@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/storage/buf_internals.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/storage/buf_internals.h</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバッファマネージャおよびバッファ置換戦略（クロックスイープアルゴリズム）の内部定義を保持するヘッダーファイルです。共有メモリ上のバッファ記述子（<code>BufferDesc</code>）の構造や、バッファの状態管理、ハッシュテーブルによるバッファ検索の仕組みを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/storage</code> モジュールにおいて、バッファ管理の低レイヤーを担います。<code>bufmgr.h</code> が公開インターフェースを提供するのに対し、本ファイルはバッファの物理的な状態管理や、アトミック操作によるロックの最適化など、実装の詳細を定義しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファ状態の管理**: 参照カウント、使用カウント、フラグを32ビットの単一変数に詰め込み、アトミック操作による効率的な状態更新を実現する。</li>
+<li>**バッファ記述子の定義**: 共有バッファのメタデータ（タグ、状態、ロック、I/O状態）を保持する構造体の定義。</li>
+<li>**バッファタグの管理**: ディスク上のブロックを一意に識別するための <code>BufferTag</code> の操作関数を提供。</li>
+<li>**ハッシュパーティショニング**: バッファ検索の競合を減らすためのパーティションロックの計算ロジックを提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BufferDesc</code>: 各共有バッファのメタデータを保持する構造体。キャッシュライン境界を意識したパディングが施されている。</li>
+<li><code>pg_atomic_uint32 state</code>: バッファの状態（フラグ、参照数、使用数）を保持するアトミック変数。</li>
+<li><code>BufferTag</code>: バッファが保持するページを特定するための識別子。</li>
+<li><code>BM_*</code> マクロ: <code>state</code> 変数内のフラグビット（<code>BM_DIRTY</code>, <code>BM_VALID</code>, <code>BM_LOCKED</code> 等）。</li>
+<li><code>BufMappingPartitionLock()</code>: 特定のタグに対応するバッファハッシュテーブルのパーティションロックを取得する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BufTagGetForkNum</code></li>
+<li><code>BufTagGetRelFileLocator</code></li>
+<li><code>BufTagGetRelNumber</code></li>
+<li><code>BufTagSetRelForkDetails</code></li>
+<li><code>BufferDescPadded</code></li>
+<li><code>CkptSortItem</code></li>
+<li><code>ClearBufferTag</code></li>
+<li><code>InitBufferTag</code></li>
+<li><code>PendingWriteback</code></li>
+<li><code>WritebackContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**状態更新**: バッファヘッダのロック（<code>BM_LOCKED</code>）を伴う更新と、CAS（Compare-And-Swap）を用いたロックフリーな更新の2パターンが存在します。</li>
+<li>**バッファ検索**: <code>BufTableHashCode</code> でハッシュ値を計算し、<code>BufMappingPartitionLock</code> でロックを取得した後、ハッシュテーブルを探索して <code>buf_id</code> を特定します。</li>
+<li>**I/O管理**: <code>BufferDesc</code> 内の <code>io_wref</code> や <code>BM_IO_IN_PROGRESS</code> フラグを用いて、非同期I/OやブロックI/Oの進行状況を管理します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buf.h</code>, <code>storage/bufmgr.h</code>: 基本的なバッファ定義。</li>
+<li><code>storage/lwlock.h</code>: バッファマッピングやコンテンツロックに使用。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ管理。</li>
+<li><code>port/atomics.h</code>: バッファ状態の並行更新用。</li>
+<li><code>pgstat.h</code></li>
+<li><code>storage/aio_types.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>utils/relcache.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: バッファ管理の主要ロジック。</li>
+<li><code>src/backend/storage/buffer/buf_table.c</code>: バッファハッシュテーブルの実装。</li>
+<li><code>src/backend/storage/buffer/freelist.c</code>: バッファ置換戦略（クロックスイープ）の実装。</li>
+<li><code>src/backend/storage/buffer/localbuf.c</code>: ローカルバッファの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: <code>BufferDesc</code> はキャッシュラインサイズ（64バイト）を意識して設計されています。構造体を変更する際はサイズ増加に注意してください。</li>
+<li>**ロックの注意点**: <code>BM_LOCKED</code> はバッファヘッダのメタデータ保護用であり、バッファ内のデータそのものを保護するものではありません。データアクセスには <code>content_lock</code> を使用します。</li>
+<li>**アトミック操作**: <code>state</code> フィールドの操作は、<code>BM_LOCKED</code> フラグの状態に依存するため、既存の <code>LockBufHdr</code> / <code>UnlockBufHdr</code> を通じて行うのが安全です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufferTag.html" target="wiki-view"><code>BufferTag</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufTagGetRelNumber.html" target="wiki-view"><code>BufTagGetRelNumber</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufTagGetForkNum.html" target="wiki-view"><code>BufTagGetForkNum</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufTagSetRelForkDetails.html" target="wiki-view"><code>BufTagSetRelForkDetails</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufTagGetRelFileLocator.html" target="wiki-view"><code>BufTagGetRelFileLocator</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__ClearBufferTag.html" target="wiki-view"><code>ClearBufferTag</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__InitBufferTag.html" target="wiki-view"><code>InitBufferTag</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufferDesc.html" target="wiki-view"><code>BufferDesc</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__BufferDescPadded.html" target="wiki-view"><code>BufferDescPadded</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__PendingWriteback.html" target="wiki-view"><code>PendingWriteback</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__WritebackContext.html" target="wiki-view"><code>WritebackContext</code></a></li>
+<li><a href="../../../symbols/src__include__storage__buf_internals_h__CkptSortItem.html" target="wiki-view"><code>CkptSortItem</code></a></li>
+</ul></body></html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/state.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>state</h1>
+<h2>概念</h2>
+<p>PostgreSQLのソースコードにおいて、<code>state</code> という名前の構造体（<code>struct state</code>）は、全く異なる2つのモジュールで独立して定義され、それぞれの文脈における「状態」を管理するために使用されています。</p>
+<p>1. **正規表現NFA（非決定性有限オートマトン）の状態** (<code>src/include/regex/regguts.h</code>): 正規表現のコンパイルおよび最適化プロセスにおいて、状態遷移図（NFA）の各ノードを表現します。 2. **タイムゾーンデータベースの状態** (<code>src/timezone/pgtz.h</code>): IANAタイムゾーンデータベース（tzfile）のバイナリ形式をメモリ上に展開し、タイムゾーンの遷移情報、閏秒情報、および時刻型情報を保持します。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**正規表現NFAの状態**:</li>
+<p>正規表現パターンマッチングエンジンにおいて、効率的なNFAの構築、最適化、およびグラフ走査（到達可能性判定など）を行うための基盤となるデータ構造です。</p>
+<li>**タイムゾーンデータベースの状態**:</li>
+<p>セッションやログのタイムゾーン変換処理において、正確なオフセット、夏時間（DST）、および閏秒の計算を高速に行うために不可欠な情報を保持します。</p>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/regex</code></li>
+<li><code>module:src/timezone</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/regex/regguts.h#state</code>**:</li>
+<p>NFAの各状態を表現する構造体。状態番号、入力/出力アークのリスト、走査用の一時ポインタ、およびライブ状態/空き状態管理用の双方向リンクを保持します。</p>
+<li>**<code>symbol:src/timezone/pgtz.h#state</code>**:</li>
+<p>タイムゾーンの遷移時刻、型情報、閏秒情報などを保持する構造体。上位の <code>pg_tz</code> 構造体の内部状態として保持されます。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>これら2つの構造体は、それぞれ独立したフローで動作します。</p>
+<h3>1. 正規表現NFAの構築と走査</h3>
+<ul>
+<li>**構築**: <code>src/backend/regex/regcomp.c</code> において、正規表現のコンパイル中に <code>struct state</code> がインスタンス化され、<code>struct arc</code> を介して他の状態と接続されます。</li>
+<li>**走査と最適化**: グラフ走査アルゴリズム（到達可能性判定や最適化など）において、<code>tmp</code> ポインタや <code>next</code>/<code>prev</code> リストを用いて状態が走査・管理されます。</li>
+</ul>
+<h3>2. タイムゾーンデータのロードと変換</h3>
+<ul>
+<li>**ロード**: <code>src/timezone/localtime.c</code> 内の <code>tzload()</code> が <code>pg_open_tzfile()</code> を介してタイムゾーンファイルを特定し、その内容を解析して <code>struct state</code> の各フィールド（<code>ats</code>、<code>ttis</code>、<code>lsis</code> など）を構築します。</li>
+<li>**変換**: タイムゾーン変換処理を行う関数群（<code>localtime.c</code> など）が、この構築された <code>state</code> 構造体を参照して、適切なタイムゾーンオフセットや夏時間フラグを決定します。</li>
+</ul>
+<p>※なお、メモリ確保失敗時などの詳細なエラーハンドリングの全容や、具体的なファイル破損時のフォールバックフローの詳細は、提供されたモジュール情報からは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<h3>正規表現NFAの状態</h3>
+<ul>
+<li><code>no</code> フィールドには、非負の整数または <code>FREESTATE</code> (-1) が格納されます。</li>
+<li><code>ins</code> および <code>outs</code> は、それぞれ <code>struct arc</code> の有効な連結リストを指す必要があります。</li>
+<li><code>next</code> および <code>prev</code> フィールドは、NFA内の全ライブ状態を管理するための双方向リストを構成します。</li>
+</ul>
+<h3>タイムゾーンデータベースの状態</h3>
+<ul>
+<li>配列サイズ（<code>ats</code>、<code>types</code>、<code>ttis</code>、<code>lsis</code>）は、<code>tzfile.h</code> で定義された <code>TZ_MAX_TIMES</code>、<code>TZ_MAX_TYPES</code>、<code>TZ_MAX_LEAPS</code> などの定数によって決定されます。</li>
+<li><code>defaulttype</code> は、最近の tzdb リリースでは常に 0 ですが、2018e 以前のデータでは非ゼロとなる可能性があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<h3>正規表現NFAの状態</h3>
+<ul>
+<li>**リスト操作の混同**: <code>next</code> フィールドは「ライブ状態の連結」と「空き状態の連結（再利用）」という二つの異なる役割を兼ねているため、状態のリスト操作を行う際は、現在の状態がどちらのリストに属しているかを厳密に区別する必要があります。</li>
+<li>**一時ポインタの競合**: <code>tmp</code> ポインタは再帰的なアルゴリズムやグラフ走査で頻繁に書き換えられるため、複数のアルゴリズムを並行して実行する際には競合に注意する必要があります。</li>
+</ul>
+<h3>タイムゾーンデータベースの状態</h3>
+<ul>
+<li>**サイズ制限**: <code>TZ_MAX_TIMES</code> を超える遷移情報を持つファイルは、読み込み時にエラーとなる可能性があります。</li>
+<li>**直接操作の禁止**: 外部モジュールからタイムゾーン機能を利用する場合は、本構造体を直接操作せず、<code>pgtime.h</code> のインターフェースを使用する必要があります。</li>
+<li>**ファイル整合性**: 破損したタイムゾーンファイルが入力された場合、構造体の各フィールドに不正な値が設定されるリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/regex/regguts.h</code>: 正規表現NFAの <code>state</code> および <code>arc</code> 構造体の定義。</li>
+<li><code>src/timezone/pgtz.h</code>: タイムゾーンの <code>state</code> 構造体および関連定数の定義。</li>
+<li><code>src/backend/regex/regcomp.c</code>: NFAの構築、最適化、および状態管理の実装。</li>
+<li><code>src/timezone/localtime.c</code>: タイムゾーンファイルのロード（<code>tzload</code>）と時刻変換処理の実装。</li>
+</ul></body></html>

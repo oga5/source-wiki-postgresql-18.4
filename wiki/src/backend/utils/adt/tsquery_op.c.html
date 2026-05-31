@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tsquery_op.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tsquery_op.c</h1>
+<h2>概要</h2>
+<p><code>tsquery_op.c</code> は、PostgreSQL の全文検索用データ型 <code>tsquery</code> に対する演算子および比較関数を実装するモジュールです。論理演算（AND, OR, NOT）やフレーズ検索、および <code>tsquery</code> 同士の比較・包含関係の判定を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>tsearch</code> サブシステムの一部として、<code>tsquery</code> 型の操作を抽象化します。<code>tsquery</code> は内部的にポーランド記法に近い構造を持つため、本ファイルではこれらを <code>QTNode</code>（ツリー構造）に変換して操作し、最終的にシリアライズされた <code>TSQuery</code> 形式に戻す処理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**論理演算の提供**: <code>&amp;</code> (AND), <code>|</code> (OR), <code>!</code> (NOT) 演算子の実装。</li>
+<li>**フレーズ検索のサポート**: <code>&lt;N&gt;</code> 演算子による単語間距離の指定。</li>
+<li>**比較演算**: <code>tsquery</code> 同士の大小比較および等価判定。</li>
+<li>**包含判定**: <code>tsq_mcontains</code> / <code>tsq_mcontained</code> による、ある <code>tsquery</code> が別の <code>tsquery</code> の全単語を含んでいるかの判定。</li>
+<li>**シグネチャ生成**: <code>makeTSQuerySign</code> によるインデックス検索用のビットマップシグネチャ作成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>join_tsqueries</code>: 2つの <code>tsquery</code> を指定された演算子で結合し、<code>QTNode</code> ツリーを構築する内部ヘルパー。</li>
+<li><code>CompareTSQ</code>: <code>tsquery</code> をツリー構造に展開して比較するコアロジック。</li>
+<li><code>tsquery_numnode</code>: <code>tsquery</code> 内のノード数を返す関数。</li>
+<li><code>tsq_mcontains</code>: 包含関係（<code>@&gt;</code> / <code>&lt;@</code>）を判定する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cmp_string</code></li>
+<li><code>tsq_mcontained</code></li>
+<li><code>tsquery_and</code></li>
+<li><code>tsquery_cmp</code></li>
+<li><code>tsquery_not</code></li>
+<li><code>tsquery_or</code></li>
+<li><code>tsquery_phrase</code></li>
+<li><code>tsquery_phrase_distance</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **演算子関数**: <code>PG_GETARG_TSQUERY</code> で入力を受け取り、必要に応じて <code>QT2QTN</code> でツリー構造へ変換します。 2.  **ツリー操作**: <code>join_tsqueries</code> 等でノードを結合・加工します。 3.  **再シリアライズ**: <code>QTN2QT</code> を呼び出し、ツリー構造を再び <code>TSQuery</code> 型（メモリ上のバイト列）に変換します。 4.  **メモリ管理**: <code>QTNFree</code> で一時的なツリー構造を解放し、<code>PG_FREE_IF_COPY</code> で入力引数のメモリを適切に管理します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>tsearch/ts_utils.h</code>: <code>tsquery</code> 関連のデータ構造（<code>QTNode</code>, <code>QueryItem</code>）および変換関数（<code>QT2QTN</code>, <code>QTN2QT</code>）の定義。</li>
+<li><code>lib/qunique.h</code>: 包含判定時の重複排除に使用。</li>
+<li><code>postgres.h</code>, <code>fmgrprotos.h</code>: PostgreSQL の標準的な関数インターフェース。</li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/tsquery.c</code>: <code>tsquery</code> 型の基本的な入出力や構造定義。</li>
+<li><code>src/backend/utils/adt/tsquery_util.c</code>: <code>tsquery</code> のツリー操作やメモリ管理の補助関数。</li>
+<li><code>src/backend/utils/adt/tsvector_op.c</code>: <code>tsvector</code>（検索対象の文書）側の演算子実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ツリー変換のコスト**: <code>tsquery</code> の演算は、毎回 <code>QT2QTN</code> でツリー構造に展開してから処理を行うため、複雑なクエリではオーバーヘッドが発生します。</li>
+<li>**メモリ管理**: <code>QTN_NEEDFREE</code> フラグを持つノードは <code>QTNFree</code> で解放する必要があります。メモリリークを防ぐため、<code>PG_RETURN_*</code> 前の解放処理に注意してください。</li>
+<li>**包含判定**: <code>tsq_mcontains</code> はクエリ内の単語リストを抽出し、ソートして比較します。これは構造的な包含ではなく、単語集合としての包含を判定する点に留意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_numnode.html" target="wiki-view"><code>tsquery_numnode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__join_tsqueries.html" target="wiki-view"><code>join_tsqueries</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_and.html" target="wiki-view"><code>tsquery_and</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_or.html" target="wiki-view"><code>tsquery_or</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_phrase_distance.html" target="wiki-view"><code>tsquery_phrase_distance</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_phrase.html" target="wiki-view"><code>tsquery_phrase</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_not.html" target="wiki-view"><code>tsquery_not</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__CompareTSQ.html" target="wiki-view"><code>CompareTSQ</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsquery_cmp.html" target="wiki-view"><code>tsquery_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__cmp_string.html" target="wiki-view"><code>cmp_string</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsq_mcontains.html" target="wiki-view"><code>tsq_mcontains</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_op_c__tsq_mcontained.html" target="wiki-view"><code>tsq_mcontained</code></a></li>
+</ul></body></html>

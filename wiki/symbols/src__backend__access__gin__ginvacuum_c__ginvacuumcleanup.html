@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginvacuum_c__ginvacuumcleanup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginvacuumcleanup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginvacuum.c:686</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのクリーンアップ処理を実行し、保留中の挿入の処理、不要なページの再利用判定、統計情報の更新、およびFSM（Free Space Map）のバキュームを行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>IndexBulkDeleteResult *ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>info</code>: バキューム対象のインデックス情報を含む <code>IndexVacuumInfo</code> 構造体。</li>
+<li><code>stats</code>: 統計情報を保持する <code>IndexBulkDeleteResult</code> 構造体（NULLの場合、内部で初期化される）。</li>
+<li>**出力**:</li>
+<li>更新された <code>IndexBulkDeleteResult</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>info-&gt;analyze_only</code> が真の場合、AutoVacuumワーカプロセスであれば保留中の挿入を処理し、それ以外は何も行わずに終了します。</li>
+<li><code>stats</code> がNULLの場合、<code>ginInsertCleanup</code> を呼び出して保留中の挿入を処理します。</li>
+<li>インデックスのロックが必要な場合（<code>!RELATION_IS_LOCAL</code>）、拡張時に <code>ExclusiveLock</code> を取得します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化と保留処理**: <code>analyze_only</code> モードまたは <code>stats</code> がNULLの場合に <code>ginInsertCleanup</code> を実行します。 2. **統計情報の準備**: インデックスのタプル数や推定カウントを <code>stats</code> に設定します。 3. **全ページ走査**: インデックスの全ページを <code>GIN_ROOT_BLKNO</code> から順に走査します。</p>
+<ul>
+<li><code>vacuum_delay_point</code> を呼び出し、バキュームの遅延を制御します。</li>
+<li><code>GinPageIsRecyclable</code> で再利用可能と判定されたページを <code>RecordFreeIndexPage</code> でFSMに返却します。</li>
+<li>再利用不可の場合、ページ種別（データページかエントリページか）に応じて <code>idxStat</code> を更新します。</li>
+<p>4. **メタデータ更新**: <code>ginUpdateStats</code> を呼び出し、集計したページ数やエントリ数をメタページに反映します。 5. **FSMバキューム**: <code>IndexFreeSpaceMapVacuum</code> を呼び出し、FSMを整理します。 6. **終了処理**: 最終的なページ数を取得し、結果を返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/gin/ginutil.c</code>: <code>amroutine-&gt;amvacuumcleanup</code> として登録。</li>
+<li><code>src/backend/commands/analyze.c</code>: ANALYZE処理の一部として参照。</li>
+<li>**呼び出し先**:</li>
+<li><code>ginInsertCleanup</code>, <code>initGinState</code>, <code>LockRelationForExtension</code>, <code>RelationGetNumberOfBlocks</code>, <code>ReadBufferExtended</code>, <code>LockBuffer</code>, <code>GinPageIsRecyclable</code>, <code>RecordFreeIndexPage</code>, <code>GinPageIsData</code>, <code>GinPageIsList</code>, <code>GinPageIsLeaf</code>, <code>PageGetMaxOffsetNumber</code>, <code>UnlockReleaseBuffer</code>, <code>ginUpdateStats</code>, <code>IndexFreeSpaceMapVacuum</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexVacuumInfo</code>: バキュームの制御パラメータ。</li>
+<li><code>IndexBulkDeleteResult</code>: バキュームの結果統計。</li>
+<li><code>GinState</code>: GINインデックスの状態保持用。</li>
+<li><code>GinStatsData</code>: インデックスの統計集計用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>stats</code> がNULLの場合、メモリ割り当て（<code>palloc0</code>）が失敗する可能性があります。</li>
+<li>インデックスが空の場合、走査範囲はルートのみとなります。</li>
+<li><code>GinPageIsRecyclable</code> の判定により、ルートページは再利用対象から除外されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ginvacuumcleanup</code> は <code>VACUUM ANALYZE</code> 等のクリーンアップフェーズの主エントリポイントです。</li>
+<li><code>XXX</code> コメントにある通り、インデックスのタプル数はヒープのタプル数で代用しており、部分インデックス等の場合には正確な値ではない点に注意してください。</li>
+<li><code>needLock</code> フラグによるロック制御は、ローカルインデックスと共有インデックスの差異を吸収するために使用されています。</li>
+</ul></body></html>

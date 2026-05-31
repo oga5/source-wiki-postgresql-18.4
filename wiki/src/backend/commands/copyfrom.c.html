@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/copyfrom.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/copyfrom.c</h1>
+<h2>概要</h2>
+<p><code>copyfrom.c</code> は、PostgreSQL の <code>COPY &lt;table&gt; FROM</code> コマンドの実行エンジンです。外部ソース（ファイル、プログラム、クライアント）からデータを読み込み、テーブルへ効率的に挿入する責務を負います。単なる挿入だけでなく、パーティションルーティング、トリガー実行、制約チェック、インデックス更新、および FDW（外部データラッパー）との連携を統合的に管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、データ入出力の「入力側」を担います。<code>copyto.c</code> が出力側を担うのに対し、本ファイルは実行時の状態管理（<code>CopyFromState</code>）と、挿入の最適化（マルチインサート）に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データソースの抽象化**: ファイル、プログラム、コールバック関数からの入力を統一的に扱う。</li>
+<li>**挿入の最適化**: <code>CopyMultiInsertInfo</code> を用いたバッチ挿入の制御。パーティションテーブルへのルーティングと、各パーティションごとのバッファ管理。</li>
+<li>**実行コンテキストの管理**: <code>COPY</code> コマンド実行中のエラーハンドリング、進捗状況の報告、メモリコンテキストの分離。</li>
+<li>**トリガーと制約の統合**: <code>BEFORE/AFTER</code> トリガー、生成列、チェック制約の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>CopyFromState</code>: <code>COPY FROM</code> 実行中の全状態を保持するメイン構造体。</li>
+<li><code>CopyFromRoutine</code>: テキスト、CSV、バイナリ形式ごとの処理を抽象化する関数ポインタテーブル。</li>
+</ul>
+<h3>マルチインサート（バッチ処理）</h3>
+<ul>
+<li><code>CopyMultiInsertInfo</code>: 複数のパーティションやテーブルに対するバッチ挿入状態を管理する。</li>
+<li><code>CopyMultiInsertBuffer</code>: 特定のリレーションに対するタプルバッファ。<code>MAX_BUFFERED_TUPLES</code>（1000）および <code>MAX_BUFFERED_BYTES</code>（65535）でフラッシュタイミングを制御。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>CopyFrom</code>: <code>COPY FROM</code> のメインループ。タプルの読み込みから挿入、トリガー実行までを統括。</li>
+<li><code>BeginCopyFrom</code> / <code>EndCopyFrom</code>: 実行コンテキストの初期化およびリソース解放。</li>
+<li><code>CopyMultiInsertInfoFlush</code>: バッファされたタプルを物理ストレージへ書き出す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CopyMultiInsertBuffer</code></li>
+<li><code>CopyMultiInsertBufferCleanup</code></li>
+<li><code>CopyMultiInsertBufferFlush</code></li>
+<li><code>CopyMultiInsertBufferInit</code></li>
+<li><code>CopyMultiInsertInfo</code></li>
+<li><code>CopyMultiInsertInfoCleanup</code></li>
+<li><code>CopyMultiInsertInfoFlush</code></li>
+<li><code>CopyMultiInsertInfoInit</code></li>
+<li><code>CopyMultiInsertInfoIsEmpty</code></li>
+<li><code>CopyMultiInsertInfoIsFull</code></li>
+<li><code>CopyMultiInsertInfoNextFreeSlot</code></li>
+<li><code>CopyMultiInsertInfoSetupBuffer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>BeginCopyFrom</code> が <code>CopyFromState</code> を作成し、フォーマットに応じた <code>CopyFromRoutine</code> を設定。 2. **ループ処理**: <code>CopyFrom</code> 内の無限ループで <code>NextCopyFrom</code> を呼び出し、入力を取得。 3. **ルーティング**: パーティションテーブルの場合、<code>ExecFindPartition</code> で適切なリレーションを特定。 4. **挿入**:</p>
+<ul>
+<li>**シングル挿入**: <code>table_tuple_insert</code> を直接呼び出す。</li>
+<li>**マルチ挿入**: <code>CopyMultiInsertInfoStore</code> でバッファに蓄積し、閾値に達した時点で <code>CopyMultiInsertBufferFlush</code> を実行。</li>
+<p>5. **後処理**: <code>EndCopyFrom</code> でファイルハンドルやパイプを閉じ、メモリコンテキストを破棄。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッドの抽象化レイヤー。</li>
+<li><code>executor/execPartition.h</code>: パーティションルーティングの制御。</li>
+<li><code>commands/copyfrom_internal.h</code>: 内部共有定義。</li>
+<li><code>commands/copyapi.h</code>: <code>COPY</code> 用の API 定義。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeModifyTable.h</code></li>
+<li><code>executor/tuptable.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/portal.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>copyfromparse.c</code>: 入力データのパースと <code>Datum</code> への変換（本ファイルが依存するロジック）。</li>
+<li><code>copyto.c</code>: <code>COPY TO</code> コマンドの実装。</li>
+<li><code>nodeModifyTable.c</code>: <code>INSERT</code> 文の実行エンジン（<code>COPY</code> と共通のトリガー/制約ロジックを共有）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>cstate-&gt;copycontext</code> を使用して、<code>COPY</code> 実行中のメモリを分離しています。これにより、大量のデータ処理でもメモリリークを抑制します。</li>
+<li>**マルチインサートの制約**: <code>BEFORE</code> トリガーや <code>INSTEAD OF</code> トリガーが存在する場合、マルチインサートは無効化されます。これはトリガーが挿入済みの行を参照する可能性があるためです。</li>
+<li>**エラーハンドリング**: <code>CopyFromErrorCallback</code> は、エラー発生時に現在の行番号や列名をコンテキストとして出力するために使用されます。</li>
+<li>**省略された詳細**: パース処理（<code>NextCopyFrom</code> の詳細）は <code>copyfromparse.c</code> に委譲されており、本ファイルには含まれていません。これは責務の分離によるものです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertBuffer.html" target="wiki-view"><code>CopyMultiInsertBuffer</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfo.html" target="wiki-view"><code>CopyMultiInsertInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertBufferInit.html" target="wiki-view"><code>CopyMultiInsertBufferInit</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoSetupBuffer.html" target="wiki-view"><code>CopyMultiInsertInfoSetupBuffer</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoInit.html" target="wiki-view"><code>CopyMultiInsertInfoInit</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoIsFull.html" target="wiki-view"><code>CopyMultiInsertInfoIsFull</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoIsEmpty.html" target="wiki-view"><code>CopyMultiInsertInfoIsEmpty</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertBufferFlush.html" target="wiki-view"><code>CopyMultiInsertBufferFlush</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertBufferCleanup.html" target="wiki-view"><code>CopyMultiInsertBufferCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoFlush.html" target="wiki-view"><code>CopyMultiInsertInfoFlush</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoCleanup.html" target="wiki-view"><code>CopyMultiInsertInfoCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfrom_c__CopyMultiInsertInfoNextFreeSlot.html" target="wiki-view"><code>CopyMultiInsertInfoNextFreeSlot</code></a></li>
+</ul></body></html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__backup__basebackup_c__perform_base_backup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>perform_base_backup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/backup/basebackup.c:233</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL の物理ベースバックアップにおけるメインループを制御し、データディレクトリおよびテーブルスペースのファイルを <code>bbsink</code> インターフェースを通じてストリーミング送信する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void perform_base_backup(basebackup_options *opt, bbsink *sink, IncrementalBackupInfo *ib);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>opt</code>: バックアップオプション（ラベル、チェックポイント設定、マニフェスト設定など）。</li>
+<li><code>sink</code>: データ送信先を抽象化した <code>bbsink</code> オブジェクト。</li>
+<li><code>ib</code>: 増分バックアップ用情報（NULL の場合はフルバックアップ）。</li>
+<li>**出力**: なし（副作用として <code>sink</code> へのデータ書き出しおよびバックアップ状態の遷移を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>AuxProcessResourceOwner</code> が初期化されていること。</li>
+<li><code>do_pg_backup_start</code> から <code>do_pg_backup_stop</code> までの処理は、エラー発生時に <code>do_pg_abort_backup</code> が確実に呼び出されるよう <code>PG_ENSURE_ERROR_CLEANUP</code> ブロック内で実行されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: バックアップ状態の初期化、マニフェストの準備、および <code>do_pg_backup_start</code> によるバックアップモードへの移行。 2. **準備**: 増分バックアップの場合は <code>PrepareForIncrementalBackup</code> を実行。 3. **サイズ見積もり**: <code>opt-&gt;progress</code> が有効な場合、全テーブルスペースのサイズを計算。 4. **送信ループ**:</p>
+<ul>
+<li>各テーブルスペースを順次処理。</li>
+<li>メインデータディレクトリの場合、<code>backup_label</code>、<code>tablespace_map</code>、データファイル群、<code>pg_control</code> を順に送信。</li>
+<li>外部テーブルスペースの場合、対応する tar アーカイブを作成して送信。</li>
+<li>各アーカイブの終了時に tar 終端ブロックを書き込み。</li>
+<p>5. **終了処理**: <code>do_pg_backup_stop</code> を呼び出し、バックアップモードを解除。 6. **WAL 追跡**: <code>opt-&gt;includewal</code> が有効な場合、バックアップ終了後に WAL ファイルを追記する準備を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/backup/basebackup.c</code> 内の関数（<code>SendBaseBackup</code> 等から間接的に呼び出される）。</li>
+<li>**呼び出し先**: <code>do_pg_backup_start</code>, <code>do_pg_backup_stop</code>, <code>do_pg_abort_backup</code>, <code>sendDir</code>, <code>sendTablespace</code>, <code>bbsink</code> インターフェース関数群（<code>bbsink_begin_backup</code>, <code>bbsink_begin_archive</code> 等）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>basebackup_options</code>: バックアップ設定。</li>
+<li><code>bbsink</code>: データ送信パイプライン。</li>
+<li><code>BackupState</code>: バックアップの進行状況や LSN を保持。</li>
+<li><code>tablespaceinfo</code>: テーブルスペースのパスやサイズ情報。</li>
+<li><code>backup_manifest_info</code>: バックアップ整合性検証用マニフェスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>do_pg_backup_start</code> 以降の処理中にエラーが発生した場合、<code>do_pg_abort_backup</code> が実行され、バックアップカウンターのリークを防ぐ。</li>
+<li><code>opt-&gt;includewal</code> が有効な場合、メインデータディレクトリの送信後に WAL ファイルを追記するため、メインデータディレクトリは常に最後に送信される必要がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>bbsink</code> は単なる出力先ではなく、圧縮やフィルタリングを行うパイプラインとして機能する。</li>
+<li>WAL ファイルはバックアップの最後にまとめて送信される設計である。</li>
+<li><code>PG_ENSURE_ERROR_CLEANUP</code> の使用により、エラー時のクリーンアップが保証されている。</li>
+</ul></body></html>

@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/ltree/ltxtquery_io.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/ltree/ltxtquery_io.c</h1>
+<h2>概要</h2>
+<p><code>ltxtquery</code> 型の入出力処理を担当するファイルです。<code>ltree</code> モジュールにおける検索クエリ（<code>ltxtquery</code>）のテキスト表現と内部バイナリ形式の相互変換、およびネットワーク転送用のシリアライズ・デシリアライズを実装します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>ltree</code> モジュールにおいて、ユーザーが入力した検索クエリ文字列を解析し、検索エンジンが効率的に処理できる「逆ポーランド記法（後置記法）」のツリー構造へ変換する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**構文解析**: クエリ文字列のトークン化と、演算子（<code>&amp;</code>, <code>|</code>, <code>!</code>）の優先順位を考慮したツリー構築。</li>
+<li>**バイナリ変換**: 内部的な <code>ITEM</code> 配列構造への変換と、<code>ltxtquery</code> 型のメモリレイアウトの構築。</li>
+<li>**入出力インターフェース**: SQL レベルの <code>in</code>, <code>out</code>, <code>recv</code>, <code>send</code> 関数の提供。</li>
+<li>**検証**: クエリの構文エラーチェックおよび、スタックオーバーフロー防止のための再帰深さ制限。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ltxtq_in</code> / <code>ltxtq_out</code>: SQL 型変換のための標準的な入出力関数。</li>
+<li><code>QPRS_STATE</code>: 解析中の状態（バッファ、演算子スタック、エラーコンテキスト）を保持する構造体。</li>
+<li><code>NODE</code>: 解析中に一時的に使用される連結リスト形式のツリーノード。</li>
+<li><code>ITEM</code>: <code>ltxtquery</code> 内部で保持される、演算子とオペランドの固定長配列要素。</li>
+<li><code>makepol</code>: クエリ文字列を逆ポーランド記法に変換するメインのパーサ関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>INFIX</code></li>
+<li><code>findoprnd</code></li>
+<li><code>gettoken_query</code></li>
+<li><code>ltxtq_recv</code></li>
+<li><code>ltxtq_send</code></li>
+<li><code>pushquery</code></li>
+<li><code>pushval_asis</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力 (<code>ltxtq_in</code>)**:</p>
+<ul>
+<li><code>gettoken_query</code> で文字列をトークン化。</li>
+<li><code>makepol</code> が再帰的に呼び出され、演算子の優先順位に従って <code>NODE</code> リストを構築。</li>
+<li><code>findoprnd</code> が構築されたツリーを走査し、各演算子ノードが参照する左オペランドのオフセットを計算・設定。</li>
+<li>最終的に <code>ltxtquery</code> 構造体へメモリをコピーして返却。</li>
+<p>2. **出力 (<code>ltxtq_out</code>)**:</p>
+<li><code>ITEM</code> 配列を再帰的に走査する <code>infix</code> 関数を使用。</li>
+<li>逆ポーランド記法から、人間が読みやすい中置記法（<code>A &amp; B | C</code> 等）の文字列へ復元。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>ltree.h</code>: <code>ltxtquery</code> や <code>ITEM</code> 構造体定義。</li>
+<li><code>libpq/pqformat.h</code>: <code>send</code>/<code>recv</code> 用のバイナリプロトコル処理。</li>
+<li><code>crc32.h</code>: オペランドのハッシュ計算用。</li>
+<li><code>ctype.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ltxtquery_op.c</code>: このファイルで構築された <code>ltxtquery</code> を実際に使用して検索を行う演算ロジック。</li>
+<li><code>ltree_io.c</code>: <code>ltree</code> 型（パス型）の入出力処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰の安全性**: <code>makepol</code>, <code>findoprnd</code>, <code>infix</code> は再帰関数です。スタックオーバーフローを防ぐため <code>check_stack_depth()</code> が各所で呼び出されています。</li>
+<li>**メモリ管理**: <code>QPRS_STATE</code> 内で動的にバッファを拡張（<code>repalloc</code>）しながら解析を行うため、メモリ確保の挙動に注意してください。</li>
+<li>**バイナリ形式**: <code>ltxtq_recv</code>/<code>send</code> はバージョン管理（現在は v1）を行っており、将来的なフォーマット変更に備えた設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__NODE.html" target="wiki-view"><code>NODE</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__QPRS_STATE.html" target="wiki-view"><code>QPRS_STATE</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__gettoken_query.html" target="wiki-view"><code>gettoken_query</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__pushquery.html" target="wiki-view"><code>pushquery</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__pushval_asis.html" target="wiki-view"><code>pushval_asis</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__makepol.html" target="wiki-view"><code>makepol</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__findoprnd.html" target="wiki-view"><code>findoprnd</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__ltxtq_in.html" target="wiki-view"><code>ltxtq_in</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__ltxtq_recv.html" target="wiki-view"><code>ltxtq_recv</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__INFIX.html" target="wiki-view"><code>INFIX</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__ltxtq_out.html" target="wiki-view"><code>ltxtq_out</code></a></li>
+<li><a href="../../symbols/contrib__ltree__ltxtquery_io_c__ltxtq_send.html" target="wiki-view"><code>ltxtq_send</code></a></li>
+</ul></body></html>

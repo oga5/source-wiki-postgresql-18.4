@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/int.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/int.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の組み込み整数型（<code>int2</code> / <code>smallint</code> および <code>int4</code> / <code>integer</code>）の SQL インターフェースを実装するモジュールです。型変換、算術演算、比較、および <code>generate_series</code> などのセット生成関数を提供します。<code>int8</code>（bigint）は別ファイルで管理されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> サブシステムの一部として、SQL レベルの整数演算を C 言語のネイティブな算術演算へマッピングします。<code>common/int.h</code> で定義されたオーバーフロー保護ルーチンを利用し、安全な数値計算を保証する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 処理**: SQL 文字列と内部バイナリ表現（<code>Datum</code>）間の相互変換（<code>in</code>/<code>out</code>/<code>recv</code>/<code>send</code>）。</li>
+<li>**算術・論理演算**: 加減乗除、剰余、ビット演算、絶対値、GCD/LCM の実装。</li>
+<li>**型変換**: <code>int2</code> と <code>int4</code> 間のキャスト、および <code>bool</code> 型との相互変換。</li>
+<li>**セット生成**: <code>generate_series</code> 関数による整数シーケンスの生成とプランナサポート。</li>
+<li>**バリデーション**: <code>int2vector</code> 型の構造整合性チェック。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>I/O ルーチン</h3>
+<ul>
+<li><code>int2in</code>, <code>int2out</code>, <code>int4in</code>, <code>int4out</code>: テキスト形式の入出力。</li>
+<li><code>int2recv</code>, <code>int2send</code>, <code>int4recv</code>, <code>int4send</code>: バイナリ形式の入出力。</li>
+<li><code>int2vectorin</code>, <code>int2vectorout</code>: <code>int2vector</code> 型（<code>smallint[]</code> の特殊版）の入出力。</li>
+</ul>
+<h3>演算・比較</h3>
+<ul>
+<li><code>int4pl</code>, <code>int4mi</code>, <code>int4mul</code>, <code>int4div</code>: <code>int4</code> の算術演算。</li>
+<li><code>int4eq</code>, <code>int4lt</code>, <code>int4gt</code> 等: <code>int4</code> および <code>int2</code> の比較演算子群。</li>
+<li><code>int4gcd</code>, <code>int4lcm</code>: 最大公約数および最小公倍数の計算。</li>
+</ul>
+<h3>ユーティリティ・構造体</h3>
+<ul>
+<li><code>generate_series_fctx</code>: <code>generate_series</code> の実行状態を保持するコンテキスト構造体。</li>
+<li><code>buildint2vector</code>: <code>int2vector</code> を動的に構築するヘルパー。</li>
+<li><code>check_valid_int2vector</code>: <code>int2vector</code> のメモリレイアウトが期待通りか検証する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>bool_int4</code></li>
+<li><code>check_valid_int2vector</code></li>
+<li><code>generate_series_fctx</code></li>
+<li><code>generate_series_int4</code></li>
+<li><code>in_range_int2_int2</code></li>
+<li><code>in_range_int2_int4</code></li>
+<li><code>in_range_int2_int8</code></li>
+<li><code>in_range_int4_int2</code></li>
+<li><code>in_range_int4_int4</code></li>
+<li><code>in_range_int4_int8</code></li>
+<li><code>int4_bool</code></li>
+<li><code>int4gcd_internal</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**演算フロー**: すべての演算関数は <code>PG_FUNCTION_ARGS</code> を受け取り、<code>PG_GETARG_INTxx</code> で値を取得します。オーバーフローの可能性がある演算（加減乗）は、<code>pg_add_sxx_overflow</code> 等を呼び出し、オーバーフロー時は <code>ereport(ERROR, ...)</code> でトランザクションを中断します。</li>
+<li>**セット生成フロー**: <code>generate_series_int4</code> は <code>SRF_IS_FIRSTCALL()</code> を用いて初回に <code>generate_series_fctx</code> をメモリコンテキストに割り当て、以降の呼び出しで <code>SRF_RETURN_NEXT</code> を用いてシーケンスを返します。</li>
+<li>**GCD/LCM フロー**: <code>int4gcd_internal</code> はユークリッドの互換法を実装しており、<code>INT_MIN</code> などの境界値を安全に処理するために負の空間で計算を行います。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>common/int.h</code>: オーバーフロー保護付き算術関数の定義。</li>
+<li><code>utils/builtins.h</code>: 組み込み関数のプロトタイプ。</li>
+<li><code>funcapi.h</code>: セット生成関数（SRF）のための API。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ入出力用メッセージフォーマット。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/common/int.h</code>: 本ファイルが依存するオーバーフローチェックの基盤。</li>
+<li><code>src/backend/utils/adt/int8.c</code>: <code>int8</code> 型の同様の実装。</li>
+<li><code>src/backend/utils/adt/numeric.c</code>: より複雑な数値型（<code>numeric</code>）の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>int2vector</code> は可変長構造体であり、<code>palloc</code> で確保されます。<code>buildint2vector</code> は <code>SET_VARSIZE</code> を用いてヘッダーを初期化します。</li>
+<li>**オーバーフロー**: <code>int.c</code> 内の算術演算は、C 言語の未定義動作を避けるため、必ず <code>common/int.h</code> のオーバーフローチェック関数を経由します。</li>
+<li>**int2vector**: これは歴史的な理由で存在する特殊な配列型です。通常の配列とは異なり、<code>ndim=1</code>, <code>dataoffset=0</code>（NULL 値なし）という不変条件を持ちます。</li>
+<li>**省略された詳細**: 比較演算子の実装は非常に定型的であるため、本ページでは個別の関数ロジックの詳細は省略しています。これらはすべて <code>PG_RETURN_BOOL</code> を用いた単純な比較です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__generate_series_fctx.html" target="wiki-view"><code>generate_series_fctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__check_valid_int2vector.html" target="wiki-view"><code>check_valid_int2vector</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__int4_bool.html" target="wiki-view"><code>int4_bool</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__bool_int4.html" target="wiki-view"><code>bool_int4</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int4_int4.html" target="wiki-view"><code>in_range_int4_int4</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int4_int2.html" target="wiki-view"><code>in_range_int4_int2</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int4_int8.html" target="wiki-view"><code>in_range_int4_int8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int2_int4.html" target="wiki-view"><code>in_range_int2_int4</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int2_int2.html" target="wiki-view"><code>in_range_int2_int2</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__in_range_int2_int8.html" target="wiki-view"><code>in_range_int2_int8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__int4gcd_internal.html" target="wiki-view"><code>int4gcd_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__int_c__generate_series_int4.html" target="wiki-view"><code>generate_series_int4</code></a></li>
+</ul></body></html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/file/fd.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/file/fd.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける「仮想ファイル記述子（VFD）」管理の中核です。OSのファイル記述子（FD）制限を回避するためのLRUキャッシュ機構を提供し、データベース内の物理ファイルI/Oを抽象化します。また、一時ファイルのライフサイクル管理、ディレクトリ操作、およびクラッシュセーフなファイル操作（<code>fsync</code>、<code>durable_rename</code>等）の基盤を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>storage/file</code> サブシステムの最下層に位置し、OSの低レベルI/O（<code>open</code>, <code>read</code>, <code>write</code>, <code>close</code>）をラップします。<code>buffile.c</code> や <code>sharedfileset.c</code> などの上位モジュールは、本ファイルが提供する <code>File</code> 型（VFDインデックス）を通じてファイルにアクセスします。</p>
+<h2>責務</h2>
+<ul>
+<li>**VFD管理**: LRUアルゴリズムを用いたFDの動的開閉と、プロセスごとのFD制限（<code>max_safe_fds</code>）の遵守。</li>
+<li>**一時ファイル管理**: トランザクション終了時の自動クリーンアップ、一時テーブルスペースへの分散配置、およびサイズ制限の監視。</li>
+<li>**耐久性保証**: <code>fsync</code> のラッパー提供、および <code>durable_rename</code> / <code>durable_unlink</code> によるクラッシュ後の整合性維持。</li>
+<li>**リソース追跡**: <code>ResourceOwner</code> を用いた、エラー発生時やトランザクション終了時のファイル記述子リーク防止。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>VFD管理</h3>
+<ul>
+<li><code>Vfd</code>: 仮想ファイル記述子の状態を保持する構造体。LRUリストのリンク、ファイル名、現在のFD、リソース所有者情報を含む。</li>
+<li><code>VfdCache</code>: VFDを格納する動的配列。<code>File</code> 型のインデックスでアクセスされる。</li>
+<li><code>max_safe_fds</code>: プロセスが同時に開ける最大FD数。<code>set_max_safe_fds</code> で初期化される。</li>
+</ul>
+<h3>ファイル操作インターフェース</h3>
+<ul>
+<li><code>PathNameOpenFile</code>: 指定パスのファイルをVFDとして開く。</li>
+<li><code>OpenTemporaryFile</code>: 一時ファイルを作成し、自動削除とリソース所有権を登録する。</li>
+<li><code>FileReadV</code> / <code>FileWriteV</code>: <code>iovec</code> を用いた分散I/O操作。</li>
+<li><code>FileSync</code>: <code>pg_fsync</code> を呼び出し、データの永続化を行う。</li>
+</ul>
+<h3>外部FD管理（<code>Allocate</code>系）</h3>
+<ul>
+<li><code>AllocateFile</code> / <code>AllocateDir</code>: <code>fopen</code>/<code>opendir</code> のラッパー。<code>ResourceOwner</code> に登録され、自動クローズ対象となる。</li>
+<li><code>OpenTransientFile</code>: <code>open</code> のラッパー。短期間のファイル操作用。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ファイルアクセス**: <code>FileAccess(File)</code> が呼び出されると、対象VFDがオープン済みか確認する。未オープンなら <code>LruInsert</code> を呼び出し、必要に応じて <code>ReleaseLruFiles</code> で古いFDを閉じてから <code>open</code> を実行する。 2. **LRU更新**: ファイルアクセスが発生するたびに、<code>Delete</code> と <code>Insert</code> を用いて、該当VFDをLRUリストの先頭（Most Recently Used）へ移動させる。 3. **一時ファイル**: <code>OpenTemporaryFile</code> は <code>PathNameOpenFile</code> を呼び出した後、<code>FD_DELETE_AT_CLOSE</code> フラグを立て、<code>ResourceOwner</code> に登録する。これにより、<code>FileClose</code> またはトランザクション終了時に自動的に <code>unlink</code> される。 4. **耐久性**: <code>durable_rename</code> は、操作対象のファイルと親ディレクトリに対して <code>fsync</code> を発行し、OSクラッシュ時にファイルシステムが不整合な状態にならないよう保証する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/resowner.h</code>: リソース所有権管理（自動クローズ用）。</li>
+<li><code>access/xact.h</code>: トランザクション終了時のクリーンアップフック。</li>
+<li><code>storage/aio.h</code>: 非同期I/O連携。</li>
+<li>標準ヘッダー: <code>&lt;fcntl.h&gt;</code>, <code>&lt;unistd.h&gt;</code>, <code>&lt;sys/stat.h&gt;</code> 等の低レベルI/O用。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>buffile.c</code>: <code>File</code> 型を基盤としたバッファ付きI/O。</li>
+<li><code>sharedfileset.c</code>: プロセス間で共有される一時ファイルの管理。</li>
+<li><code>reinit.c</code>: アンログドテーブルのリカバリ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>Vfd</code> 構造体内の <code>fileName</code> は <code>malloc</code> されており、<code>FreeVfd</code> で解放されます。</li>
+<li>**エラーパス**: <code>BasicOpenFilePerm</code> は <code>EMFILE</code>/<code>ENFILE</code> を検知すると <code>ReleaseLruFile</code> を呼び出して再試行します。このため、ファイルオープンは「失敗する可能性がある」ことを前提に設計する必要があります。</li>
+<li>**制約**: <code>File</code> 型は単なる <code>int</code>（<code>VfdCache</code> へのインデックス）であり、OSのFDとは異なります。直接 <code>close()</code> を呼ぶと内部状態が破壊されるため、必ず <code>FileClose</code> を使用してください。</li>
+<li>**省略箇所**: 本ファイルには <code>pg_fsync</code> のプラットフォーム依存実装（<code>F_FULLFSYNC</code> 等）が含まれますが、これらはOSの耐久性保証モデルに依存するため、移植時には注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__Vfd.html" target="wiki-view"><code>Vfd</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__AllocateDescKind.html" target="wiki-view"><code>AllocateDescKind</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__AllocateDesc.html" target="wiki-view"><code>AllocateDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__InitFileAccess.html" target="wiki-view"><code>InitFileAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__InitTemporaryFileAccess.html" target="wiki-view"><code>InitTemporaryFileAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__Delete.html" target="wiki-view"><code>Delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__LruDelete.html" target="wiki-view"><code>LruDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__AllocateVfd.html" target="wiki-view"><code>AllocateVfd</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__FreeVfd.html" target="wiki-view"><code>FreeVfd</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__PathNameCreateTemporaryDir.html" target="wiki-view"><code>PathNameCreateTemporaryDir</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__PathNameDeleteTemporaryDir.html" target="wiki-view"><code>PathNameDeleteTemporaryDir</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__fd_c__radvisory.html" target="wiki-view"><code>radvisory</code></a></li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/workerinfo.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WorkerInfo</h1>
+<h2>概念</h2>
+<p><code>WorkerInfo</code> は、PostgreSQLのコードベースにおいて、異なる2つのコンテキストで定義・使用されているデータ構造です。</p>
+<p>1. **自動バキューム（バックエンド）**: 自動バキュームワーカープロセスの状態を追跡・管理するためのハンドル（<code>struct WorkerInfoData *</code> の <code>typedef</code>）として機能します。 2. **並列ダンプ（<code>pg_dump</code>）**: <code>pg_dump</code> の並列処理において、リーダープロセスと各ワーカープロセス間の連携や状態を管理するための構造体（<code>struct</code>）として機能します。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**自動バキュームにおける重要性**: ワーカープロセスの起動から終了にいたるライフサイクル（共有メモリ上の管理リストへの登録、終了時のリソース解放、および他のワーカーへのコスト制限再計算の通知など）を安全に制御するために不可欠です。</li>
+<li>**<code>pg_dump</code> における重要性**: 並列ダンプの実行時に、リーダープロセスが各ワーカーのデータベース接続や通信スロットの状態を正確に追跡し、並列処理を協調動作させるために必要となります。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/postmaster</code></li>
+<li><code>module:src/bin/pg_dump</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/postmaster/autovacuum.c#WorkerInfo</code>**: 自動バキュームワーカーの状態を指すポインタ型定義。</li>
+<li>**<code>symbol:src/backend/postmaster/autovacuum.c#FreeWorkerInfo</code>**: ワーカー終了時に共有メモリ上の <code>WorkerInfo</code> を解放し、再調整をトリガーする関数。</li>
+<li>**<code>symbol:src/bin/pg_dump/parallel.c#WorkerInfo</code>**: <code>pg_dump</code> のリーダーとワーカー間の連携情報を保持する構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<h3>自動バキュームワーカーのライフサイクル</h3>
+<p>1. **初期化と登録**: ワーカーの起動時に <code>av_startingWorker</code> を介して初期化され、実行中キュー（<code>av_runningWorkers</code>）などの操作に <code>WorkerInfo</code> が使用されます。ワーカープロセス内では、静的変数 <code>MyWorkerInfo</code> を通じて自身の状態が保持されます。 2. **プロセスの終了と解放**: ワーカープロセスが終了する際、<code>on_shmem_exit</code> コールバックを介して <code>FreeWorkerInfo</code> が呼び出されます。 3. **共有メモリの更新**: <code>FreeWorkerInfo</code> は <code>AutovacuumLock</code> を排他取得し、<code>MyWorkerInfo</code> を管理リストから削除して初期化した後、フリーリスト（<code>av_freeWorkers</code>）の先頭に返却します。 4. **再バランスのトリガー**: 最後に <code>AutoVacuumShmem-&gt;av_signal[AutoVacRebalance]</code> を <code>true</code> に設定し、残存する他のワーカーに対してコスト制限の再計算を促します。</p>
+<h3><code>pg_dump</code> における並列処理フロー</h3>
+<ul>
+<li><code>pg_dump</code> における <code>WorkerInfo</code> を用いた具体的なインスタンス化、参照箇所、および詳細なエンドツーエンドの制御フローは、提供された情報からは明らかになっていません。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**自動バキューム側**:</li>
+<li><code>WorkerInfo</code> は、必ず共有メモリ領域 <code>AutoVacuumShmem</code> 内で管理される <code>WorkerInfoData</code> インスタンスを指していなければなりません。</li>
+<li><code>FreeWorkerInfo</code> の実行時、<code>MyWorkerInfo</code> が有効なワーカー情報を指している必要があります。</li>
+<li>共有メモリ上のリスト（フリーリストや実行中キュー）を操作する際は、必ず <code>AutovacuumLock</code> を排他モードで取得している必要があります。</li>
+<li>**<code>pg_dump</code> 側**:</li>
+<li><code>WorkerInfo</code> 構造体の <code>AH</code> メンバはリーダー側のデータベース接続（<code>ArchiveHandle</code>）を指し、<code>slot</code> メンバは当該ワーカーに割り当てられた <code>ParallelSlot</code> を指している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の混同**: バックエンドの自動バキューム用 <code>WorkerInfo</code> と、クライアントツールである <code>pg_dump</code> の並列処理用 <code>WorkerInfo</code> は、名前は同一ですが全く異なるデータ構造であり、直接的な関連性はありません。開発・保守時にはこれらを混同しないよう注意が必要です。</li>
+<li>**排他制御の欠如（自動バキューム）**: <code>AutovacuumLock</code> を取得せずに <code>WorkerInfo</code> が関与するリスト操作を行うと、共有メモリのデータ構造に不整合を招く恐れがあります。</li>
+<li>**デッドロックの危険性（自動バキューム）**: <code>FreeWorkerInfo</code> はプロセス終了処理（<code>on_shmem_exit</code>）の中で確実に実行される必要があります。デッドロックを避けるため、この関数内では <code>AutovacuumLock</code> 以外の新たなロック取得を行わないように設計されています。</li>
+<li>**NULLアクセス（<code>pg_dump</code>）**: <code>WorkerInfo</code> 内の <code>AH</code> または <code>slot</code> が <code>NULL</code> の状態でアクセスされた場合、並列処理の制御ロジックがクラッシュする原因となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/postmaster/autovacuum.c</code></li>
+<li><code>src/bin/pg_dump/parallel.c</code></li>
+</ul></body></html>

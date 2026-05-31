@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__origin_c__ReplicationOriginExitCleanup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReplicationOriginExitCleanup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/origin.c:1077</code></li>
+</ul>
+<h2>目的</h2>
+<p>プロセス終了時に、現在セッションが保持しているレプリケーション起点の獲得状態を解放し、待機中のプロセスへ通知を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ReplicationOriginExitCleanup(int code, Datum arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>code</code>: <code>on_shmem_exit</code> から渡される終了コード。</li>
+<li><code>arg</code>: <code>on_shmem_exit</code> から渡される補助引数（本関数では未使用）。</li>
+<li>出力: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>session_replication_state</code> が有効な場合、その起点は現在のプロセス（<code>MyProcPid</code>）によって獲得されている必要がある。</li>
+<li><code>ReplicationOriginLock</code> を排他モードで取得して共有メモリ上の状態を更新する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>session_replication_state</code> が <code>NULL</code> の場合は即座に終了する。 2. <code>ReplicationOriginLock</code> を排他モードで取得する。 3. 現在のセッションの <code>acquired_by</code> が自身のプロセスID（<code>MyProcPid</code>）と一致する場合：</p>
+<ul>
+<li><code>session_replication_state-&gt;origin_cv</code> をローカル変数に退避する。</li>
+<li><code>acquired_by</code> を 0 にリセットし、<code>session_replication_state</code> を <code>NULL</code> にクリアする。</li>
+<p>4. <code>ReplicationOriginLock</code> を解放する。 5. 退避した <code>ConditionVariable</code> が存在する場合、<code>ConditionVariableBroadcast</code> を呼び出し、当該起点の解放を待機しているプロセスを起床させる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>on_shmem_exit(ReplicationOriginExitCleanup, 0)</code> を介してプロセス終了時に呼び出される。</li>
+<li>呼び出し先: <code>LWLockAcquire</code>, <code>LWLockRelease</code>, <code>ConditionVariableBroadcast</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationState</code>: セッションが保持するレプリケーション起点の状態構造体。</li>
+<li><code>ReplicationOriginLock</code>: 起点テーブル全体を保護するロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>session_replication_state</code> が <code>NULL</code> の場合、何もしない（安全に終了する）。</li>
+<li>自身のプロセスが起点を獲得していない場合、ロック取得後に状態変更は行われない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>on_shmem_exit</code> に登録されるコールバックであるため、プロセスが異常終了または正常終了する際に確実に実行される必要がある。</li>
+<li><code>ConditionVariableBroadcast</code> はロックを解放した後に呼び出されるため、デッドロックの懸念はない。</li>
+</ul></body></html>

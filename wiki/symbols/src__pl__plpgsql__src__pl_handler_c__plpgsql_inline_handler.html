@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__pl__plpgsql__src__pl_handler_c__plpgsql_inline_handler.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>plpgsql_inline_handler</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/pl/plpgsql/src/pl_handler.c:315</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL における <code>DO</code> 文（匿名コードブロック）の実行を仲介するハンドラ関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum plpgsql_inline_handler(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PG_FUNCTION_ARGS</code> を介して <code>InlineCodeBlock</code> 構造体（ソーステキストおよびアトミック性フラグを含む）を受け取る。</li>
+<li>**出力**: <code>Datum</code> 型の実行結果を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>SPI_connect_ext</code> により SPI マネージャへの接続が確立されていること。</li>
+<li>実行に使用する <code>EState</code> および <code>ResourceOwner</code> は、トランザクションレベルのリソースとは独立して管理され、<code>DO</code> ブロック内の <code>COMMIT</code>/<code>ROLLBACK</code> を跨いで生存する必要がある。</li>
+<li>実行終了時（成功・失敗問わず）に、割り当てた <code>EState</code>、<code>ResourceOwner</code>、およびコンパイル済み関数メモリが解放されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>SPI_connect_ext</code> を呼び出し、<code>DO</code> ブロックの実行コンテキストを準備する。 2. <code>plpgsql_compile_inline</code> を使用してソーステキストを <code>PLpgSQL_function</code> にコンパイルする。 3. 実行に必要な <code>EState</code> と <code>ResourceOwner</code> を作成する。 4. <code>PG_TRY</code> ブロック内で <code>plpgsql_exec_function</code> を呼び出し、コードブロックを実行する。 5. <code>PG_CATCH</code> ブロックにて、エラー発生時に <code>plpgsql_subxact_cb</code> を呼び出してサブトランザクション関連のクリーンアップを行い、リソースを解放した後にエラーを再スローする。 6. 正常終了時、または <code>PG_CATCH</code> 後のクリーンアップ処理として、<code>EState</code> の破棄、<code>ResourceOwner</code> の解放、関数メモリの解放、および <code>SPI_finish</code> を実行する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: PostgreSQL の関数マネージャ（直接的な呼び出し元情報はソースコード上では明示されていないが、<code>DO</code> 文実行時に起動される）。</li>
+<li>**呼び出し先**: <code>SPI_connect_ext</code>, <code>plpgsql_compile_inline</code>, <code>CreateExecutorState</code>, <code>ResourceOwnerCreate</code>, <code>plpgsql_exec_function</code>, <code>plpgsql_subxact_cb</code>, <code>FreeExecutorState</code>, <code>ReleaseAllPlanCacheRefsInOwner</code>, <code>ResourceOwnerDelete</code>, <code>plpgsql_free_function_memory</code>, <code>SPI_finish</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>InlineCodeBlock</code>: 実行対象のソースコードとアトミック性フラグを保持。</li>
+<li><code>PLpgSQL_function</code>: コンパイルされた関数表現。</li>
+<li><code>EState</code>: 実行状態を保持する構造体。</li>
+<li><code>ResourceOwner</code>: リソース管理用オブジェクト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>SPI_finish</code> が失敗した場合、<code>elog(ERROR)</code> によりエラーが報告される。</li>
+<li><code>DO</code> ブロック内でエラーが発生した場合、<code>PG_CATCH</code> ブロックを経由してリソースのクリーンアップが行われ、エラーが伝播される。</li>
+<li><code>func-&gt;cfunc.use_count</code> が 0 にならない場合は <code>Assert</code> により停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>PG_TRY/PG_FINALLY</code> 的な構造（<code>PG_CATCH</code> を含む）を用いてリソースリークを防止している。特に <code>ResourceOwner</code> はトランザクションに依存しないため、<code>DO</code> ブロック内のトランザクション制御の影響を受けないよう注意が必要である。</li>
+<li><code>plpgsql_subxact_cb</code> の呼び出しは、<code>DO</code> ブロック内のサブトランザクション異常終了時に <code>simple_econtext_stack</code> を適切にクリーンアップするために必須である。</li>
+</ul></body></html>

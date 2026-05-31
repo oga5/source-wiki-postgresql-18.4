@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/ginchkval.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GinChkVal</h1>
+<h2>概念</h2>
+<p><code>GinChkVal</code> は、PostgreSQLのGIN（Generalized Inverted Index）インデックスの整合性チェック（consistent）処理において、クエリの論理条件とインデックス内のキー状態を照合・評価するためのコンテキスト情報を保持する構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>GINインデックスの検索時、インデックスから得られたキーの存在有無と、クエリの論理構造（AND/OR/NOTなど）を組み合わせて、最終的な検索結果の合致判定を行う必要があります。<code>GinChkVal</code> は、この判定を行う評価関数（<code>checkcondition_gin</code> など）にコンテキスト情報を一括して受け渡す役割を担っており、インデックス評価ロジックの効率的な実行に不可欠です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/intarray/_int_bool.c#GinChkVal</code>**</li>
+<li>整数配列クエリ用の <code>GinChkVal</code> 構造体。クエリツリーの先頭（<code>ITEM</code>）と、各ノードの評価結果（<code>bool</code> 配列）を保持します。</li>
+<li>**<code>symbol:src/backend/utils/adt/tsginidx.c#GinChkVal</code>**</li>
+<li>テキスト検索（<code>tsquery</code>）用の <code>GinChkVal</code> 構造体。クエリのアイテム配列（<code>QueryItem</code>）、キーの存在状態（<code>GinTernaryValue</code>）、およびマッピング情報（<code>map_item_operand</code>）を保持します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化とインスタンス化**</p>
+<ul>
+<li><code>contrib/intarray</code> では、<code>gin_bool_consistent</code> 等の関数内で <code>GinChkVal</code> が準備されます。</li>
+<li><code>src/backend/utils/adt</code> では、<code>gin_tsquery_consistent</code> や <code>gin_tsquery_triconsistent</code> 等の関数内で <code>GinChkVal</code> がインスタンス化されます。</li>
+<p>2. **評価関数への受け渡し**</p>
+<li>構築された <code>GinChkVal</code> は、<code>checkcondition_gin</code> などのコールバック関数や、<code>TS_execute_ternary</code> などの評価関数へコンテキスト（ポインタ）として渡されます。</li>
+<p>3. **状態の追跡と判定**</p>
+<li>評価関数内において、<code>GinChkVal</code> を経由して特定のクエリノードの真偽値や存在状態が読み書きされ、最終的なクエリ条件の合致判定が行われます。</li>
+</ul>
+<p>※なお、インデックススキャン全体における詳細なエンドツーエンドの制御フローは、提供されたモジュールの範囲内では完全には明文化されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリ領域の確保と有効性**</li>
+<li><code>contrib/intarray</code> 版：<code>mapped_check</code> 配列は、対応するクエリツリーのノード数分以上のメモリ領域が確保されている必要があります。また、<code>first</code> は有効な <code>ITEM</code> 配列の先頭を指している必要があります。</li>
+<li><code>src/backend/utils/adt</code> 版：<code>check</code> 配列は、対応するクエリのアイテム数分以上の要素を持つ必要があります。また、<code>first_item</code> は有効な <code>QueryItem</code> 配列を指している必要があります。</li>
+</ul>
+<p>※これら以外の、PostgreSQLコアのインデックスマネージャ側との共通インターフェースにおける不変条件は、提供されたモジュールの範囲内では完全には明文化されていません。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名構造体の重複定義**</li>
+<li><code>GinChkVal</code> は <code>contrib/intarray</code> と <code>src/backend/utils/adt</code> の両方で同名で定義されていますが、メンバ構成や型（<code>bool</code> と <code>GinTernaryValue</code> など）が異なります。一方のモジュールを変更する際、もう一方のモジュールへの影響や、キャスト時の型不整合に注意する必要があります。</li>
+<li>**メモリ不足とセグメンテーション違反**</li>
+<li><code>mapped_check</code> や <code>check</code> のメモリ領域が不足している場合、バッファオーバーランが発生する可能性があります。また、<code>first</code> や <code>first_item</code> が <code>NULL</code> または無効なメモリを指している場合、評価時にセグメンテーションフォールトが発生します。</li>
+<li>**マッピングの不整合**</li>
+<li>クエリの複雑さに対して <code>map_item_operand</code> の整合性が取れていない場合、誤った判定結果を返す可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>contrib/intarray/_int_bool.c</code>**</li>
+<li>整数配列に対するGINインデックスの整合性チェック（<code>gin_bool_consistent</code>）の実装。</li>
+<li>**<code>src/backend/utils/adt/tsginidx.c</code>**</li>
+<li>テキスト検索（<code>tsquery</code>）に対するGINインデックスの整合性チェック（<code>gin_tsquery_consistent</code>）の実装。</li>
+</ul></body></html>

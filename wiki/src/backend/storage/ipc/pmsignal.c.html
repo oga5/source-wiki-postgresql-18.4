@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/pmsignal.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/pmsignal.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのPostmaster（親プロセス）と、その配下で動作するバックエンドプロセス（子プロセス）間での非同期通信および状態管理を行うためのモジュールです。主にシグナル通知と共有メモリ上のフラグを用いたステータス共有を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> 内において、プロセス間通信（IPC）の基盤の一部として機能します。特にPostmasterが子プロセスの生存状況を把握し、必要に応じてシグナル（<code>SIGUSR1</code>, <code>SIGQUIT</code>）を介して制御を伝達する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**Postmasterへの通知**: 子プロセスからPostmasterへ、リカバリ開始やログローテーション等のイベントを <code>SIGUSR1</code> と共有メモリフラグで通知する。</li>
+<li>**子プロセスの状態追跡**: 各バックエンドが共有メモリをどの程度利用しているか（UNUSED/ASSIGNED/ACTIVE/WALSENDER）を管理する。</li>
+<li>**Postmaster生存監視**: 子プロセスがPostmasterの死を検知するための仕組み（パイプ監視やOS固有のシグナル）を提供し、異常終了時の連鎖的な停止をサポートする。</li>
+<li>**シャットダウン理由の伝達**: Postmasterが <code>SIGQUIT</code> を送出する際、その理由を共有メモリ経由で子プロセスに伝える。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PMSignalData</code>: 共有メモリ上に配置されるメイン構造体。シグナルフラグと子プロセスの状態配列を保持。</li>
+<li><code>PMSignalState</code>: <code>PMSignalData</code> を指すグローバルなポインタ。</li>
+<li><code>SendPostmasterSignal()</code>: 子プロセスからPostmasterへ特定の理由を通知する。</li>
+<li><code>CheckPostmasterSignal()</code>: Postmasterが受信したシグナルの理由を確認・クリアする。</li>
+<li><code>PostmasterIsAlive()</code>: Postmasterが生存しているかを確認する（高速パスと低速パスを持つ）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckPostmasterSignal</code></li>
+<li><code>GetQuitSignalReason</code></li>
+<li><code>IsPostmasterChildWalSender</code></li>
+<li><code>MarkPostmasterChildSlotAssigned</code></li>
+<li><code>MarkPostmasterChildSlotUnassigned</code></li>
+<li><code>PMSignalShmemInit</code></li>
+<li><code>PMSignalShmemSize</code></li>
+<li><code>PostmasterDeathSignalInit</code></li>
+<li><code>RegisterPostmasterChildActive</code></li>
+<li><code>SendPostmasterSignal</code></li>
+<li><code>SetQuitSignalReason</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **通知フロー**: 子プロセスが <code>SendPostmasterSignal</code> を呼び出し、共有メモリの <code>PMSignalFlags</code> を更新後、<code>kill(PostmasterPid, SIGUSR1)</code> を発行します。 2. **受信フロー**: Postmasterは <code>SIGUSR1</code> を受けると <code>CheckPostmasterSignal</code> をループで呼び出し、設定されたフラグに応じた処理（例：WALレシーバーの起動など）を実行します。 3. **状態管理**: 子プロセスは起動時に <code>RegisterPostmasterChildActive</code> を呼び出し、終了時に <code>on_shmem_exit</code> フックを通じて自動的に <code>MarkPostmasterChildInactive</code> が実行されるよう設計されています。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/pmsignal.h</code>: インターフェース定義。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ領域の確保。</li>
+<li><code>postmaster/postmaster.h</code>: PostmasterのPIDや状態管理。</li>
+<li><code>sys/prctl.h</code> / <code>sys/procctl.h</code>: OS依存の親プロセス死検知機能。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/postmaster/postmaster.c</code>: 本モジュールの主要な利用者であり、シグナルハンドラや子プロセスのライフサイクル管理を行う。</li>
+<li><code>src/backend/replication/walsender.c</code>: <code>WALSENDER</code> 状態への遷移を行うプロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アトミック性**: <code>PMSignalFlags</code> 等は <code>sig_atomic_t</code> を使用しており、明示的なロックなしで更新可能です。これはシグナルハンドラ内での安全性を確保するためです。</li>
+<li>**PostmasterIsAlive**: この関数はパフォーマンスが重要です。OSがサポートしていれば <code>postmaster_possibly_dead</code> フラグによる高速パスが使用され、それ以外の場合はパイプ読み込み等の低速パスが実行されます。</li>
+<li>**スロット管理**: <code>num_child_flags</code> は共有メモリ内の値とPostmasterのローカル変数の両方で保持されます。Postmasterは自身のローカルコピーを信頼して動作します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__PMSignalData.html" target="wiki-view"><code>PMSignalData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__PMSignalShmemSize.html" target="wiki-view"><code>PMSignalShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__PMSignalShmemInit.html" target="wiki-view"><code>PMSignalShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__SendPostmasterSignal.html" target="wiki-view"><code>SendPostmasterSignal</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__CheckPostmasterSignal.html" target="wiki-view"><code>CheckPostmasterSignal</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__SetQuitSignalReason.html" target="wiki-view"><code>SetQuitSignalReason</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__GetQuitSignalReason.html" target="wiki-view"><code>GetQuitSignalReason</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__MarkPostmasterChildSlotAssigned.html" target="wiki-view"><code>MarkPostmasterChildSlotAssigned</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__MarkPostmasterChildSlotUnassigned.html" target="wiki-view"><code>MarkPostmasterChildSlotUnassigned</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__IsPostmasterChildWalSender.html" target="wiki-view"><code>IsPostmasterChildWalSender</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__RegisterPostmasterChildActive.html" target="wiki-view"><code>RegisterPostmasterChildActive</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__pmsignal_c__PostmasterDeathSignalInit.html" target="wiki-view"><code>PostmasterDeathSignalInit</code></a></li>
+</ul></body></html>

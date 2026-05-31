@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_c__heap_insert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_insert</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/access/heap/heapam.c:2079</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーション（テーブル）に対して単一のタプルを挿入します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void heap_insert(Relation relation, HeapTuple tup, CommandId cid, int options, BulkInsertState bistate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relation</code>: 挿入先のリレーション。</li>
+<li><code>tup</code>: 挿入するタプル（<code>HeapTuple</code>）。</li>
+<li><code>cid</code>: 現在のコマンドID。</li>
+<li><code>options</code>: 挿入オプション（<code>HEAP_INSERT_SPECULATIVE</code> 等）。</li>
+<li><code>bistate</code>: 一括挿入用状態（<code>BulkInsertState</code>）。</li>
+<li>**出力**: なし（副作用としてリレーションにタプルが追加されます）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し前に <code>AssertHasSnapshotForToast(relation)</code> が満たされている必要があります。</li>
+<li>タプルの属性数がリレーションの定義を超えていないことを前提とします。</li>
+<li>クリティカルセクション内では <code>ereport(ERROR)</code> を発生させてはなりません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **準備**: <code>heap_prepare_insert</code> を呼び出し、タプルのヘッダー設定および必要に応じたTOAST処理を行います。 2. **バッファ確保**: <code>RelationGetBufferForTuple</code> を使用し、挿入可能な空き領域を持つページバッファを確保します。 3. **競合チェック**: <code>CheckForSerializableConflictIn</code> により、シリアライザブル隔離レベルでの競合をチェックします。 4. **物理書き込み**: クリティカルセクションを開始し、<code>RelationPutHeapTuple</code> でページにタプルを書き込みます。 5. **可視性マップ更新**: ページが「全可視（All-Visible）」状態であれば、フラグをクリアし可視性マップを更新します。 6. **WAL記録**: リレーションがWALを必要とする場合、<code>XLogInsert</code> を介して挿入操作を記録します。 7. **終了処理**: バッファのロック解除、キャッシュ無効化（<code>CacheInvalidateHeapTuple</code>）、統計情報の更新（<code>pgstat_count_heap_insert</code>）を行い、必要に応じて一時タプルのメモリを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/access/common/toast_internals.c</code></li>
+<li><code>src/backend/access/heap/heapam.c</code>（内部のラッパー関数等）</li>
+<li>**呼び出し先**: </li>
+<li><code>heap_prepare_insert</code>, <code>RelationGetBufferForTuple</code>, <code>CheckForSerializableConflictIn</code>, <code>RelationPutHeapTuple</code>, <code>PageClearAllVisible</code>, <code>visibilitymap_clear</code>, <code>MarkBufferDirty</code>, <code>XLogInsert</code>, <code>CacheInvalidateHeapTuple</code>, <code>pgstat_count_heap_insert</code>, <code>heap_freetuple</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: ターゲットとなるリレーション情報。</li>
+<li><code>HeapTuple</code>: 挿入対象のタプルデータ。</li>
+<li><code>Buffer</code>: 物理ページを保持するバッファ。</li>
+<li><code>BulkInsertState</code>: 一括挿入時の状態管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>挿入時にページ容量を超える場合、TOAST処理が実行されます。</li>
+<li>投機的挿入（<code>HEAP_INSERT_SPECULATIVE</code>）の場合、WALレコードにその旨が記録されます。</li>
+<li>ページが初期化直後の場合、<code>XLOG_HEAP_INIT_PAGE</code> フラグが使用されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はクリティカルセクションを伴うため、メモリ割り当てやエラー発生の可能性がある処理は <code>START_CRIT_SECTION()</code> 前に完了させる必要があります。</li>
+<li>投機的挿入の取り消しやロールバックが発生した場合でも、統計情報（<code>pgstat</code>）はカウントされる仕様です。</li>
+</ul></body></html>

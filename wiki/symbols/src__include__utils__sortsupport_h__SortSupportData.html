@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__utils__sortsupport_h__SortSupportData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SortSupportData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/utils/sortsupport.h:60</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のソート処理において、データ型固有の比較ロジックや省略キー（Abbreviated Key）変換ルーチンを保持し、低オーバーヘッドな比較メカニズムを提供するための状態管理構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct SortSupportData {
+    MemoryContext ssup_cxt;
+    Oid           ssup_collation;
+    bool          ssup_reverse;
+    bool          ssup_nulls_first;
+    AttrNumber    ssup_attno;
+    void         *ssup_extra;
+    int         (*comparator) (Datum x, Datum y, SortSupport ssup);
+    bool          abbreviate;
+    Datum       (*abbrev_converter) (Datum original, SortSupport ssup);
+    bool        (*abbrev_abort) (int memtupcount, SortSupport ssup);
+    int         (*abbrev_full_comparator) (Datum x, Datum y, SortSupport ssup);
+} SortSupportData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>BTSORTSUPPORT_PROC</code> プロシージャを介して初期化されます。<code>ssup_cxt</code> や <code>ssup_collation</code> は初期化時に設定され、以降変更不可です。</li>
+<li>**出力**: <code>comparator</code> 関数ポインタは、比較結果（&lt;0, 0, &gt;0）を返します。省略キー比較が不確定（0）を返した場合、<code>abbrev_full_comparator</code> が最終的な判定を行います。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ssup_extra</code> に格納するデータは、必ず <code>ssup_cxt</code> コンテキスト内に割り当てる必要があります。</li>
+<li><code>comparator</code> は NULL を返さず、入力される <code>x</code>, <code>y</code> も NULL ではないことが保証されます。</li>
+<li>省略キーを使用する場合、<code>abbrev_converter</code> と <code>abbrev_full_comparator</code> の設定が必須です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>PrepareSortSupport</code> 系関数により、対象の型に応じた比較関数が登録されます。 2. **比較**: <code>ApplySortComparator</code> を通じて比較が実行されます。省略キーが有効な場合、まず高速な近似比較を行い、結果が不確定な場合にのみ <code>abbrev_full_comparator</code> を呼び出します。 3. **最適化**: <code>abbrev_abort</code> を用いて、省略キーの重複が多い場合に変換コストを回避する戦略をとることが可能です。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>tuplesort.c</code>（ソートエンジン）、<code>nodeIndexscan.c</code>、<code>nodeMergejoin.c</code>、<code>nodeSetOp.c</code> 等の実行ノードや、<code>analyze.c</code>、<code>nbtsort.c</code> 等のユーティリティから参照されます。</li>
+<li>**呼び出し先**: <code>BTSORTSUPPORT_PROC</code> で定義された型固有の関数、および <code>ApplySortAbbrevFullComparator</code> 等のインライン関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SortSupport</code>: <code>SortSupportData</code> へのポインタ型。</li>
+<li><code>MemoryContext</code>: <code>ssup_cxt</code> で使用されるメモリ管理コンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>省略キーの比較結果が 0 の場合、それは等価を意味せず「判定不能」を意味するため、必ず <code>abbrev_full_comparator</code> によるフォールバックが必要です。</li>
+<li><code>abbrev_converter</code> が設定されていない場合、省略キー最適化は無効となります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ssup_reverse</code> および <code>ssup_nulls_first</code> は初期化後も変更可能です。</li>
+<li><code>comparator</code> は、コアコードの判断により、省略キー用から完全比較用へ動的に切り替えられる場合があります。</li>
+<li>CPU キャッシュ効率を最大化するため、省略キーのエンコーディング設計には注意が必要です。</li>
+</ul></body></html>

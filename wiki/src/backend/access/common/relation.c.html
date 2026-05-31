@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/relation.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/relation.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおけるリレーション（テーブル、インデックス等）を開閉するための汎用的なインターフェースを提供します。リレーションのオープン時に適切なロックを取得し、リレーションキャッシュ（relcache）を介してリレーション記述子（<code>Relation</code>）を取得する一連の定型処理をカプセル化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> モジュールにおいて、リレーションへのアクセスを開始・終了する際の標準的なエントリーポイントとして機能します。低レベルなリレーションキャッシュ操作（<code>RelationIdGetRelation</code>）と、高レベルなSQLレベルのオブジェクト参照（<code>RangeVar</code>）の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**リレーションのオープン**: OIDまたは<code>RangeVar</code>（スキーマ修飾名など）によるリレーションの特定と、適切なロックの取得。</li>
+<li>**整合性の維持**: オープン時の無効化メッセージの処理（<code>AcceptInvalidationMessages</code>）や、一時リレーション使用時のトランザクションフラグ更新。</li>
+<li>**リレーションのクローズ**: リレーション記述子の解放と、必要に応じたロックの解除。</li>
+<li>**統計情報の初期化**: <code>pgstat_init_relation</code> を呼び出し、統計情報収集の準備を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>relation_open</code>: OIDでリレーションを開く。存在しない場合はエラー。</li>
+<li><code>try_relation_open</code>: OIDでリレーションを開く。存在しない場合はNULLを返す。</li>
+<li><code>relation_openrv</code>: <code>RangeVar</code>（名前）でリレーションを開く。</li>
+<li><code>relation_openrv_extended</code>: <code>missing_ok</code> フラグ付きで <code>RangeVar</code> から開く。</li>
+<li><code>relation_close</code>: リレーションを閉じ、指定されたロックを解放する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ロック取得**: <code>relation_open</code> 等は、リレーションキャッシュにアクセスする前に <code>LockRelationOid</code> を呼び出し、競合を防ぎます。 2. **名前解決**: <code>relation_openrv</code> 系は <code>RangeVarGetRelid</code> を使用して名前をOIDに変換します。この際、必要に応じて無効化メッセージを処理し、最新のカタログ情報を反映させます。 3. **キャッシュ取得**: <code>RelationIdGetRelation</code> を呼び出し、メモリ上のリレーション記述子を取得します。 4. **事後処理**: 一時テーブルの場合は <code>MyXactFlags</code> を更新し、<code>pgstat_init_relation</code> で統計情報を初期化して呼び出し元に返します。 5. **クローズ**: <code>relation_close</code> は <code>RelationClose</code> を呼び出してキャッシュ参照を減らし、指定があればロックを解除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/relation.h</code>: 公開インターフェース定義。</li>
+<li><code>storage/lmgr.h</code>: ロック管理機能。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュ検索。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化メッセージの処理。</li>
+<li><code>pgstat.h</code>: 統計情報収集機能。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/relcache.h</code>: リレーションキャッシュの内部構造と低レベルAPI。</li>
+<li><code>src/backend/catalog/namespace.c</code>: <code>RangeVarGetRelid</code> の実装元。名前解決のロジック。</li>
+<li><code>src/backend/storage/lmgr/lock.c</code>: ロック取得・解放の具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「リレーションのオープン」という定型的なボイラープレートを排除するためのものです。特定のアクセス手法（ヒープやインデックス固有の処理）は、それぞれのサブシステム（<code>access/heap</code> や <code>access/index</code>）に委譲されます。</li>
+<li><code>NoLock</code> を指定して開く場合は、呼び出し側が既に適切なロックを保持していることが前提となります。<code>relation_open</code> 内の <code>Assert</code> でこの制約がチェックされます。</li>
+<li><code>relation_close</code> を呼んでも、ロックは自動的には解除されません。<code>lockmode</code> 引数を指定した場合のみ、そのロックが解除されます。指定しない場合、ロックはトランザクション終了時まで保持されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__relation_c__relation_open.html" target="wiki-view"><code>relation_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__relation_c__try_relation_open.html" target="wiki-view"><code>try_relation_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__relation_c__relation_openrv.html" target="wiki-view"><code>relation_openrv</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__relation_c__relation_openrv_extended.html" target="wiki-view"><code>relation_openrv_extended</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__relation_c__relation_close.html" target="wiki-view"><code>relation_close</code></a></li>
+</ul></body></html>

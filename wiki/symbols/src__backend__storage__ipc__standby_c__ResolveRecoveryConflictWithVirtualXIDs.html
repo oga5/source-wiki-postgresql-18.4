@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ResolveRecoveryConflictWithVirtualXIDs</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/standby.c:359</code></li>
+</ul>
+<h2>目的</h2>
+<p>ホットスタンバイ環境において、リカバリプロセスが要求するリソースと競合している特定の仮想トランザクション（VirtualXID）が終了するまで待機、または強制終了させることで競合を解決します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ResolveRecoveryConflictWithVirtualXIDs(
+    VirtualTransactionId *waitlist,
+    ProcSignalReason reason,
+    uint32 wait_event_info,
+    bool report_waiting
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>waitlist</code>: 待機対象の <code>VirtualTransactionId</code> 配列（終端は無効なID）。</li>
+<li><code>reason</code>: 競合理由（<code>ProcSignalReason</code>）。</li>
+<li><code>wait_event_info</code>: 待機イベント情報。</li>
+<li><code>report_waiting</code>: 待機状況をログやプロセスステータスに報告するかどうかのフラグ。</li>
+<li>**出力**: なし（副作用として対象トランザクションの終了待機またはキャンセルを実行）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>waitlist</code> が指す配列は、有効な <code>VirtualTransactionId</code> のリストであること。</li>
+<li>呼び出し元は、リカバリプロセスが保持するロックやバッファピンと競合が発生した状態にあること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **早期終了**: <code>waitlist</code> が空であれば即座にリターンします。 2. **待機ループ**: <code>waitlist</code> 内の各 <code>VirtualTransactionId</code> に対して、<code>VirtualXactLock</code> が取得可能になるまで（＝対象トランザクションが終了するまで）ループします。 3. **タイムアウト判定**: <code>WaitExceedsMaxStandbyDelay</code> を呼び出し、設定された待機時間を超過した場合は <code>CancelVirtualTransaction</code> を実行して対象バックエンドを強制終了させます。 4. **報告**: <code>report_waiting</code> が真の場合、待機時間が <code>deadlock_timeout</code> を超えると <code>LogRecoveryConflict</code> を呼び出し、ログ出力やプロセスステータスの更新を行います。 5. **終了処理**: 全てのトランザクションが終了した後に、必要に応じてログの事後報告やプロセスステータスのリセットを行います。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/ipc/standby.c</code> 内の各競合解決処理（<code>ResolveRecoveryConflictWithSnapshot</code> 等）から呼び出されます。</li>
+<li>**呼び出し先**: <code>VirtualTransactionIdIsValid</code>, <code>GetCurrentTimestamp</code>, <code>VirtualXactLock</code>, <code>WaitExceedsMaxStandbyDelay</code>, <code>CancelVirtualTransaction</code>, <code>pg_usleep</code>, <code>TimestampDifferenceExceeds</code>, <code>set_ps_display_suffix</code>, <code>LogRecoveryConflict</code>, <code>set_ps_display_remove_suffix</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>VirtualTransactionId</code>: 仮想トランザクションを識別する構造体。</li>
+<li><code>ProcSignalReason</code>: 競合理由を示す列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**タイムアウト**: <code>max_standby_streaming_delay</code> を超えると、対象バックエンドが強制終了されます。</li>
+<li>**空リスト**: <code>waitlist</code> が無効なIDで始まる場合、何もせず即座に終了します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、スタンバイ側でプライマリのロック状態を模倣する際の重要な同期ポイントです。</li>
+<li>待機中の <code>pg_usleep(5000L)</code> は、システム負荷が高い状況下で応答のないバックエンドへの過度な負荷を避けるための調整値です。</li>
+</ul></body></html>

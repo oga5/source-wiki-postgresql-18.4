@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/initdb/findtimezone.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/initdb/findtimezone.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの初期化ツール（<code>initdb</code>）において、ホストOSのタイムゾーン設定を検出し、PostgreSQLが認識可能なタイムゾーン名へマッピングするためのユーティリティ群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>initdb</code> の環境適応フェーズにおいて、データベースクラスタのデフォルトタイムゾーンを決定する責務を負います。OS固有のタイムゾーン表現をPostgreSQLのタイムゾーンデータベース（IANA準拠）と照合し、互換性のある設定を自動選択します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タイムゾーン検出**: 環境変数 <code>TZ</code> の確認、OSのシステム設定（<code>/etc/localtime</code> 等）の解析、またはWindowsレジストリの照会。</li>
+<li>**互換性検証**: 検出したタイムゾーンがPostgreSQLの内部形式で正しく動作するか（閏秒の有無など）の検証。</li>
+<li>**マッピング**: OS固有のタイムゾーン名をPostgreSQLの標準的なゾーン名へ変換。</li>
+<li>**フォールバック**: 適切なゾーンが見つからない場合の <code>GMT</code> への自動切り替え。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>タイムゾーン管理・検証</h3>
+<ul>
+<li><code>select_default_timezone(const char *share_path)</code>: 公開API。環境変数やシステム設定から最適なタイムゾーン名を返します。</li>
+<li><code>pg_open_tzfile(const char *name, char *canonname)</code>: タイムゾーン定義ファイルをファイルシステムから開きます。</li>
+<li><code>validate_zone(const char *tzname)</code>: タイムゾーン名が有効かつPostgreSQLで利用可能か検証します。</li>
+</ul>
+<h3>検索・照合ロジック (Unix系)</h3>
+<ul>
+<li><code>identify_system_timezone()</code>: システムの <code>localtime()</code> の挙動をサンプリングし、データベース内のゾーンと照合します。</li>
+<li><code>score_timezone()</code>: 特定のゾーンがシステム挙動とどれだけ一致するかをスコアリングします。</li>
+<li><code>scan_available_timezones()</code>: タイムゾーンデータベースを再帰的に探索し、最適なゾーンを特定します。</li>
+</ul>
+<h3>Windows固有</h3>
+<ul>
+<li><code>win32_tzmap[]</code>: Windowsのタイムゾーン名とIANAタイムゾーン名の静的マッピングテーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>build_time_t</code></li>
+<li><code>check_system_link_file</code></li>
+<li><code>compare_tm</code></li>
+<li><code>get_timezone_offset</code></li>
+<li><code>identify_system_timezone</code></li>
+<li><code>perfect_timezone_match</code></li>
+<li><code>pg_TZDIR</code></li>
+<li><code>pg_load_tz</code></li>
+<li><code>pg_open_tzfile</code></li>
+<li><code>score_timezone</code></li>
+<li><code>tztry</code></li>
+<li><code>zone_name_pref</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>select_default_timezone</code> が呼び出され、<code>tzdirpath</code> を設定します。 2. **優先順位**:</p>
+<ul>
+<li><code>getenv(&quot;TZ&quot;)</code> を試行し、<code>validate_zone</code> で検証。</li>
+<li>失敗時、<code>identify_system_timezone</code> を実行。</li>
+<p>3. **Unix系フロー**:</p>
+<li><code>check_system_link_file</code> で <code>/etc/localtime</code> のシンボリックリンクを解析。</li>
+<li>失敗時、<code>scan_available_timezones</code> で全ゾーンを探索。<code>tztry</code> 構造体に過去100年分のテスト時刻を保持し、<code>localtime()</code> の出力と照合してスコアを算出。</li>
+<p>4. **Windows系フロー**:</p>
+<li><code>localtime()</code> から得たゾーン名で <code>win32_tzmap</code> を検索。</li>
+<li>見つからない場合、レジストリを列挙してローカライズされた名前から英語名へ逆引きを試行。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>pgtz.h</code>: タイムゾーン処理の共通インターフェース。</li>
+<li><code>fcntl.h</code>, <code>sys/stat.h</code>, <code>unistd.h</code>: ファイルシステム操作およびディレクトリ探索用。</li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/pgtz.h</code>: タイムゾーン関連のデータ構造定義。</li>
+<li><code>src/timezone/</code>: PostgreSQLのタイムゾーンデータベースおよび解析エンジン（<code>tzload</code>, <code>tzparse</code> 等の定義元）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>pg_load_tz</code> は静的変数 <code>static pg_tz tz</code> を再利用するため、一度に一つのタイムゾーンしかロードできません。</li>
+<li>**パフォーマンス**: Unix系での <code>scan_available_timezones</code> は全ゾーンを探索するためコストが高いですが、<code>check_system_link_file</code> によるショートカットが成功すれば高速に終了します。</li>
+<li>**制約**: 閏秒を含むタイムゾーンは <code>pg_tz_acceptable</code> により拒否されます。</li>
+<li>**未実装・浅い部分**: Windowsのレジストリ探索は、システム環境の言語設定に依存する可能性があるため、フォールバックとして <code>GMT</code> への帰着が設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__pg_TZDIR.html" target="wiki-view"><code>pg_TZDIR</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__pg_open_tzfile.html" target="wiki-view"><code>pg_open_tzfile</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__pg_load_tz.html" target="wiki-view"><code>pg_load_tz</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__tztry.html" target="wiki-view"><code>tztry</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__get_timezone_offset.html" target="wiki-view"><code>get_timezone_offset</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__build_time_t.html" target="wiki-view"><code>build_time_t</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__compare_tm.html" target="wiki-view"><code>compare_tm</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__score_timezone.html" target="wiki-view"><code>score_timezone</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__perfect_timezone_match.html" target="wiki-view"><code>perfect_timezone_match</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__identify_system_timezone.html" target="wiki-view"><code>identify_system_timezone</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__check_system_link_file.html" target="wiki-view"><code>check_system_link_file</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__findtimezone_c__zone_name_pref.html" target="wiki-view"><code>zone_name_pref</code></a></li>
+</ul></body></html>

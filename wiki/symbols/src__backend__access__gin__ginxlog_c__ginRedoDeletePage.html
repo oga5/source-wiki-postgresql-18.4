@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginxlog_c__ginRedoDeletePage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginRedoDeletePage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginxlog.c:476</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスにおいて、ページ削除操作に関連するWALレコードをリプレイし、インデックスの物理構造（左隣接ページ、削除対象ページ、親ページ）を整合性のある状態へ復元します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ginRedoDeletePage(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> を介して取得した各ページは、<code>GinPageIsData</code> マクロによりGINデータページであることが保証される必要があります。</li>
+<li>親ページ（<code>pbuffer</code>）に対しては、<code>!GinPageIsLeaf</code> であることがアサーションにより検証されます。</li>
+<li>デッドロックを回避するため、左隣接ページ（<code>lbuffer</code>）を最初にロックする順序が守られます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **左隣接ページの更新**: <code>XLogReadBufferForRedo</code> で取得した左隣接ページの <code>rightlink</code> を、WALレコード内の <code>data-&gt;rightLink</code> で更新します。 2. **削除対象ページの更新**: 削除対象ページに <code>GinPageSetDeleted</code> を適用し、削除時のトランザクションID（<code>deleteXid</code>）を記録します。 3. **親ページの更新**: 親ページから <code>data-&gt;parentOffset</code> で指定されたアイテムを <code>GinPageDeletePostingItem</code> により削除します。 4. **共通処理**: 各ステップで変更が行われた場合、<code>PageSetLSN</code> でLSNを更新し、<code>MarkBufferDirty</code> を呼び出します。 5. **終了処理**: 取得したすべてのバッファに対して <code>UnlockReleaseBuffer</code> を実行し、ロックを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginxlog.c</code> 内の <code>gin_redo</code> 関数から呼び出されます。</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>、<code>XLogReadBufferForRedo</code>、<code>BufferGetPage</code>、<code>GinPageIsData</code>、<code>GinPageGetOpaque</code>、<code>PageSetLSN</code>、<code>MarkBufferDirty</code>、<code>GinPageSetDeleted</code>、<code>GinPageSetDeleteXid</code>、<code>GinPageIsLeaf</code>、<code>GinPageDeletePostingItem</code>、<code>BufferIsValid</code>、<code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ginxlogDeletePage</code>: WALレコードから読み取られるデータ構造。<code>rightLink</code>、<code>deleteXid</code>、<code>parentOffset</code> を保持します。</li>
+<li><code>XLogReaderState</code>: WALリプレイの状態管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、そのバッファに対する更新処理はスキップされます。</li>
+<li>各バッファは <code>BufferIsValid</code> を確認した後にのみ <code>UnlockReleaseBuffer</code> が実行されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ginStepRight()</code> とのデッドロックを防ぐため、左隣接ページを優先的にロックする設計となっています。変更を加える際はロック順序に注意してください。</li>
+<li><code>GinPageIsData</code> や <code>GinPageIsLeaf</code> などのマクロは <code>access/gin_private.h</code> で定義されています。</li>
+</ul></body></html>

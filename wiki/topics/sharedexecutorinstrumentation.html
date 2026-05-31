@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/sharedexecutorinstrumentation.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SharedExecutorInstrumentation</h1>
+<h2>概念</h2>
+<p><code>SharedExecutorInstrumentation</code> は、PostgreSQLの並列クエリ実行において、複数のワーカープロセスが収集した実行統計情報（<code>Instrumentation</code>）を共有メモリ上で集約・管理するための構造体です。</p>
+<p>ヘッダーファイル <code>src/include/executor/execParallel.h</code> で不透明な構造体として宣言され、ソースファイル <code>src/backend/executor/execParallel.c</code> でその具体的なメンバが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>並列クエリの実行時、各ワーカープロセスが個別に収集した実行統計情報をリーダープロセスに集約し、<code>EXPLAIN ANALYZE</code> などでクエリ全体の実行結果として統合・表示できるようにするために不可欠です。共有メモリを介してリーダーとワーカー間で統計データを安全に受け渡す役割を担います。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/executor/execParallel.h#SharedExecutorInstrumentation</code>**</li>
+<p>構造体の型宣言。並列実行のライフサイクルを管理する <code>ParallelExecutorInfo</code> などの上位構造体から参照されます。</p>
+<li>**<code>symbol:src/backend/executor/execParallel.c#SharedExecutorInstrumentation</code>**</li>
+<p>構造体の具体的な定義。以下のメンバを持ちます。 ``<code>c struct SharedExecutorInstrumentation { int         instrument_options; int         instrument_offset; int         num_workers; int         num_plan_nodes; int         plan_node_id[FLEXIBLE_ARRAY_MEMBER]; /* この後に num_plan_nodes * num_workers 個の Instrumentation オブジェクトが配置される */ }; </code>``</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: リーダープロセスは、並列実行の初期化時（<code>ExecInitParallelPlan</code> など）に、並列実行プランのノード数（<code>num_plan_nodes</code>）およびワーカー数（<code>num_workers</code>）に基づき、動的共有メモリ（DSM）上に本構造体を割り当て、初期化します。 2. **書き込み**: 各ワーカープロセスは、並列実行中に自身の担当するプランノードの統計情報を、本構造体内の対応するオフセット位置に書き込みます。 3. **集約**: リーダープロセスは、<code>ExecParallelFinish</code> 等を通じてワーカーの終了を待機した後、本構造体から統計情報を読み取り、クエリ全体の実行結果として集約します。</p>
+<p>*注意: 提供されたコンテキストからは、具体的な書き込み・読み取りを行う各実行ノードの個別関数や、詳細な同期処理の全容など、上記以外のエンドツーエンドのフローの詳細は判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリレイアウトの整合性**: <code>plan_node_id</code> は可変長配列（<code>FLEXIBLE_ARRAY_MEMBER</code>）として定義されており、構造体の末尾には <code>num_plan_nodes * num_workers</code> 分の <code>Instrumentation</code> オブジェクトが連続して配置される必要があります。</li>
+<li>**プロセス間の一貫性**: リーダープロセスとワーカープロセス間で、本構造体のメモリレイアウト（オフセット計算など）の整合性が完全に保たれている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリレイアウト計算の誤り**: 本構造体は可変長配列メンバを含んでいるため、メモリ割り当てやオフセット計算の際には単純な <code>sizeof</code> ではなく、<code>offsetof</code> マクロ（例: <code>offsetof(SharedExecutorInstrumentation, plan_node_id)</code>）を正しく使用する必要があります。これを誤ると、メモリ破壊や不正なデータアクセス（オーバーラン）を引き起こします。</li>
+<li>**共有メモリの確保失敗**: 共有メモリの確保に失敗した場合、並列実行の初期化自体が中断されます。</li>
+<li>**不整合なパラメータ**: <code>num_workers</code> や <code>num_plan_nodes</code> の値に不整合がある場合、境界外アクセスが発生する危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/executor/execParallel.h</code>**: 構造体の宣言と、これを利用する <code>ParallelExecutorInfo</code> などの関連データ構造を確認できます。</li>
+<li>**<code>src/backend/executor/execParallel.c</code>**: 構造体の詳細な定義、<code>offsetof</code> を用いたメモリレイアウト計算、および <code>ExecInitParallelPlan</code> などの並列実行管理ロジックにおける具体的な操作方法を確認できます。</li>
+</ul></body></html>

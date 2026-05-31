@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__commit_ts_c__TransactionTreeSetCommitTsData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TransactionTreeSetCommitTsData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/commit_ts.c:140</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクションおよびそのサブトランザクション群のコミット時刻とレプリケーション元ノードIDを、SLRU（Simple Least Recently Used）キャッシュおよび共有メモリへ一括記録する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
+                                   TransactionId *subxids, TimestampTz timestamp,
+                                   RepOriginId nodeid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>xid</code>: 親トランザクションID。</li>
+<li><code>nsubxids</code>: サブトランザクションの数。</li>
+<li><code>subxids</code>: サブトランザクションIDの配列。</li>
+<li><code>timestamp</code>: 記録するコミット時刻。</li>
+<li><code>nodeid</code>: レプリケーション元のノードID。</li>
+<li>**出力**: なし（副作用としてSLRUページおよび共有メモリを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>commitTsShared-&gt;commitTsActive</code> が真であること（偽の場合は即座にリターンする）。</li>
+<li>SLRUページ境界を跨ぐトランザクションID群は、適切にグループ化されて処理される必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **アクティブ確認**: <code>commitTsActive</code> が無効な場合は何もしない。 2. **範囲特定**: バッチ内の最新トランザクションID（<code>newestXact</code>）を特定する。 3. **SLRUページへの書き込み**:</p>
+<ul>
+<li>トランザクションID群をSLRUページ単位に分割する。</li>
+<li>各ページごとに <code>SetXidCommitTsInPage</code> を呼び出し、該当するXID範囲のデータを書き込む。</li>
+<li>ページ境界を跨ぐ場合は、次のグループのヘッドを更新してループを継続する。</li>
+<p>4. **共有メモリ更新**: <code>CommitTsLock</code> を排他ロックし、最後にコミットされたトランザクション情報を共有メモリ上の <code>commitTsShared</code> に反映する。 5. **最新XIDの更新**: <code>TransamVariables-&gt;newestCommitTsXid</code> が <code>newestXact</code> より古い場合、これを更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/twophase.c</code></li>
+<li><code>src/backend/access/transam/xact.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>TransactionIdToCTsPage</code></li>
+<li><code>SetXidCommitTsInPage</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>TransactionIdPrecedes</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CommitTimestampShared</code> (共有メモリ上の制御構造体)</li>
+<li><code>CommitTsLock</code> (排他制御用ロック)</li>
+<li><code>TransamVariables</code> (トランザクション関連のグローバル変数)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nsubxids</code> が 0 の場合、親トランザクションのみが処理対象となる。</li>
+<li><code>commitTsActive</code> が偽の場合、処理はスキップされる（スタンバイモードでの設定変更時に発生）。</li>
+<li>SLRUバッファの競合が発生した場合、<code>SetXidCommitTsInPage</code> 内部で待機が発生する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はトランザクションコミットのクリティカルパスで実行されるため、SLRUのバッファ設定（<code>commit_timestamp_buffers</code>）が性能に直結する。</li>
+<li>スタンバイ側ではリカバリプロセスのみが本関数を呼び出すため、<code>commitTsActive</code> のチェックはロックなしで行っても安全である。</li>
+</ul></body></html>

@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/pg_backup_directory.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/pg_backup_directory.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の <code>pg_dump</code> における「ディレクトリ形式」アーカイブの入出力処理を実装するモジュールです。この形式は、ダンプデータを単一の巨大なファイルではなく、メタデータ（<code>toc.dat</code>）と個別のデータファイル（<code>&lt;oid&gt;.dat</code>）の集合としてディレクトリ内に保存します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_dump</code> のアーカイブフォーマット抽象化レイヤーの一部です。<code>pg_backup_archiver.c</code> が定義するインターフェースを実装し、ディレクトリ構造特有のファイル操作（パス生成、ディレクトリ作成、圧縮ファイルの個別管理）を隠蔽します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ディレクトリ構造の管理**: ダンプ先ディレクトリの作成と、各データファイルへのパス解決。</li>
+<li>**データチャンクの分離**: テーブルデータやラージオブジェクト（BLOB）を個別のファイルとして書き出し・読み込み。</li>
+<li>**圧縮の透過的処理**: 各データファイル単位での圧縮・解凍（<code>compress_io.c</code> を利用）。</li>
+<li>**並列処理のサポート**: <code>ParallelState</code> を用いた並列ダンプ・リストア時のジョブ実行とファイルアクセス制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>InitArchiveFmt_Directory</code>: アーカイブ形式の初期化関数。関数ポインタを <code>ArchiveHandle</code> に登録し、コンテキストを構築します。</li>
+<li><code>lclContext</code>: ディレクトリ形式特有の実行時状態（ディレクトリパス、現在開いているファイルハンドル、並列状態）を保持する構造体。</li>
+<li><code>_ArchiveEntry</code>: 各 TOC エントリに対して、対応するファイル名（<code>&lt;oid&gt;.dat</code> 等）を割り当てる関数。</li>
+<li><code>_StartData</code> / <code>_EndData</code>: 個別のデータファイルのオープン・クローズを管理するライフサイクル関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lclTocEntry</code></li>
+<li><code>setFilePath</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitArchiveFmt_Directory</code> が呼ばれ、<code>ArchiveHandle</code> にディレクトリ形式用の関数ポインタ群を注入します。 2. **ダンプ時**:</p>
+<ul>
+<li><code>_ArchiveEntry</code> で各エントリのファイル名を決定。</li>
+<li><code>_StartData</code> でファイルを作成し、<code>_WriteData</code> でデータを書き込み、<code>_EndData</code> で閉じます。</li>
+<li><code>_CloseArchive</code> で最後に <code>toc.dat</code> を生成し、並列処理を開始します。</li>
+<p>3. **リストア時**:</p>
+<li><code>toc.dat</code> を読み込み、TOC エントリを復元。</li>
+<li><code>_PrintTocData</code> が各エントリのファイルパスを特定し、<code>_PrintFileData</code> を介してデータを読み出し、標準出力またはデータベースへ流し込みます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド共通定義。</li>
+<li><code>compress_io.h</code>: 圧縮・解凍処理の抽象化。</li>
+<li><code>pg_backup_utils.h</code>: バックアップ用ユーティリティ。</li>
+<li><code>dirent.h</code>, <code>sys/stat.h</code>: ファイルシステム操作用。</li>
+<li><code>parallel.h</code>: 並列処理用。</li>
+<li><code>common/file_utils.h</code></li>
+<li><code>dumputils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pg_backup_archiver.c</code>: アーカイブ処理のメインエンジン。本ファイルが実装するインターフェースの呼び出し元。</li>
+<li><code>pg_backup_tar.c</code>: ディレクトリ形式と概念的に非常に近く、TOC の構造を共有しています。</li>
+<li><code>compress_io.c</code>: 実際の圧縮アルゴリズム（Gzip, LZ4, Zstd）の切り替えを担当。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**互換性**: ディレクトリ形式は <code>tar</code> 形式と内部的な TOC 構造が同一です。変更を加える際は <code>pg_backup_tar.c</code> との整合性に注意してください。</li>
+<li>**圧縮**: データファイルは個別に圧縮されますが、<code>toc.dat</code> や <code>blobs_*.toc</code> は圧縮されません（手動圧縮された <code>.gz</code> ファイルは読み込み時に自動認識されます）。</li>
+<li>**並列処理**: <code>_PrepParallelRestore</code> は、各ファイルのサイズを <code>stat</code> で取得し、リストアの優先順位付け（<code>dataLength</code>）に利用しています。圧縮時は拡張子を考慮したサイズ推定が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__lclContext.html" target="wiki-view"><code>lclContext</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__lclTocEntry.html" target="wiki-view"><code>lclTocEntry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__InitArchiveFmt_Directory.html" target="wiki-view"><code>InitArchiveFmt_Directory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__setFilePath.html" target="wiki-view"><code>setFilePath</code></a></li>
+</ul></body></html>

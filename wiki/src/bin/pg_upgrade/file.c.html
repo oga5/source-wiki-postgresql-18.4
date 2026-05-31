@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/file.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/file.c</h1>
+<h2>概要</h2>
+<p><code>file.c</code> は、<code>pg_upgrade</code> におけるデータディレクトリ間のファイル転送および変換処理を担う低レベルなユーティリティモジュールです。物理的なファイルコピー、ハードリンク、クローン（reflink）、および旧バージョン形式の可視性マップ（Visibility Map）の変換機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> のデータ移行プロセスにおいて、データベースファイルを新しいクラスタへ移動・複製する際の「物理的なデータ転送層」として機能します。<code>exec.c</code> や <code>pg_upgrade.c</code> から呼び出され、OS 依存のファイル操作を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ファイル転送**: コピー、ハードリンク、<code>copy_file_range</code>、およびファイルクローン（reflink）による高速なデータ移行。</li>
+<li>**データ変換**: 旧バージョンの可視性マップを、現在の PostgreSQL 形式（1 ページから 2 ページへの拡張など）に変換して書き出す。</li>
+<li>**機能検証**: 実行環境が特定の転送手法（ハードリンクやクローン等）をサポートしているかを事前に確認するテスト関数の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>cloneFile()</code>: OS がサポートする場合、reflink を使用して高速にファイルを複製する。</li>
+<li><code>copyFile()</code>: 汎用的なファイルコピー処理。Windows 環境では <code>CopyFile</code> API を使用。</li>
+<li><code>rewriteVisibilityMap()</code>: 旧形式の可視性マップを読み込み、新しい形式に変換して書き出す。</li>
+<li><code>check_hard_link()</code> / <code>check_file_clone()</code>: 移行モードが実行可能かを確認する診断関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_copy_file_range</code></li>
+<li><code>check_file_clone</code></li>
+<li><code>check_hard_link</code></li>
+<li><code>cloneFile</code></li>
+<li><code>copyFile</code></li>
+<li><code>copyFileByRange</code></li>
+<li><code>linkFile</code></li>
+<li><code>rewriteVisibilityMap</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **転送処理**: 呼び出し元が指定した転送モード（リンク、コピー、クローン）に基づき、各関数がファイル記述子を開き、OS 固有のシステムコール（<code>link</code>, <code>ioctl(FICLONE)</code>, <code>copy_file_range</code> 等）を呼び出します。 2. **可視性マップ変換**:</p>
+<ul>
+<li>旧ファイルをページ単位で読み込み、ヘッダーを保持したままデータを再配置します。</li>
+<li><code>BITS_PER_BYTE</code> をループし、旧形式のビットを新しい形式（<code>VISIBILITYMAP_ALL_VISIBLE</code>）へマッピングします。</li>
+<li>必要に応じてチェックサムを再計算し、新しいファイルへ書き出します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
+<li><code>pg_upgrade.h</code>: <code>pg_upgrade</code> のグローバル定義およびクラスタ構造体。</li>
+<li><code>storage/bufpage.h</code> / <code>storage/checksum.h</code>: ページヘッダーおよびチェックサム計算用。</li>
+<li><code>common/file_perm.h</code>: ファイル作成時のパーミッション定義。</li>
+<li>OS 依存ヘッダー: <code>&lt;sys/stat.h&gt;</code>, <code>&lt;fcntl.h&gt;</code>, <code>&lt;sys/ioctl.h&gt;</code> (Linux), <code>&lt;copyfile.h&gt;</code> (macOS等)。</li>
+<li><code>access/visibilitymapdefs.h</code></li>
+<li><code>copyfile.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>linux/fs.h</code></li>
+<li><code>storage/checksum_impl.h</code></li>
+<li><code>sys/ioctl.h</code></li>
+<li><code>sys/stat.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/exec.c</code>: このファイルで定義された関数を呼び出し、実際の移行タスクを実行する。</li>
+<li><code>src/include/storage/visibilitymap.h</code>: 可視性マップのビット定義の参照先。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**プラットフォーム依存性**: このファイルは <code>#ifdef</code> を多用しており、Linux の <code>FICLONE</code> や macOS の <code>copyfile</code> など、OS 固有の高速化機能を積極的に利用しています。</li>
+<li>**可視性マップの変換**: <code>rewriteVisibilityMap</code> は、<code>catversion</code> 201603011 以前からのアップグレード時に必須となる重要な処理です。この変換を行わないと、アップグレード後に全テーブルの <code>VACUUM</code> が必要となり、移行コストが大幅に増大します。</li>
+<li>**エラーハンドリング**: ファイル操作失敗時は <code>pg_fatal</code> を使用して即座に処理を中断し、エラーメッセージにシステムエラー（<code>%m</code>）を出力する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__cloneFile.html" target="wiki-view"><code>cloneFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__copyFile.html" target="wiki-view"><code>copyFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__copyFileByRange.html" target="wiki-view"><code>copyFileByRange</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__linkFile.html" target="wiki-view"><code>linkFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__rewriteVisibilityMap.html" target="wiki-view"><code>rewriteVisibilityMap</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__check_file_clone.html" target="wiki-view"><code>check_file_clone</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__check_copy_file_range.html" target="wiki-view"><code>check_copy_file_range</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__file_c__check_hard_link.html" target="wiki-view"><code>check_hard_link</code></a></li>
+</ul></body></html>

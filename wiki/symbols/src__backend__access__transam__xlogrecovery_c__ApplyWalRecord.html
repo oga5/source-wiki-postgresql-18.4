@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlogrecovery_c__ApplyWalRecord.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ApplyWalRecord</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xlogrecovery.c:1927</code></li>
+</ul>
+<h2>目的</h2>
+<p>WALレコードを解析し、対応するリソースマネージャのRedoルーチンを実行してデータベースの状態を復元する。リカバリプロセスにおけるWAL適用ループの主要な処理単位である。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *replayTLI)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>xlogreader</code>: WALレコードを読み込むための状態管理構造体。</li>
+<li><code>record</code>: 適用対象のWALレコード。</li>
+<li><code>replayTLI</code>: 現在のタイムラインID（ポインタ経由で更新される）。</li>
+<li>**出力**: なし（副作用としてデータベース状態の更新および共有メモリのリカバリ状態更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>xlogreader</code> は有効なWALレコードを保持していること。</li>
+<li><code>XLogRecoveryCtl</code> 共有メモリ構造体が初期化されていること。</li>
+<li><code>rm_redo</code> 実行中、エラー発生時に備えて <code>error_context_stack</code> が適切に設定されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **エラーハンドリング設定**: <code>rm_redo_error_callback</code> をエラーコンテキストスタックに登録。 2. **XID更新**: <code>AdvanceNextFullTransactionIdPastXid</code> を呼び出し、次回のトランザクションIDをレコードのXIDより先に進める。 3. **タイムライン切り替え判定**: レコードが <code>RM_XLOG_ID</code> であり、かつチェックポイントやリカバリ終了を示す場合、タイムラインの切り替えを検証・実行する。 4. **共有メモリ更新**: <code>XLogRecoveryCtl</code> の <code>replayEndRecPtr</code> 等を更新し、リカバリの進捗を記録。 5. **スタンバイ処理**: ホットスタンバイモードであれば、XIDを既知の割り当て済みトランザクションとして記録。 6. **Redo実行**: <code>xlogrecovery_redo</code>（リカバリ専用処理）および各リソースマネージャの <code>rm_redo</code> を実行。 7. **整合性検証**: <code>XLR_CHECK_CONSISTENCY</code> フラグがある場合、バックアップページの整合性を検証。 8. **事後処理**: <code>lastReplayed</code> 関連のポインタを更新し、必要に応じてWAL送信プロセスの起床、リカバリ整合性のチェック、およびタイムライン切り替え時の不要ファイル削除を行う。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>PerformWalRecovery</code> (<code>src/backend/access/transam/xlogrecovery.c</code>)</li>
+<li>**呼び出し先**:</li>
+<li><code>GetRmgr(record-&gt;xl_rmid).rm_redo()</code></li>
+<li><code>xlogrecovery_redo()</code></li>
+<li><code>checkTimeLineSwitch()</code></li>
+<li><code>verifyBackupPageConsistency()</code></li>
+<li><code>WalSndWakeup()</code></li>
+<li><code>WalRcvForceReply()</code></li>
+<li><code>CheckRecoveryConsistency()</code></li>
+<li><code>RemoveNonParentXlogFiles()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogReaderState</code>: WAL読み込み状態。</li>
+<li><code>XLogRecord</code>: WALレコード本体。</li>
+<li><code>XLogRecoveryCtlData</code>: リカバリの共有メモリ状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>rm_redo</code> 実行中にエラーが発生した場合、<code>ereport</code> によりリカバリが中断される。</li>
+<li>タイムライン切り替え時に <code>checkTimeLineSwitch</code> の検証に失敗した場合、エラーが発生する。</li>
+<li>整合性チェック（<code>verifyBackupPageConsistency</code>）で不一致が検出された場合、パニックまたはエラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリの心臓部であり、各リソースマネージャの <code>rm_redo</code> を呼び出すため、ここでの変更は全リソースマネージャの動作に影響する。</li>
+<li>タイムライン切り替え時の <code>RemoveNonParentXlogFiles</code> は、将来のWALセグメントを削除する破壊的な処理を含むため、慎重に扱うこと。</li>
+<li><code>XLogRecoveryCtl</code> へのアクセスには <code>info_lck</code> スピンロックが必須である。</li>
+</ul></body></html>

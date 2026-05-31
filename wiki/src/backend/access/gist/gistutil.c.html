@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistutil.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistutil.c</h1>
+<h2>概要</h2>
+<p>GiST (Generalized Search Tree) インデックスの構築、操作、および管理を支援する汎用ユーティリティ関数群を提供します。インデックスページの物理的な操作から、キーの圧縮・伸長、ペナルティ計算、ページ初期化まで、GiSTのコアロジックを支える低レベルな基盤機能が集約されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> モジュールにおける「共通ライブラリ」として機能します。他のソースファイル（<code>gist.c</code>, <code>gistbuild.c</code>, <code>gistsplit.c</code> など）がインデックスの構造を操作する際、これらのユーティリティを呼び出すことで、GiST特有の複雑なデータ変換やページ管理を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスページ操作**: ページの初期化、タプルの挿入・抽出、空き容量の管理。</li>
+<li>**データ変換**: <code>GISTSTATE</code> を用いたキーの圧縮 (<code>Compress</code>)、伸長 (<code>DeCompress</code>)、および <code>Union</code> 操作。</li>
+<li>**挿入最適化**: 挿入先を選択するためのペナルティ計算 (<code>gistpenalty</code>, <code>gistchoose</code>)。</li>
+<li>**リソース管理**: 新規バッファの割り当てと、不要になったページの再利用判定。</li>
+<li>**メタデータ管理**: インデックスプロパティの検証や、非WALログ対象インデックス用の偽LSN生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gistchoose</code>: 挿入時に最もペナルティが低い（インデックスの拡大を最小限に抑える）ページを選択する。</li>
+<li><code>gistMakeUnionItVec</code>: インデックスタプルのベクトルから、GiSTの親ノードに格納する「和（Union）」キーを生成する。</li>
+<li><code>gistdentryinit</code>: 圧縮されたキーを伸長し、GiSTエントリ構造体を初期化する。</li>
+<li><code>gistNewBuffer</code>: 空き領域マップ (FSM) を利用して新しいインデックスページを確保する。</li>
+<li><code>gistPageRecyclable</code>: 削除されたページが再利用可能か（他のスキャンから参照されていないか）を判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GISTInitBuffer</code></li>
+<li><code>gistKeyIsEQ</code></li>
+<li><code>gistMakeUnionKey</code></li>
+<li><code>gist_translate_cmptype_common</code></li>
+<li><code>gistextractpage</code></li>
+<li><code>gistfillbuffer</code></li>
+<li><code>gistfillitupvec</code></li>
+<li><code>gistfitpage</code></li>
+<li><code>gistjoinvector</code></li>
+<li><code>gistnospace</code></li>
+<li><code>gistunion</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入時**: <code>gistchoose</code> がインデックスの階層を辿り、最適な挿入先を決定します。この際、<code>gistpenalty</code> が各属性の適合度を評価します。 2. **更新時**: <code>gistgetadjusted</code> が既存のキーと新しいキーの和を計算し、インデックスの更新が必要か判断します。 3. **ページ管理**: <code>gistNewBuffer</code> は FSM を経由してページを取得し、<code>gistinitpage</code> で GiST 用のヘッダ情報を付与します。 4. **データ変換**: <code>gistCompressValues</code> / <code>gistDeCompressAtt</code> は、<code>GISTSTATE</code> に登録された opclass 関数を呼び出し、インデックス内部表現と元のデータ型を相互変換します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST 固有のデータ構造と型定義。</li>
+<li><code>storage/indexfsm.h</code>: 空き領域マップ (FSM) の操作。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュ検索。</li>
+<li><code>utils/rel.h</code>: リレーション情報の取得。</li>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>math.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gistproc.c</code>: GiST の opclass が提供するサポート関数（<code>union</code>, <code>penalty</code>, <code>compress</code> 等）の実装。</li>
+<li><code>gistbuild.c</code>: インデックス構築時のバッファ管理とページ充填。</li>
+<li><code>gistsplit.c</code>: ページ分割アルゴリズム。</li>
+<li><code>gistxlog.c</code>: WAL ログの生成とリカバリ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ペナルティ計算**: <code>gistchoose</code> 内のペナルティ計算は、インデックスの性能を左右する最重要ロジックです。等価なペナルティを持つノードが複数ある場合、ランダム選択による負荷分散が行われる点に注目してください。</li>
+<li>**圧縮の有無**: <code>gistFetchTuple</code> は、インデックスオンリースキャンをサポートするために、圧縮されたキーから元の値を復元しようと試みます。opclass が <code>fetch</code> 関数を提供しない場合、その列はインデックスオンリースキャンに使用できないという制約があります。</li>
+<li>**ページ再利用**: <code>gistPageRecyclable</code> は、削除されたページがまだスキャン中のプロセスから参照されている可能性があるかを考慮しており、MVCC との整合性を保つための重要なガードレールとなっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistfillbuffer.html" target="wiki-view"><code>gistfillbuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistnospace.html" target="wiki-view"><code>gistnospace</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistfitpage.html" target="wiki-view"><code>gistfitpage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistextractpage.html" target="wiki-view"><code>gistextractpage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistjoinvector.html" target="wiki-view"><code>gistjoinvector</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistfillitupvec.html" target="wiki-view"><code>gistfillitupvec</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistMakeUnionItVec.html" target="wiki-view"><code>gistMakeUnionItVec</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistunion.html" target="wiki-view"><code>gistunion</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistMakeUnionKey.html" target="wiki-view"><code>gistMakeUnionKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gistKeyIsEQ.html" target="wiki-view"><code>gistKeyIsEQ</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__GISTInitBuffer.html" target="wiki-view"><code>GISTInitBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistutil_c__gist_translate_cmptype_common.html" target="wiki-view"><code>gist_translate_cmptype_common</code></a></li>
+</ul></body></html>

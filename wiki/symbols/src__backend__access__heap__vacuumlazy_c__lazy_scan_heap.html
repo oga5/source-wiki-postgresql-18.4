@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_heap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>lazy_scan_heap</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/vacuumlazy.c:1199</code></li>
+</ul>
+<h2>目的</h2>
+<p>VACUUM処理におけるヒープスキャンのメインループを実行し、不要なタプルの特定、タプルの凍結、およびインデックスクリーンアップのトリガーを行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void lazy_scan_heap(LVRelState *vacrel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>LVRelState *vacrel</code>（VACUUM実行中の状態を保持する構造体）</li>
+<li>**出力**: なし（副作用としてヒープのメンテナンスと統計情報の更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>vacrel</code> は初期化済みであること。</li>
+<li><code>read_stream</code> を使用してヒープを走査する。</li>
+<li><code>TidStore</code> の容量制限（<code>max_bytes</code>）に達した場合、インデックスのクリーンアップを優先する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 進捗状況の報告を開始し、ヒープ走査用の <code>read_stream</code> を設定する。 2. **ループ処理**:</p>
+<ul>
+<li><code>vacuum_delay_point</code> を呼び出し、必要に応じて待機する。</li>
+<li>定期的に <code>lazy_check_wraparound_failsafe</code> を呼び出し、トランザクションID周回防止の安全装置を確認する。</li>
+<li><code>TidStore</code> が溢れそうな場合、<code>lazy_vacuum</code> を呼び出してインデックスとヒープのクリーンアップを実行し、FSM（空き領域マップ）を更新する。</li>
+<li><code>read_stream_next_buffer</code> で次のページを取得する。</li>
+<li><code>visibilitymap_pin</code> で可視性マップをピン留めする。</li>
+<li><code>ConditionalLockBufferForCleanup</code> を試み、失敗した場合は共有ロックを取得する。</li>
+<li><code>lazy_scan_new_or_empty</code> で新規または空のページを処理する。</li>
+<li><code>lazy_scan_noprune</code> でクリーンアップロックなしの処理を試み、失敗した場合はクリーンアップロックを取得して <code>lazy_scan_prune</code> へ移行する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>heap_vacuum_rel</code>（<code>src/backend/access/heap/vacuumlazy.c:839</code>）</li>
+<li>**呼び出し先**: <code>lazy_check_wraparound_failsafe</code>, <code>lazy_vacuum</code>, <code>FreeSpaceMapVacuumRange</code>, <code>read_stream_next_buffer</code>, <code>visibilitymap_pin</code>, <code>lazy_scan_new_or_empty</code>, <code>lazy_scan_noprune</code>, <code>lazy_scan_prune</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LVRelState</code>: VACUUM全体の状態管理。</li>
+<li><code>TidStore</code>: デッドタプルのTIDを保持。</li>
+<li><code>ReadStream</code>: ヒープ走査のストリーム制御。</li>
+<li><code>Buffer</code>: ヒープページへのアクセス用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**TidStoreの溢れ**: メモリ制限に達すると、スキャンを中断してインデックス掃除を優先する。</li>
+<li>**ロック競合**: クリーンアップロックが取得できない場合、<code>lazy_scan_noprune</code> による限定的な処理を行うか、ロック取得まで待機する。</li>
+<li>**トランザクションID周回**: <code>lazy_check_wraparound_failsafe</code> により、周回リスクが高い場合は強制的に処理を切り替える。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はVACUUMの「フェーズI」を担う。</li>
+<li><code>lazy_scan_prune</code> への移行ロジックは、<code>aggressive</code> フラグやロックの可否に依存するため注意すること。</li>
+<li><code>read_stream</code> の使用により、ページ読み込みの効率化が図られている。</li>
+</ul></body></html>

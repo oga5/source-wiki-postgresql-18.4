@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_upgrade__pg_upgrade_c__create_new_objects.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>create_new_objects</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_upgrade/pg_upgrade.c:571</code></li>
+</ul>
+<h2>目的</h2>
+<p>新クラスタにおいて <code>pg_restore</code> を実行し、データベーススキーマを再構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void create_new_objects(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: グローバル変数 <code>old_cluster</code> (旧クラスタ情報) および <code>new_cluster</code> (新クラスタ情報) を参照。</li>
+<li>**出力**: なし（副作用として新クラスタへのスキーマ復元を実行）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>old_cluster</code> および <code>new_cluster</code> が初期化済みであること。</li>
+<li><code>template1</code> データベースの変更がディスクに書き込まれている必要がある（関数内で <code>CHECKPOINT</code> を実行して保証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **template1 の準備**: <code>template1</code> データベースに対して <code>CHECKPOINT</code> を実行し、状態を確定させる。 2. **template1 の復元**: <code>template1</code> は他のデータベースと並行処理できないため、単独で <code>pg_restore</code> を実行（<code>--clean --create</code> オプションを使用）。 3. **他データベースの復元**: <code>template1</code> 以外の全データベースに対し、<code>pg_restore</code> を並行実行。</p>
+<ul>
+<li><code>postgres</code> データベースには <code>--clean --create</code> を適用。</li>
+<li>その他には <code>--create</code> を適用。</li>
+<li>並行実行数 (<code>user_opts.jobs</code>) に応じて <code>--transaction-size</code> を調整。</li>
+<p>4. **終了処理**: 全子プロセスの終了を待ち、<code>check_ok()</code> で完了を通知。 5. **事後処理**:</p>
+<li>PostgreSQL 9.2 以前からのアップグレードの場合、<code>set_frozenxids(true)</code> を呼び出す。</li>
+<li><code>get_db_rel_and_slot_infos(&amp;new_cluster)</code> を呼び出し、新クラスタの情報を更新する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>main</code> 関数 (<code>src/bin/pg_upgrade/pg_upgrade.c:170</code>)。</li>
+<li>**呼び出し先**: </li>
+<li><code>connectToServer</code>, <code>executeQueryOrDie</code>, <code>PQclear</code>, <code>PQfinish</code> (libpq)</li>
+<li><code>prep_status_progress</code>, <code>pg_log</code>, <code>end_progress_output</code>, <code>check_ok</code></li>
+<li><code>exec_prog</code>, <code>parallel_exec_prog</code></li>
+<li><code>reap_child</code></li>
+<li><code>set_frozenxids</code></li>
+<li><code>get_db_rel_and_slot_infos</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>old_cluster</code>, <code>new_cluster</code>: クラスタ情報を保持するグローバル構造体。</li>
+<li><code>DbInfo</code>: データベース情報を保持する構造体。</li>
+<li><code>log_opts</code>: ログ設定を保持するグローバル構造体。</li>
+<li><code>user_opts</code>: ユーザー指定オプション（並列数など）を保持するグローバル構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>pg_restore</code> がエラーを返した場合、<code>--exit-on-error</code> により処理が中断される。</li>
+<li><code>template1</code> の復元中に接続失敗が発生する可能性があるため、非並列で処理される。</li>
+<li>並列実行時、<code>--transaction-size</code> が小さすぎるとロック競合が発生し、大きすぎるとメモリ消費が増大する（<code>Max(txn_size, 10)</code> で下限を保護）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>template1</code> の復元は、データベースのドロップと再作成を伴うため、接続の排他性が重要である。</li>
+<li><code>RESTORE_TRANSACTION_SIZE</code> 定数は、スキーマ復元のパフォーマンスに直結するため、調整時は並列数とのバランスを考慮すること。</li>
+<li>Windows 環境では <code>exec_prog</code> 経由のプロセス管理に依存しているため、<code>reap_child</code> の呼び出し漏れがないよう注意が必要。</li>
+</ul></body></html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__index_c__ConstructTupleDescriptor.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ConstructTupleDescriptor</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/index.c:280</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックス作成時に、そのインデックスのタプル記述子（<code>TupleDesc</code>）を構築します。ヒープリレーションの属性情報や、インデックス式、演算子クラス（opclass）の定義に基づき、インデックスの各列の型や属性を決定します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
+                                         const IndexInfo *indexInfo,
+                                         const List *indexColNames,
+                                         Oid accessMethodId,
+                                         const Oid *collationIds,
+                                         const Oid *opclassIds)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>heapRelation</code>: 対象となるヒープリレーション。</li>
+<li><code>indexInfo</code>: インデックスの属性数、キー属性数、インデックス式を含むメタデータ。</li>
+<li><code>indexColNames</code>: インデックス列名のリスト。</li>
+<li><code>accessMethodId</code>: インデックスアクセスメソッドのOID。</li>
+<li><code>collationIds</code>: 各インデックス列の照合順序（Collation）OID配列。</li>
+<li><code>opclassIds</code>: 各インデックス列の演算子クラスOID配列。</li>
+<li>**出力**:</li>
+<li>構築された <code>TupleDesc</code> 構造体。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>indexInfo</code> に含まれる属性数と <code>indexColNames</code> の要素数は一致している必要があります。</li>
+<li>インデックス式（<code>ii_Expressions</code>）が存在する場合、対応するリスト要素が提供されている必要があります。</li>
+<li>演算子クラスや型情報の検索において、システムキャッシュ（<code>TYPEOID</code>, <code>CLAOID</code>）が有効である必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>GetIndexAmRoutineByAmId</code> を呼び出し、アクセスメソッドのAPI構造体を取得します。 2. <code>CreateTemplateTupleDesc</code> で指定された属性数分のテンプレートを作成します。 3. 各属性について以下の処理をループで実行します：</p>
+<ul>
+<li>属性名、照合順序を設定します。</li>
+<li>属性が単純な列（<code>atnum != 0</code>）の場合、ヒープリレーションの属性定義をコピーします。</li>
+<li>属性が式（<code>atnum == 0</code>）の場合、式の結果型を <code>exprType</code> で特定し、<code>pg_type</code> キャッシュから型情報を取得して設定します。</li>
+<li>演算子クラスの <code>opckeytype</code> が指定されている場合、それを優先してキー型として適用します。</li>
+<li><code>ANYELEMENT</code> 型などの特殊なケースでは、基底型を解決します。</li>
+<p>4. 最終的に構築された <code>TupleDesc</code> を返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/catalog/index.c</code> 内の <code>index_create</code> 関数から呼び出されます。</li>
+<li>**呼び出し先**:</li>
+<li><code>GetIndexAmRoutineByAmId</code></li>
+<li><code>RelationGetDescr</code></li>
+<li><code>CreateTemplateTupleDesc</code></li>
+<li><code>SearchSysCache1</code> / <code>ReleaseSysCache</code></li>
+<li><code>exprType</code> / <code>exprTypmod</code></li>
+<li><code>CheckAttributeType</code></li>
+<li><code>get_base_element_type</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TupleDesc</code>: 構築されるタプル記述子。</li>
+<li><code>IndexInfo</code>: インデックスの定義情報。</li>
+<li><code>IndexAmRoutine</code>: インデックスアクセスメソッドのルーチン定義。</li>
+<li><code>FormData_pg_attribute</code>: 属性定義のカタログデータ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>colnames</code> リストや <code>indexprs</code> リストの要素数が不足している場合、<code>elog(ERROR)</code> を発生させます。</li>
+<li>存在しない型OIDや演算子クラスOIDを参照した場合、キャッシュルックアップ失敗として <code>elog(ERROR)</code> を発生させます。</li>
+<li>インデックスとして安全でない型（匿名レコード型など）が式の結果として指定された場合、<code>CheckAttributeType</code> によりエラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はインデックスの物理的な列定義を決定する重要な箇所です。<code>CONCURRENTLY</code> なインデックス作成時など、カタログ操作の順序に依存する処理が含まれるため、変更時は <code>index_create</code> 全体のフローへの影響を考慮してください。</li>
+<li><code>attrelid</code> はこの時点では <code>InvalidOid</code> に設定され、後続の <code>InitializeAttributeOids</code> で修正される設計となっています。</li>
+</ul></body></html>

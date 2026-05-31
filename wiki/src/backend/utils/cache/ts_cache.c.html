@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/ts_cache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/ts_cache.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの全文検索（Tsearch）機能で使用される、パーサー、辞書、および設定（Configuration）のキャッシュを管理するモジュールです。全文検索は辞書引きや解析のコストが高いため、これらのオブジェクトをメモリ上にキャッシュし、パフォーマンスを最適化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> ディレクトリの一部として、システムカタログ（<code>pg_ts_parser</code>, <code>pg_ts_dict</code>, <code>pg_ts_config</code> 等）へのアクセスを抽象化し、バックエンドの生存期間中、一度読み込んだ定義を再利用する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュの保持と管理**: パーサー、辞書、設定の各オブジェクトをハッシュテーブルで管理し、高速なルックアップを提供します。</li>
+<li>**無効化処理**: システムカタログが更新された際、<code>InvalidateTSCacheCallBack</code> を通じてキャッシュエントリを無効化し、整合性を保ちます。</li>
+<li>**GUC連携**: <code>default_text_search_config</code> 設定の検証と、現在の設定値のキャッシュ管理を行います。</li>
+<li>**リソース管理**: 辞書固有のメモリコンテキストを管理し、初期化メソッドの実行結果を保持します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>lookup_ts_parser_cache</code>: パーサー定義をキャッシュから取得または生成します。</li>
+<li><code>lookup_ts_dictionary_cache</code>: 辞書定義と初期化データをキャッシュから取得します。</li>
+<li><code>lookup_ts_config_cache</code>: 設定（マッピング情報）をキャッシュから取得します。</li>
+<li><code>InvalidateTSCacheCallBack</code>: カタログ変更時にキャッシュを無効化するコールバック関数です。</li>
+<li><code>TSCurrentConfig</code>: 現在のデフォルト全文検索設定を保持するGUC変数です。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>assign_default_text_search_config</code></li>
+<li><code>check_default_text_search_config</code></li>
+<li><code>getTSCurrentConfig</code></li>
+<li><code>init_ts_config_cache</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ルックアップ**: 各 <code>lookup_</code> 関数は、まず <code>lastUsed</code> ポインタ（単一エントリの高速キャッシュ）を確認し、ヒットしなければハッシュテーブルを検索します。 2. **キャッシュミス**: ハッシュテーブルに存在しない場合、<code>SearchSysCache</code> を使用してシステムカタログから情報を取得し、メモリ上にエントリを構築します。 3. **初期化**: 辞書の場合、<code>tmplinit</code> メソッドを呼び出し、結果を <code>dictData</code> としてキャッシュエントリに格納します。 4. **無効化**: カタログ更新時にコールバックが呼ばれると、ハッシュテーブル内の全エントリの <code>isvalid</code> フラグが <code>false</code> に設定され、次回のルックアップ時に再構築が強制されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>pg_ts_config</code>, <code>pg_ts_dict</code>, <code>pg_ts_parser</code> 等の定義。</li>
+<li>**キャッシュ基盤**: <code>utils/catcache.h</code>, <code>utils/syscache.h</code>, <code>utils/inval.h</code>。</li>
+<li>**メモリ管理**: <code>utils/memutils.h</code>（キャッシュ用メモリコンテキストの作成）。</li>
+<li>**関数呼び出し**: <code>fmgr.h</code>（辞書やパーサーのメソッド実行用）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_config_map.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_ts_parser.h</code></li>
+<li><code>catalog/pg_ts_template.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tsearch/ts_cache.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/regproc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/tsearch/ts_cache.h</code>: キャッシュエントリの構造体定義。</li>
+<li><code>src/backend/tsearch/</code>: 全文検索の実行エンジン本体。</li>
+<li><code>src/backend/utils/cache/catcache.c</code>: システムカタログキャッシュの基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの生存期間**: キャッシュエントリはバックエンドの終了まで保持されます。そのため、ポインタを保持していても安全ですが、無効化が発生した後の再構築時にはポインタの内容が更新される可能性がある点に注意してください。</li>
+<li>**メモリ管理**: 辞書キャッシュは <code>dictCtx</code> という個別のメモリコンテキストを持ちます。これは辞書固有のデータを安全に管理するための仕組みです。</li>
+<li>**ハードコードされた制限**: <code>MAXTOKENTYPE</code> や <code>MAXDICTSPERTT</code> は設定読み込み時のワークスペースサイズを制限しています。通常は十分な値ですが、極端に複雑な設定を行う場合は注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__InvalidateTSCacheCallBack.html" target="wiki-view"><code>InvalidateTSCacheCallBack</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__lookup_ts_parser_cache.html" target="wiki-view"><code>lookup_ts_parser_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__lookup_ts_dictionary_cache.html" target="wiki-view"><code>lookup_ts_dictionary_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__init_ts_config_cache.html" target="wiki-view"><code>init_ts_config_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__lookup_ts_config_cache.html" target="wiki-view"><code>lookup_ts_config_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__getTSCurrentConfig.html" target="wiki-view"><code>getTSCurrentConfig</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__check_default_text_search_config.html" target="wiki-view"><code>check_default_text_search_config</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__ts_cache_c__assign_default_text_search_config.html" target="wiki-view"><code>assign_default_text_search_config</code></a></li>
+</ul></body></html>

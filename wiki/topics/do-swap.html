@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/do-swap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>do_swap</h1>
+<h2>概念</h2>
+<p><code>do_swap</code> は、PostgreSQLのソースコードにおいて異なる目的で使用されている2つのエンティティに関連する名称です。</p>
+<p>1. **<code>pg_upgrade</code> における関数**: 旧クラスタと新クラスタの間でディレクトリ構造の入れ替えやカタログファイルの差し替えを統括する静的関数。 2. **<code>sort_template.h</code> におけるマクロ**: ソート処理のテンプレート内で要素の入れ替え（スワップ）を行うために定義されている <code>DO_SWAP</code> マクロ。</p>
+<p>これらは名前が類似していますが、一方はアップグレード時のファイルシステム操作、もう一方は汎用的なソートアルゴリズムの実装という、全く異なる文脈で機能します。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**<code>pg_upgrade</code> の <code>do_swap</code>**: <code>--swap</code> モードでのアップグレード実行時に、新旧クラスタのデータディレクトリやテーブルスペース、カタログファイルを安全かつ正しい順序で入れ替えるための中心的な制御フローを提供します。</li>
+<li>**<code>sort_template.h</code> の <code>DO_SWAP</code>**: PostgreSQL内部で高速かつインライン化されたソート処理を実現するための共通部品として機能していると推測されます（詳細な仕様は提供されたコンテキストからは不明です）。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_upgrade</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/bin/pg_upgrade/relfilenumber.c#do_swap</code> (静的関数)</li>
+<li><code>symbol:src/include/lib/sort_template.h#DO_SWAP</code> (マクロ)</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<h3><code>pg_upgrade</code> における <code>do_swap</code> の流れ</h3>
+<p>1. **ソートの実行**: 入力されたファイル対応表（<code>FileNameMap</code> 配列）を、比較関数 <code>FileNameMapCmp</code> を用いて <code>relfilenumber</code> 順に <code>qsort</code> で並べ替えます。 2. **対象の判定と処理**:</p>
+<ul>
+<li>**特定のテーブルスペース (<code>old_tablespace</code>) が指定されている場合**:</li>
+<li>そのテーブルスペースに対して <code>prepare_for_swap</code> を実行します。</li>
+<li>成功した場合、<code>swap_catalog_files</code> を呼び出してカタログファイルを差し替えます。</li>
+<li>**特定のテーブルスペースが指定されていない場合**:</li>
+<li>まずメインのデータディレクトリである <code>old_cluster.pgdata</code> に対して <code>prepare_for_swap</code> および <code>swap_catalog_files</code> を実行します。</li>
+<li>続いて、<code>os_info.old_tablespaces</code> に登録されているすべてのテーブルスペースに対して順次同様の処理をループ実行します。</li>
+</ul>
+<p>※ <code>sort_template.h</code> の <code>DO_SWAP</code> マクロが関与するソート処理のエンドツーエンドの流れについては、提供されたコンテキストからは不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ソート順の保証**: <code>pg_upgrade</code> の <code>do_swap</code> 内で、<code>maps</code> 配列は <code>swap_catalog_files</code> を呼び出す前に必ず <code>relfilenumber</code> 順にソートされていなければなりません。</li>
+<li>**実行の依存関係**: <code>prepare_for_swap</code> が成功（真を返却）した場合にのみ、後続の <code>swap_catalog_files</code> が呼び出されます。</li>
+</ul>
+<p>※ <code>sort_template.h</code> の <code>DO_SWAP</code> マクロに関する不変条件は、提供されたコンテキストからは不明です。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**モードの混同**: <code>pg_upgrade</code> の <code>do_swap</code> は <code>--swap</code> モード専用の独立したコードパスです。通常のファイル転送処理とは異なるため、コードを変更する際は <code>prepare_for_swap</code> や <code>swap_catalog_files</code> との整合性を慎重に維持する必要があります。</li>
+<li>**境界条件の未チェック**: <code>maps</code> 配列が空、または <code>size</code> 引数が不適切な状態で <code>do_swap</code> を呼び出すと、<code>qsort</code> や配列アクセスで予期せぬ動作（セグメンテーションフォールトなど）を引き起こす可能性があります。</li>
+</ul>
+<p>※ <code>sort_template.h</code> の <code>DO_SWAP</code> マクロに関する落とし穴は、提供されたコンテキストからは不明です。</p>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/relfilenumber.c</code>：<code>do_swap</code> 関数の具体的な実装、および <code>prepare_for_swap</code> や <code>swap_catalog_files</code> との連携を確認してください。</li>
+<li><code>src/include/lib/sort_template.h</code>：<code>DO_SWAP</code> マクロの定義と、それがソートテンプレート内でどのように使用されているかを確認してください。</li>
+</ul></body></html>

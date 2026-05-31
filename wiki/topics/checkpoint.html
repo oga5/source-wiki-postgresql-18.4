@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/checkpoint.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CheckPoint</h1>
+<h2>概念</h2>
+<p><code>CheckPoint</code> は、PostgreSQLのチェックポイント処理において、データベースクラスタの最新状態（REDO開始点、WAL位置、タイムライン、各種オブジェクトIDの進行状況など）を保持し、リカバリ開始点や整合性チェックの基準となるメタデータを格納するためのデータ構造（<code>struct CheckPoint</code>）です。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのクラッシュリカバリ時において、WAL（Write-Ahead Log）の適用を開始する位置（REDO開始点）を決定し、データベースの整合性を迅速かつ確実に復元するために不可欠です。また、システム状態（トランザクションIDやマルチトランザクションIDの最小値・最大値など）を永続化し、システム全体の整合性を維持する役割を担います。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/include/catalog</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/catalog/pg_control.h#CheckPoint</code>: チェックポイントのメタデータを保持する構造体。</li>
+<li><code>symbol:src/backend/access/transam/xlog.c#CreateCheckPoint</code>: チェックポイントを作成し、<code>CheckPoint</code> 構造体を記録する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたコンテキストからは、詳細なエンドツーエンドの実行フロー（<code>CreateCheckPoint</code> の内部処理の全ステップや、呼び出しのトリガーなど）は完全には明らかになっていません。判明している範囲の流れは以下の通りです。</p>
+<p>1. **チェックポイントの作成**: チェックポイント処理（<code>CreateCheckPoint</code> など）の実行時に、現在のシステム状態（REDO開始点、トランザクションID、タイムラインなど）が <code>CheckPoint</code> 構造体の各フィールドに書き込まれます。 2. **永続化**: この構造体は <code>ControlFileData</code> の一部として、制御ファイル（<code>pg_control</code>）に書き込まれ、ディスクに永続化されます。 3. **リカバリ時の復元**: リカバリプロセス（<code>src/backend/access/transam/xlogrecovery.c</code> など）の開始時に、この構造体が読み込まれ、WALの適用範囲の決定やシステム状態の復元に使用されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**サイズ制限**: <code>CheckPoint</code> 構造体を含む <code>ControlFileData</code> 全体のサイズは、<code>PG_CONTROL_MAX_SAFE_SIZE</code>（512バイト）を超えてはなりません。</li>
+<li>**特定フィールドの条件**: <code>oldestActiveXid</code> は、オンラインチェックポイントかつ <code>wal_level</code> が <code>replica</code> の場合にのみ計算され、それ以外の場合は <code>InvalidTransactionId</code> となります。</li>
+<li>**互換性**: 構造体のフィールドを変更する場合は、<code>PG_CONTROL_VERSION</code> の更新が必須です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バイナリ互換性とアライメント**: 構造体のフィールド順序はバイナリ互換性とアライメントを考慮して設計されているため、フィールドの追加や順序変更を行う際は注意が必要です。</li>
+<li>**リカバリへの影響**: <code>oldestActiveXid</code> の計算ロジックはホットスタンバイモードの初期化に依存しているため、この部分を変更するとリカバリプロセスに重大な影響を与える可能性があります。</li>
+<li>**破損検知**: <code>pg_control</code> ファイルの破損は CRC チェックによって検知されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/catalog/pg_control.h</code>: <code>CheckPoint</code> 構造体の定義とフィールド詳細。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: <code>CreateCheckPoint</code> によるチェックポイント作成、読み込み、および <code>RecoveryRestartPoint</code> での参照処理。</li>
+</ul></body></html>

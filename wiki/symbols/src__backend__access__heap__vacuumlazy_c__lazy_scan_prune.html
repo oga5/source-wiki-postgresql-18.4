@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_prune.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>lazy_scan_prune</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/vacuumlazy.c:1943</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページ内のHOT更新チェーンの剪定（Pruning）およびタプルの凍結（Freeze）を行い、不要になったタプルを特定して可視性マップ（VM）を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int lazy_scan_prune(LVRelState *vacrel, Buffer buf, BlockNumber blkno, Page page, Buffer vmbuffer, bool all_visible_according_to_vm, bool *has_lpdead_items, bool *vm_page_frozen)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>vacrel</code>: VACUUM実行状態を保持する構造体。</li>
+<li><code>buf</code>, <code>page</code>: 対象ヒープページのバッファとページポインタ。</li>
+<li><code>vmbuffer</code>: 可視性マップのバッファ。</li>
+<li><code>all_visible_according_to_vm</code>: VM上の可視性フラグ状態。</li>
+<li>**出力**:</li>
+<li>戻り値: 削除されたタプル数（<code>int</code>）。</li>
+<li><code>has_lpdead_items</code>: ページ内に削除対象のデッドタプルが存在するかを示すフラグ。</li>
+<li><code>vm_page_frozen</code>: ページが新たに凍結されたかを示すフラグ。</li>
+<li><code>vacrel</code> 内部の統計情報および <code>TidStore</code> が更新される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>BufferGetBlockNumber(buf) == blkno</code> であること。</li>
+<li><code>vacrel-&gt;NewRelminMxid</code> および <code>vacrel-&gt;NewRelfrozenXid</code> が有効であること。</li>
+<li>インデックスが存在しない場合、<code>HEAP_PAGE_PRUNE_MARK_UNUSED_NOW</code> オプションが適用される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>heap_page_prune_and_freeze</code> を呼び出し、ページ内のタプル剪定と凍結を実行する。 2. 剪定結果に基づき、<code>vacrel</code> の統計情報（削除数、凍結数、ライブタプル数等）を更新する。 3. 削除対象のデッドタプル（<code>LP_DEAD</code>）がある場合、そのオフセットをソートして <code>dead_items_add</code> を通じ <code>TidStore</code> に蓄積する。 4. ページが全可視（all-visible）と判定された場合、VMのビットを更新し、必要に応じてバッファをダーティにする。 5. デバッグビルドでは、<code>heap_page_is_all_visible</code> を用いて剪定結果との整合性を検証する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>lazy_scan_heap</code>（<code>src/backend/access/heap/vacuumlazy.c:1391</code> 等）。</li>
+<li>**呼び出し先**: <code>heap_page_prune_and_freeze</code>, <code>qsort</code>, <code>dead_items_add</code>, <code>PageSetAllVisible</code>, <code>MarkBufferDirty</code>, <code>visibilitymap_set</code>, <code>heap_page_is_all_visible</code>（デバッグ時）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LVRelState</code>: VACUUMの全体状態を管理。</li>
+<li><code>PruneFreezeResult</code>: 剪定および凍結処理の結果を保持。</li>
+<li><code>TidStore</code>: 削除対象TIDの格納先。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ページ内にタプルが存在する場合、<code>vacrel-&gt;nonempty_pages</code> が更新される。</li>
+<li>VMビットとページ状態の不整合が検出された場合、VMの再設定が行われる。</li>
+<li><code>presult.lpdead_items &gt; 0</code> の場合、インデックス削除のための追跡対象となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>lazy_scan_heap</code> のメインループ内で呼び出される。</li>
+<li><code>dead_items_add</code> に渡すオフセットはソート済みである必要があるため、<code>qsort</code> が必須である。</li>
+<li>VMの更新ロジックは、クラッシュ後のリカバリ状況を考慮し、ビットがクリアされている場合でも強制的に同期を行う設計となっている。</li>
+</ul></body></html>

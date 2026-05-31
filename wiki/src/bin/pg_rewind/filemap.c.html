@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_rewind/filemap.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_rewind/filemap.c</h1>
+<h2>概要</h2>
+<p><code>filemap.c</code> は、<code>pg_rewind</code> が同期元（ソース）と同期先（ターゲット）のデータディレクトリ間で、どのファイルをどのように同期すべきかを決定するための中心的なデータ構造とロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_rewind</code> の中核となる意思決定エンジンです。ファイルシステムのスキャン結果と WAL の解析結果を統合し、最終的な同期アクション（コピー、削除、切り詰め等）を決定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ファイル状態の追跡**: ソースとターゲット双方のファイル属性をハッシュテーブルで管理。</li>
+<li>**同期アクションの決定**: <code>decide_file_actions()</code> を通じて、各ファイルに対する最適な操作を決定。</li>
+<li>**除外リストの管理**: 一時ファイルや再生成可能なファイル（<code>pg_dynshmem</code> 等）を同期対象から除外。</li>
+<li>**WAL 変更の記録**: ターゲットで変更されたデータブロックを追跡し、ソースからコピーすべきページを特定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>file_entry_t</code>: 各ファイルのメタデータ、状態、および実行すべきアクションを保持する構造体。</li>
+<li><code>filemap_t</code>: 決定されたアクションのリストを保持し、実行順序にソートされた最終的な同期計画。</li>
+<li><code>filehash</code>: ファイルパスをキーとするハッシュテーブル。<code>simplehash.h</code> を使用。</li>
+<li><code>decide_file_actions()</code>: 全ファイルに対して同期アクションを割り当て、実行順序にソートするメイン関数。</li>
+<li><code>process_target_wal_block_change()</code>: WAL 解析中に呼び出され、変更されたブロックを <code>target_pages_to_overwrite</code> に記録。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>action_to_str</code></li>
+<li><code>check_file_excluded</code></li>
+<li><code>exclude_list_item</code></li>
+<li><code>filehash_init</code></li>
+<li><code>insert_filehash_entry</code></li>
+<li><code>keepwal_entry</code></li>
+<li><code>keepwal_entry_exists</code></li>
+<li><code>keepwal_init</code></li>
+<li><code>lookup_filehash_entry</code></li>
+<li><code>process_source_file</code></li>
+<li><code>process_target_file</code></li>
+<li><code>process_target_wal_block_change</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **収集**: <code>process_source_file</code> / <code>process_target_file</code> を呼び出し、全ファイルを <code>filehash</code> に登録。 2. **WAL 解析**: <code>process_target_wal_block_change</code> により、ターゲットで変更されたブロックを特定し、該当ファイルのビットマップを更新。 3. **意思決定**: <code>decide_file_actions</code> がハッシュテーブルを走査し、<code>decide_file_action</code> を用いて各ファイルのアクションを決定。 4. **ソート**: <code>final_filemap_cmp</code> を使用し、ディレクトリ作成や削除の依存関係を考慮した順序に並び替え。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/simplehash.h</code>: ハッシュテーブル実装。</li>
+<li><code>datapagemap.h</code>: ページレベルの変更追跡用ビットマップ。</li>
+<li><code>filemap.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>pg_rewind.h</code>: 共通の定数や型定義。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>catalog/pg_tablespace_d.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>common/hashfn_unstable.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_rewind/datapagemap.c</code>: ページマップの操作ロジック。</li>
+<li><code>src/bin/pg_rewind/file_ops.c</code>: <code>filemap</code> で決定されたアクションを実際に実行するファイル操作関数群。</li>
+<li><code>src/bin/pg_rewind/parsexlog.c</code>: WAL を解析し、<code>process_target_wal_block_change</code> を呼び出す起点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アクションの順序**: <code>file_action_t</code> の列挙順序は重要です。<code>REMOVE</code> が最後に来るようにソートされており、ディレクトリ削除の安全性を担保しています。</li>
+<li>**除外リスト**: <code>excludeDirContents</code> と <code>excludeFiles</code> は <code>basebackup.c</code> と同期させる必要があります。修正時は注意してください。</li>
+<li>**WAL 依存**: データファイルの変更追跡はメインフォークのみを対象としています。他のフォークは常に全体コピーされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__keepwal_entry.html" target="wiki-view"><code>keepwal_entry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__exclude_list_item.html" target="wiki-view"><code>exclude_list_item</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__filehash_init.html" target="wiki-view"><code>filehash_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__insert_filehash_entry.html" target="wiki-view"><code>insert_filehash_entry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__lookup_filehash_entry.html" target="wiki-view"><code>lookup_filehash_entry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__keepwal_init.html" target="wiki-view"><code>keepwal_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__keepwal_entry_exists.html" target="wiki-view"><code>keepwal_entry_exists</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__process_source_file.html" target="wiki-view"><code>process_source_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__process_target_file.html" target="wiki-view"><code>process_target_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__process_target_wal_block_change.html" target="wiki-view"><code>process_target_wal_block_change</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__check_file_excluded.html" target="wiki-view"><code>check_file_excluded</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__filemap_c__action_to_str.html" target="wiki-view"><code>action_to_str</code></a></li>
+</ul></body></html>

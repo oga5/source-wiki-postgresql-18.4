@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/proc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/proc.c</h1>
+<h2>概要</h2>
+<p><code>proc.c</code> は、PostgreSQL の各バックエンドプロセスが共有メモリ上で保持する状態構造体 <code>PGPROC</code> のライフサイクルと、プロセス間の同期（待機・起床）を管理する中核ファイルです。ロックマネージャ（<code>lock.c</code>）と密接に連携し、ロック競合時のプロセススリープ、デッドロック検出のトリガー、およびプロセス終了時のリソース解放を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/lmgr</code> サブシステムにおいて、プロセスごとの「同期状態」を保持するデータ層です。軽量ロック（LWLock）や重量級ロック（LockManager）がプロセスを待機させる際、このモジュールが提供する <code>PGPROC</code> 構造体とラッチ（Latch）メカニズムを利用して、プロセスを効率的にスリープ・起床させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**PGPROC 管理**: 共有メモリ上の <code>PGPROC</code> 配列の初期化、割り当て、および終了時の再利用（フリーリスト管理）。</li>
+<li>**プロセス同期**: ロック待ちキューへの挿入（<code>JoinWaitQueue</code>）、スリープ（<code>ProcSleep</code>）、および起床（<code>ProcWakeup</code>）の制御。</li>
+<li>**デッドロック検出の連携**: <code>deadlock.c</code> を呼び出し、ロック待ちグラフの循環を解消するためのシグナル処理。</li>
+<li>**プロセス終了処理**: バックエンド終了時に保持しているロックの解放、待機キューからの離脱、および共有メモリ上の状態リセット。</li>
+<li>**グループロック管理**: 並列クエリ実行時のロックグループ（リーダーとメンバー）の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス管理・初期化</h3>
+<ul>
+<li><code>PGPROC *MyProc</code>: 現在のバックエンドプロセスに対応する <code>PGPROC</code> 構造体へのポインタ。</li>
+<li><code>PROC_HDR *ProcGlobal</code>: 共有メモリ上のプロセス管理ヘッダー。フリーリストや全プロセスの配列を保持。</li>
+<li><code>InitProcGlobal()</code>: 共有メモリ上のプロセス関連構造体の初期化（Postmaster 起動時）。</li>
+<li><code>InitProcess()</code>: 個別バックエンド起動時に <code>MyProc</code> を割り当て、初期化。</li>
+</ul>
+<h3>同期・待機制御</h3>
+<ul>
+<li><code>JoinWaitQueue()</code>: ロック待ちキューへの挿入と、即時獲得の判定。</li>
+<li><code>ProcSleep()</code>: ラッチを使用してプロセスをスリープさせ、タイムアウトやデッドロックを監視。</li>
+<li><code>ProcWakeup()</code>: 待機中のプロセスを起床させる。</li>
+<li><code>ProcLockWakeup()</code>: ロック解放時に、次に獲得可能なプロセスをキューから探索して起床。</li>
+</ul>
+<h3>デッドロック・エラー処理</h3>
+<ul>
+<li><code>CheckDeadLock()</code>: デッドロック検出ロジックの実行。</li>
+<li><code>LockErrorCleanup()</code>: トランザクション異常終了時に、ロック待ちキューから安全に離脱し、整合性を保つ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FastPathLockShmemSize</code></li>
+<li><code>GetStartupBufferPinWaitBufId</code></li>
+<li><code>HaveNFreeProcs</code></li>
+<li><code>InitAuxiliaryProcess</code></li>
+<li><code>InitProcGlobal</code></li>
+<li><code>InitProcess</code></li>
+<li><code>InitProcessPhase2</code></li>
+<li><code>LockErrorCleanup</code></li>
+<li><code>PGProcShmemSize</code></li>
+<li><code>ProcGlobalSemas</code></li>
+<li><code>ProcGlobalShmemSize</code></li>
+<li><code>SetStartupBufferPinWaitBufId</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ロック獲得**: <code>lmgr.c</code> 経由で <code>JoinWaitQueue</code> が呼ばれ、<code>PGPROC</code> がロックの待機キュー（<code>lock-&gt;waitProcs</code>）にリンクされます。 2. **スリープ**: <code>ProcSleep</code> が <code>WaitLatch</code> を呼び出し、プロセスはシグナルまたはラッチセットまで停止します。 3. **起床**: ロックを解放するプロセスが <code>ProcLockWakeup</code> を呼び出し、キュー内の <code>PGPROC</code> を特定して <code>SetLatch</code> を実行します。 4. **デッドロック**: <code>DEADLOCK_TIMEOUT</code> が発生すると <code>CheckDeadLock</code> が呼ばれ、循環依存があれば <code>RemoveFromWaitQueue</code> でプロセスをキューから強制排除し、エラーを発生させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: <code>PGPROC</code> 構造体の定義。</li>
+<li><code>storage/lock.h</code>: ロック管理のデータ構造。</li>
+<li><code>storage/lwlock.h</code>: 軽量ロックの管理。</li>
+<li><code>storage/spin.h</code>: <code>ProcStructLock</code>（フリーリスト保護用スピンロック）。</li>
+<li><code>storage/ipc.h</code>: 共有メモリ管理。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>lock.c</code>: 重量級ロックのハッシュテーブル管理。</li>
+<li><code>deadlock.c</code>: デッドロック検出アルゴリズムの実装。</li>
+<li><code>lwlock.c</code>: 軽量ロックの待機制御。</li>
+<li><code>procarray.c</code>: トランザクション ID 管理とプロセス配列の可視性。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PGPROC</code> は共有メモリ上にあり、<code>ProcGlobal</code> が所有します。各バックエンドは <code>InitProcess</code> でフリーリストから一つを借用し、終了時に返却します。</li>
+<li>**レイアウト**: <code>PGPROC</code> は非常にホットな構造体です。キャッシュラインの競合を避けるため、頻繁にアクセスされるフィールドの配置には注意が必要です。</li>
+<li>**デッドロック検出の制約**: <code>CheckDeadLock</code> は <code>LWLock</code> を保持した状態で実行されるため、デッドロック検出中に新たなロック競合が発生しないよう、厳密な順序でロックを取得する必要があります。</li>
+<li>**省略された詳細**: 本ファイルはプロセス管理の「枠組み」に集中しており、ロックの具体的な競合判定ロジック（<code>LockCheckConflicts</code> 等）は <code>lock.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__PGProcShmemSize.html" target="wiki-view"><code>PGProcShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__FastPathLockShmemSize.html" target="wiki-view"><code>FastPathLockShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__ProcGlobalShmemSize.html" target="wiki-view"><code>ProcGlobalShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__ProcGlobalSemas.html" target="wiki-view"><code>ProcGlobalSemas</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcGlobal.html" target="wiki-view"><code>InitProcGlobal</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcess.html" target="wiki-view"><code>InitProcess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcessPhase2.html" target="wiki-view"><code>InitProcessPhase2</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitAuxiliaryProcess.html" target="wiki-view"><code>InitAuxiliaryProcess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__SetStartupBufferPinWaitBufId.html" target="wiki-view"><code>SetStartupBufferPinWaitBufId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__GetStartupBufferPinWaitBufId.html" target="wiki-view"><code>GetStartupBufferPinWaitBufId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__HaveNFreeProcs.html" target="wiki-view"><code>HaveNFreeProcs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__LockErrorCleanup.html" target="wiki-view"><code>LockErrorCleanup</code></a></li>
+</ul></body></html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__parallel_c__WaitForParallelWorkersToFinish.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitForParallelWorkersToFinish</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/parallel.c:802</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、起動されたすべてのワーカープロセスが終了するまで待機し、必要に応じてワーカーから伝播されたエラーを処理し、最終的なトランザクション状態を同期する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void WaitForParallelWorkersToFinish(ParallelContext *pcxt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>pcxt</code> (並列実行コンテキストを保持する <code>ParallelContext</code> 構造体へのポインタ)</li>
+<li>**出力**: なし（正常終了時はワーカーの完了を待機し、エラー時は例外をスローする）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pcxt</code> は有効な並列コンテキストであること。</li>
+<li>リーダープロセスは、本関数を呼び出す前にワーカーを起動済みであること。</li>
+<li>ワーカーがエラーを報告した場合、本関数内で <code>ereport(ERROR, ...)</code> が発生し、処理が中断される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ループ待機**: すべてのワーカーが終了するまで以下の処理を繰り返す。</p>
+<ul>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、保留中のメッセージ処理や割り込みチェックを行う。</li>
+<li>各ワーカーの <code>error_mqh</code> を確認し、終了済みか稼働中かを判定する。</li>
+<li>すべてのワーカーが終了していればループを抜ける。</li>
+<li>稼働中のワーカーがないにもかかわらず終了済みとみなせない場合、ワーカーの起動失敗や異常終了を検知し、必要に応じてエラーをスローする。</li>
+<li>待機が必要な場合は <code>WaitLatch</code> を使用して待機し、ラッチをリセットする。</li>
+<p>2. **状態同期**: ループ終了後、<code>pcxt-&gt;toc</code> が存在する場合、共有メモリ上の <code>FixedParallelState</code> から <code>last_xlog_end</code> を取得し、リーダーの <code>XactLastRecEnd</code> を更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/brin/brin.c</code></li>
+<li><code>src/backend/access/gin/gininsert.c</code></li>
+<li><code>src/backend/access/nbtree/nbtsort.c</code></li>
+<li><code>src/backend/access/transam/parallel.c</code></li>
+<li><code>src/backend/commands/vacuumparallel.c</code></li>
+<li><code>src/backend/executor/execParallel.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code></li>
+<li><code>GetBackgroundWorkerPid()</code></li>
+<li><code>shm_mq_get_queue()</code></li>
+<li><code>shm_mq_get_sender()</code></li>
+<li><code>ereport()</code></li>
+<li><code>WaitLatch()</code></li>
+<li><code>ResetLatch()</code></li>
+<li><code>shm_toc_lookup()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行の全体状態を管理する構造体。</li>
+<li><code>FixedParallelState</code>: ワーカーとリーダー間で共有される固定サイズのトランザクション状態。</li>
+<li><code>shm_mq</code>: ワーカーとの通信に使用される共有メモリキュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ワーカーの初期化失敗**: ワーカーがエラーキューにアタッチする前に終了した場合、<code>ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE</code> でエラーをスローする。</li>
+<li>**ワーカーの異常終了**: ワーカーがエラーを報告した場合、リーダー側でそのエラーが伝播される。</li>
+<li>**ポストマスターの終了**: <code>WL_EXIT_ON_PM_DEATH</code> により、ポストマスターが終了した場合は待機を中断する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリーダープロセスがワーカーの完了を待つための主要な同期ポイントである。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> をループの先頭で呼び出すことで、ワーカーから送られてきたエラーメッセージを即座に処理する設計となっている。</li>
+<li><code>XactLastRecEnd</code> の更新は、並列実行中にワーカーが行った WAL 書き込みをリーダーに反映させるために不可欠である。</li>
+</ul></body></html>

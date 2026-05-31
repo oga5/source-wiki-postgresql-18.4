@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/portalmem.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/portalmem.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「ポータル（Portal）」のメモリ管理を行うモジュールです。ポータルはクエリ実行状態を保持するオブジェクトであり、本ファイルはそれらの作成、破棄、およびトランザクション境界を跨ぐライフサイクル管理を担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/mmgr</code> の一部として、メモリコンテキスト（<code>MemoryContext</code>）を利用したポータル専用の管理レイヤーを提供します。実行エンジンそのものではなく、実行に必要なリソース（クエリツリー、プラン、タプルストア）の生存期間を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ポータルのライフサイクル管理**: ポータルの作成、状態遷移（<code>NEW</code>, <code>READY</code>, <code>ACTIVE</code>, <code>DONE</code>, <code>FAILED</code>）、および破棄。</li>
+<li>**名前付きポータルのハッシュ管理**: <code>PortalHashTable</code> を用いた名前ベースの検索・登録・削除。</li>
+<li>**トランザクション連携**: トランザクションのコミット/アボート時に、保持すべきポータル（<code>WITH HOLD</code>）の永続化と、不要なポータルのクリーンアップ。</li>
+<li>**リソース保護**: <code>PinPortal</code>/<code>UnpinPortal</code> によるポータルの誤削除防止。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PortalHashTable</code>: 全ポータルを管理するハッシュテーブル。</li>
+<li><code>TopPortalContext</code>: ポータル構造体自体を割り当てるためのメモリコンテキスト。</li>
+<li><code>CreatePortal()</code>: 新規ポータルの作成と初期化を行う主要関数。</li>
+<li><code>PortalDrop()</code>: ポータルに関連するメモリおよびリソース（<code>ResourceOwner</code>、<code>tuplestore</code>）を解放する関数。</li>
+<li><code>PreCommit_Portals()</code>: トランザクション終了時に、保持すべきカーソルを処理し、不要なものを破棄する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtAbort_Portals</code></li>
+<li><code>AtCleanup_Portals</code></li>
+<li><code>AtSubAbort_Portals</code></li>
+<li><code>AtSubCleanup_Portals</code></li>
+<li><code>AtSubCommit_Portals</code></li>
+<li><code>CreateNewPortal</code></li>
+<li><code>CreatePortal</code></li>
+<li><code>EnablePortalManager</code></li>
+<li><code>PortalCreateHoldStore</code></li>
+<li><code>PortalHashEnt</code></li>
+<li><code>PortalHashTableDeleteAll</code></li>
+<li><code>PreCommit_Portals</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成**: <code>CreatePortal</code> が呼ばれると、<code>TopPortalContext</code> からメモリを確保し、<code>PortalHashTable</code> に登録します。 2. **実行**: <code>MarkPortalActive</code> で状態を <code>ACTIVE</code> に遷移させ、実行完了後に <code>MarkPortalDone</code> で <code>DONE</code> に遷移させます。 3. **終了処理**: トランザクション終了時、<code>PreCommit_Portals</code> がハッシュテーブルを走査し、<code>WITH HOLD</code> 指定がある場合は <code>HoldPortal</code> を呼び出してタプルストアを永続化し、それ以外は <code>PortalDrop</code> で解放します。 4. **異常系**: <code>AtAbort_Portals</code> が呼ばれると、実行中のポータルを <code>FAILED</code> にし、リソースを適切に解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト操作。</li>
+<li><code>access/xact.h</code>: トランザクション状態管理。</li>
+<li><code>storage/ipc.h</code>: 共有メモリ・プロセス間通信関連。</li>
+<li><code>commands/portalcmds.h</code>: ポータル固有のコマンド処理。</li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tcop/pquery.c</code>: ポータルの実行（Executor）を呼び出す上位層。</li>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの基盤実装。</li>
+<li><code>src/include/utils/portal.h</code>: ポータル構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>ポータルは <code>ResourceOwner</code> を所有しており、トランザクションアボート時にリソースリークを防ぐ仕組みになっています。</li>
+<li><code>PortalDrop</code> は非常に強力な関数であり、呼び出し前に <code>portalPinned</code> フラグを確認して保護する必要があります。</li>
+<li><code>WITH HOLD</code> カーソルは、トランザクション終了時に <code>tuplestore</code> へデータを書き出すため、メモリ使用量に注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__PortalHashEnt.html" target="wiki-view"><code>PortalHashEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__EnablePortalManager.html" target="wiki-view"><code>EnablePortalManager</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__CreatePortal.html" target="wiki-view"><code>CreatePortal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__CreateNewPortal.html" target="wiki-view"><code>CreateNewPortal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__PortalCreateHoldStore.html" target="wiki-view"><code>PortalCreateHoldStore</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__PortalHashTableDeleteAll.html" target="wiki-view"><code>PortalHashTableDeleteAll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__PreCommit_Portals.html" target="wiki-view"><code>PreCommit_Portals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__AtAbort_Portals.html" target="wiki-view"><code>AtAbort_Portals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__AtCleanup_Portals.html" target="wiki-view"><code>AtCleanup_Portals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__AtSubCommit_Portals.html" target="wiki-view"><code>AtSubCommit_Portals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__AtSubAbort_Portals.html" target="wiki-view"><code>AtSubAbort_Portals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__portalmem_c__AtSubCleanup_Portals.html" target="wiki-view"><code>AtSubCleanup_Portals</code></a></li>
+</ul></body></html>

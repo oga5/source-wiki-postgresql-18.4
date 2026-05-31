@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__pg_constraint_c__ConstraintSetParentConstraint.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ConstraintSetParentConstraint</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/pg_constraint.c:1123</code></li>
+</ul>
+<h2>目的</h2>
+<p>制約の継承関係を設定または解除し、<code>pg_constraint</code> カタログのメタデータおよび <code>pg_depend</code> の依存関係を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ConstraintSetParentConstraint(Oid childConstrId, Oid parentConstrId, Oid childTableId)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>childConstrId</code> (Oid): 継承関係を変更する対象の制約OID。</li>
+<li><code>parentConstrId</code> (Oid): 親となる制約のOID（解除時は <code>InvalidOid</code>）。</li>
+<li><code>childTableId</code> (Oid): 子制約が属するテーブルのOID。</li>
+<li>出力: なし（副作用としてカタログを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_constraint</code> テーブルに対する <code>RowExclusiveLock</code> が保持されていること。</li>
+<li><code>parentConstrId</code> が有効な場合、対象の制約が既に親を持っていないこと（<code>coninhcount == 0</code> かつ <code>conparentid == InvalidOid</code>）。</li>
+<li><code>parentConstrId</code> が <code>InvalidOid</code> の場合、対象の制約の継承カウントが 0 であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_constraint</code> をスキャンし、<code>childConstrId</code> に該当するタプルを取得する。 2. **継承設定時 (<code>parentConstrId</code> が有効)**:</p>
+<ul>
+<li><code>conislocal</code> を <code>false</code> に設定し、<code>coninhcount</code> をインクリメントする。</li>
+<li><code>conparentid</code> を <code>parentConstrId</code> に更新する。</li>
+<li><code>CatalogTupleUpdate</code> でカタログを更新する。</li>
+<li>親制約への依存関係 (<code>DEPENDENCY_PARTITION_PRI</code>) および子テーブルへの依存関係 (<code>DEPENDENCY_PARTITION_SEC</code>) を <code>pg_depend</code> に記録する。</li>
+<p>3. **継承解除時 (<code>parentConstrId</code> が <code>InvalidOid</code>)**:</p>
+<li><code>coninhcount</code> をデクリメントし、<code>conislocal</code> を <code>true</code> に設定、<code>conparentid</code> を <code>InvalidOid</code> にリセットする。</li>
+<li><code>CatalogTupleUpdate</code> でカタログを更新する。</li>
+<li>関連する <code>DEPENDENCY_PARTITION_PRI</code> および <code>DEPENDENCY_PARTITION_SEC</code> の依存関係レコードを削除する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/indexcmds.c</code> および <code>src/backend/commands/tablecmds.c</code> 内の複数箇所（パーティションテーブルの制約操作に関連）。</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>SearchSysCache1</code>, <code>heap_copytuple</code>, <code>CatalogTupleUpdate</code>, <code>recordDependencyOn</code>, <code>deleteDependencyRecordsForClass</code>, <code>ReleaseSysCache</code>, <code>table_close</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Form_pg_constraint</code>: <code>pg_constraint</code> カタログの行構造体。</li>
+<li><code>ObjectAddress</code>: 依存関係管理に使用されるオブジェクト識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>childConstrId</code> が存在しない場合、<code>elog(ERROR)</code> で停止する。</li>
+<li>既に親を持つ制約に対して親を設定しようとした場合、<code>elog(ERROR)</code> で停止する。</li>
+<li><code>coninhcount</code> がオーバーフローする場合、<code>ereport(ERROR)</code> で停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はパーティション継承における制約の管理を担う。依存関係の追加・削除は <code>pg_depend</code> の特定のクラス（<code>DEPENDENCY_PARTITION_PRI/SEC</code>）に対して行われるため、変更時は依存関係の整合性に注意すること。</li>
+</ul></body></html>

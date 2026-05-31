@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/resowner/resowner.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/resowner/resowner.c</h1>
+<h2>概要</h2>
+<p><code>resowner.c</code> は、PostgreSQL における「リソースオーナー（ResourceOwner）」の管理を担う中心的なファイルです。トランザクションやクエリの生存期間中に確保されたリソース（バッファピン、ロック、メモリコンテキストなど）を追跡し、終了時に確実に解放するためのメカニズムを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>src/include/utils/resowner.h</code> で定義されたインターフェースの実装体です。リソースの追跡、優先順位に基づいた解放、および階層的なリソース管理（サブトランザクションのサポート）をカプセル化し、他のサブシステムがリソース管理の詳細を意識せずに済むように抽象化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**リソースの追跡**: 固定長配列（最近の参照用）とハッシュテーブル（大量の参照用）を組み合わせた効率的なデータ管理。</li>
+<li>**階層的解放**: 親子関係を持つリソースオーナーの再帰的な解放処理。</li>
+<li>**優先順位付き解放**: リソースの種類に応じた適切な解放順序（ロック解放前・中・後）の制御。</li>
+<li>**ロックキャッシュ**: ローカルロックの追跡（オーバーフロー時はロックマネージャへフォールバック）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ResourceOwnerData</code>: リソースオーナーの内部状態を保持する構造体。</li>
+<li><code>ResourceOwnerRemember()</code> / <code>ResourceOwnerForget()</code>: リソースの登録と登録解除。</li>
+<li><code>ResourceOwnerRelease()</code>: 指定フェーズのリソース解放を実行するメイン関数。</li>
+<li><code>CurrentResourceOwner</code>: 現在のコンテキストでアクティブなリソースオーナー。</li>
+<li><code>ResourceOwnerEnlarge()</code>: リソース追加前に必要な容量を確保する関数（必須）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateAuxProcessResourceOwner</code></li>
+<li><code>ResourceElem</code></li>
+<li><code>ResourceOwnerAddToHash</code></li>
+<li><code>ResourceOwnerCreate</code></li>
+<li><code>ResourceOwnerDelete</code></li>
+<li><code>ResourceOwnerEnlarge</code></li>
+<li><code>ResourceOwnerForget</code></li>
+<li><code>ResourceOwnerReleaseAll</code></li>
+<li><code>ResourceOwnerRemember</code></li>
+<li><code>ResourceOwnerSort</code></li>
+<li><code>ResourceReleaseCallbackItem</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <code>ResourceOwnerEnlarge()</code> で容量を確保後、<code>ResourceOwnerRemember()</code> でリソースを登録。最初は高速な固定長配列に格納され、溢れるとハッシュテーブルへ移行します。 2. **解放**: <code>ResourceOwnerRelease()</code> が呼び出されると、リソースを解放優先順位に従ってソート（<code>ResourceOwnerSort()</code>）し、フェーズごとに <code>ReleaseResource</code> コールバックを順次実行します。 3. **階層処理**: 再帰的に子オーナーのリソースを処理し、最後に自身のコールバックを実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用。</li>
+<li><code>lib/ilist.h</code>: AIO ハンドル管理用リスト。</li>
+<li><code>storage/proc.h</code>, <code>storage/ipc.h</code>: ロック管理およびプロセス間通信用。</li>
+<li><code>utils/resowner.h</code>: 公開インターフェース定義。</li>
+<li><code>common/int.h</code></li>
+<li><code>storage/aio.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/resowner.h</code>: リソースオーナーの型定義とコールバックインターフェース。</li>
+<li><code>src/backend/utils/resowner/README</code>: リソースオーナーの設計思想と利用ガイド。</li>
+<li><code>src/backend/storage/lmgr/</code>: ロックマネージャ（<code>ResourceOwner</code> が管理するロックの解放先）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**解放の順序**: リソースの解放は <code>BEFORE_LOCKS</code> -&gt; <code>LOCKS</code> -&gt; <code>AFTER_LOCKS</code> の3フェーズで行われます。この順序はデッドロック回避や整合性維持のために厳格です。</li>
+<li>**注意点**: <code>ResourceOwnerRemember()</code> を呼ぶ前に必ず <code>ResourceOwnerEnlarge()</code> を呼ぶ必要があります。また、解放プロセスが開始された後は、新しいリソースの登録や個別の解放は禁止されます。</li>
+<li>**デバッグ**: <code>ResourceOwner</code> は <code>TopMemoryContext</code> に割り当てられるため、明示的に <code>ResourceOwnerDelete()</code> を呼ばない限りメモリリークの原因となります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceElem.html" target="wiki-view"><code>ResourceElem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerData.html" target="wiki-view"><code>ResourceOwnerData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceReleaseCallbackItem.html" target="wiki-view"><code>ResourceReleaseCallbackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerAddToHash.html" target="wiki-view"><code>ResourceOwnerAddToHash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerSort.html" target="wiki-view"><code>ResourceOwnerSort</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerReleaseAll.html" target="wiki-view"><code>ResourceOwnerReleaseAll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerCreate.html" target="wiki-view"><code>ResourceOwnerCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerEnlarge.html" target="wiki-view"><code>ResourceOwnerEnlarge</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerRemember.html" target="wiki-view"><code>ResourceOwnerRemember</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerForget.html" target="wiki-view"><code>ResourceOwnerForget</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerDelete.html" target="wiki-view"><code>ResourceOwnerDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__resowner__resowner_c__CreateAuxProcessResourceOwner.html" target="wiki-view"><code>CreateAuxProcessResourceOwner</code></a></li>
+</ul></body></html>

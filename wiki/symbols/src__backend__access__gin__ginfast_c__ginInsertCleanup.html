@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginfast_c__ginInsertCleanup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginInsertCleanup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginfast.c:779</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのペンディングリスト（Pending List）に蓄積されたデータをメインのB-tree構造へ転送し、リストを解放する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ginInsertCleanup(GinState *ginstate, bool full_clean, bool fill_fsm, bool forceCleanup, IndexBulkDeleteResult *stats)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ginstate</code>: GINインデックスの状態管理構造体。</li>
+<li><code>full_clean</code>: <code>true</code> の場合、リスト全体を空になるまで処理する。</li>
+<li><code>fill_fsm</code>: 削除されたページをFSM（Free Space Map）へ返却するかどうか。</li>
+<li><code>forceCleanup</code>: 強制実行フラグ。<code>true</code> ならメタページを排他ロックして待機する。</li>
+<li><code>stats</code>: 統計情報格納用（現時点では未使用）。</li>
+<li>**出力**: なし（副作用としてインデックス構造を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>メタページに対してロックを取得し、並行処理を制御する。</li>
+<li><code>full_clean</code> が <code>false</code> の場合、処理開始時点のテールページまでを処理対象とする（無限ループ防止）。</li>
+<li>処理中、ペンディングリストのページは <code>GinPageIsDeleted</code> でないことを前提とする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロック取得**: <code>forceCleanup</code> に応じてメタページを排他ロックする。 2. **初期化**: メタページからリストのヘッドとテールを取得し、メモリコンテキストを準備する。 3. **データ集約**: ペンディングリストをページ単位でスキャンし、<code>processPendingPage</code> を用いてデータを <code>BuildAccumulator</code> に蓄積する。 4. **転送**: メモリ上の蓄積データが上限（<code>work_mem</code>）に達するか、リストの末尾に到達した時点で、<code>ginEntryInsert</code> を呼び出しメインインデックスへ挿入する。 5. **ページ解放**: 転送完了後、処理済みページをリストから切り離し、必要に応じてFSMへ返却する。 6. **並行挿入への対応**: ページ処理中に挿入されたデータがある場合、再スキャンして処理を継続する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/gin/ginfast.c</code> (挿入処理時)</li>
+<li><code>src/backend/access/gin/ginvacuum.c</code> (VACUUM処理時)</li>
+<li><code>gin_clean_pending_list</code> (SQL関数)</li>
+<li>**呼び出し先**:</li>
+<li><code>processPendingPage</code></li>
+<li><code>ginBeginBAScan</code> / <code>ginGetBAEntry</code></li>
+<li><code>ginEntryInsert</code></li>
+<li><code>vacuum_delay_point</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GinMetaPageData</code>: ペンディングリストのヘッド/テール管理。</li>
+<li><code>BuildAccumulator</code>: 転送用データの一時集約。</li>
+<li><code>GinState</code>: インデックス操作のコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**並行処理**: <code>forceCleanup</code> が <code>false</code> の場合、他プロセスが既にクリーンアップ中であれば即座に終了する。</li>
+<li>**メモリ制限**: <code>work_mem</code> を超えるデータが蓄積された場合、部分的な転送を行いメモリを解放する。</li>
+<li>**リストの空状態**: メタページのヘッドが <code>InvalidBlockNumber</code> の場合は何もせず終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメタページの排他ロックを保持するが、リストの各ページ処理中は共有ロックに留めることで並行性を確保している。</li>
+<li>転送処理（<code>ginEntryInsert</code>）は時間がかかるため、ロックを解放した状態で実行される。</li>
+</ul></body></html>

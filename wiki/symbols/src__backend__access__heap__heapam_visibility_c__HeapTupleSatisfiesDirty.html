@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesDirty.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HeapTupleSatisfiesDirty</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_visibility.c:742</code></li>
+</ul>
+<h2>目的</h2>
+<p>タプルが「ダーティ（更新中または未確定）」な状態にあるかどうかを判定し、現在のトランザクションから見て可視であるかを判断します。主に、他のトランザクションによる更新の競合や、投機的挿入（speculative insertion）の追跡に使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>htup</code>: 判定対象のタプル。</li>
+<li><code>snapshot</code>: 可視性判定結果を格納する構造体（<code>xmin</code>, <code>xmax</code>, <code>speculativeToken</code> が更新される）。</li>
+<li><code>buffer</code>: タプルが格納されているバッファ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: タプルが可視であれば <code>true</code>、不可視であれば <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象のバッファに対して、少なくとも共有ロック（Shared Lock）を保持している必要があります。</li>
+<li><code>htup-&gt;t_self</code> が有効であり、<code>t_tableOid</code> が設定されている必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>snapshot</code> の <code>xmin</code>, <code>xmax</code> を <code>InvalidTransactionId</code> に、<code>speculativeToken</code> を 0 にリセットします。 2. **Xmin 判定**:</p>
+<ul>
+<li>未コミットの場合、<code>HEAP_MOVED_OFF</code> や <code>HEAP_MOVED_IN</code> フラグを確認し、古いバイナリアップグレード時の特殊処理を行います。</li>
+<li>現在のトランザクションによる挿入であれば、<code>xmax</code> の状態に応じて可視性を判定します。</li>
+<li>他のトランザクションによる挿入で進行中であれば、<code>xmin</code> を <code>snapshot-&gt;xmin</code> に設定し、投機的挿入であれば <code>speculativeToken</code> も取得して <code>true</code> を返します。</li>
+<li>コミット済みであればヒントビットを更新します。</li>
+<p>3. **Xmax 判定**:</p>
+<li>挿入トランザクションがコミット済みの場合、<code>t_infomask</code> を確認します。</li>
+<li><code>HEAP_XMAX_INVALID</code> であれば可視（<code>true</code>）。</li>
+<li><code>HEAP_XMAX_COMMITTED</code> であれば、ロックのみか更新かを確認し、更新済みなら不可視（<code>false</code>）。</li>
+<li>マルチトランザクションや進行中の更新トランザクションがある場合、それに応じて <code>snapshot-&gt;xmax</code> を設定し、可視性を決定します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam.c:6165</code></li>
+<li><code>src/backend/access/heap/heapam_handler.c:484</code></li>
+<li><code>src/backend/access/heap/heapam_visibility.c:1789</code></li>
+<li>**呼び出し先**:</li>
+<li><code>SetHintBits</code> (ヒントビット更新用)</li>
+<li><code>TransactionIdIsCurrentTransactionId</code>, <code>TransactionIdIsInProgress</code>, <code>TransactionIdDidCommit</code> (トランザクション状態確認用)</li>
+<li><code>HeapTupleHeaderGetRawXmin</code>, <code>HeapTupleHeaderGetRawXmax</code> 等のアクセサ</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HeapTuple</code>: 判定対象のタプル構造体。</li>
+<li><code>Snapshot</code>: 可視性判定の結果や状態を保持する構造体。</li>
+<li><code>Buffer</code>: タプルが属するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>TransactionId</code> が無効な場合や、トランザクションがアボート/クラッシュした場合は、ヒントビットを <code>HEAP_XMIN_INVALID</code> または <code>HEAP_XMAX_INVALID</code> に設定し、適切に <code>false</code> または <code>true</code> を返します。</li>
+<li>投機的挿入のトークンが 0 の場合はアサーションエラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、<code>HeapTupleSatisfiesVisibility</code> のような汎用的なディスパッチャではなく、特定のダーティ状態を判定するための特殊な関数です。</li>
+<li><code>TransactionIdIsInProgress</code> を <code>TransactionIdDidCommit</code> より先にチェックする順序は、コミット直後のレースコンディションを回避するために厳守してください。</li>
+</ul></body></html>

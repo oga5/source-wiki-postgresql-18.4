@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/syncscan.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/syncscan.c</h1>
+<h2>概要</h2>
+<p><code>syncscan.c</code> は、PostgreSQL における「同期スキャン（Synchronous Scan）」機能を実装するモジュールです。複数のバックエンドが同一テーブルに対してシーケンシャルスキャンを行う際、スキャン開始位置を共有・調整することで、バッファキャッシュの効率的な利用と I/O 負荷の低減を図ります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> ディレクトリの一部として、テーブルアクセスに関連する共通機能を提供します。特に、シーケンシャルスキャンを実行する各バックエンドが、先行するスキャンの進行状況を把握し、キャッシュヒット率を高めるための調整役を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン位置の追跡**: 共有メモリ上に各テーブルの現在のスキャン位置を保持する。</li>
+<li>**LRU 管理**: 追跡対象のテーブル数が多すぎる場合に備え、LRU（Least Recently Used）リストを用いてスキャン位置情報を管理する。</li>
+<li>**同期の促進**: 新規スキャン開始時に、既存のスキャン位置に近いブロックから読み取りを開始させる。</li>
+<li>**オーバーヘッドの抑制**: ロック競合を避けるため、スキャン位置の報告頻度を間引く（<code>SYNC_SCAN_REPORT_INTERVAL</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ss_scan_locations_t</code>: 共有メモリ上のスキャン位置リストを保持するメイン構造体。</li>
+<li><code>ss_get_location()</code>: 新規スキャン開始時に、最適な開始ブロック番号を取得する。</li>
+<li><code>ss_report_location()</code>: スキャン進行中に現在のブロック位置を共有メモリへ更新する。</li>
+<li><code>SyncScanShmemInit()</code>: 共有メモリ領域の初期化を行う。</li>
+<li><code>SyncScanLock</code>: 本モジュールのデータ構造を保護するための <code>LWLock</code>。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SyncScanShmemInit</code></li>
+<li><code>SyncScanShmemSize</code></li>
+<li><code>ss_get_location</code></li>
+<li><code>ss_lru_item_t</code></li>
+<li><code>ss_report_location</code></li>
+<li><code>ss_scan_location_t</code></li>
+<li><code>ss_search</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>SyncScanShmemInit</code> により、固定サイズの LRU リストが共有メモリ上に確保されます。 2. **スキャン開始**: <code>ss_get_location</code> が呼ばれると、<code>SyncScanLock</code> を排他獲得し、<code>ss_search</code> で対象テーブルの現在の位置を検索します。見つからない場合は新規エントリを作成し、リストの先頭へ移動させます。 3. **スキャン進行**: <code>ss_report_location</code> が定期的に呼ばれます。パフォーマンスのため、<code>LWLockConditionalAcquire</code> を使用し、ロックが即座に取れない場合は更新をスキップします。 4. **LRU 更新**: <code>ss_search</code> 内で、アクセスされたエントリは常にリストの先頭（<code>head</code>）へ移動され、古いエントリは末尾（<code>tail</code>）から押し出されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/syncscan.h</code>: 公開インターフェース定義。</li>
+<li><code>storage/lwlock.h</code>: 同期用ロック（<code>SyncScanLock</code>）の制御。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ管理。</li>
+<li><code>utils/rel.h</code>: <code>Relation</code> 構造体および <code>RelFileLocator</code> の操作。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/syncscan.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/storage/buffer/freelist.c</code>: 同期スキャンが利用するバッファリング戦略に関連。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: シーケンシャルスキャン実行時に <code>ss_get_location</code> 等を呼び出す側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの性質**: <code>ss_report_location</code> は <code>LWLockConditionalAcquire</code> を使用するため、更新が必ずしも成功するとは限りません。これは設計上の意図であり、多少の更新漏れは許容されます。</li>
+<li>**スキャン位置の循環**: 本モジュールは「どこから開始するか」を調整するだけであり、スキャン終了後のラップアラウンド処理などは呼び出し側のスキャンロジックに依存します。</li>
+<li>**定数設定**: <code>SYNC_SCAN_NELEM</code>（デフォルト 20）は同時にアクティブな大規模スキャンを保持する数です。環境に応じて調整が必要な場合があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_scan_location_t.html" target="wiki-view"><code>ss_scan_location_t</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_lru_item_t.html" target="wiki-view"><code>ss_lru_item_t</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_scan_locations_t.html" target="wiki-view"><code>ss_scan_locations_t</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__SyncScanShmemSize.html" target="wiki-view"><code>SyncScanShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__SyncScanShmemInit.html" target="wiki-view"><code>SyncScanShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_search.html" target="wiki-view"><code>ss_search</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_get_location.html" target="wiki-view"><code>ss_get_location</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__syncscan_c__ss_report_location.html" target="wiki-view"><code>ss_report_location</code></a></li>
+</ul></body></html>

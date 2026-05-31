@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execReplication.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execReplication.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおけるデータ適用（INSERT, UPDATE, DELETE）をサポートするための実行エンジンルーチンを提供します。主に、リモートから受信した変更をローカルのテーブルに適用する際、対象行の特定、競合の検出、および制約やトリガーの実行を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、論理レプリケーションの適用プロセス（Apply Worker）がテーブル操作を行う際の「低レベルな実行インターフェース」を担います。<code>nodeModifyTable.c</code> が提供する一般的なテーブル更新ロジックを、レプリケーション特有の制約（レプリカアイデンティティの検証など）でラップする役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**行の特定**: インデックスまたはシーケンシャルスキャンを用いて、レプリケーション対象の行を検索・ロックする。</li>
+<li>**競合処理**: ユニーク制約違反などの競合を検出し、必要に応じてエラー報告を行う。</li>
+<li>**操作の実行**: <code>simple_table_tuple_*</code> 関数を呼び出し、トリガーや制約チェックを含めた一連の更新処理を実行する。</li>
+<li>**検証**: レプリケーション対象テーブルが、パブリケーションの要件（レプリカアイデンティティ等）を満たしているかを確認する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationFindReplTupleByIndex</code>: インデックスを使用して対象行を検索・ロックする。</li>
+<li><code>ExecSimpleRelationInsert/Update/Delete</code>: レプリケーション用の簡易的なテーブル操作関数。</li>
+<li><code>CheckCmdReplicaIdentity</code>: テーブルが更新・削除操作を許可するためのアイデンティティ要件を満たしているか検証する。</li>
+<li><code>CheckAndReportConflict</code>: 競合発生時に詳細情報を収集し、エラーを報告する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BuildConflictIndexInfo</code></li>
+<li><code>CheckSubscriptionRelkind</code></li>
+<li><code>ExecSimpleRelationDelete</code></li>
+<li><code>ExecSimpleRelationInsert</code></li>
+<li><code>ExecSimpleRelationUpdate</code></li>
+<li><code>FindConflictTuple</code></li>
+<li><code>RelationFindReplTupleSeq</code></li>
+<li><code>build_replindex_scan_key</code></li>
+<li><code>should_refetch_tuple</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>RelationFindReplTupleByIndex</code> が呼ばれると、<code>build_replindex_scan_key</code> でスキャンキーを生成し、インデックス経由で対象行を特定します。 2. **ロック**: <code>table_tuple_lock</code> を使用して行をロックし、同時実行による競合（<code>TM_Updated</code> 等）が発生した場合は <code>should_refetch_tuple</code> を経由して再試行します。 3. **適用**: <code>ExecSimpleRelation*</code> 関数が、トリガー（BEFORE/AFTER）の実行、制約チェック、およびテーブルへの書き込みを順次行います。 4. **競合チェック**: 更新後にインデックスを再スキャンし、制約違反があれば <code>CheckAndReportConflict</code> でエラーを発生させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: テーブルアクセス（<code>tableam.h</code>）およびインデックスアクセス（<code>genam.h</code>）の抽象化レイヤー。</li>
+<li><code>replication/</code>: 論理レプリケーション固有の構造体（<code>logicalrelation.h</code>）や競合定義（<code>conflict.h</code>）。</li>
+<li><code>executor/</code>: 実行状態管理（<code>executor.h</code>）およびテーブル変更ノード（<code>nodeModifyTable.h</code>）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/gist.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeModifyTable.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/conflict.h</code></li>
+<li><code>replication/logicalrelation.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/apply.c</code>: このファイルで定義された関数を呼び出し、実際のレプリケーション適用ロジックを駆動するメインモジュール。</li>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: 一般的なテーブル更新処理の基盤。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: <code>table_tuple_lock</code> などの実体。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再試行ロジック**: レプリケーションは非同期で実行されるため、同時実行制御による競合が頻発します。<code>goto retry</code> を多用した再試行ループが各所に存在するため、状態遷移の整合性に注意してください。</li>
+<li>**パフォーマンス**: <code>RelationFindReplTupleSeq</code> はインデックスがない場合のフォールバックですが、非常に低速です。実運用では必ず適切なレプリカアイデンティティ（インデックス）を設定することが前提となっています。</li>
+<li>**トリガー**: レプリケーション経由の操作でも、通常のトリガーが発火するように設計されています。<code>ExecBR*</code>（Before Row）や <code>ExecAR*</code>（After Row）の呼び出し順序が重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__build_replindex_scan_key.html" target="wiki-view"><code>build_replindex_scan_key</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__should_refetch_tuple.html" target="wiki-view"><code>should_refetch_tuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__RelationFindReplTupleByIndex.html" target="wiki-view"><code>RelationFindReplTupleByIndex</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__RelationFindReplTupleSeq.html" target="wiki-view"><code>RelationFindReplTupleSeq</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__BuildConflictIndexInfo.html" target="wiki-view"><code>BuildConflictIndexInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__FindConflictTuple.html" target="wiki-view"><code>FindConflictTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__CheckAndReportConflict.html" target="wiki-view"><code>CheckAndReportConflict</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__ExecSimpleRelationInsert.html" target="wiki-view"><code>ExecSimpleRelationInsert</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__ExecSimpleRelationUpdate.html" target="wiki-view"><code>ExecSimpleRelationUpdate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__ExecSimpleRelationDelete.html" target="wiki-view"><code>ExecSimpleRelationDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__CheckCmdReplicaIdentity.html" target="wiki-view"><code>CheckCmdReplicaIdentity</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execReplication_c__CheckSubscriptionRelkind.html" target="wiki-view"><code>CheckSubscriptionRelkind</code></a></li>
+</ul></body></html>

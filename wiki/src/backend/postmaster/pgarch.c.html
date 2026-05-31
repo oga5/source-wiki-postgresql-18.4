@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/pgarch.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/pgarch.c</h1>
+<h2>概要</h2>
+<p>WAL（Write-Ahead Log）アーカイバプロセスを実装するソースファイルです。PostgreSQLの継続的アーカイブ機能の中核を担い、<code>pg_wal</code> ディレクトリ内の完了済みWALセグメントを、外部ストレージやアーカイブライブラリへ転送する役割を持ちます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、Postmasterからフォークされる補助プロセス（Auxiliary Process）として動作します。Postmasterとの通信にはシグナルを使用し、共有メモリを介して状態管理を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALの監視と収集**: <code>pg_wal/archive_status</code> 内の <code>.ready</code> ファイルをスキャンし、アーカイブ対象のWALファイルを特定する。</li>
+<li>**アーカイブ実行**: 構成された <code>archive_command</code> または <code>archive_library</code> を使用して、WALファイルを安全に転送する。</li>
+<li>**状態管理**: アーカイブ成功後に <code>.ready</code> ファイルを <code>.done</code> にリネームし、不要な孤立状態ファイルをクリーンアップする。</li>
+<li>**プロセス制御**: Postmasterからのシグナルに応答し、設定変更時の再起動やシャットダウンを適切に処理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgArchiverMain</code>: アーカイバプロセスのメインエントリポイント。</li>
+<li><code>PgArchData</code>: アーカイバの状態を保持する共有メモリ構造体。</li>
+<li><code>pgarch_readyXlog</code>: アーカイブ対象のWALファイルを優先度順（タイムライン履歴優先）に取得する関数。</li>
+<li><code>pgarch_archiveXlog</code>: 実際にアーカイブモジュールを呼び出し、エラー発生時に例外をキャッチしてリトライを制御する関数。</li>
+<li><code>XLogArchiveLibrary</code>: 使用するアーカイブライブラリを指定するGUC変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LoadArchiveLibrary</code></li>
+<li><code>PgArchCanRestart</code></li>
+<li><code>PgArchForceDirScan</code></li>
+<li><code>PgArchShmemInit</code></li>
+<li><code>PgArchShmemSize</code></li>
+<li><code>PgArchWakeup</code></li>
+<li><code>ProcessPgArchInterrupts</code></li>
+<li><code>arch_files_state</code></li>
+<li><code>pgarch_MainLoop</code></li>
+<li><code>pgarch_waken_stop</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PgArchiverMain</code> が起動し、アーカイブライブラリをロードしてメインループへ移行。 2. **メインループ (<code>pgarch_MainLoop</code>)**: <code>WaitLatch</code> で待機し、タイムアウト（<code>PGARCH_AUTOWAKE_INTERVAL</code>）またはシグナルで起床。 3. **スキャン**: <code>pgarch_readyXlog</code> がディレクトリをスキャンし、優先度付きヒープ（<code>binaryheap</code>）を用いてアーカイブ順序を決定。 4. **転送**: <code>pgarch_ArchiverCopyLoop</code> が各ファイルを順次処理。<code>pgarch_archiveXlog</code> 内で <code>sigsetjmp</code> を使用し、アーカイブ失敗時のプロセス終了を防ぎつつリトライを試行。 5. **完了**: 成功時に <code>pgarch_archiveDone</code> でステータスファイルを <code>.done</code> に変更。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>archive/archive_module.h</code>: アーカイブ対象のWAL管理とモジュールインターフェース。</li>
+<li><code>storage/latch.h</code>, <code>storage/shmem.h</code>: プロセス間通信と共有メモリ管理。</li>
+<li><code>postmaster/pgarch.h</code>: ペアとなるヘッダーファイル。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>archive/shell_archive.h</code></li>
+<li><code>lib/binaryheap.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/resowner.h</code></li>
+<li><code>utils/timeout.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/pgarch.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/archive/</code>: アーカイブモジュールの実装基盤。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: プロセスの起動と管理の起点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**例外処理**: アーカイバは <code>sigsetjmp</code> を使用して、アーカイブモジュール内で発生した <code>ERROR</code> をキャッチし、プロセス全体をクラッシュさせずにリトライする設計になっています。</li>
+<li>**優先順位**: タイムライン履歴ファイル（<code>.history</code>）は通常のWALセグメントよりも高い優先度でアーカイブされます。</li>
+<li>**孤立ファイル**: システムクラッシュ等で残った <code>.ready</code> ファイルは、<code>pgarch_ArchiverCopyLoop</code> 内で自動的にクリーンアップされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchData.html" target="wiki-view"><code>PgArchData</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__arch_files_state.html" target="wiki-view"><code>arch_files_state</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchShmemSize.html" target="wiki-view"><code>PgArchShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchShmemInit.html" target="wiki-view"><code>PgArchShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchCanRestart.html" target="wiki-view"><code>PgArchCanRestart</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchiverMain.html" target="wiki-view"><code>PgArchiverMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchWakeup.html" target="wiki-view"><code>PgArchWakeup</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__pgarch_waken_stop.html" target="wiki-view"><code>pgarch_waken_stop</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__pgarch_MainLoop.html" target="wiki-view"><code>pgarch_MainLoop</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__PgArchForceDirScan.html" target="wiki-view"><code>PgArchForceDirScan</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__ProcessPgArchInterrupts.html" target="wiki-view"><code>ProcessPgArchInterrupts</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__pgarch_c__LoadArchiveLibrary.html" target="wiki-view"><code>LoadArchiveLibrary</code></a></li>
+</ul></body></html>

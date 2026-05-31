@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_inherits.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_inherits.c</h1>
+<h2>概要</h2>
+<p><code>pg_inherits.c</code> は、PostgreSQL の継承関係を管理するシステムカタログ <code>pg_inherits</code> に対する操作および照会を行うためのルーチン群を提供します。テーブル継承やパーティショニングにおける親子関係の解決、および継承状態の検証を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> モジュールの一部として、継承階層の探索とメタデータ管理を抽象化します。主にクエリ実行時の継承展開（Inheritance Expansion）や、DDL 操作時の整合性チェックをサポートするユーティリティとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**継承関係の探索**: 特定の親テーブルから直接的または間接的に継承している子テーブルのリストを取得する。</li>
+<li>**継承状態の検証**: 指定されたリレーションが継承関係にあるか、あるいは特定の型を継承しているかの判定。</li>
+<li>**カタログ操作**: <code>pg_inherits</code> テーブルへの行の挿入・削除、およびパーティションのデタッチ状態（<code>inhdetachpending</code>）の管理。</li>
+<li>**並行性制御**: 継承関係の変更やパーティションのデタッチ処理における競合を避けるためのロック管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>find_inheritance_children</code>: 指定された親テーブルの直系の子テーブルをリストアップする。</li>
+<li><code>find_all_inheritors</code>: 再帰的に継承階層を辿り、すべての子孫テーブルをリストアップする。</li>
+<li><code>typeInheritsFrom</code>: 型の継承関係（複雑型やドメイン）を判定する。</li>
+<li><code>StoreSingleInheritance</code> / <code>DeleteInheritsTuple</code>: <code>pg_inherits</code> カタログに対する低レベルな CRUD 操作。</li>
+<li><code>PartitionHasPendingDetach</code>: パーティションが現在デタッチ処理中であるかを判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SeenRelsEntry</code></li>
+<li><code>find_inheritance_children_extended</code></li>
+<li><code>has_subclass</code></li>
+<li><code>has_superclass</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **探索**: <code>find_inheritance_children</code> は <code>pg_inherits</code> を <code>InheritsParentIndexId</code> でスキャンし、該当する <code>inhrelid</code> を収集します。 2. **フィルタリング**: パーティションのデタッチ処理中（<code>inhdetachpending</code>）の場合、現在のスナップショットに基づいて可視性を判断し、必要に応じて除外します。 3. **再帰**: <code>find_all_inheritors</code> はハッシュテーブル（<code>SeenRelsEntry</code>）を使用して、既に訪問したリレーションを追跡しながら、幅優先探索で継承ツリー全体を走査します。 4. **更新**: DDL 操作（<code>tablecmds.c</code> 等から呼び出し）により、<code>StoreSingleInheritance</code> や <code>DeleteInheritsTuple</code> が呼ばれ、カタログの更新と整合性チェックが行われます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/genam.h</code>, <code>access/table.h</code>: システムカタログのスキャンおよびテーブルアクセス用。</li>
+<li><code>catalog/pg_inherits.h</code>: カタログ定義およびデータ構造の参照。</li>
+<li><code>utils/syscache.h</code>: リレーション情報の高速なキャッシュ参照。</li>
+<li><code>storage/lmgr.h</code>: 継承関係の変更に伴うロック管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/tablecmds.c</code>: 継承関係の作成・削除を実際に実行する上位レイヤー。</li>
+<li><code>src/backend/optimizer/prep/prepunion.c</code>: クエリプランニング時に継承テーブルを展開する際に本モジュールの関数を利用する。</li>
+<li><code>src/include/catalog/pg_inherits.h</code>: カタログのスキーマ定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの重要性**: 本モジュールの関数は、呼び出し元が対象のリレーションに対して適切なロックを保持していることを前提としています。<code>NoLock</code> モードを使用する場合は、並行的な <code>DROP</code> 操作によるレースコンディションに注意してください。</li>
+<li>**デタッチ処理**: パーティションのデタッチ処理は、カタログ上のフラグとトランザクションの可視性を組み合わせた複雑なロジックを含んでいます。<code>find_inheritance_children_extended</code> の実装は、この特殊なケースを扱うための重要なリファレンスです。</li>
+<li>**効率化**: <code>has_subclass</code> は <code>pg_class</code> のフラグを利用した高速なチェックですが、これは「かつて子が存在した」場合でも真を返す可能性があるため、あくまで探索のスキップ用として利用されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__SeenRelsEntry.html" target="wiki-view"><code>SeenRelsEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__find_inheritance_children.html" target="wiki-view"><code>find_inheritance_children</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__find_inheritance_children_extended.html" target="wiki-view"><code>find_inheritance_children_extended</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__find_all_inheritors.html" target="wiki-view"><code>find_all_inheritors</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__has_subclass.html" target="wiki-view"><code>has_subclass</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__has_superclass.html" target="wiki-view"><code>has_superclass</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__typeInheritsFrom.html" target="wiki-view"><code>typeInheritsFrom</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__StoreSingleInheritance.html" target="wiki-view"><code>StoreSingleInheritance</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__DeleteInheritsTuple.html" target="wiki-view"><code>DeleteInheritsTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_inherits_c__PartitionHasPendingDetach.html" target="wiki-view"><code>PartitionHasPendingDetach</code></a></li>
+</ul></body></html>

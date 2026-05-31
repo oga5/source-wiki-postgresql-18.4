@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/tupledesc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TupleDesc</h1>
+<h2>概念</h2>
+<p><code>TupleDesc</code>（タプル記述子 / Tuple Descriptor）は、PostgreSQLにおいてリレーションやクエリ結果の行構造（列数、各列の型、制約など）を保持するメタデータ構造体（<code>TupleDescData</code> へのポインタ型）です。実行エンジンやアクセスメソッドが、メモリ上のタプルを解釈・変形（Deformation）するための基盤として機能します。</p>
+<h2>なぜ重要か</h2>
+<p>実行エンジンがタプルから値を取得したり、タプルのバイト列を解析したりする際、そのタプルがどのような属性構成（列数、型情報など）を持つかを識別・検証するために不可欠です。また、タプル解釈を高速化するための内部構造体 <code>CompactAttribute</code> を保持し、タプルアクセスの最適化に寄与します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/common</code></li>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/tupdesc.h#TupleDesc</code>**: 行構造のメタデータを保持する主要な構造体ポインタ型。</li>
+<li>**<code>symbol:src/backend/access/common/tupdesc.c#CreateTupleDesc</code>**: 指定された属性定義（<code>Form_pg_attribute</code>）の配列から新しい <code>TupleDesc</code> を作成・初期化する関数。</li>
+<li>**<code>symbol:src/backend/access/common/tupdesc.c#FreeTupleDesc</code>**: <code>TupleDesc</code> およびその内部の制約情報（<code>TupleConstr</code>）に関連するメモリを解放する関数。</li>
+<li>**<code>symbol:src/include/executor/execExpr.h#TupleDesc</code>**: 実行エンジンの式評価コンテキスト（<code>fetch</code> 構造体など）において、タプルの構造が既知である場合にそのメタデータを保持する <code>known_desc</code> フィールドなどとして参照されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>システム全体における完全なエンドツーエンドのライフサイクルは未だ完全には明らかになっていませんが、提供されたモジュールから判明している部分的な流れは以下の通りです。</p>
+<p>1. **生成**: <code>CreateTupleDesc</code> が呼び出され（ブートストラップ処理やシステムカタログ初期化時など）、指定された属性数（<code>natts</code>）と属性定義（<code>attrs</code>）に基づいて <code>TupleDesc</code> がメモリ上に確保・初期化されます。この際、内部的に <code>CompactAttribute</code> が生成・同期されます。 2. **利用**: 実行エンジンがタプルから値を取得する際、<code>TupleDesc</code>（例えば <code>execExpr.h</code> 内の <code>fetch</code> 構造体の <code>known_desc</code>）を参照して属性情報（型や列数など）を特定し、タプル変形（Deformation）やアクセス最適化を行います。 3. **解放**: 参照カウント（<code>tdrefcount</code>）が 0 以下になると、<code>FreeTupleDesc</code> が呼び出され、内部の制約情報（デフォルト値、欠損値、チェック制約など）とともにメモリが解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**参照カウントによる管理**: <code>TupleDesc</code> のライフサイクルは参照カウント（<code>tdrefcount</code>）によって管理されます。<code>FreeTupleDesc</code> を呼び出す際、<code>tdrefcount</code> が 0 以下であることが前提条件（<code>Assert</code> で検証）となります。ただし、<code>tdrefcount</code> が <code>-1</code> の場合はキャッシュ管理対象外（スタック上や一時的なメモリコンテキスト）であることを示し、Pin/Release 操作は無効となります。</li>
+<li>**属性定義の同期**: カタログ由来の属性定義（<code>FormData_pg_attribute</code>）を変更した後は、必ず <code>populate_compact_attribute()</code> を呼び出して <code>compact_attrs</code>（<code>CompactAttribute</code>）と同期させ、整合性を維持しなければなりません。</li>
+<li>**属性配列の整合性**: <code>CreateTupleDesc</code> の呼び出し時、入力される <code>attrs</code> 配列には少なくとも指定された属性数（<code>natts</code>）個の有効な属性定義が含まれている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**最適化情報の同期漏れ**: <code>populate_compact_attribute()</code> の呼び出しを怠ると、<code>CompactAttribute</code> と実際の属性定義との間に不整合が生じ、タプル変形時に予期しない動作を引き起こす可能性があります。</li>
+<li>**参照カウントの管理不備**: 参照カウントの増減（<code>PinTupleDesc</code> / <code>ReleaseTupleDesc</code>）を誤ると、メモリリークが発生するか、もしくは使用中の <code>TupleDesc</code> が早期に解放されてしまう危険性があります。</li>
+<li>**制約情報のコピー**: <code>CreateTupleDesc</code> は属性定義のコピーのみを行い、制約（<code>TupleConstr</code>）のコピーは行いません。制約が必要な場合は <code>CreateTupleDescCopyConstr</code> などの別の関数を使用する必要があります。</li>
+<li>**未定義状態の参照**: <code>execExpr.h</code> の <code>fetch</code> 構造体において、<code>known_desc</code> が <code>NULL</code> の場合や <code>fixed</code> フラグが偽の場合は、タプル構造が特定できないか信頼できないため、直接的な <code>TupleDesc</code> の利用には注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/common/tupdesc.c</code></li>
+<li><code>src/include/access/tupdesc.h</code></li>
+<li><code>src/include/executor/execExpr.h</code></li>
+</ul></body></html>

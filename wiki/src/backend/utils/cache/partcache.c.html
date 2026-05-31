@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/partcache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/partcache.c</h1>
+<h2>概要</h2>
+<p>パーティションテーブルおよびパーティションのメタデータをリレーションキャッシュ（relcache）内で管理するためのサポートルーチン群です。パーティションキーの定義や、パーティション制約（qual）の構築・キャッシュを担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールの一部として、<code>relcache</code> が保持するリレーション情報のうち、特にパーティション関連の複雑な構造体をオンデマンドで構築・保持する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**パーティションキーの構築**: <code>pg_partitioned_table</code> カタログから情報を読み取り、<code>PartitionKeyData</code> 構造体を生成してリレーションに付与する。</li>
+<li>**パーティション制約の生成**: パーティションの境界条件（bound）から、そのパーティションが満たすべき制約式（qual）を再帰的に構築する。</li>
+<li>**メモリ管理**: キャッシュされたデータが relcache のフラッシュ時に適切に破棄されるよう、専用のメモリコンテキスト（<code>CacheMemoryContext</code> の子）を管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationGetPartitionKey</code>: 指定されたリレーションのパーティションキーを取得する。未構築の場合は <code>RelationBuildPartitionKey</code> を呼び出す。</li>
+<li><code>RelationGetPartitionQual</code>: パーティションが満たすべき制約式リストを返す。</li>
+<li><code>PartitionKeyData</code>: パーティション戦略、キー列、演算子クラス、サポート関数情報などを保持する主要構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>generate_partition_qual</code></li>
+<li><code>get_partition_qual_relid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **キー構築**: <code>RelationGetPartitionKey</code> が呼ばれると、<code>rd_partkey</code> が NULL の場合に <code>RelationBuildPartitionKey</code> が起動します。</p>
+<ul>
+<li><code>CurTransactionContext</code> で一時的にメモリを確保し、エラー発生時のリークを防ぎます。</li>
+<li>成功時に <code>CacheMemoryContext</code> へコンテキストを再配置し、<code>relcache</code> に紐付けます。</li>
+<p>2. **制約生成**: <code>generate_partition_qual</code> は再帰的に親テーブルの制約を辿り、<code>map_partition_varattnos</code> を用いて現在のリレーションの属性番号に変換します。</p>
+<li>結果は <code>rd_partcheck</code> にキャッシュされ、次回以降の呼び出しを高速化します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/partition.h</code>, <code>catalog/pg_partitioned_table.h</code>: パーティション関連カタログの定義。</li>
+<li><code>utils/rel.h</code>, <code>utils/relcache.h</code>: リレーションキャッシュ構造体へのアクセス。</li>
+<li><code>utils/partcache.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/syscache.h</code>: システムカタログの高速検索。</li>
+<li><code>access/hash.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>partitioning/partbounds.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/partcache.h</code>: <code>PartitionKeyData</code> 構造体の定義とインライン関数。</li>
+<li><code>src/backend/partitioning/partbounds.c</code>: パーティション境界の解析や制約の生成ロジック。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: リレーションキャッシュの全体管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理の注意**: パーティションキーや制約は <code>CacheMemoryContext</code> の子コンテキストに配置されます。これは relcache のエントリが破棄される際に一緒に解放される設計です。</li>
+<li>**再帰的制約**: <code>generate_partition_qual</code> はパーティション階層を再帰的に辿るため、非常に深いパーティションツリーではスタックオーバーフローのリスクがあります（<code>check_stack_depth()</code> で保護されています）。</li>
+<li>**不変性**: パーティションキーは一度作成されると変更されない前提で設計されており、relcache のリビルド時にも保持されるようになっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__partcache_c__RelationGetPartitionKey.html" target="wiki-view"><code>RelationGetPartitionKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__partcache_c__RelationBuildPartitionKey.html" target="wiki-view"><code>RelationBuildPartitionKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__partcache_c__RelationGetPartitionQual.html" target="wiki-view"><code>RelationGetPartitionQual</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__partcache_c__get_partition_qual_relid.html" target="wiki-view"><code>get_partition_qual_relid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__partcache_c__generate_partition_qual.html" target="wiki-view"><code>generate_partition_qual</code></a></li>
+</ul></body></html>

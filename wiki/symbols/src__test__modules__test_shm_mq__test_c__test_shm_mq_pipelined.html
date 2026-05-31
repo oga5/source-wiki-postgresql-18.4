@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__test__modules__test_shm_mq__test_c__test_shm_mq_pipelined.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>test_shm_mq_pipelined</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/test/modules/test_shm_mq/test.c:131</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの共有メモリメッセージキュー（<code>shm_mq</code>）のノンブロッキングI/Oインターフェースを用いたパイプライン処理の検証。送信と受信を並行して行い、キューの輻輳やデッドロック耐性をテストする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Datum test_shm_mq_pipelined(PG_FUNCTION_ARGS)</code></pre>
+<p>SQL関数として呼び出され、以下の引数を取る： 1. <code>queue_size</code> (int64): キューのサイズ 2. <code>message</code> (text): 送信するメッセージ内容 3. <code>loop_count</code> (int32): 送受信の繰り返し回数 4. <code>nworkers</code> (int32): バックグラウンドワーカー数 5. <code>verify</code> (bool): 受信データの整合性検証を行うか否か</p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: SQL経由で渡されるパラメータ（上記シグネチャ参照）。</li>
+<li>**出力**: <code>PG_RETURN_VOID()</code> により値を返さない。エラー発生時は <code>ereport</code> により例外を投げる。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>loop_count</code> および <code>nworkers</code> は0以上であること。</li>
+<li><code>test_shm_mq_setup</code> が正常に共有メモリセグメントとキューハンドルを初期化できること。</li>
+<li><code>shm_mq_send</code> が <code>SHM_MQ_WOULD_BLOCK</code> を返した場合、同一のメッセージ内容で再試行する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>test_shm_mq_setup</code> を呼び出し、共有メモリとワーカーを準備。 2. ループ内で <code>shm_mq_send</code> と <code>shm_mq_receive</code> をノンブロッキングモードで呼び出す。 3. 送信または受信が成功するたびに進捗フラグを立てる。 4. 進捗がない（<code>wait</code> が真の）場合、<code>WaitLatch</code> を使用して他のプロセスからの通知を待機する。 5. <code>receive_count</code> が <code>loop_count</code> に達した時点で、<code>send_count</code> との整合性を確認しループを終了。 6. 最後に <code>dsm_detach</code> で共有メモリセグメントを解放。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQLインターフェース（<code>PG_FUNCTION_INFO_V1</code> による登録）。</li>
+<li>**呼び出し先**: <code>test_shm_mq_setup</code>, <code>shm_mq_send</code>, <code>shm_mq_receive</code>, <code>verify_message</code>, <code>WaitLatch</code>, <code>dsm_detach</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>dsm_segment</code>: 動的共有メモリセグメント。</li>
+<li><code>shm_mq_handle</code>: メッセージキューのハンドル。</li>
+<li><code>we_message_queue</code>: 待機イベントID。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>loop_count</code> または <code>nworkers</code> が負の場合: <code>ERRCODE_INVALID_PARAMETER_VALUE</code> でエラー。</li>
+<li><code>shm_mq_send</code>/<code>receive</code> が <code>SHM_MQ_DETACHED</code> を返した場合: <code>ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE</code> でエラー。</li>
+<li>ループ終了時に <code>send_count != receive_count</code> の場合: <code>ERRCODE_INTERNAL_ERROR</code> でエラー。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>WaitLatch</code> の待機イベントとして <code>we_message_queue</code> を使用しており、初回呼び出し時に <code>WaitEventExtensionNew</code> で生成される。</li>
+<li><code>verify_message</code> は比較処理が重いため、パイプラインテストのパフォーマンスに影響を与える可能性がある。</li>
+<li>ノンブロッキングI/Oの特性上、<code>shm_mq_send</code> 失敗時の再試行ロジックが重要である。</li>
+</ul></body></html>

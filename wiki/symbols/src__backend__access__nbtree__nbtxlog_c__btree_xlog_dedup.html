@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_dedup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>btree_xlog_dedup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtxlog.c:463</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスページに対する重複排除（deduplication）操作の WAL リプレイを実行し、ページの状態を再構築します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void btree_xlog_dedup(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象の WAL レコード）。</li>
+<li>**出力**: なし（副作用としてバッファページを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返す場合のみ、ページ更新処理が実行されます。</li>
+<li>処理終了後、ページ内の <code>BTP_HAS_GARBAGE</code> フラグが適切にクリアされます。</li>
+<li>処理されたインターバル数は、WAL レコード内の <code>nintervals</code> と一致する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>XLogReadBufferForRedo</code> を呼び出し、対象ページを読み込みます。 2. 一時的なページ（<code>newpage</code>）を作成し、必要に応じてハイキー（High Key）をコピーします。 3. WAL レコードから取得した <code>BTDedupInterval</code> 情報に基づき、既存のタプルを走査します。 4. <code>_bt_dedup_start_pending</code> および <code>_bt_dedup_save_htid</code> を使用して、重複排除後のタプルを <code>newpage</code> 上に再構築します。 5. 最後に <code>_bt_dedup_finish_pending</code> を呼び出し、残りのタプルを確定させます。 6. 元のページに <code>BTP_HAS_GARBAGE</code> フラグがある場合、これをクリアします。 7. <code>PageRestoreTempPage</code> で一時ページの内容を元のページに反映し、LSN を更新してバッファをダーティとしてマークします。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>btree_redo</code>（<code>src/backend/access/nbtree/nbtxlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: </li>
+<li><code>XLogRecGetData</code>, <code>XLogRecGetBlockData</code></li>
+<li><code>PageGetTempPageCopySpecial</code>, <code>PageRestoreTempPage</code></li>
+<li><code>_bt_dedup_start_pending</code>, <code>_bt_dedup_save_htid</code>, <code>_bt_dedup_finish_pending</code></li>
+<li><code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_btree_dedup</code>: WAL レコードの構造体。</li>
+<li><code>BTDedupState</code>: 重複排除処理中の状態管理用構造体。</li>
+<li><code>BTDedupInterval</code>: 重複排除の範囲を示す構造体。</li>
+<li><code>BTPageOpaque</code>: B-tree ページヘッダーの不透明部分。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が失敗した場合、<code>ERROR</code> を発生させます。</li>
+<li><code>_bt_dedup_save_htid</code> が失敗した場合、<code>ERROR</code> を発生させます。</li>
+<li>処理後のインターバル数や内容が WAL レコードと一致しない場合、<code>Assert</code> により停止します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は物理的なページ再構築を行うため、<code>nbtdedup.c</code> で定義される論理的な重複排除ロジックと密接に関連しています。</li>
+<li>リカバリ時は並行更新が発生しないため、ロックはページ単位で簡略化されています。</li>
+</ul></body></html>

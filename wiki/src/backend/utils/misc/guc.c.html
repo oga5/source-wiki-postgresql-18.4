@@ -1,0 +1,115 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/misc/guc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/misc/guc.c</h1>
+<h2>概要</h2>
+<p><code>guc.c</code> は、PostgreSQLの「Grand Unified Configuration (GUC)」システムの中心となるエンジンです。サーバー設定パラメータの定義、読み込み、検証、適用、および永続化（<code>ALTER SYSTEM</code>）を管理します。本ファイルは、設定値のライフサイクル管理と、SQLインターフェース（<code>SET</code>/<code>SHOW</code>）のバックエンド処理を担う大規模なインフラストラクチャです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/misc</code> サブシステムにおいて、設定管理の「コア」として機能します。</p>
+<ul>
+<li><code>guc_tables.c</code>: パラメータの静的定義を提供。</li>
+<li><code>guc_funcs.c</code>: SQLレベルのコマンド（<code>SET</code>, <code>SHOW</code>）の入り口。</li>
+<li><code>conffiles.c</code>: 設定ファイルのパース処理。</li>
+<li>本ファイルは、これらを統合し、メモリ上の状態管理と検証ロジックを統括します。</li>
+</ul>
+<h2>責務</h2>
+<ul>
+<li>**設定値のライフサイクル管理**: 起動時のデフォルト値適用、設定ファイルからの読み込み、セッション/トランザクション単位の変更管理。</li>
+<li>**検証と適用**: 型変換、単位変換（kB, MB等）、範囲チェック、およびカスタムフック（check/assign hook）の実行。</li>
+<li>**トランザクション管理**: <code>SET LOCAL</code> 等によるトランザクション/サブトランザクション単位の変更のスタック管理とロールバック処理。</li>
+<li>**永続化**: <code>ALTER SYSTEM</code> による <code>postgresql.auto.conf</code> の更新とアトミックな反映。</li>
+<li>**シリアライズ**: パラレルクエリ実行時のワーカープロセスへの設定値同期。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>GUCHashEntry</code>: パラメータ名から定義構造体への高速アクセス用ハッシュテーブルエントリ。</li>
+<li><code>GucStack</code>: トランザクション単位の設定変更を保持するスタック構造。</li>
+<li><code>unit_conversion</code>: メモリや時間の単位変換テーブル。</li>
+</ul>
+<h3>主要な管理変数</h3>
+<ul>
+<li><code>guc_hashtab</code>: 全パラメータを管理するハッシュテーブル。</li>
+<li><code>guc_nondef_list</code>: デフォルト値から変更されたパラメータのリスト。</li>
+<li><code>guc_stack_list</code>: トランザクションスタックを持つパラメータのリスト。</li>
+<li><code>GUCMemoryContext</code>: GUC関連の全データが確保される専用メモリコンテキスト。</li>
+</ul>
+<h3>主要な関数</h3>
+<ul>
+<li><code>ProcessConfigFileInternal</code>: 設定ファイルの読み込みと反映のメインロジック。</li>
+<li><code>set_config_option</code>: パラメータ設定の汎用インターフェース。</li>
+<li><code>find_option</code>: パラメータ名の検索とカスタムプレースホルダーの生成。</li>
+<li><code>AtEOXact_GUC</code>: トランザクション終了時の設定値復元処理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_GUC</code></li>
+<li><code>AtStart_GUC</code></li>
+<li><code>GUCArrayDelete</code></li>
+<li><code>GUCArrayReset</code></li>
+<li><code>GUCHashEntry</code></li>
+<li><code>GetConfigOptionResetString</code></li>
+<li><code>InitializeGUCOptions</code></li>
+<li><code>InitializeOneGUCOption</code></li>
+<li><code>ResetAllOptions</code></li>
+<li><code>guc_free</code></li>
+<li><code>guc_realloc</code></li>
+<li><code>unit_conversion</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitializeGUCOptions</code> が <code>build_guc_variables</code> を呼び出し、ハッシュテーブルを構築してデフォルト値を適用します。 2. **設定変更**: <code>set_config_option</code> が呼ばれると、まず <code>find_option</code> で定義を取得し、<code>parse_and_validate_value</code> で型変換とチェックフックを実行します。 3. **スタック管理**: トランザクション内で変更が行われる場合、<code>push_old_value</code> で現在の値をスタックに退避し、<code>AtEOXact_GUC</code> でコミット/アボートに応じて値を復元します。 4. **永続化**: <code>AlterSystemSetConfigFile</code> は <code>LWLock</code> を取得し、既存の設定をパースして値を置換後、一時ファイル経由で <code>postgresql.auto.conf</code> をアトミックに更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/guc_tables.h</code>: パラメータ定義の参照。</li>
+<li><code>utils/memutils.h</code>: <code>GUCMemoryContext</code> の管理。</li>
+<li><code>storage/lwlock.h</code>: <code>ALTER SYSTEM</code> 時の排他制御。</li>
+<li><code>catalog/pg_parameter_acl.h</code>: パラメータごとの権限チェック。</li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>guc_internal.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>libpq/protocol.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/shmem.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/conffiles.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/guc.h</code>: 公開インターフェースと <code>GucContext</code> 等の定義。</li>
+<li><code>src/backend/utils/misc/guc_funcs.c</code>: SQLコマンドのハンドラ。</li>
+<li><code>src/backend/utils/misc/conffiles.c</code>: 設定ファイルのパースロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: GUCデータは <code>GUCMemoryContext</code> に集約されており、<code>pfree</code> ではなく <code>guc_free</code> を使用して管理されます。</li>
+<li>**エラーハンドリング**: <code>check_hook</code> 内でのエラー報告は <code>GUC_check_errcode</code> 等の専用マクロを介して行われます。</li>
+<li>**並列処理**: パラレルワーカーへの設定同期は <code>SerializeGUCState</code> / <code>RestoreGUCState</code> を通じて行われます。<code>can_skip_gucvar</code> のロジックは非常に繊細であり、変更時は注意が必要です。</li>
+<li>**省略された詳細**: 単位変換の具体的な計算式や、個別のパラメータの <code>check_hook</code> 実装は各モジュールに分散しているため、本ファイルでは汎用的な呼び出しロジックのみを扱っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__unit_conversion.html" target="wiki-view"><code>unit_conversion</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__GUCHashEntry.html" target="wiki-view"><code>GUCHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__guc_realloc.html" target="wiki-view"><code>guc_realloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__guc_free.html" target="wiki-view"><code>guc_free</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__InitializeGUCOptions.html" target="wiki-view"><code>InitializeGUCOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__InitializeOneGUCOption.html" target="wiki-view"><code>InitializeOneGUCOption</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__ResetAllOptions.html" target="wiki-view"><code>ResetAllOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__AtStart_GUC.html" target="wiki-view"><code>AtStart_GUC</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__AtEOXact_GUC.html" target="wiki-view"><code>AtEOXact_GUC</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__GetConfigOptionResetString.html" target="wiki-view"><code>GetConfigOptionResetString</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__GUCArrayDelete.html" target="wiki-view"><code>GUCArrayDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_c__GUCArrayReset.html" target="wiki-view"><code>GUCArrayReset</code></a></li>
+</ul></body></html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/relmapper.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/relmapper.c</h1>
+<h2>概要</h2>
+<p><code>relmapper.c</code> は、PostgreSQL の「マッピングされたカタログ（Mapped Catalogs）」における、OID と物理ファイル番号（<code>RelFileNumber</code>）の対応関係を管理するモジュールです。<code>pg_class</code> 自体や共有カタログなど、通常の <code>pg_class</code> テーブルを参照して物理ファイル位置を特定できない特殊なカタログのために、専用のマップファイル（<code>pg_filenode.map</code>）を介して永続的なマッピングを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールにおいて、このファイルはカタログの物理的な場所を解決するための「最後の砦」として機能します。<code>relcache.c</code> がリレーションのメタデータをキャッシュするのに対し、<code>relmapper.c</code> はそのメタデータ自体が依存する物理的なファイルパスを決定する低レイヤーの基盤を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**マッピングの永続化**: <code>pg_filenode.map</code> ファイルの読み書きと、整合性を保つための CRC チェック。</li>
+<li>**アトミックな更新**: ファイル更新時のテンポラリファイル作成と <code>durable_rename</code> によるクラッシュセーフな置換。</li>
+<li>**トランザクション管理**: <code>CommandCounterIncrement</code> に合わせたマッピングの有効化（pending から active への移行）と、コミット時の WAL 記録。</li>
+<li>**並列処理対応**: 並列ワーカーへのマッピング状態のシリアライズとリストア。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelMapFile</code>: マップファイルの内容を保持する構造体。<code>magic</code> 番号と CRC を含みます。</li>
+<li><code>shared_map</code> / <code>local_map</code>: 現在メモリ上にロードされている共有およびローカルのマップデータ。</li>
+<li><code>RelationMapOidToFilenumber()</code>: OID から物理ファイル番号を引く主要なインターフェース。</li>
+<li><code>RelationMapUpdateMap()</code>: マッピングの変更を予約または即時適用する関数。</li>
+<li><code>RelationMappingLock</code>: マップファイルへのアクセスを同期するための <code>LWLock</code>。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtCCI_RelationMap</code></li>
+<li><code>AtEOXact_RelationMap</code></li>
+<li><code>AtPrepare_RelationMap</code></li>
+<li><code>RelMapping</code></li>
+<li><code>RelationMapFilenumberToOid</code></li>
+<li><code>RelationMapInitialize</code></li>
+<li><code>RelationMapInitializePhase2</code></li>
+<li><code>RelationMapInitializePhase3</code></li>
+<li><code>RelationMapOidToFilenumber</code></li>
+<li><code>RelationMapUpdateMap</code></li>
+<li><code>SerializedActiveRelMaps</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>RelationMapInitialize</code> 系関数により、起動時に共有およびローカルのマップファイルがメモリにロードされます。 2. **参照**: <code>RelationMapOidToFilenumber</code> が呼ばれると、まず <code>active_xxx_updates</code>（トランザクション内で変更されたもの）を検索し、次にメインの <code>xxx_map</code> を検索します。 3. **更新**: <code>RelationMapUpdateMap</code> で変更が予約されます。トランザクションのコミット時に <code>AtEOXact_RelationMap</code> が呼び出され、<code>perform_relmap_update</code> を通じてファイルシステムへの書き出しと WAL への記録が行われます。 4. **無効化**: 他のバックエンドで更新が発生した場合、SI（Shared Invalidation）メッセージを受信し、<code>RelationMapInvalidate</code> を通じてメモリ上のマップを再読み込みします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: ファイル操作（<code>OpenTransientFile</code> 等）。</li>
+<li><code>storage/lwlock.h</code>: <code>RelationMappingLock</code> による排他制御。</li>
+<li><code>access/xlog.h</code> / <code>access/xloginsert.h</code>: WAL 記録用。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化メッセージの送受信。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/relmapper.h</code>: 公開インターフェースと WAL レコード構造の定義。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: このモジュールで解決されたファイル番号を使用してリレーションを開く側。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: <code>relmap_redo</code> を呼び出し、リカバリ時にマップを復元する側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アトミック性の保証**: マップファイルは上書きではなく、常にテンポラリファイル経由の <code>rename</code> で更新されます。これはクラッシュ時にファイルが破損するのを防ぐためです。</li>
+<li>**制約**: マッピングの変更はサブトランザクション内では許可されていません。また、<code>VACUUM FULL</code> や <code>CLUSTER</code> など、トランザクション的に安全な操作でのみ使用されることを前提としています。</li>
+<li>**デバッグ**: マップファイルが破損している場合、PostgreSQL は起動時に致命的なエラー（FATAL）を発生させます。これはカタログへのアクセスが不可能になるためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelMapping.html" target="wiki-view"><code>RelMapping</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelMapFile.html" target="wiki-view"><code>RelMapFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__SerializedActiveRelMaps.html" target="wiki-view"><code>SerializedActiveRelMaps</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapOidToFilenumber.html" target="wiki-view"><code>RelationMapOidToFilenumber</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapFilenumberToOid.html" target="wiki-view"><code>RelationMapFilenumberToOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapOidToFilenumberForDatabase.html" target="wiki-view"><code>RelationMapOidToFilenumberForDatabase</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__AtCCI_RelationMap.html" target="wiki-view"><code>AtCCI_RelationMap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__AtEOXact_RelationMap.html" target="wiki-view"><code>AtEOXact_RelationMap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__AtPrepare_RelationMap.html" target="wiki-view"><code>AtPrepare_RelationMap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapInitialize.html" target="wiki-view"><code>RelationMapInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapInitializePhase2.html" target="wiki-view"><code>RelationMapInitializePhase2</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relmapper_c__RelationMapInitializePhase3.html" target="wiki-view"><code>RelationMapInitializePhase3</code></a></li>
+</ul></body></html>

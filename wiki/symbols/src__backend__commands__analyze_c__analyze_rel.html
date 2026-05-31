@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__analyze_c__analyze_rel.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>analyze_rel</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/analyze.c:108</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたリレーション（テーブル、マテリアライズドビュー、外部テーブル、またはパーティションテーブル）に対して統計情報を生成し、<code>pg_statistic</code> カタログを更新するためのエントリポイントとして機能します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void analyze_rel(Oid relid, RangeVar *relation, VacuumParams *params, List *va_cols, bool in_outer_xact, BufferAccessStrategy bstrategy)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relid</code>: 対象リレーションの OID。</li>
+<li><code>relation</code>: 対象リレーションの識別情報（<code>RangeVar</code>）。</li>
+<li><code>params</code>: <code>VACUUM</code> オプションを含むパラメータ構造体。</li>
+<li><code>va_cols</code>: 解析対象とする列のリスト。</li>
+<li><code>in_outer_xact</code>: 外部トランザクション内で実行されているかを示すフラグ。</li>
+<li><code>bstrategy</code>: バッファアクセスの戦略。</li>
+<li>**出力**: なし（副作用として統計情報の更新および進捗報告を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ShareUpdateExclusiveLock</code> を取得し、対象リレーションに対する同時実行の <code>ANALYZE</code> を防止します。</li>
+<li><code>pg_statistic</code> テーブル自体は解析対象外です。</li>
+<li>一時テーブル（他バックエンドのもの）は解析対象外としてスキップされます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: ログレベルの設定とバッファ戦略の適用。 2. **ロックと検証**: <code>vacuum_open_relation</code> でリレーションを開き、権限チェックを実行。 3. **リレーション種別の判定**:</p>
+<ul>
+<li>通常テーブル/マテリアライズドビュー: <code>acquire_sample_rows</code> を使用してサンプル行を取得。</li>
+<li>外部テーブル: FDW（Foreign Data Wrapper）の <code>AnalyzeForeignTable</code> フックを呼び出し、解析可否と取得関数を決定。</li>
+<li>パーティションテーブル: 再帰的な解析のためにスキップ。</li>
+<p>4. **進捗報告**: <code>pgstat_progress_start_command</code> を開始。 5. **統計生成**:</p>
+<li>非パーティションテーブルの場合: <code>do_analyze_rel</code> を呼び出し、統計を計算・更新。</li>
+<li>子テーブルが存在する場合: <code>do_analyze_rel</code> を再帰的に呼び出し。</li>
+<p>6. **終了処理**: リレーションをクローズし、進捗報告を終了。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/vacuum.c</code> (直接の呼び出しを確認)</li>
+<li>**呼び出し先**:</li>
+<li><code>vacuum_open_relation</code></li>
+<li><code>vacuum_is_permitted_for_relation</code></li>
+<li><code>acquire_sample_rows</code> (通常テーブルの場合)</li>
+<li><code>GetFdwRoutineForRelation</code> (外部テーブルの場合)</li>
+<li><code>do_analyze_rel</code></li>
+<li><code>pgstat_progress_start_command</code> / <code>pgstat_progress_end_command</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>VacuumParams</code>: 解析オプションを保持。</li>
+<li><code>Relation</code>: 対象リレーションのメタデータ。</li>
+<li><code>FdwRoutine</code>: 外部テーブル解析用の関数ポインタ群。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>リレーションがオープンできない、またはロックできない場合は即座に終了。</li>
+<li>権限がない場合、または解析対象外の特殊なシステムテーブルの場合はスキップ。</li>
+<li>外部テーブルで解析がサポートされていない場合は警告を出して終了。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ANALYZE</code> の高レベルな制御フローを担います。実際の統計計算ロジックは <code>do_analyze_rel</code> に委譲されています。</li>
+<li>外部テーブルの解析は FDW の実装に依存するため、<code>fdwroutine-&gt;AnalyzeForeignTable</code> の戻り値チェックが重要です。</li>
+<li>リレーションのクローズ後もロックを保持することで、コミットまでの整合性を担保しています。</li>
+</ul></body></html>

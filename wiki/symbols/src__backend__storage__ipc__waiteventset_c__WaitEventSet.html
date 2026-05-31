@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__waiteventset_c__WaitEventSet.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitEventSet</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/waiteventset.c:117</code></li>
+</ul>
+<h2>目的</h2>
+<p>複数のイベント（ソケット、ラッチ、ポストマスターの終了など）を単一のインターフェースで効率的に待機するための抽象化レイヤーを提供します。OS 固有のイベント通知プリミティブ（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>WaitForMultipleObjects</code>）をラップし、プラットフォーム間の差異を吸収します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct WaitEventSet {
+    ResourceOwner owner;
+    int           nevents;
+    int           nevents_space;
+    WaitEvent    *events;
+    Latch        *latch;
+    int           latch_pos;
+    bool          exit_on_postmaster_death;
+    /* プラットフォーム依存のメンバ (epoll_fd, kqueue_fd, pollfds, handles 等) */
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>CreateWaitEventSet</code> により生成され、<code>AddWaitEventToSet</code> を通じて監視対象のイベントが登録されます。</li>
+<li>**出力**: <code>WaitEventSetWait</code> を呼び出すことで、発生したイベント情報が <code>WaitEvent</code> 構造体として返されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>nevents</code> は常に <code>nevents_space</code> 以下であること。</li>
+<li><code>WL_LATCH_SET</code> が指定された場合、<code>latch</code> ポインタと <code>latch_pos</code> が正しく設定されていること。</li>
+<li>コンパイル時に選択されたプラットフォーム固有のメンバ（<code>epoll_fd</code> 等）が、対応する OS プリミティブと整合していること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>CreateWaitEventSet</code> でリソースを確保し、OS 固有の待機メカニズムを準備します。 2. **登録**: <code>AddWaitEventToSet</code> で監視対象を追加し、OS 固有のシステムコール（<code>epoll_ctl</code> 等）でカーネルに登録します。 3. **待機**: <code>WaitEventSetWait</code> が呼び出されると、内部の待機ブロックが OS プリミティブを呼び出し、イベント発生までプロセスを停止します。 4. **復帰**: イベント発生後、発生したイベントを解析して呼び出し元へ通知します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>postmaster.c</code>, <code>syslogger.c</code>, <code>walreceiver.c</code>, <code>postgres_fdw.c</code> 等の各バックエンドプロセス。</li>
+<li>**呼び出し先**: OS 固有のシステムコール（<code>epoll_wait</code>, <code>kevent</code>, <code>poll</code>, <code>WaitForMultipleObjects</code> 等）および <code>latch.c</code> のラッチ管理関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WaitEvent</code>: 待機対象のイベント定義を保持する構造体。</li>
+<li><code>Latch</code>: プロセス起床のための同期プリミティブ。</li>
+<li><code>ResourceOwner</code>: メモリおよびファイル記述子のライフサイクル管理に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nevents</code> が <code>nevents_space</code> を超える追加は不可。</li>
+<li>プラットフォーム固有の制限（<code>epoll</code> の FD 上限など）に依存します。</li>
+<li><code>WL_EXIT_ON_PM_DEATH</code> が設定されている場合、ポストマスターの死滅を検知すると即座に終了します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>コンパイル時のフラグ（<code>WAIT_USE_EPOLL</code> 等）により実装が大きく異なります。デバッグ時は対象環境のプリミティブを確認してください。</li>
+<li>Unix 系環境では、シグナルハンドラとの競合を避けるためにセルフパイプや <code>signalfd</code> が重要な役割を果たします。</li>
+<li>Windows 版は <code>WaitForMultipleObjects</code> を使用するため、実装が他プラットフォームと大きく異なります。</li>
+</ul></body></html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/bloom/blinsert.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/bloom/blinsert.c</h1>
+<h2>概要</h2>
+<p>Bloom 索引の構築（Build）および個別のタプル挿入（Insert）処理を実装するソースファイルです。PostgreSQL のアクセスメソッドインターフェースに従い、ヒープスキャンによる一括構築と、実行時の単一タプル挿入の両方をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/bloom</code> モジュールにおいて、インデックスの物理的なデータ配置と書き込みを担当します。<code>blutils.c</code> で定義された Bloom フィルタの計算ロジックを利用し、<code>GenericXLog</code> を用いて WAL ログへの書き込みを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス構築**: <code>blbuild</code> を通じて、ヒープ全体をスキャンし、Bloom フィルタをページ単位で生成・フラッシュする。</li>
+<li>**タプル挿入**: <code>blinsert</code> を通じて、空き容量のあるページをメタページから特定し、タプルを挿入する。</li>
+<li>**ページ管理**: ページが満杯になった際の新規ページ割り当てや、メタページの <code>notFullPage</code> 配列の更新を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BloomBuildState</code>: インデックス構築中に使用される一時的な状態保持構造体。ページキャッシュとメモリコンテキストを管理します。</li>
+<li><code>blbuild</code>: インデックス作成時のエントリポイント。</li>
+<li><code>blinsert</code>: 個別タプル挿入時のエントリポイント。</li>
+<li><code>bloomBuildCallback</code>: <code>table_index_build_scan</code> から呼び出される、タプルごとの処理関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>blbuildempty</code></li>
+<li><code>flushCachedPage</code></li>
+<li><code>initCachedPage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **構築時**: <code>blbuild</code> が <code>BloomBuildState</code> を初期化し、<code>bloomBuildCallback</code> を介してタプルを処理します。ページが満杯になると <code>flushCachedPage</code> でディスクへ書き出し、新しいページを初期化します。 2. **挿入時**: <code>blinsert</code> はまずメタページを読み取り、空きのあるページ（<code>notFullPage</code>）を探します。</p>
+<ul>
+<li>ページが見つかれば排他ロックを取得して挿入を試みます。</li>
+<li>失敗した場合はメタページを更新し、別のページを探索するか、<code>BloomNewBuffer</code> で新規ページを割り当てます。</li>
+<li>変更はすべて <code>GenericXLog</code> を通じてアトミックにコミットされます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>bloom.h</code>: Bloom フィルタのデータ構造と共通関数。</li>
+<li><code>access/generic_xlog.h</code>: WAL ログの汎用的な書き込みインターフェース。</li>
+<li><code>storage/bufmgr.h</code>: バッファマネージャによるページ読み書き。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキストの管理。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>blutils.c</code>: <code>initBloomState</code> や <code>BloomFormTuple</code> など、インデックスの初期化やタプル生成の基盤ロジックを提供。</li>
+<li><code>blvacuum.c</code>: 削除されたページの再利用やメタページのメンテナンスに関連するロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>GenericXLog</code> を多用しています。これはページレベルの変更を WAL に記録するための仕組みであり、クラッシュリカバリの整合性を保証するために重要です。</li>
+<li><code>blinsert</code> 内でメタページのロックを共有（SHARE）から排他（EXCLUSIVE）へ昇格させるフローは、競合を避けるための最適化として設計されています。</li>
+<li>メモリ管理のため、構築および挿入の各プロセスで専用の <code>MemoryContext</code> を作成・破棄しています。これにより、大量のタプル処理時におけるメモリリークを防いでいます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__BloomBuildState.html" target="wiki-view"><code>BloomBuildState</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__flushCachedPage.html" target="wiki-view"><code>flushCachedPage</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__initCachedPage.html" target="wiki-view"><code>initCachedPage</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__bloomBuildCallback.html" target="wiki-view"><code>bloomBuildCallback</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__blbuild.html" target="wiki-view"><code>blbuild</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__blbuildempty.html" target="wiki-view"><code>blbuildempty</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blinsert_c__blinsert.html" target="wiki-view"><code>blinsert</code></a></li>
+</ul></body></html>

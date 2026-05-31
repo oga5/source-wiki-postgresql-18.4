@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/orderedsetaggs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/orderedsetaggs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「順序集合集約関数（Ordered-set aggregate functions）」の実行エンジンです。<code>percentile_cont</code>、<code>percentile_disc</code>、<code>mode</code>、および仮説的集約関数（<code>rank</code>等）の計算ロジックを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、集約関数が入力データの順序を必要とするケースを専門に扱います。標準的な集約関数（<code>sum</code>や<code>avg</code>など）が単なる累積計算を行うのに対し、本モジュールは <code>tuplesort</code> を利用してデータをソートし、特定の順序に基づいた統計量を算出します。</p>
+<h2>責務</h2>
+<ul>
+<li>**状態管理**: 実行中の集約状態（<code>OSAPerQueryState</code> / <code>OSAPerGroupState</code>）の管理。</li>
+<li>**ソート処理**: <code>tuplesort</code> を用いた入力データの整列。</li>
+<li>**統計量計算**: 離散的・連続的なパーセンタイル、最頻値（mode）、および仮説的順位の算出。</li>
+<li>**リソース解放**: 集約終了時の <code>tuplesort</code> リソースのクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>OSAPerQueryState</code>: クエリ全体で共有されるメタデータ（ソート順、型情報など）。</li>
+<li><code>OSAPerGroupState</code>: グループ単位の実行状態。<code>tuplesort</code> オブジェクトを保持。</li>
+<li><code>ordered_set_startup</code>: 集約の初期化と <code>tuplesort</code> の準備を行う。</li>
+<li><code>ordered_set_transition</code>: 単一カラムの集約用遷移関数。</li>
+<li><code>ordered_set_transition_multi</code>: 複数カラムの集約用遷移関数。</li>
+<li><code>percentile_cont_final_common</code>: 連続パーセンタイル計算の共通ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Datum</code></li>
+<li><code>float8_lerp</code></li>
+<li><code>interval_lerp</code></li>
+<li><code>ordered_set_shutdown</code></li>
+<li><code>pct_info</code></li>
+<li><code>percentile_disc_final</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ordered_set_startup</code> が呼ばれ、<code>fn_extra</code> に <code>OSAPerQueryState</code> をキャッシュし、グループごとの <code>OSAPerGroupState</code> を作成します。 2. **遷移**: <code>ordered_set_transition</code> 等が入力値を <code>tuplesort</code> に投入します。 3. **最終計算**: <code>finalfn</code>（例: <code>percentile_disc_final</code>）が呼ばれると、<code>tuplesort_performsort</code> でソートを実行し、必要な順位のデータを抽出して結果を返します。 4. **終了**: <code>ordered_set_shutdown</code> がコールバックとして登録され、集約終了時に <code>tuplesort_end</code> を呼び出してメモリと一時ファイルを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/tuplesort.h</code>: データのソート処理の核。</li>
+<li><code>catalog/pg_aggregate.h</code>: 集約関数のメタデータ定義。</li>
+<li><code>executor/executor.h</code>: 実行コンテキストとタプル操作。</li>
+<li><code>nodes/nodeFuncs.h</code>: <code>Aggref</code> 構造体の解析。</li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeAgg.c</code>: 集約関数の実行を制御する上位モジュール。本ファイルの <code>startup</code>/<code>shutdown</code> 関数を呼び出します。</li>
+<li><code>src/include/utils/tuplesort.h</code>: ソートエンジンのインターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>OSAPerQueryState</code> はクエリのライフサイクルに依存し、<code>OSAPerGroupState</code> はグループのライフサイクルに依存します。メモリリークを防ぐため、<code>AggRegisterCallback</code> を介したクリーンアップが必須です。</li>
+<li>**仮説的集約**: <code>AGGKIND_HYPOTHETICAL</code> の場合、ソート対象に「フラグカラム」を追加して、仮説的な行を他の行と区別してソートする工夫がなされています。</li>
+<li>**パフォーマンス**: <code>tuplesort</code> は <code>work_mem</code> を使用します。大量のデータを集約する場合、一時ファイルが生成される可能性がある点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__OSAPerQueryState.html" target="wiki-view"><code>OSAPerQueryState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__OSAPerGroupState.html" target="wiki-view"><code>OSAPerGroupState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__ordered_set_startup.html" target="wiki-view"><code>ordered_set_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__ordered_set_shutdown.html" target="wiki-view"><code>ordered_set_shutdown</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__ordered_set_transition.html" target="wiki-view"><code>ordered_set_transition</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__ordered_set_transition_multi.html" target="wiki-view"><code>ordered_set_transition_multi</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__percentile_disc_final.html" target="wiki-view"><code>percentile_disc_final</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__float8_lerp.html" target="wiki-view"><code>float8_lerp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__interval_lerp.html" target="wiki-view"><code>interval_lerp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__percentile_cont_final_common.html" target="wiki-view"><code>percentile_cont_final_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__orderedsetaggs_c__pct_info.html" target="wiki-view"><code>pct_info</code></a></li>
+</ul></body></html>

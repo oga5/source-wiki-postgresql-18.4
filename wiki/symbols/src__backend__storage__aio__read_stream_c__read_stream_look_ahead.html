@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__read_stream_c__read_stream_look_ahead.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>read_stream_look_ahead</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/aio/read_stream.c:428</code></li>
+</ul>
+<h2>目的</h2>
+<p>ストリームの先読み距離（<code>distance</code>）を維持するために、コールバック関数からブロック番号を補充し、必要に応じて非同期 I/O を開始する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void read_stream_look_ahead(ReadStream *stream)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ReadStream *stream</code>（ストリームの状態を保持する構造体）</li>
+<li>**出力**: なし（副作用として <code>stream</code> 構造体の内部状態および I/O 状態を更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>stream-&gt;pinned_buffers &gt; 0</code> または <code>stream-&gt;distance == 0</code> であること（関数終了時の不変条件）。</li>
+<li><code>batch_mode</code> が有効な場合、<code>pgaio_enter_batchmode()</code> および <code>pgaio_exit_batchmode()</code> が適切に呼び出されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **バッチモード開始**: <code>stream-&gt;batch_mode</code> が真であれば <code>pgaio_enter_batchmode()</code> を実行。 2. **ブロック補充ループ**: 進行中の I/O 数およびピン留め済みバッファ数が目標距離に達するまで以下を繰り返す。</p>
+<ul>
+<li>コールバックから次の <code>blocknum</code> を取得。<code>InvalidBlockNumber</code> の場合はストリーム終了とみなし、<code>distance</code> を 0 に設定して終了。</li>
+<li>取得したブロックが既存の <code>pending_read</code> と連続していれば、<code>pending_read_nblocks</code> をインクリメントしてマージ。</li>
+<li>連続していない場合、既存の <code>pending_read</code> を <code>read_stream_start_pending_read()</code> で実行し、新しい <code>pending_read</code> を開始。</li>
+<p>3. **I/O 実行判定**: ループ終了後、<code>io_combine_limit</code> に達しているか、距離制限を満たしている場合に <code>read_stream_start_pending_read()</code> を呼び出し、保留中の I/O を発行。 4. **バッチモード終了**: <code>pgaio_exit_batchmode()</code> を実行。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/aio/read_stream.c:429</code> (自身)</li>
+<li><code>src/backend/storage/aio/read_stream.c:889</code></li>
+<li><code>src/backend/storage/aio/read_stream.c:991</code></li>
+<li>**呼び出し先**:</li>
+<li><code>pgaio_enter_batchmode()</code> / <code>pgaio_exit_batchmode()</code></li>
+<li><code>read_stream_start_pending_read()</code></li>
+<li><code>get_per_buffer_data()</code></li>
+<li><code>read_stream_get_block()</code></li>
+<li><code>read_stream_unget_block()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReadStream</code>: ストリームの制御状態（<code>distance</code>, <code>pending_read_nblocks</code>, <code>ios_in_progress</code> 等）を保持。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ストリーム終了**: コールバックが <code>InvalidBlockNumber</code> を返すと、<code>distance</code> を 0 に設定し、それ以上の先読みを停止する。</li>
+<li>**I/O 制限**: <code>max_ios</code> に達した場合、または <code>io_combine_limit</code> に達した場合は、現在の保留分を処理し、それ以上の追加を一時停止する。</li>
+<li>**バッファ制限**: <code>pinned_buffers</code> が目標距離に達した場合、新たな I/O は発行されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、I/O 提出コストを償却するために複数のブロックをマージする役割を持つ。</li>
+<li><code>pending_read</code> のマージロジックは、<code>buffer_index</code> の循環計算を含んでおり、変更時は <code>queue_size</code> との整合性に注意すること。</li>
+<li><code>Assert</code> 文により、関数終了時に必ず何らかのバッファがピン留めされているか、ストリームが終了していることが保証されている。</li>
+</ul></body></html>

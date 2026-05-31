@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__parallel_c__InitializeParallelDSM.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitializeParallelDSM</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/parallel.c:210</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行のために、リーダープロセスからワーカープロセスへ共有すべきトランザクション状態やセッション情報を動的共有メモリ（DSM）にシリアライズし、初期化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void InitializeParallelDSM(ParallelContext *pcxt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ParallelContext *pcxt</code>（並列実行コンテキスト。ワーカー数やメモリ見積もり情報を含む）。</li>
+<li>**出力**: なし（副作用として <code>pcxt</code> 内の <code>seg</code>（DSMセグメント）および <code>toc</code>（テーブル・オブ・コンテンツ）が初期化され、共有メモリ領域に状態が書き込まれる）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し時に <code>INTERRUPTS_CAN_BE_PROCESSED()</code> が真であること（偽の場合はワーカー数が0に強制される）。</li>
+<li><code>pcxt-&gt;estimator</code> が適切に見積もられていること。</li>
+<li>共有メモリの確保に失敗した場合、並列実行を断念し、<code>pcxt-&gt;nworkers</code> を0に設定してバックエンドプライベートメモリへフォールバックする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **見積もり**: <code>shm_toc_estimate_chunk</code> を使用し、固定状態および可変状態（GUC、スナップショット、ライブラリ状態等）に必要なメモリ量を算出する。 2. **DSM確保**: <code>dsm_create</code> により共有メモリセグメントを確保する。確保できない場合はプライベートメモリを使用する。 3. **固定状態の書き込み**: <code>FixedParallelState</code> 構造体に現在のユーザーID、トランザクション開始時刻、シリアライザブルトランザクションハンドル等を格納し、<code>shm_toc_insert</code> で登録する。 4. **可変状態のシリアライズ**: <code>nworkers &gt; 0</code> の場合、各コンポーネント（GUC、スナップショット、ComboCID等）のシリアライズ関数を呼び出し、共有メモリ領域へ書き込む。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/brin/brin.c</code></li>
+<li><code>src/backend/access/gin/gininsert.c</code></li>
+<li><code>src/backend/access/nbtree/nbtsort.c</code></li>
+<li><code>src/backend/commands/vacuumparallel.c</code></li>
+<li><code>src/backend/executor/execParallel.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>EstimateLibraryStateSpace</code>, <code>SerializeLibraryState</code></li>
+<li><code>EstimateGUCStateSpace</code>, <code>SerializeGUCState</code></li>
+<li><code>EstimateSnapshotSpace</code>, <code>EstimateTransactionStateSpace</code> 等の各種シリアライズ関連関数</li>
+<li><code>dsm_create</code>, <code>shm_toc_create</code>, <code>shm_toc_allocate</code>, <code>shm_toc_insert</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行の全体管理構造体。</li>
+<li><code>FixedParallelState</code>: ワーカーがリーダーから継承する固定サイズの共有状態。</li>
+<li><code>shm_toc</code>: 共有メモリ内のデータ配置を管理するテーブル・オブ・コンテンツ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**DSM不足**: <code>dsm_create</code> が失敗した場合、<code>pcxt-&gt;nworkers</code> を0にリセットし、プライベートメモリで動作を継続する。</li>
+<li>**割り込み不可状態**: <code>INTERRUPTS_CAN_BE_PROCESSED()</code> が偽の場合、ワーカー起動を回避するため <code>nworkers</code> を0にする。</li>
+<li>**セッションDSM欠如**: セッションDSMセグメントが作成できない場合、タプル交換が不可能なため <code>nworkers</code> を0にする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数内で <code>shm_toc_estimate_chunk</code> を追加した際は、対応する <code>shm_toc_estimate_keys</code> のカウントを更新する必要がある。</li>
+<li>新しい並列化対象の機能を追加する場合は、本関数でのシリアライズ処理と、ワーカー側（<code>ParallelWorkerMain</code> 等）での復元処理の両方を実装すること。</li>
+</ul></body></html>

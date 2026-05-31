@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/brin-evacuate-page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BRIN_EVACUATE_PAGE</h1>
+<h2>概念</h2>
+<p><code>BRIN_EVACUATE_PAGE</code> は、PostgreSQLのBRIN（Block Range Index）において、インデックスページを再利用または削除する準備として、そのページ内に存在するすべてのインデックス・タプルを他の適切なページへ移動（退避）させる処理、およびその対象ページを示すフラグ（<code>src/include/access/brin_page.h</code>）です。</p>
+<h2>なぜ重要か</h2>
+<p>BRINインデックスのページを安全に再利用・削除するためには、対象ページに格納されている有効なインデックス・タプルを失うことなく、整合性を保ったまま別のページへ退避させる必要があります。<code>BRIN_EVACUATE_PAGE</code> フラグとそれに関連する処理は、この安全なページ移行プロセスを制御するために不可欠です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/brin</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/brin_page.h#BRIN_EVACUATE_PAGE</code>**: 対象ページが退避処理中であることを示すページフラグ。</li>
+<li>**<code>symbol:src/backend/access/brin/brin_pageops.c#brin_evacuate_page</code>**: 実際にページ内のタプルを走査し、他のページへ退避させるコア関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **トリガー**: <code>src/backend/access/brin/brin_revmap.c</code> などの呼び出し元から <code>brin_evacuate_page</code> が呼び出されます（どのような契機でこの退避が開始されるかの全体的なエンドツーエンドフローの詳細は、提供されたコンテキストからは未解明です）。 2. **検証**: 呼び出し時点で、対象ページに <code>BRIN_EVACUATE_PAGE</code> フラグが設定されていることを <code>Assert</code> で検証します。 3. **タプルの走査とコピー**:</p>
+<ul>
+<li>対象ページ内の各オフセットを走査し、使用中のタプルを特定します。</li>
+<li>各タプルを <code>brin_copy_tuple</code> で一時的にコピーします。</li>
+<p>4. **タプルの移動**:</p>
+<li>ページに対するロックを一時的に解除します。</li>
+<li><code>brin_doupdate</code> を呼び出して、コピーしたタプルを別の適切なページへ移動させます。</li>
+<li><code>brin_doupdate</code> が失敗した場合は、該当オフセットを再試行します。</li>
+<p>5. **状態確認と終了**:</p>
+<li>移動完了後、ページに対する共有ロックを再取得し、ページが依然として退避対象（非レギュラーページ）であるかを確認します。</li>
+<li>すべてのタプルの処理が終了した後、バッファを解放します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**フラグの存在**: <code>brin_evacuate_page</code> の開始時に、対象ページに <code>BRIN_EVACUATE_PAGE</code> フラグが設定されていなければなりません。</li>
+<li>**ロックの管理**: 処理中、ページは基本的に共有ロック状態で保持されますが、<code>brin_doupdate</code> を実行する際には一時的にロックを解除する必要があります。</li>
+<li>**状態変化の監視**: ロックを再取得した際、ページがレギュラーページ（<code>BRIN_IS_REGULAR_PAGE</code> が真）に変化していた場合は、退避の必要がなくなったと判断してループを中断します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ロック解除中の状態変化**: <code>brin_doupdate</code> 実行のためにページのロックを一時的に解除するため、その間にページの状態が他から変更される可能性があります。そのため、ロック再取得後に必ずページ状態（<code>BRIN_IS_REGULAR_PAGE</code> など）を再検証する必要があります。</li>
+<li>**デッドロックや無限ループの回避**: <code>brin_doupdate</code> が失敗した際、同じオフセットを再試行（デクリメント）するため、適切なリトライ制御が行われないと処理がスタックする可能性があります。</li>
+<li>**割り込み対策**: 長時間実行される可能性があるため、ループ内に <code>CHECK_FOR_INTERRUPTS()</code> を配置して、クエリキャンセルなどの割り込みを適切に受け付ける必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/brin/brin_pageops.c</code>: <code>brin_evacuate_page</code> の具体的な実装と、<code>brin_doupdate</code> や <code>brin_copy_tuple</code> との連携フロー。</li>
+<li><code>src/include/access/brin_page.h</code>: <code>BRIN_EVACUATE_PAGE</code> フラグの定義および関連するページ状態マクロ。</li>
+<li><code>src/backend/access/brin/brin_revmap.c</code>: <code>brin_evacuate_page</code> を呼び出す上位ロジック。</li>
+</ul></body></html>

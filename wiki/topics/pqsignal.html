@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pqsignal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pqsignal</h1>
+<h2>概念</h2>
+<p><code>pqsignal</code> は、PostgreSQLにおいてプラットフォーム間で一貫した信頼性の高いシグナルハンドリングを提供し、OS固有のシグナル動作の差異を抽象化するための仕組みです。</p>
+<p>歴史的な経緯から、現代のPostgreSQLコードベースで広く使用される標準実装（<code>src/port/pqsignal.c</code>）と、過去の <code>libpq</code>（PostgreSQL 9.2以前）とのバイナリ互換性を維持するためのレガシー実装（<code>src/interfaces/libpq/legacy-pqsignal.c</code>）の2種類が存在します。</p>
+<h2>なぜ重要か</h2>
+<p>1. **プラットフォーム間の抽象化**: Unix系OS（<code>sigaction</code> を使用し、<code>SA_RESTART</code> などのフラグを制御）とWindows環境（標準の <code>signal</code> 関数を使用）のシグナル動作の差異を吸収します。 2. **信頼性の高いシグナル処理**: Unix環境において <code>SA_RESTART</code> フラグを付与することで、シグナル割り込みによるシステムコールの意図しない中断を防ぎ、自動再開を有効にします。 3. **後方互換性の維持**: 古いクライアントアプリケーションがシグナルハンドラを設定できるように、レガシーな <code>libpq</code> インターフェースを維持しています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include</code></li>
+<li><code>module:src/interfaces/libpq</code></li>
+<li><code>module:src/port</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/port/pqsignal.c#pqsignal</code>**: バックエンドおよびフロントエンドの各所で広く使用される標準のシグナル登録関数。戻り値は <code>void</code> です。</li>
+<li>**<code>symbol:src/interfaces/libpq/legacy-pqsignal.c#pqsignal</code>**: 古いクライアント向けの互換用関数。戻り値として設定変更前の古いハンドラを返します。</li>
+<li>**<code>symbol:src/include/port.h#pqsignal</code>**: 内部コードからレガシーな <code>pqsignal</code> 関数を誤って呼び出すことを制限するマクロ定義や宣言を含みます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>シグナルハンドラが登録され、実行されるまでの流れは以下の通りです。</p>
+<p>1. **シグナルの登録**:</p>
+<ul>
+<li>**標準実装**: 呼び出し元（<code>autoprewarm.c</code> や <code>parallel.c</code> など）が <code>pqsignal(signo, func)</code> を呼び出します。<code>func</code> が <code>SIG_IGN</code> または <code>SIG_DFL</code> 以外の場合、内部配列 <code>pqsignal_handlers[signo]</code> にハンドラが保存され、実際のOS向けハンドラとして <code>wrapper_handler</code> が登録されます。</li>
+<li>**レガシー実装**: 外部の古いクライアントが <code>pqsignal(signo, func)</code> を呼び出し、直接 <code>sigaction</code>（Unix）または <code>signal</code>（Windows）を用いて登録を行います。</li>
+<p>2. **OSへのシステムコール発行**:</p>
+<li>Unix環境では <code>sigaction</code> を使用し、<code>SA_RESTART</code>（および <code>SIGCHLD</code> の場合は <code>SA_NOCLDSTOP</code>）を付与して登録します。</li>
+<li>Windows環境（かつフロントエンド）では、標準の <code>signal()</code> 関数へ処理を転送します。</li>
+<p>3. **シグナル発生時のハンドラ実行**:</p>
+<li>標準実装では、シグナルが発生すると <code>wrapper_handler</code> が仲介し、<code>MyProcPid</code> を用いたプロセス検証などを行った上で、登録された実際のハンドラを実行します。</li>
+</ul>
+<p>※ なお、シグナル受信からハンドラ実行に至るOSカーネルレベルの完全なライフサイクルや、Windows環境のバックエンドにおける詳細なシグナル受信フローは、提供された情報からは未解明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**シグナル番号の範囲制限**: 標準実装（<code>src/port/pqsignal.c</code>）において、登録対象の <code>signo</code> は必ず <code>0</code> より大きく <code>PG_NSIG</code> 未満でなければなりません（<code>Assert</code> により検証されます）。</li>
+<li>**登録の成功保証**: 標準実装での <code>sigaction</code> または <code>signal</code> の呼び出し失敗、および範囲外の <code>signo</code> 指定は、<code>Assert(false)</code> または <code>Assert</code> によりプロセスを即座に停止させます。</li>
+<li>**レガシー関数の呼び出し制限**: <code>src/interfaces/libpq/legacy-pqsignal.c</code> の <code>pqsignal</code> は、現代の内部コードから呼び出されないよう <code>src/include/port.h</code> のマクロ定義によって制限されています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**シグナル自動再開（SA_RESTART）の挙動差異**:</li>
+<li>レガシー実装（<code>legacy-pqsignal.c</code>）では、<code>SIGALRM</code> に対しては <code>SA_RESTART</code> を付与しないという古い仕様が厳密に再現されます。</li>
+<li>標準実装（<code>src/port/pqsignal.c</code>）とは、戻り値の型（<code>pqsigfunc</code> 対 <code>void</code>）や内部のラッパー処理の有無が異なるため、混同して使用すると予期しない動作やビルドエラーの原因になります。</li>
+<li>**Windows環境での挙動**: Windows環境ではフロントエンドとバックエンドで挙動の差異があるため、移植性の高いコードを書く際には注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/port/pqsignal.c</code>**: 標準的なシグナルハンドリングの実装と <code>wrapper_handler</code> の挙動を理解するために参照してください。</li>
+<li>**<code>src/interfaces/libpq/legacy-pqsignal.c</code>**: 互換性維持のためのレガシーな実装の詳細を確認するために参照してください。</li>
+<li>**<code>src/include/port.h</code>**: <code>pqsignal</code> のマクロ定義や宣言による制御を確認するために参照してください。</li>
+</ul></body></html>

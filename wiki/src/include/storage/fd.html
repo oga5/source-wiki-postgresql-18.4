@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/storage/fd.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/storage/fd.h</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「仮想ファイル記述子（VFD）」管理システムのインターフェース定義です。OSのファイル記述子（FD）制限を回避し、多数のファイルを効率的に扱うための抽象化レイヤーを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>storage</code> サブシステムにおいて、物理的なファイルアクセスを仲介する最下位の抽象化層です。<code>smgr</code>（ストレージマネージャ）などの上位モジュールが直接OSの <code>open(2)</code> を呼ぶ代わりに、このモジュールを介することで、プロセスごとのFD枯渇を防ぎ、LRUアルゴリズムによるFDの動的な開閉を実現します。</p>
+<h2>責務</h2>
+<ul>
+<li>**VFD管理**: <code>File</code> 型による仮想的なファイルハンドルの提供と、LRUキャッシュによる実FDの管理。</li>
+<li>**リソース保護**: <code>AllocateFile</code> や <code>OpenTransientFile</code> を通じた、トランザクション終了時の自動クローズ保証。</li>
+<li>**プラットフォーム抽象化**: <code>O_DIRECT</code> のようなOS固有フラグの正規化や、Windows/Unix間の挙動差異の吸収。</li>
+<li>**永続性保証**: <code>fsync</code> 関連のラッパー提供による、データ整合性の維持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>File</code>: VFDを表す整数型。OSのFDとは直接互換性がありません。</li>
+<li><code>PathNameOpenFile</code>: VFDを生成し、ファイルを開くための主要なエントリポイント。</li>
+<li><code>AllocateFile</code> / <code>FreeFile</code>: <code>fopen</code>/<code>fclose</code> の代替。サブトランザクションでの自動クローズをサポート。</li>
+<li><code>FileRead</code> / <code>FileWrite</code>: <code>iovec</code> を用いた読み書きのラッパー。</li>
+<li><code>PG_O_DIRECT</code>: OS依存のダイレクトI/Oフラグを抽象化したマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FileExtendMethod</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **オープン**: <code>PathNameOpenFile</code> が呼ばれると、VFDが割り当てられ、必要に応じてLRUリストから古い実FDがクローズされます。 2.  **アクセス**: <code>FileRead</code>/<code>FileWrite</code> を通じてデータが転送されます。内部では <code>FileReadV</code>/<code>FileWriteV</code> が呼び出され、オフセット指定による読み書きが行われます。 3.  **クローズ**: <code>FileClose</code> によりVFDが解放されます。一時ファイルの場合は、トランザクション終了時に <code>AtEOXact_Files</code> 等を通じて自動的にクローズ・削除されます。 4.  **外部FD**: <code>BasicOpenFile</code> 等で直接OSのFDを取得した場合、<code>AcquireExternalFD</code> を呼び出して、VFD管理システムにそのFDの存在を通知する必要があります。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>port/pg_iovec.h</code>: <code>iovec</code> 構造体の定義。</li>
+<li><code>&lt;dirent.h&gt;</code>: ディレクトリ操作用。</li>
+<li><code>&lt;fcntl.h&gt;</code>: ファイル制御フラグ用。</li>
+<li><code>dirent.h</code></li>
+<li><code>fcntl.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/file/fd.c</code>: 本ヘッダーで宣言された関数の実体。LRUロジックやFD管理の核心が含まれます。</li>
+<li><code>src/include/storage/smgr.h</code>: ストレージマネージャ。<code>fd.h</code> を利用して物理ファイルへのアクセスを抽象化します。</li>
+<li><code>src/backend/storage/file/sharedfileset.c</code>: 共有一時ファイルの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**原則**: PostgreSQL内では、標準の <code>open</code>, <code>fopen</code>, <code>opendir</code> を直接使用してはいけません。必ず本ヘッダーで定義されたラッパーを使用してください。</li>
+<li>**EMFILE対策**: <code>BasicOpenFile</code> 等で直接FDを確保する場合、必ず <code>AcquireExternalFD</code> を呼び出してください。これを怠ると、VFD管理システムがFDの空き数を誤認し、<code>EMFILE</code> エラーが発生するリスクがあります。</li>
+<li>**移植性**: <code>FileRead</code>/<code>FileWrite</code> はオフセット指定が必須です。ファイルポインタの概念はVFDには存在しないため注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__storage__fd_h__File.html" target="wiki-view"><code>File</code></a></li>
+<li><a href="../../../symbols/src__include__storage__fd_h__FileExtendMethod.html" target="wiki-view"><code>FileExtendMethod</code></a></li>
+<li><a href="../../../symbols/src__include__storage__fd_h__FileRead.html" target="wiki-view"><code>FileRead</code></a></li>
+<li><a href="../../../symbols/src__include__storage__fd_h__FileWrite.html" target="wiki-view"><code>FileWrite</code></a></li>
+</ul></body></html>

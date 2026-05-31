@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CheckpointerMain</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/postmaster/checkpointer.c:181</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのチェックポインタープロセスのメインループを実行し、定期的なチェックポイントの実行、要求されたチェックポイントの処理、およびファイル同期（fsync）要求の集約を管理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void CheckpointerMain(const void *startup_data, size_t startup_data_len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>startup_data</code>: 起動データ（現在は使用されず、<code>startup_data_len == 0</code> であることがアサートされる）。</li>
+<li><code>startup_data_len</code>: データの長さ。</li>
+<li>**出力**: なし（プロセス終了までループ内で動作）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>startup_data_len</code> は常に 0 であること。</li>
+<li><code>AuxiliaryProcessMainCommon()</code> を呼び出し、補助プロセスとしての初期化を完了していること。</li>
+<li><code>sigsetjmp</code> を使用したエラーハンドリング環境が構築されており、エラー発生時にはリソース解放と状態リセットを経て 1 秒間の待機後に再試行されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: プロセスタイプを <code>B_CHECKPOINTER</code> に設定し、シグナルハンドラを登録する。<code>SIGTERM</code> は無視し、<code>SIGUSR2</code> によるシャットダウン指示を待機する設計。 2. **メモリ管理**: 専用のメモリコンテキストを作成し、エラーリカバリ時のメモリリークを防ぐ。 3. **エラーハンドリング**: <code>sigsetjmp</code> を設定し、例外発生時にはロックの解放、バッファのアンロック、統計情報の更新などを行い、安全に復帰する。 4. **メインループ**:</p>
+<ul>
+<li><code>ResetLatch(MyLatch)</code> で待機状態をリセット。</li>
+<li>共有メモリから fsync 要求を吸い上げ、チェックポイントの必要性を判定。</li>
+<li>必要に応じて <code>CreateCheckPoint</code> を実行し、完了後に共有メモリを更新して待機中のバックエンドに通知。</li>
+<li>次のイベントまで待機。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/postmaster/launch_backend.c</code> において、ポストマスターがプロセスを起動する際に参照される。</li>
+<li>**呼び出し先**: </li>
+<li><code>AuxiliaryProcessMainCommon()</code></li>
+<li><code>pqsignal()</code> (シグナルハンドラ設定)</li>
+<li><code>before_shmem_exit()</code></li>
+<li><code>AllocSetContextCreate()</code></li>
+<li><code>sigsetjmp()</code> / <code>FlushErrorState()</code></li>
+<li><code>LWLockReleaseAll()</code> 等の各種リソース解放関数</li>
+<li><code>UpdateSharedMemoryConfig()</code></li>
+<li><code>ResetLatch()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CheckpointerShmem</code>: チェックポインターとバックエンド間で共有されるメモリ構造体。</li>
+<li><code>sigjmp_buf</code>: エラーリカバリ用のスタック状態保持。</li>
+<li><code>MyLatch</code>: プロセスの待機・起床を制御するラッチ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**チェックポイント失敗**: <code>ckpt_active</code> が真の状態でエラーが発生した場合、共有メモリの <code>ckpt_failed</code> をインクリメントし、待機中のバックエンドに通知して失敗を伝播させる。</li>
+<li>**エラー時の再試行**: エラー発生後は <code>pg_usleep(1000000L)</code> により最低 1 秒間待機し、ログの溢れを防ぐ。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>SIGTERM</code> を無視する設計は、シャットダウン時にすべてのバックエンドが終了した後に最終チェックポイントを実行するためである。</li>
+<li><code>PG_TRY</code> を使用せず <code>sigsetjmp</code> を直接使用しているのは、例外スタックの最下層でエラーリカバリを確実に行うためである。</li>
+<li>チェックポイント処理中にエラーが発生してもプロセスは終了せず、リソースを解放して再試行可能な状態に戻る。</li>
+</ul></body></html>

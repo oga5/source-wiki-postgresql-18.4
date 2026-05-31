@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/consolehandler.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>consoleHandler</h1>
+<h2>概念</h2>
+<p><code>consoleHandler</code> は、Windows環境においてコンソールからの割り込みイベント（<code>Ctrl+C</code> や <code>Ctrl+Break</code>）を捕捉し、実行中の処理を中断またはキャンセルするためのイベントハンドラ関数です。PostgreSQLのクライアントユーティリティやフロントエンドユーティリティにおいて、非同期のシグナルハンドリングをWindows上でエミュレート・処理するために用いられます。</p>
+<h2>なぜ重要か</h2>
+<p>Windows環境のクライアントツールにおいて、ユーザーが <code>Ctrl+C</code> などのキー入力をした際に、安全かつ迅速にバックエンドのクエリをキャンセルしたり、並行処理を中断したりするために不可欠です。これがないと、Windows上で実行中のクライアントプログラムが応答不能になったり、バックエンドプロセスが不要な処理を継続したりする原因になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_dump</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/fe_utils/cancel.c#consoleHandler</code>**: Windows環境でコンソールイベントを検知し、接続中のバックエンドに対して <code>PQcancel</code> を用いてクエリのキャンセル要求を送信するハンドラ。</li>
+<li>**<code>symbol:src/bin/pg_dump/parallel.c#consoleHandler</code>**: <code>pg_dump</code> の並行処理コンテキストにおける同名のハンドラ（※詳細な振る舞いは提供された情報からは未詳）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>src/fe_utils/cancel.c</code> における処理の流れは以下の通りです：</p>
+<p>1. **登録**: <code>setup_cancel_handler</code> 等により、Windows APIの <code>SetConsoleCtrlHandler</code> に <code>consoleHandler</code> が登録されます。 2. **イベント発生**: ユーザーが <code>Ctrl+C</code> または <code>Ctrl+Break</code> を入力すると、Windows OSから <code>consoleHandler</code> が呼び出されます。 3. **フラグ設定とコールバック**: <code>CancelRequested</code> フラグを <code>true</code> に設定し、登録されている <code>cancel_callback</code> があれば実行します。 4. **キャンセル送信**: <code>cancelConnLock</code>（CRITICAL_SECTION）を用いて排他制御を行い、有効な <code>cancelConn</code> が存在すれば <code>PQcancel</code> を呼び出してバックエンドへキャンセル信号を送信します。 5. **結果出力**: <code>PQcancel</code> の成否に応じて、<code>write_stderr</code> を通じてメッセージを出力し、ロックを解放して <code>TRUE</code> を返します。</p>
+<p>※ <code>src/bin/pg_dump/parallel.c</code> における具体的なエンドツーエンドの流れは、提供された情報からは未詳です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**プラットフォーム制限**: Windows環境でのみ動作します。</li>
+<li>**排他制御**: <code>src/fe_utils/cancel.c</code> では、<code>cancelConn</code> にアクセスする際、必ず <code>cancelConnLock</code>（CRITICAL_SECTION）による排他制御が保証されている必要があります。</li>
+<li>**フラグの非自動リセット**: <code>CancelRequested</code> フラグは自動的にリセットされないため、呼び出し側で適切に管理する必要があります。</li>
+</ul>
+<p>※ <code>src/bin/pg_dump/parallel.c</code> における不変条件は、提供された情報からは未詳です。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**スレッドセーフティ**: 本関数は Windows のコンソールイベントハンドラとしてOSから非同期に呼び出されるため、スレッドセーフな実装が必須です。</li>
+<li>**シグナルセーフな出力**: ハンドラ内でのエラー出力には、シグナルハンドラ内でも安全に動作するように設計された <code>write_stderr</code> を使用する必要があります。</li>
+<li>**未リセットフラグ**: <code>CancelRequested</code> フラグのリセットを忘れると、後続の処理で意図しないキャンセル状態が維持される可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/fe_utils/cancel.c</code>**: <code>consoleHandler</code> の具体的な実装、および <code>setup_cancel_handler</code> による登録処理。</li>
+<li>**<code>src/bin/pg_dump/parallel.c</code>**: <code>pg_dump</code> の並行処理における <code>consoleHandler</code> の役割と実装詳細。</li>
+</ul></body></html>

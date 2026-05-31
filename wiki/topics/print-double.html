@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/print-double.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>print_double</h1>
+<h2>概念</h2>
+<p><code>print_double</code> は、PostgreSQLのECPG（Embedded SQL in C）テストスイートにおいて、プラットフォーム間で異なる浮動小数点数（<code>double</code>）の指数表記を正規化し、標準出力（<code>stdout</code>）へ書き出すためのヘルパー関数です。</p>
+<h2>なぜ重要か</h2>
+<p>Windows環境（<code>WIN32</code>）では、<code>sprintf</code> や <code>printf</code> による浮動小数点数の指数表記が3桁（例: <code>e+001</code>）になる場合があります。一方、非Windows環境では通常2桁（例: <code>e+01</code>）で出力されます。この表記の差異があると、テスト結果と期待値（expectedファイル）との比較（diff）で不一致が発生し、回帰テストが失敗してしまいます。<code>print_double</code> はこの表記揺れを吸収し、テスト結果の安定性と一貫性を担保するために極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/interfaces/ecpg/test</code></li>
+<li><code>module:src/interfaces/ecpg/test/expected</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/interfaces/ecpg/test/printf_hack.h#print_double</code></li>
+<li>共通のハックとして定義されている <code>static</code> 関数。</li>
+<li><code>symbol:src/interfaces/ecpg/test/expected/compat_informix-dec_test.c#print_double</code></li>
+<li><code>symbol:src/interfaces/ecpg/test/expected/pgtypeslib-num_test.c#print_double</code></li>
+<li><code>symbol:src/interfaces/ecpg/test/expected/pgtypeslib-num_test2.c#print_double</code></li>
+<li>各テストの期待値または生成コード内に定義・配置されている同名の <code>static</code> 関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>テスト実行時における詳細なエンドツーエンドの呼び出しフロー全体（どのテストケースからどのような順序で呼び出されるかなど）は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<p>しかし、本関数単体における処理の流れは以下の通りです：</p>
+<p>1. **入力**: <code>double</code> 型の値 <code>x</code> を引数として <code>print_double(x)</code> が呼び出されます。 2. **非Windows環境（<code>WIN32</code> 未定義）**:</p>
+<ul>
+<li>標準の <code>printf(&quot;%g&quot;, x)</code> を直接実行して終了します。</li>
+<p>3. **Windows環境（<code>WIN32</code> 定義時）**:</p>
+<li><code>sprintf</code> を使用して、<code>x</code> をローカルの文字配列バッファ <code>convert</code>（128バイト）に文字列として書き出します。</li>
+<li>文字列の末尾付近を走査し、指数部が3桁（例: <code>e+0xx</code>）であるかを確認します。</li>
+<li>3桁の指数部を検出した場合、余分な <code>0</code> を1つ削除して2桁（例: <code>e+xx</code>）に詰め、文字列を再構成します。</li>
+<li>最終的に、加工後の文字列を <code>printf</code> で標準出力に出力します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**スコープの限定**: <code>static</code> 関数として定義されており、インクルードした各ソースファイル内で個別にコンパイルされます。</li>
+<li>**出力の正規化**: Windows環境下において、指数部が3桁（例: <code>e+001</code>）である場合に、これを必ず2桁（例: <code>e+01</code>）に変換して出力します。</li>
+<li>**非破壊的なフォールバック**: 指数表記を含まない値や、文字列長が極端に短い場合（例: <code>vallen</code> が 6 未満）、または指数部が既に2桁以下の場合は、変換処理をスキップしてそのまま出力します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バッファオーバーフローの潜在的リスク**: 内部で128バイトの固定長バッファ（<code>char convert[128]</code>）を使用しており、<code>sprintf</code> による変換結果がこれを超えるような極端な数値表現の場合、バッファオーバーフローを引き起こす可能性があります（ただし、通常の <code>double</code> 出力では十分に収まる想定となっています）。</li>
+<li>**プラットフォーム依存のオーバーヘッド**: Windows環境でのみ文字列の走査と再構成が発生するため、パフォーマンス特性が異なります。</li>
+<li>**コードの重複と同期**: <code>printf_hack.h</code> で定義されているほか、複数のテストファイル（<code>compat_informix-dec_test.c</code>、<code>pgtypeslib-num_test.c</code>、<code>pgtypeslib-num_test2.c</code>）に同等のロジックが埋め込まれているため、修正時には影響範囲に注意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/ecpg/test/printf_hack.h</code></li>
+<li>共通定義されているハック関数の実装。</li>
+<li><code>src/interfaces/ecpg/test/expected/compat_informix-dec_test.c</code></li>
+<li><code>src/interfaces/ecpg/test/expected/pgtypeslib-num_test.c</code></li>
+<li><code>src/interfaces/ecpg/test/expected/pgtypeslib-num_test2.c</code></li>
+<li>本関数を利用してテスト出力の一貫性を検証している各テストコード。</li>
+</ul></body></html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/sh-key-type.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SH_KEY_TYPE</h1>
+<h2>概念</h2>
+<p><code>SH_KEY_TYPE</code> は、PostgreSQL のヘッダーファイル <code>lib/simplehash.h</code> を用いて、型安全かつ高速なインラインハッシュテーブルを生成する際に定義する必須のマクロ（パラメータ）の一つです。 <code>simplehash.h</code> は、C言語でジェネリックなハッシュテーブルを実現するためのマクロテンプレートであり、利用者はハッシュテーブルの定義を生成する前に、キーのデータ型を指定するために <code>SH_KEY_TYPE</code> を定義します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL では、動的なメモリ割り当てや関数ポインタ経由の呼び出しによるオーバーヘッドを削減するため、オープンアドレス法のハッシュテーブルテンプレートである <code>simplehash.h</code> を多用しています。 <code>SH_KEY_TYPE</code> を定義することで、コンパイル時に特定のキー型（例: <code>Oid</code>, <code>BlockNumber</code>, 構造体, 文字列ポインタなど）に特化したハッシュルックアップ、挿入、削除関数がインライン展開可能な形で自動生成されます。これにより、実行時のパフォーマンスが大幅に向上します。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたソースコードに基づくと、以下のモジュールが <code>SH_KEY_TYPE</code> を使用して独自のハッシュテーブルを定義しています。</p>
+<ul>
+<li>**バックエンドコア・オプティマイザ・エグゼキュータ**:</li>
+<li><code>module:src/backend/catalog</code> (カタログ・ネームスペース管理)</li>
+<li><code>module:src/backend/executor</code> (式評価、グループ化、Memoize ノード)</li>
+<li><code>module:src/backend/nodes</code> (TID ビットマップ)</li>
+<li><code>module:src/backend/optimizer/path</code> (等価クラスの管理)</li>
+<li><code>module:src/include/nodes</code> (実行ノード定義)</li>
+<li>**ユーティリティ・統計情報**:</li>
+<li><code>module:src/backend/utils/activity</code> (pgstat 統計情報、共有メモリ統計情報)</li>
+<li><code>module:src/backend/utils/adt</code> (ロケールキャッシュ)</li>
+<li>**バックアップ・共通処理**:</li>
+<li><code>module:src/backend/backup</code> (増分バックアップ処理)</li>
+<li><code>module:src/common</code> (ブロック参照テーブル <code>blkreftable.c</code>)</li>
+<li>**クライアントツール / バイナリ**:</li>
+<li><code>module:src/bin/pg_combinebackup</code> (マニフェストロード)</li>
+<li><code>module:src/bin/pg_dump</code> (ダンプ対象オブジェクトの管理)</li>
+<li><code>module:src/bin/pg_rewind</code> (ファイルマップ管理)</li>
+<li><code>module:src/bin/pg_verifybackup</code> (バックアップ検証)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>各ファイルにおいて、<code>SH_KEY_TYPE</code> は以下のような具体的なキー型とともに定義され、<code>simplehash.h</code> をインクルードすることでハッシュテーブルが生成されます。</p>
+<ul>
+<li>**<code>symbol:src/backend/backup/basebackup_incremental.c#SH_KEY_TYPE</code>**: 増分バックアップにおけるファイルやブロック情報の管理用キー。</li>
+<li>**<code>symbol:src/backend/catalog/namespace.c#SH_KEY_TYPE</code>**: スキーマ検索パスや一時名前空間のキャッシュ用キー。</li>
+<li>**<code>symbol:src/backend/executor/execGrouping.c#SH_KEY_TYPE</code>** / **<code>symbol:src/backend/executor/nodeMemoize.c#SH_KEY_TYPE</code>**: グループ化キーや、Memoize ノードのキャッシュエントリキー。</li>
+<li>**<code>symbol:src/backend/nodes/tidbitmap.c#SH_KEY_TYPE</code>**: <code>BlockNumber</code> をキーとする TID ビットマップのページエントリ。</li>
+<li>**<code>symbol:src/backend/utils/activity/pgstat_shmem.c#SH_KEY_TYPE</code>**: 共有メモリ上の統計情報エントリを識別するキー。</li>
+<li>**<code>symbol:src/bin/pg_rewind/filemap.c#SH_KEY_TYPE</code>**: 比較対象ファイルのパスや識別子をキーとするファイルマップ。</li>
+<li>**<code>symbol:src/common/blkreftable.c#SH_KEY_TYPE</code>**: ブロック参照テーブルにおけるブロック番号等のキー。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>SH_KEY_TYPE</code> を用いたハッシュテーブルの生成と利用の一般的な流れは以下の通りです。</p>
+<p>1. **マクロの定義**: ハッシュテーブルを定義したいソースファイル（またはヘッダーファイル）内で、以下のマクロ群を定義します。</p>
+<ul>
+<li><code>SH_PREFIX</code>: 生成される関数や構造体の接頭辞（例: <code>pagetable</code>）</li>
+<li><code>SH_KEY_TYPE</code>: キーの型（例: <code>BlockNumber</code>）</li>
+<li><code>SH_ELEMENT_TYPE</code>: ハッシュテーブルに格納する要素（構造体）の型</li>
+<li><code>SH_DECLARE</code> または <code>SH_DEFINE</code>: 宣言または定義の有効化</li>
+<li>その他、<code>SH_EQUAL</code>（キー比較関数）や <code>SH_HASH_KEY</code>（ハッシュ値計算関数）など</li>
+<p>2. **テンプレートのインクルード**: <code>#include &quot;lib/simplehash.h&quot;</code> を実行します。これにより、指定した <code>SH_KEY_TYPE</code> に適合する構造体やインライン関数（例: <code>pagetable_insert</code>, <code>pagetable_lookup</code>）がコンパイル時に生成されます。 3. **ハッシュテーブルの操作**: 生成された関数を用いて、指定されたキー型（<code>SH_KEY_TYPE</code>）のデータを検索・挿入します。</p>
+</ul>
+<p>*注意: 各モジュールにおける具体的なハッシュ関数のアルゴリズムや、衝突解決の挙動など、個別のエンドツーエンドのデータフローの詳細は、それぞれのモジュールの実装に依存しており、統一的な単一のフローとしては定義されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**キーの一貫性**: <code>SH_KEY_TYPE</code> で指定された型は、<code>SH_ELEMENT_TYPE</code> で定義される構造体の中に、同一の型を持つメンバ（通常は <code>key</code> という名前）として存在しなければなりません。</li>
+<li>**ハッシュ関数と等価関数の整合性**: <code>SH_HASH_KEY</code> が返すハッシュ値と <code>SH_EQUAL</code> による比較結果は一貫している必要があります（等しいキーは必ず同じハッシュ値を持つ）。</li>
+<li>**マクロの未定義化（Undefine）**: <code>simplehash.h</code> をインクルードした後、これらの <code>SH_</code> から始まるマクロは、同一ファイル内で別のハッシュテーブルを定義する際の衝突を防ぐために、自動的または明示的にアンデフ（<code>#undef</code>）されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**マクロの再定義エラー**: 同一の C ファイル内で複数の異なる <code>simplehash</code> テーブルを定義する場合、各インクルードの前に <code>SH_KEY_TYPE</code> や <code>SH_PREFIX</code> などのマクロを適切に再定義（および以前の定義をクリア）しないと、コンパイルエラーが発生します。</li>
+<li>**ポインタ型をキーにする場合の寿命**: <code>SH_KEY_TYPE</code> に <code>char*</code> などのポインタ型を指定した場合、ハッシュテーブルに格納されるのはポインタそのものです。ポインタが指す実体（文字列など）のメモリが解放されたり書き換えられたりすると、ハッシュテーブルの検索が破損します。</li>
+<li>**ヘッダーでの多重定義**: <code>SH_DEFINE</code> をヘッダーファイル内で不用意に行うと、そのヘッダーをインクルードする複数のソースファイルでシンボルの重複定義エラーが発生します。宣言（<code>SH_DECLARE</code>）と定義（<code>SH_DEFINE</code>）を適切に分離する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/lib/simplehash.h</code> (提供されたファイルリスト外): <code>SH_KEY_TYPE</code> を含む各種マクロがどのように展開され、ハッシュテーブルが構築されるかのテンプレート実装。</li>
+<li><code>src/backend/nodes/tidbitmap.c</code>: <code>BlockNumber</code> を <code>SH_KEY_TYPE</code> とした、シンプルで理解しやすい <code>simplehash</code> の適用例。</li>
+<li><code>src/bin/pg_rewind/filemap.c</code>: フロントエンドツールにおける文字列やファイルパスをキーとした適用例。</li>
+</ul></body></html>

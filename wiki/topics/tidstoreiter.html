@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/tidstoreiter.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TidStoreIter</h1>
+<h2>概念</h2>
+<p><code>TidStoreIter</code> は、<code>TidStore</code> に格納されたすべての TID（<code>ItemPointerData</code>）を順次走査するためのイテレータ状態を保持する構造体です。</p>
+<p>ヘッダーファイル <code>src/include/access/tidstore.h</code> では不透明な構造体（Opaque struct）として宣言されており、実装ファイル <code>src/backend/access/common/tidstore.c</code> において具体的なメンバが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p><code>TidStore</code> は、VACUUM 処理（<code>vacuumlazy.c</code> など）において不要なタプルの TID を効率的に管理するために使用されます。<code>TidStoreIter</code> は、対象の <code>TidStore</code> が共有メモリ上にあるかローカルメモリ上にあるかにかかわらず、内部のラディックツリー（<code>lib/radixtree.h</code>）の複雑な走査ロジックをカプセル化し、呼び出し側にシンプルなブロック単位の走査インターフェースを提供するために不可欠です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/common</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/tidstore.h#TidStoreIter</code>**  </li>
+<p>外部モジュールに公開される不透明な構造体定義です。呼び出し側は内部の実装詳細に依存せずにイテレータを扱えます。</p>
+<li>**<code>symbol:src/backend/access/common/tidstore.c#TidStoreIter</code>**  </li>
+<p>具体的な構造体の定義です。対象の <code>TidStore</code> へのポインタ、共有/ローカル用のラディックツリーイテレータの共用体（<code>tree_iter</code>）、および走査結果を格納する <code>TidStoreIterResult output</code> を保持します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **イテレータの生成と初期化** 呼び出し側（<code>vacuumlazy.c</code> やテストモジュールなど）が <code>TidStoreBeginIterate</code> を呼び出します。これにより、呼び出し側のメモリコンテキスト上に <code>TidStoreIter</code> が <code>palloc0</code> で確保され、初期化されます。 2. **順次走査** <code>TidStoreIterateNext</code> を繰り返し呼び出します。内部的には、<code>TidStore</code> の種類に応じて <code>tree_iter.shared</code> または <code>tree_iter.local</code> を介して次のブロックおよびオフセットを検索し、結果を <code>output</code> に格納して返します。 3. **リソースの解放** 走査が完了（または途中で中断）した際、呼び出し側は <code>TidStoreEndIterate</code> を呼び出してイテレータに割り当てられたメモリを解放します。</p>
+<p>*注意: 走査中に <code>TidStore</code> 自体が変更された場合の挙動や、並行アクセス時における具体的なロックの獲得・解放の全ライフサイクルについては、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリ配置の不変条件**  </li>
+<p>走査対象の <code>TidStore</code> が共有メモリ上にある場合でも、<code>TidStoreIter</code> 構造体自体のメモリは常に呼び出し側のローカルメモリコンテキストに確保されます。</p>
+<li>**共用体アクセスの整合性**  </li>
+<p>内部の <code>tree_iter</code> は共用体であるため、<code>TidStoreIsShared()</code> の判定結果に基づいて、対応するアクティブなメンバ（<code>shared</code> または <code>local</code>）に対してのみ正しくアクセスされなければなりません。</p>
+<li>**リソース管理の義務**  </li>
+<p>メモリリークを防ぐため、<code>TidStoreBeginIterate</code> で開始した走査は、必ず <code>TidStoreEndIterate</code> の呼び出しで終了しなければなりません。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不透明型への直接アクセス**  </li>
+<p><code>TidStoreIter</code> は <code>tidstore.h</code> で不透明型として定義されているため、外部モジュールから直接構造体のメンバ（<code>tree_iter</code> や <code>output</code> など）にアクセスしようとするとコンパイルエラーになります。必ず提供されている API 関数を経由して操作してください。</p>
+<li>**共有メモリ走査時のロック欠如**  </li>
+<p>共有メモリ版の <code>TidStore</code> を走査する際、適切なロックが保持されていない状態で走査を行うと、未定義の動作を引き起こす可能性があります。</p>
+<li>**空のストアに対する考慮**  </li>
+<p><code>TidStore</code> が空の場合、イテレータは即座に終了状態を返します。呼び出し側は初回の <code>TidStoreIterateNext</code> で走査が終了する可能性を考慮する必要があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/common/tidstore.c</code>  </li>
+<p>イテレータの具体的な構造体定義、および <code>TidStoreBeginIterate</code>, <code>TidStoreIterateNext</code>, <code>TidStoreEndIterate</code> の実装詳細。</p>
+<li><code>src/include/access/tidstore.h</code>  </li>
+<p>外部に公開されている <code>TidStoreIter</code> の不透明型定義および関連 API のプロトタイプ宣言。</p>
+</ul></body></html>

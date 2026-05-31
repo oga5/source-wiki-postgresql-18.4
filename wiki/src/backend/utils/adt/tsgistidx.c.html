@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tsgistidx.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tsgistidx.c</h1>
+<h2>概要</h2>
+<p><code>tsgistidx.c</code> は、PostgreSQL の全文検索型 <code>tsvector</code> に対する GiST インデックスのサポート関数を実装するモジュールです。<code>tsvector</code> の内容をシグネチャ（ビットベクトル）またはハッシュ値の配列としてインデックス化し、GiST の木構造上で効率的な検索を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> ディレクトリ内で、全文検索機能（<code>tsearch</code>）と GiST インデックスアクセスメソッドを橋渡しする役割を担います。<code>tsvector</code> のインデックス操作に必要な <code>compress</code>, <code>decompress</code>, <code>consistent</code>, <code>union</code>, <code>picksplit</code> などの標準的な GiST サポート関数を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスキーの圧縮**: <code>tsvector</code> を GiST インデックスに適したコンパクトな形式（<code>SignTSVector</code>）へ変換します。</li>
+<li>**検索の適合性判定**: <code>tsquery</code> とインデックスキーを照合し、検索条件に合致する可能性があるか（<code>TS_MAYBE</code>）を判定します。</li>
+<li>**インデックスの構築と維持**: GiST の木構造を維持するためのノード統合（<code>union</code>）や分割（<code>picksplit</code>）ロジックを提供します。</li>
+<li>**オプション管理**: インデックス作成時に指定可能な <code>siglen</code>（シグネチャ長）パラメータの処理を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SignTSVector</code>: GiST インデックス内に格納されるキー構造体。フラグ（<code>ARRKEY</code>, <code>SIGNKEY</code>, <code>ALLISTRUE</code>）により、配列形式かビットベクトル形式かを識別します。</li>
+<li><code>gtsvector_compress</code>: <code>tsvector</code> をインデックスキーに変換する関数。ハッシュ値の配列を作成し、サイズに応じてビットベクトルへ変換します。</li>
+<li><code>gtsvector_consistent</code>: 検索時に呼び出される関数。<code>TS_execute</code> を用いてクエリ条件とインデックスキーを照合します。</li>
+<li><code>gtsvector_picksplit</code>: GiST インデックスのページ分割時に、どのエントリを左右どちらのページに配置するかを決定する最適化ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BITVECP</code></li>
+<li><code>CACHESIGN</code></li>
+<li><code>CHKVAL</code></li>
+<li><code>GistTsVectorOptions</code></li>
+<li><code>SPLITCOST</code></li>
+<li><code>checkcondition_arr</code></li>
+<li><code>checkcondition_bit</code></li>
+<li><code>gtsvector_alloc</code></li>
+<li><code>gtsvector_decompress</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **圧縮**: <code>gtsvector_compress</code> は、入力された <code>tsvector</code> の各単語を CRC32 でハッシュ化し、ソート・重複排除して <code>SignTSVector</code> に格納します。サイズが閾値を超える場合はビットベクトル（<code>SIGNKEY</code>）に変換されます。 2. **検索**: <code>gtsvector_consistent</code> は、クエリの各オペランドに対し、リーフページではバイナリサーチ（<code>checkcondition_arr</code>）、内部ノードではビットチェック（<code>checkcondition_bit</code>）を行い、適合性を判定します。 3. **分割**: <code>gtsvector_picksplit</code> は、ハミング距離（<code>hemdist</code>）を用いて、インデックスのオーバーラップを最小化するようにエントリを分割します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist.h</code>: GiST インデックスの基本構造とインターフェース。</li>
+<li><code>tsearch/ts_utils.h</code>: 全文検索用のユーティリティ関数とデータ構造。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作（popcount 等）の最適化関数。</li>
+<li><code>utils/pg_crc.h</code>: 単語のハッシュ化に使用する CRC32 計算。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/tsvector_op.c</code>: <code>tsvector</code> 型自体の演算子や操作関数。</li>
+<li><code>src/backend/utils/adt/tsquery_gist.c</code>: <code>tsquery</code> 側の GiST サポート。</li>
+<li><code>src/backend/access/gist/</code>: GiST インデックスのコア実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の GiST インデックスは「不正確（inexact）」なインデックスです。<code>gtsvector_consistent</code> で <code>*recheck = true</code> が設定されている通り、インデックスによるフィルタリング後に必ずヒープ上の実データに対する再チェックが必要です。</li>
+<li><code>siglen</code> パラメータはインデックスの精度とサイズに直結します。デフォルト値（124バイト）から変更する場合は、検索性能とインデックスサイズのトレードオフを考慮してください。</li>
+<li><code>checkcondition_arr</code> と <code>checkcondition_bit</code> は <code>TS_execute</code> のコールバックとして機能し、インデックスの階層に応じて検索ロジックを切り替える重要な箇所です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__GistTsVectorOptions.html" target="wiki-view"><code>GistTsVectorOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__BITVECP.html" target="wiki-view"><code>BITVECP</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__SignTSVector.html" target="wiki-view"><code>SignTSVector</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__gtsvector_alloc.html" target="wiki-view"><code>gtsvector_alloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__gtsvector_compress.html" target="wiki-view"><code>gtsvector_compress</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__gtsvector_decompress.html" target="wiki-view"><code>gtsvector_decompress</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__CHKVAL.html" target="wiki-view"><code>CHKVAL</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__checkcondition_arr.html" target="wiki-view"><code>checkcondition_arr</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__checkcondition_bit.html" target="wiki-view"><code>checkcondition_bit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__gtsvector_consistent.html" target="wiki-view"><code>gtsvector_consistent</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__CACHESIGN.html" target="wiki-view"><code>CACHESIGN</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsgistidx_c__SPLITCOST.html" target="wiki-view"><code>SPLITCOST</code></a></li>
+</ul></body></html>

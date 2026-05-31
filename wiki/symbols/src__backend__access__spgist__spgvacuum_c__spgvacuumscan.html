@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgvacuum_c__spgvacuumscan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgvacuumscan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgvacuum.c:799</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスの物理的な全ページを走査し、不要なタプルの削除、リダイレクト情報の整理、および空き領域の FSM（Free Space Map）への返却を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgvacuumscan(spgBulkDeleteState *bds)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>spgBulkDeleteState *bds</code>（VACUUM 実行中の状態、統計情報、保留リスト等を保持する構造体へのポインタ）</li>
+<li>**出力**: なし（副作用として <code>bds-&gt;stats</code> の更新、インデックスメタページの更新、および FSM の更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>bds</code> が初期化済みであること。</li>
+<li>インデックスの物理的な全ページ（メタページを除く）を走査する。</li>
+<li>走査中に発生した <code>REDIRECT</code> 先の TID は <code>bds-&gt;pendingList</code> に蓄積され、ページ処理の合間に <code>spgprocesspending</code> によって処理される必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>initSpGistState</code> を呼び出し、スキャン用の統計情報をリセットする。 2. **走査準備**: <code>read_stream_begin_relation</code> を使用し、物理順でインデックスページを読み込むストリームを開始する。 3. **メインループ**:</p>
+<ul>
+<li>インデックスの現在のブロック数を取得し、全ページを走査するまで繰り返す。</li>
+<li><code>read_stream_next_buffer</code> でページを取得し、<code>spgvacuumpage</code> を呼び出して各ページの整理を行う。</li>
+<li>ページ処理後、<code>bds-&gt;pendingList</code> に項目があれば <code>spgprocesspending</code> を呼び出して保留中の TID を処理する。</li>
+<p>4. **終了処理**:</p>
+<li><code>SpGistUpdateMetaPage</code> を呼び出し、メタページを更新する。</li>
+<li>削除されたページがある場合、<code>IndexFreeSpaceMapVacuum</code> を呼び出して FSM を更新する。</li>
+<li>最終的な統計情報を <code>bds-&gt;stats</code> に格納する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>spgbulkdelete</code>（<code>src/backend/access/spgist/spgvacuum.c</code> 内の複数箇所）</li>
+<li>**呼び出し先**:</li>
+<li><code>initSpGistState</code>, <code>GetActiveSnapshot</code>, <code>read_stream_begin_relation</code>, <code>LockRelationForExtension</code>, <code>RelationGetNumberOfBlocks</code>, <code>vacuum_delay_point</code>, <code>read_stream_next_buffer</code>, <code>spgvacuumpage</code>, <code>spgprocesspending</code>, <code>read_stream_reset</code>, <code>read_stream_end</code>, <code>SpGistUpdateMetaPage</code>, <code>IndexFreeSpaceMapVacuum</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgBulkDeleteState</code>: VACUUM 実行中の状態を保持する主要構造体。</li>
+<li><code>ReadStream</code>: ページ走査に使用するストリーム構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**同時実行**: インデックスの切り詰め（Truncation）は、同時実行中の挿入操作との競合リスクがあるため無効化されている。</li>
+<li>**ロック**: 新規または一時的なリレーション以外では、ブロック拡張時に <code>ExclusiveLock</code> を取得する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は物理順の走査を行うため、スキャン開始後に新規追加されたリーフページも確実に処理される設計となっている。</li>
+<li><code>spgprocesspending</code> を呼び出すタイミングは、ページ処理の整合性を保つために重要である。</li>
+</ul></body></html>

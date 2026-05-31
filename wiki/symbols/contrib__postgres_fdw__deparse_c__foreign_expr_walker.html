@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__postgres_fdw__deparse_c__foreign_expr_walker.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>foreign_expr_walker</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/postgres_fdw/deparse.c:309</code></li>
+</ul>
+<h2>目的</h2>
+<p>式ツリーを再帰的に走査し、その式がリモートの PostgreSQL サーバーで安全に実行可能（shippable）であるかを判定します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool foreign_expr_walker(Node *node,
+                                foreign_glob_cxt *glob_cxt,
+                                foreign_loc_cxt *outer_cxt,
+                                foreign_loc_cxt *case_arg_cxt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>node</code>: 走査対象の式ノード。</li>
+<li><code>glob_cxt</code>: リモートサーバー情報やリレーション情報を含むグローバルコンテキスト。</li>
+<li><code>outer_cxt</code>: 親ノードから引き継がれる照合順序（Collation）状態。</li>
+<li><code>case_arg_cxt</code>: <code>CASE</code> 式の引数に関するコンテキスト。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 式がリモート実行可能であれば <code>true</code>、そうでなければ <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>node</code> が <code>NULL</code> の場合は常に <code>true</code> を返します。</li>
+<li>リモートテーブルに属さない <code>Var</code> や、照合順序がデフォルトではない <code>Const</code> は、文脈に応じて安全性が判定されます。</li>
+<li>システム列（<code>ctid</code> を除く）はリモート送信不可とみなされます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ノード種別による分岐**: <code>nodeTag(node)</code> に基づき処理を振り分けます。 2. **<code>T_Var</code> の処理**:</p>
+<ul>
+<li>リモートテーブルの列であれば、照合順序の安全性を確認します。</li>
+<li>他のテーブルの列であれば、デフォルト照合順序以外は原則として「安全ではない」とマークします。</li>
+<p>3. **<code>T_Const</code> の処理**:</p>
+<li><code>regproc</code>, <code>regclass</code> 等のシステムカタログ参照型は、<code>is_shippable</code> を用いてリモートサーバーでの利用可否を検証します。</li>
+<li><code>TSConfig</code> 等の特定の型は、<code>FirstNormalObjectId</code> 未満の OID であれば出荷可能とみなす緩和ルールを適用します。</li>
+<p>4. **再帰的走査**: 子ノードが存在する場合、<code>inner_cxt</code> を用いて再帰的に走査を行い、すべての部分式が安全であることを確認します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>is_foreign_expr</code> および <code>deparse.c</code> 内の各種ノード処理関数（<code>SubscriptingRef</code>, <code>FuncExpr</code>, <code>OpExpr</code> 等の走査時）。</li>
+<li>**呼び出し先**: <code>is_shippable</code>（定数の出荷可能性判定）、<code>bms_is_member</code>（リレーション判定）、および再帰的な自身（<code>foreign_expr_walker</code>）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>foreign_glob_cxt</code>: 走査全体で共有されるコンテキスト。</li>
+<li><code>foreign_loc_cxt</code>: ツリーの階層ごとに保持される照合順序状態。</li>
+<li><code>PgFdwRelationInfo</code>: <code>fpinfo</code> として参照され、リモートサーバーのメタデータを提供します。</li>
+<li><code>FDWCollateState</code>: 照合順序の安全性を表す列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**<code>MULTIEXPR</code> パラメータ**: <code>T_Param</code> において <code>MULTIEXPR</code> 型が検出された場合、リモート実行不可として <code>false</code> を返します。</li>
+<li>**システム列**: <code>ctid</code> 以外のシステム列はリモート実行不可と判定されます。</li>
+<li>**照合順序の不一致**: 照合順序が不明またはデフォルト以外である場合、文脈に応じて安全性が否定されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>新しいノード型が PostgreSQL コアに追加された場合、本関数に適切なハンドラを追加する必要があります。</li>
+<li><code>is_shippable</code> の判定ロジックは <code>shippable.c</code> に依存しているため、出荷可能性の基準を変更する場合はそちらも確認してください。</li>
+</ul></body></html>

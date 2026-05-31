@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/var.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/var.c</h1>
+<h2>概要</h2>
+<p>クエリツリーや式ツリー内の <code>Var</code> ノードおよび関連するノード（<code>PlaceHolderVar</code> 等）を操作するためのユーティリティ群を提供します。主にオプティマイザがクエリの構造を解析・変換する際に、変数の参照レベルの特定や、JOINエイリアスの展開、変数の抽出を行うために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールにおいて、式ツリーの走査と変数の属性抽出を担う基盤的な役割を果たします。他のファイルが複雑なプラン作成を行う際、対象の式がどのリレーションを参照しているか、あるいはどのレベルのクエリに属しているかを判定する共通関数を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**変数の抽出と走査**: 特定のクエリレベルに属する <code>Var</code> や <code>PlaceHolderVar</code> をツリーから収集する。</li>
+<li>**JOINエイリアスの展開**: <code>flatten_join_alias_vars</code> を通じ、JOINの出力変数を元のベースリレーションの変数に置換し、クエリのプッシュダウンを可能にする。</li>
+<li>**属性情報の管理**: <code>varnullingrels</code>（外部結合によるNULL化情報）の伝播や、<code>varattno</code>（属性番号）の収集。</li>
+<li>**式ツリーの検証**: 特定の式が変数を含むか、あるいは特定のレベルの変数を含むかの判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pull_varnos</code>: 指定したレベルの全 <code>varno</code> をビットマップセットとして取得する。</li>
+<li><code>pull_var_clause</code>: 式から <code>Var</code> や <code>Aggref</code> などのノードをリストとして抽出する。</li>
+<li><code>flatten_join_alias_vars</code>: JOINエイリアスをベースリレーションの変数に置換する主要なミューテータ。</li>
+<li><code>contain_vars_of_level</code>: 指定レベルの変数が式に含まれるかを高速に判定する。</li>
+<li><code>locate_var_of_level</code>: エラー報告用に、特定のレベルの変数のパース位置を特定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>flatten_join_alias_vars_context</code></li>
+<li><code>locate_var_of_level_context</code></li>
+<li><code>pull_var_clause_context</code></li>
+<li><code>pull_varattnos</code></li>
+<li><code>pull_varattnos_context</code></li>
+<li><code>pull_varattnos_walker</code></li>
+<li><code>pull_varnos_context</code></li>
+<li><code>pull_varnos_of_level</code></li>
+<li><code>pull_varnos_walker</code></li>
+<li><code>pull_vars_context</code></li>
+<li><code>pull_vars_of_level</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>本ファイルは主に <code>walker</code> および <code>mutator</code> パターンを採用しています。 1. **Walker系**: <code>expression_tree_walker</code> を利用し、ツリーを再帰的に走査して特定の条件に合致するノードを収集・判定します。<code>sublevels_up</code> を管理することで、サブクエリ内の変数と外側の変数を区別します。 2. **Mutator系**: <code>expression_tree_mutator</code> を利用し、JOINエイリアスやGROUP式を元の式に置換します。この際、<code>varnullingrels</code> などのメタデータを保持するために <code>PlaceHolderVar</code> でラップする処理が挿入されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: <code>expression_tree_walker</code> 等のツリー走査基盤。</li>
+<li><code>rewrite/rewriteManip.h</code>: 変数のレベル調整（<code>IncrementVarSublevelsUp</code>）等の操作。</li>
+<li><code>optimizer/placeholder.h</code>: <code>PlaceHolderVar</code> の生成と管理。</li>
+<li><code>access/sysattr.h</code>: システム属性の定数定義。</li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/nodes/nodeFuncs.c</code>: ツリー走査の汎用ロジック。</li>
+<li><code>src/backend/optimizer/util/clauses.c</code>: 式の評価や定数畳み込みなど、より高位な式操作。</li>
+<li><code>src/backend/optimizer/prep/prepjointree.c</code>: JOINの構造解析に関連する処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>PlaceHolderVar</code> は、オプティマイザの文脈では <code>Var</code> と同様に扱われることが多い点に注意してください。</li>
+<li><code>sublevels_up</code> の管理は、サブクエリや <code>SubLink</code> を扱う際に非常に重要です。この値が正しく更新されないと、変数のスコープ誤認が発生します。</li>
+<li><code>flatten_join_alias_vars</code> は、パーサとプランナの両方から呼ばれるため、<code>root</code> ポインタが <code>NULL</code> であるケースを許容する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varnos_context.html" target="wiki-view"><code>pull_varnos_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varattnos_context.html" target="wiki-view"><code>pull_varattnos_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_vars_context.html" target="wiki-view"><code>pull_vars_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__locate_var_of_level_context.html" target="wiki-view"><code>locate_var_of_level_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_var_clause_context.html" target="wiki-view"><code>pull_var_clause_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__flatten_join_alias_vars_context.html" target="wiki-view"><code>flatten_join_alias_vars_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varnos.html" target="wiki-view"><code>pull_varnos</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varnos_of_level.html" target="wiki-view"><code>pull_varnos_of_level</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varnos_walker.html" target="wiki-view"><code>pull_varnos_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varattnos.html" target="wiki-view"><code>pull_varattnos</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_varattnos_walker.html" target="wiki-view"><code>pull_varattnos_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__var_c__pull_vars_of_level.html" target="wiki-view"><code>pull_vars_of_level</code></a></li>
+</ul></body></html>

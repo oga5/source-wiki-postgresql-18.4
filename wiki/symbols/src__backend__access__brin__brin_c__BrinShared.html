@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_c__BrinShared.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BrinShared</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin.c:57</code></li>
+</ul>
+<h2>目的</h2>
+<p>BRIN インデックスの並列構築時において、リーダープロセスとワーカープロセス間で共有される状態を保持します。インデックス構築のメタデータ、進捗管理、および構築結果の集約に使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct BrinShared {
+    Oid         heaprelid;
+    Oid         indexrelid;
+    bool        isconcurrent;
+    BlockNumber pagesPerRange;
+    int         scantuplesortstates;
+    int64       queryid;
+    ConditionVariable workersdonecv;
+    slock_t     mutex;
+    int         nparticipantsdone;
+    double      reltuples;
+    double      indtuples;
+} BrinShared;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 並列構築開始時にリーダープロセスによって共有メモリ上に割り当てられ、初期化されます。</li>
+<li>**出力**: 構築終了時に、ワーカープロセスによって更新された統計情報（<code>reltuples</code>, <code>indtuples</code> 等）がリーダーによって読み取られます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mutex</code> は、<code>heapdesc</code> より前のフィールドを除く、並列構築中に変更される状態（<code>nparticipantsdone</code>, <code>reltuples</code>, <code>indtuples</code>）を保護します。</li>
+<li><code>workersdonecv</code> は、すべてのワーカーが終了したことをリーダーが確認するために使用されます。</li>
+<li><code>BrinShared</code> の直後には <code>ParallelTableScanDescData</code> が配置されるメモリレイアウトが想定されています。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: リーダープロセスが <code>shm_toc_allocate</code> を用いて共有メモリを確保し、インデックス構築の基本設定を書き込みます。 2. **並列処理**: ワーカープロセスは共有された <code>BrinShared</code> を参照してスキャンを実行します。 3. **同期**: 各ワーカーは終了時に <code>nparticipantsdone</code> を更新し、<code>workersdonecv</code> を通知します。 4. **集約**: リーダープロセスはすべてのワーカーが完了するのを待ち、共有された統計情報を基にインデックス構築を完了させます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/brin/brin.c</code> 内の並列構築関連関数（<code>_brin_parallel_merge</code> 等）から参照されます。</li>
+<li>**呼び出し先**: 直接的な関数呼び出し先はありませんが、<code>ConditionVariable</code> を介してプロセス間の同期を行います。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelTableScanDescData</code>: 本構造体の直後に配置される並列スキャン記述子。</li>
+<li><code>BrinLeader</code>: 本構造体を保持し、並列構築を統括する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>BUFFERALIGN</code> によるアライメント調整が必須であり、構造体サイズ計算時に考慮する必要があります。</li>
+<li>共有メモリの割り当てに失敗した場合、インデックス構築は開始できません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は並列構築専用です。フィールドを追加する際は、<code>mutex</code> による保護が必要な「可変状態」か、構築中に不変な「設定値」かを明確に区別してください。</li>
+<li><code>ParallelTableScanDescData</code> を直後に配置するメモリレイアウトに依存しているため、構造体のサイズ変更や配置変更には注意が必要です。</li>
+</ul></body></html>

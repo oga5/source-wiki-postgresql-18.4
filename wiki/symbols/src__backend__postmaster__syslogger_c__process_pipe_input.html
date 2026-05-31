@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__syslogger_c__process_pipe_input.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>process_pipe_input</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/postmaster/syslogger.c:878</code></li>
+</ul>
+<h2>目的</h2>
+<p>パイプ経由で受信したログデータのチャンクを解析し、PID ごとにメッセージを再構成して適切なログファイルへ書き出す。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void process_pipe_input(char *logbuffer, int *bytes_in_logbuffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>logbuffer</code>: 受信した未処理のログデータが格納されたバッファ。</li>
+<li><code>bytes_in_logbuffer</code>: バッファ内の有効なデータ長（入力時）。処理後、残存するデータ長に更新される（出力時）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>パイプ上のデータは <code>PipeProtoHeader</code> 構造体で定義された独自プロトコルに従う。</li>
+<li>ログメッセージは複数のチャンクに分割される可能性があり、<code>PIPE_PROTO_IS_LAST</code> フラグによって最終チャンクが識別される。</li>
+<li>プロトコル外のデータ（非プロトコルデータ）は <code>LOG_DESTINATION_STDERR</code> として扱われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ヘッダー解析**: バッファ先頭から <code>PipeProtoHeader</code> を読み取り、有効性を検証する。 2. **メッセージ再構成**:</p>
+<ul>
+<li>チャンクが最終でない場合、PID に対応する <code>save_buffer</code> にデータを蓄積する。</li>
+<li>最終チャンクの場合、蓄積されたデータと結合し、<code>write_syslogger_file</code> を呼び出して書き出す。</li>
+<li>蓄積バッファが存在しない単一チャンクのメッセージは、そのまま書き出す。</li>
+<p>3. **非プロトコルデータの処理**: プロトコルヘッダーが見つからない場合、次のヘッダー開始位置までを <code>stderr</code> として書き出す。 4. **バッファ整理**: 処理しきれなかった残りのデータをバッファの先頭へ移動し、<code>bytes_in_logbuffer</code> を更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>SysLoggerMain</code>（<code>src/backend/postmaster/syslogger.c</code> 内のメインループ）。</li>
+<li>**呼び出し先**: <code>write_syslogger_file</code>, <code>appendBinaryStringInfo</code>, <code>initStringInfo</code>, <code>palloc</code>, <code>pfree</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PipeProtoHeader</code>: パイプ通信用のプロトコルヘッダー。</li>
+<li><code>save_buffer</code>: PID ごとに分割されたログメッセージを一時保持する構造体。</li>
+<li><code>buffer_lists</code>: <code>save_buffer</code> を管理するハッシュリスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ヘッダー不整合**: プロトコルヘッダーが破損している場合、非プロトコルデータとして処理を試みる。</li>
+<li>**バッファ不足**: チャンク全体が受信できていない場合、ループを中断し、残りのデータを次回の呼び出しまで保持する。</li>
+<li>**メモリ不足**: <code>palloc</code> によるメモリ確保失敗時はプロセスが終了する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SysLoggerMain</code> におけるメインのデータ処理ロジックである。</li>
+<li>非プロトコルデータが混入した場合の挙動は、ログの整合性を維持するために <code>read()</code> の境界を尊重する設計となっている。</li>
+</ul></body></html>

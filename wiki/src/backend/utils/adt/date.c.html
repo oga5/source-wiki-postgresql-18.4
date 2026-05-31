@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/date.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/date.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、SQL 標準で定義される <code>DATE</code> 型および <code>TIME</code> 型（<code>TIME WITHOUT TIME ZONE</code> および <code>TIME WITH TIME ZONE</code>）の内部実装を提供します。PostgreSQL のデータ型システムにおいて、これらの型の入出力、算術演算、比較、および型変換ロジックを担う中心的なソースコードです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、日時関連のデータ型を管理します。<code>timestamp.c</code> が日時（<code>TIMESTAMP</code>）を扱うのに対し、本ファイルは日付のみ、あるいは時刻のみに特化した型を扱います。これらは <code>Datum</code> として表現され、PostgreSQL の実行エンジンやインデックスアクセスメソッドと連携します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換とI/O**: SQL 文字列と内部表現（<code>DateADT</code>, <code>TimeADT</code>, <code>TimeTzADT</code>）の相互変換（<code>_in</code>, <code>_out</code>, <code>_recv</code>, <code>_send</code>）。</li>
+<li>**算術演算**: 日付・時刻に対する加減算、および <code>INTERVAL</code> 型との演算。</li>
+<li>**比較とソート**: B-Tree インデックス等で利用される比較関数および <code>sortsupport</code> 関数の提供。</li>
+<li>**型修飾子（Typmod）管理**: <code>TIME(n)</code> の精度制限や検証。</li>
+<li>**型間変換**: <code>DATE</code> / <code>TIME</code> / <code>TIMESTAMP</code> / <code>TIMESTAMPTZ</code> 間の相互変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>内部表現型</h3>
+<ul>
+<li><code>DateADT</code>: <code>int32</code>。エポック（2000-01-01）からの経過日数。</li>
+<li><code>TimeADT</code>: <code>int64</code>。00:00:00 からのマイクロ秒数。</li>
+<li><code>TimeTzADT</code>: <code>struct</code>。<code>TimeADT</code> と <code>int32</code>（GMT からのオフセット秒）の組。</li>
+</ul>
+<h3>型変換・I/O</h3>
+<ul>
+<li><code>date_in</code> / <code>date_out</code>: <code>DATE</code> 型のテキスト入出力。</li>
+<li><code>time_in</code> / <code>time_out</code>: <code>TIME</code> 型のテキスト入出力。</li>
+<li><code>timetz_in</code> / <code>timetz_out</code>: <code>TIMETZ</code> 型のテキスト入出力。</li>
+</ul>
+<h3>演算・サポート関数</h3>
+<ul>
+<li><code>date_cmp</code>, <code>time_cmp</code>, <code>timetz_cmp</code>: 比較関数。</li>
+<li><code>date_sortsupport</code>, <code>date_skipsupport</code>: インデックス最適化用関数。</li>
+<li><code>AdjustTimeForTypmod</code>: <code>TIME</code> 型の精度（小数点以下の桁数）を調整するユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AdjustTimeForTypmod</code></li>
+<li><code>EncodeSpecialDate</code></li>
+<li><code>GetSQLCurrentDate</code></li>
+<li><code>GetSQLCurrentTime</code></li>
+<li><code>GetSQLLocalTime</code></li>
+<li><code>anytime_typmod_check</code></li>
+<li><code>anytime_typmodin</code></li>
+<li><code>anytime_typmodout</code></li>
+<li><code>date_in</code></li>
+<li><code>date_out</code></li>
+<li><code>date_recv</code></li>
+<li><code>date_send</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力処理**: <code>_in</code> 関数群が <code>ParseDateTime</code> を呼び出し、文字列を <code>pg_tm</code> 構造体に分解します。その後、<code>date2j</code> や <code>tm2time</code> を用いて内部表現（<code>DateADT</code> や <code>TimeADT</code>）へ変換します。 2. **演算処理**: 演算子関数（<code>date_pli</code> 等）は、<code>Datum</code> から値を抽出し、算術演算を行った後、範囲チェック（<code>IS_VALID_DATE</code> 等）を経て結果を返します。 3. **型変換**: <code>date2timestamp_opt_overflow</code> 等の関数が、日付をタイムスタンプへ昇格させます。この際、オーバーフロー発生時の挙動（エラーまたは無限値の返却）を制御します。 4. **精度調整**: <code>AdjustTimeForTypmod</code> が <code>TIME</code> 型の精度を切り捨て/丸め処理し、SQL で指定された精度に合わせます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/datetime.h</code>: 日時解析および変換の共通ロジック。</li>
+<li><code>utils/builtins.h</code>: 組み込み関数プロトタイプ。</li>
+<li><code>datatype/timestamp.h</code>: タイムスタンプ関連の定数と型定義。</li>
+<li><code>fmgr.h</code>: PostgreSQL 関数マネージャのインターフェース。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>float.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/numeric.h</code></li>
+<li><code>utils/skipsupport.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/timestamp.c</code>: <code>TIMESTAMP</code> 型の実装。本ファイルと密接に連携し、型変換を相互に行います。</li>
+<li><code>src/backend/utils/adt/datetime.c</code>: 日時解析の低レベルな共通ルーチン。</li>
+<li><code>src/include/utils/date.h</code>: 本ファイルの公開インターフェースおよび型定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>TimeTzADT</code> は <code>palloc</code> を使用してヒープ上に確保されます。<code>DateADT</code> や <code>TimeADT</code> は <code>int32</code>/<code>int64</code> であり、<code>Datum</code> として直接渡されます。</li>
+<li>**無限値**: <code>DATEVAL_NOBEGIN</code> / <code>DATEVAL_NOEND</code> は、それぞれ <code>PG_INT32_MIN</code> / <code>PG_INT32_MAX</code> を使用して表現されます。</li>
+<li>**精度**: <code>TIME</code> 型の精度は <code>MAX_TIME_PRECISION</code>（6）までサポートされています。</li>
+<li>**注意点**: <code>time_in</code> 等の関数は、<code>typmod</code> を引数として受け取り、入力時に即座に精度調整を行う設計になっています。</li>
+<li>**省略箇所**: 本ファイルは非常に広範な比較関数群を含みますが、これらは基本的に <code>date_cmp</code> や <code>timetz_cmp_internal</code> をラップした定型的な実装です。個別の比較演算子のロジックは、この内部関数を理解すれば容易に把握可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__anytime_typmodin.html" target="wiki-view"><code>anytime_typmodin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__anytime_typmod_check.html" target="wiki-view"><code>anytime_typmod_check</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__anytime_typmodout.html" target="wiki-view"><code>anytime_typmodout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__date_in.html" target="wiki-view"><code>date_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__date_out.html" target="wiki-view"><code>date_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__date_recv.html" target="wiki-view"><code>date_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__date_send.html" target="wiki-view"><code>date_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__EncodeSpecialDate.html" target="wiki-view"><code>EncodeSpecialDate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__GetSQLCurrentDate.html" target="wiki-view"><code>GetSQLCurrentDate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__GetSQLCurrentTime.html" target="wiki-view"><code>GetSQLCurrentTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__GetSQLLocalTime.html" target="wiki-view"><code>GetSQLLocalTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__date_c__AdjustTimeForTypmod.html" target="wiki-view"><code>AdjustTimeForTypmod</code></a></li>
+</ul></body></html>

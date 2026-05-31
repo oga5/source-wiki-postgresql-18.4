@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/adjustfractdays.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AdjustFractDays</h1>
+<h2>概念</h2>
+<p><code>AdjustFractDays</code> は、浮動小数点数で表現された日数（端数）を、指定されたスケール（倍率）に基づいて整数日数とそれ以下の端数に分割し、日付・時刻構造体の日フィールドおよび秒・マイクロ秒フィールドへ反映・正規化するための内部ユーティリティ関数です。</p>
+<p>PostgreSQL のコードベース内では、サーバーバックエンド（<code>datetime.c</code>）と、クライアント側の ECPG ライブラリ（<code>interval.c</code>）の2箇所に、それぞれ異なるシグネチャとデータ構造を持つ同名の <code>static</code> 関数として実装されています。</p>
+<h2>なぜ重要か</h2>
+<p>日付や時間間隔（インターバル）の計算において、月や週などの単位から生じる浮動小数点の端数（例: 0.5ヶ月、0.25週など）を、精度を保ちながら正確に日数（<code>tm_mday</code>）およびそれ以下の時間単位（秒やマイクロ秒）へ変換・伝播させるために重要です。これにより、日付計算における端数の不整合を防ぎます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code>（バックエンドのデータ型・日付処理）</li>
+<li><code>module:src/interfaces/ecpg/pgtypeslib</code>（ECPGのデータ型ライブラリ）</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/adt/datetime.c#AdjustFractDays</code>**</li>
+<li>バックエンド用の静的関数。<code>struct pg_itm_in</code> を用いて日付・時刻の内部表現を更新し、オーバーフローチェックを行います。</li>
+<li>**<code>symbol:src/interfaces/ecpg/pgtypeslib/interval.c#AdjustFractDays</code>**</li>
+<li>ECPG用の静的関数。標準の <code>struct tm</code> および <code>fsec_t</code>（小数秒）を直接更新します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>具体的なエンドツーエンドの呼び出しフロー全体（どのSQLクエリやAPI呼び出しからどのような経路をたどってこれらの関数に到達するか）の詳細は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<p>各モジュール内における局所的な処理の流れは以下の通りです。</p>
+<h3>1. バックエンド側 (<code>datetime.c</code>)</h3>
+<p>1. 日付計算処理などの呼び出し元から、端数 <code>frac</code>、スケール <code>scale</code>、および <code>pg_itm_in</code> 構造体が渡されます。 2. <code>frac</code> に <code>scale</code> を乗算して整数部分（<code>extra_days</code>）を抽出します。 3. <code>pg_add_s32_overflow</code> を使用して、<code>itm_in-&gt;tm_mday</code> に <code>extra_days</code> を安全に加算します。 4. 残りの端数（<code>frac - extra_days</code>）を <code>AdjustFractMicroseconds</code> に渡し、<code>USECS_PER_DAY</code> をスケールとしてマイクロ秒単位の調整を行います。</p>
+<h3>2. ECPG側 (<code>interval.c</code>)</h3>
+<p>1. インターバル処理の各所（162, 166, 208, 519行目など）から呼び出されます。 2. <code>frac</code> に <code>scale</code> を乗算して総日数を算出し、整数部分（<code>extra_days</code>）を <code>tm-&gt;tm_mday</code> に加算します。 3. 残りの端数を算出し、<code>AdjustFractSeconds</code> を呼び出して <code>fsec</code> および <code>tm</code> の秒単位の調整を行います。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**早期リターン**: いずれの実装においても、入力 <code>frac</code> が <code>0</code> の場合は何も処理を行わずに即座にリターンします。</li>
+<li>**バックエンド版の前提条件**: <code>datetime.c</code> の実装では、入力 <code>frac</code> の絶対値が 1 未満であることを前提として設計されています。</li>
+<li>**ポインタの有効性**: 渡される構造体ポインタ（<code>itm_in</code>、<code>tm</code>、<code>fsec</code>）は、有効なメモリ領域を指している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**オーバーフロー処理の差異**:</li>
+<li>バックエンド版は <code>pg_add_s32_overflow</code> を用いて 32 ビット整数のオーバーフローを検知し、失敗時に <code>false</code> を返します。</li>
+<li>一方、ECPG版は <code>void</code> を返し、オーバーフローチェックを行わずに <code>tm-&gt;tm_mday</code> に直接加算するため、月や年を跨ぐ繰り越しやオーバーフローの挙動は <code>struct tm</code> の仕様や呼び出し側に依存します。</li>
+<li>**前提条件の不一致**: バックエンド版を呼び出す際は、<code>frac</code> の絶対値が 1 未満である制約が呼び出し側で守られていることを確認する必要があります。</li>
+<li>**データ構造の差異**: ECPG版はバックエンドのロジックを移植したものですが、バックエンドの <code>struct pg_itm_in</code>（または <code>struct pg_tm</code>）ではなく標準の <code>struct tm</code> を使用しているため、構造体の差異に注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/adt/datetime.c</code>（バックエンドにおける端数調整とオーバーフロー処理の確認）</li>
+<li><code>src/interfaces/ecpg/pgtypeslib/interval.c</code>（ECPGにおけるインターバル計算と <code>AdjustFractSeconds</code> への伝播の確認）</li>
+</ul></body></html>

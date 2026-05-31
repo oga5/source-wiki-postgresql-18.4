@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/trigger.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/trigger.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のトリガー（Trigger）サブシステムの中核を担う実装ファイルです。DDL コマンド（<code>CREATE TRIGGER</code>, <code>ALTER TRIGGER</code> 等）によるトリガー定義の管理、および実行時におけるトリガーの起動制御（BEFORE/AFTER/INSTEAD OF）を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、テーブルやビューに対するイベント駆動型の処理を定義します。エグゼキュータ（<code>executor/</code>）がデータ操作を行う際に呼び出されるトリガー実行関数を提供し、システムカタログ（<code>pg_trigger</code>）とリレーションキャッシュ（<code>relcache</code>）の整合性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 管理**: トリガーの作成、削除、名前変更、有効/無効化の実行。</li>
+<li>**実行時ディスパッチ**: SQL 操作（INSERT/UPDATE/DELETE/TRUNCATE）に応じたトリガー関数の起動。</li>
+<li>**状態管理**: <code>AFTER</code> トリガーの遅延実行（Deferred）管理と、トランザクション内でのイベントキューイング。</li>
+<li>**遷移テーブル管理**: <code>REFERENCING</code> 句で指定された遷移テーブル（Transition Tables）の構築と保持。</li>
+<li>**整合性チェック**: パーティションテーブルや継承関係におけるトリガーの伝播と制約の検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>トリガー定義・管理</h3>
+<ul>
+<li><code>CreateTrigger</code>: トリガー作成のメインエントリポイント。カタログ更新と依存関係の記録を行う。</li>
+<li><code>RemoveTriggerById</code>: トリガーの削除。</li>
+<li><code>renametrig</code>: トリガーの名前変更。</li>
+<li><code>EnableDisableTrigger</code>: トリガーの有効/無効状態の変更。</li>
+</ul>
+<h3>実行時ディスパッチ</h3>
+<ul>
+<li><code>ExecBRInsertTriggers</code> / <code>ExecARInsertTriggers</code> 等: 各操作（INSERT/UPDATE/DELETE/TRUNCATE）の BEFORE/AFTER 行レベルトリガーを実行するエグゼキュータ用関数。</li>
+<li><code>ExecCallTriggerFunc</code>: トリガー関数を呼び出すための低レベルラッパー。<code>FmgrInfo</code> を使用して関数呼び出しを最適化する。</li>
+</ul>
+<h3>内部状態・キャッシュ</h3>
+<ul>
+<li><code>RelationBuildTriggers</code>: リレーションキャッシュ構築時に <code>pg_trigger</code> からトリガー情報を読み込み、<code>TriggerDesc</code> を生成する。</li>
+<li><code>afterTriggers</code>: トランザクション内で遅延実行されるトリガーイベントを保持する静的構造体。</li>
+<li><code>MyTriggerDepth</code>: 現在のトリガー実行のネスト深さを追跡する変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AfterTriggerEvent</code></li>
+<li><code>AfterTriggerEventData</code></li>
+<li><code>AfterTriggerEventDataNoOids</code></li>
+<li><code>AfterTriggerEventDataOneCtid</code></li>
+<li><code>AfterTriggerEventDataZeroCtids</code></li>
+<li><code>AfterTriggerShared</code></li>
+<li><code>AfterTriggerSharedData</code></li>
+<li><code>SetConstraintState</code></li>
+<li><code>SetConstraintStateData</code></li>
+<li><code>SetConstraintTrigger</code></li>
+<li><code>SetConstraintTriggerData</code></li>
+<li><code>TriggerFlags</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL フロー**: <code>CreateTrigger</code> が <code>pg_trigger</code> を更新し、<code>CommandCounterIncrement()</code> を経てリレーションキャッシュを無効化（<code>CacheInvalidateRelcache</code>）することで、全バックエンドに定義変更を伝播させます。 2. **実行フロー**: エグゼキュータが <code>ExecBR...</code> 系の関数を呼び出すと、<code>TriggerEnabled</code> で実行条件（GUC <code>SessionReplicationRole</code> や <code>WHEN</code> 句）を評価し、<code>ExecCallTriggerFunc</code> で関数を起動します。 3. **遅延実行フロー**: <code>AFTER</code> トリガーは <code>AfterTriggerSaveEvent</code> でキューイングされます。トランザクション終了時や <code>SET CONSTRAINTS</code> 実行時に <code>AfterTriggerFireDeferred</code> が呼ばれ、キューに溜まったイベントが <code>afterTriggerInvokeEvents</code> によって順次処理されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>pg_trigger</code>, <code>pg_class</code>, <code>pg_constraint</code> 等のシステムカタログ操作。</li>
+<li>**アクセス層**: <code>access/tableam.h</code> を介したテーブルアクセス、<code>storage/lmgr.h</code> によるロック管理。</li>
+<li>**実行層**: <code>executor/executor.h</code>（<code>EState</code>, <code>ResultRelInfo</code> 等）。</li>
+<li>**ユーティリティ**: <code>utils/rel.h</code>（リレーションキャッシュ）、<code>utils/tuplestore.h</code>（遷移テーブル用）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/partition.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/bitmapset.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/plancache.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/trigger.h</code>: <code>TriggerData</code> や <code>TransitionCaptureState</code> 等の公開構造体定義。</li>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: トリガー実行関数を呼び出すエグゼキュータのメインロジック。</li>
+<li><code>src/backend/catalog/pg_trigger.c</code>: カタログ操作の補助。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>TriggerDesc</code> はリレーションキャッシュの一部として <code>CacheMemoryContext</code> に保持されます。一方、実行時のトリガーイベントや遷移テーブルは <code>CurTransactionContext</code> や <code>AfterTriggerEvents</code> コンテキストで管理され、トランザクション終了時に自動解放されます。</li>
+<li>**制約事項**: 外部テーブル（Foreign Table）に対する遅延トリガーはサポートされていません。</li>
+<li>**パーティション**: パーティションテーブルに対するトリガー操作は、再帰的に全パーティションへ適用される設計です。</li>
+<li>**浅い領域**: <code>AfterTriggerExecute</code> 内の複雑なメモリコンテキスト切り替えや、<code>AfterTriggerEventChunk</code> によるイベントリストのチャンク管理は、メモリ効率を最大化するための最適化であり、デバッグ時は注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__SetConstraintTriggerData.html" target="wiki-view"><code>SetConstraintTriggerData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__SetConstraintTrigger.html" target="wiki-view"><code>SetConstraintTrigger</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__SetConstraintStateData.html" target="wiki-view"><code>SetConstraintStateData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__SetConstraintState.html" target="wiki-view"><code>SetConstraintState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__TriggerFlags.html" target="wiki-view"><code>TriggerFlags</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerShared.html" target="wiki-view"><code>AfterTriggerShared</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerSharedData.html" target="wiki-view"><code>AfterTriggerSharedData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerEvent.html" target="wiki-view"><code>AfterTriggerEvent</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerEventData.html" target="wiki-view"><code>AfterTriggerEventData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerEventDataNoOids.html" target="wiki-view"><code>AfterTriggerEventDataNoOids</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerEventDataOneCtid.html" target="wiki-view"><code>AfterTriggerEventDataOneCtid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__trigger_c__AfterTriggerEventDataZeroCtids.html" target="wiki-view"><code>AfterTriggerEventDataZeroCtids</code></a></li>
+</ul></body></html>

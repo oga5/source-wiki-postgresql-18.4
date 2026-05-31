@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/hio.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/hio.c</h1>
+<h2>概要</h2>
+<p><code>hio.c</code> は、PostgreSQL のヒープアクセスメソッドにおける低レベルな入出力操作を担うモジュールです。主に、ヒープページへのタプルの物理的な配置、空き領域の探索、およびリレーションの拡張を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールにおいて、<code>heapam.c</code> が高レベルなタプル操作（挿入・更新・削除）を定義するのに対し、本ファイルはそれらの操作が要求する「適切なページ（バッファ）の確保」と「ページ内への書き込み」という物理層の責務を分離・担当しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプルの配置**: 指定されたページバッファ内にタプルを格納し、<code>t_self</code> を更新する。</li>
+<li>**バッファ確保**: 挿入に適した空き領域を持つページを、FSM（Free Space Map）や <code>BulkInsertState</code> を用いて探索する。</li>
+<li>**リレーション拡張**: 既存ページに十分な空きがない場合、リレーションを物理的に拡張し、新しいページを初期化する。</li>
+<li>**可視性管理**: ページが「全可視（all-visible）」である場合に、Visibility Map のピンを適切に管理し、整合性を保つ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationPutHeapTuple</code>: ページ内にタプルを物理的に挿入する。</li>
+<li><code>RelationGetBufferForTuple</code>: 挿入先として最適なバッファを確保する。デッドロック回避のため、複数のバッファをロックする際の順序制御も行う。</li>
+<li><code>RelationAddBlocks</code>: リレーションを拡張し、新しいページを割り当てる。</li>
+<li><code>BulkInsertStateData</code>: 大量挿入時にバッファのピンを保持し、探索効率を向上させるための状態管理構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetVisibilityMapPins</code></li>
+<li><code>ReadBufferBI</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **探索**: <code>RelationGetBufferForTuple</code> が呼び出されると、まず <code>BulkInsertState</code> または <code>relcache</code> のキャッシュからターゲットページを特定する。 2. **検証**: ターゲットページが不適な場合、FSM を使用して空き領域のあるページを探す。 3. **ロックとピン**: ページを読み込み、必要に応じて Visibility Map をピン留めする。デッドロックを防ぐため、複数のバッファを扱う際はページ番号の昇順でロックを取得する。 4. **拡張**: 適切なページが見つからない場合、<code>RelationAddBlocks</code> を呼び出し、リレーションを拡張して新しいページを初期化する。 5. **挿入**: 最終的に確保されたバッファに対し、<code>RelationPutHeapTuple</code> でタプルを書き込む。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>: ヒープアクセスメソッドの基本定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファマネージャ（<code>ReadBuffer</code>, <code>LockBuffer</code> 等）。</li>
+<li><code>storage/freespace.h</code>: FSM へのアクセス。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップの管理。</li>
+<li><code>access/hio.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/heap/heapam.c</code>: 本ファイルの関数を呼び出す上位層。</li>
+<li><code>src/backend/storage/freespace/freespace.c</code>: FSM の実装詳細。</li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: バッファの物理的な読み書き。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**エラー処理**: <code>RelationPutHeapTuple</code> 内では <code>ereport(ERROR)</code> が禁止されています。これは、バッファロックを保持した状態でエラーが発生するとクリーンアップが困難になるためです。致命的な失敗時は <code>PANIC</code> を使用してください。</li>
+<li>**デッドロック回避**: <code>RelationGetBufferForTuple</code> は、<code>otherBuffer</code>（更新対象のタプルがあるページ）と新しい挿入先ページの両方をロックする際、常にページ番号の昇順でロックを取得するルールを厳守しています。このロジックを変更する際は注意が必要です。</li>
+<li>**Visibility Map**: ページが「全可視」である場合、Visibility Map の更新が必要になります。I/O を伴う可能性があるため、バッファロックを一時的に解放してピンを取得する複雑な再試行ロジックが含まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__hio_c__RelationPutHeapTuple.html" target="wiki-view"><code>RelationPutHeapTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__hio_c__ReadBufferBI.html" target="wiki-view"><code>ReadBufferBI</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__hio_c__GetVisibilityMapPins.html" target="wiki-view"><code>GetVisibilityMapPins</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__hio_c__RelationAddBlocks.html" target="wiki-view"><code>RelationAddBlocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__hio_c__RelationGetBufferForTuple.html" target="wiki-view"><code>RelationGetBufferForTuple</code></a></li>
+</ul></body></html>

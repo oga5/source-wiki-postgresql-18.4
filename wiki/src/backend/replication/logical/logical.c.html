@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/logical.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/logical.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの論理デコーディングにおける調整役です。WALから変更データを抽出し、出力プラグインへ渡すまでのライフサイクルを管理します。<code>LogicalDecodingContext</code> を中心に、WAL読み込み、トランザクション再構築（<code>ReorderBuffer</code>）、スナップショット構築（<code>SnapBuild</code>）を統合し、消費者が複雑な内部処理を意識せずに変更ストリームを扱えるように抽象化を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>論理レプリケーションサブシステムにおける「デコーディング・エンジン」のフロントエンドです。<code>reorderbuffer.c</code>（トランザクション管理）や <code>snapbuild.c</code>（カタログ可視性）といった低レイヤーのコンポーネントと、外部プラグインやSQLインターフェース（<code>logicalfuncs.c</code>）の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**コンテキスト管理**: <code>LogicalDecodingContext</code> の生成、初期化、および破棄。</li>
+<li>**プラグイン連携**: 出力プラグインの動的ロードと、各コールバック（begin, change, commit等）のラッパー提供。</li>
+<li>**エラーハンドリング**: プラグイン実行時のエラーコンテキスト（LSNやコールバック名）のスタック管理。</li>
+<li>**スロット状態の更新**: <code>confirmed_flush</code>、<code>catalog_xmin</code>、<code>restart_lsn</code> の進捗管理と永続化。</li>
+<li>**ストリーミング制御**: 大規模トランザクションのストリーミングおよび2フェーズコミットのデコーディング制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
+<ul>
+<li><code>LogicalDecodingContext</code>: デコーディングセッションの全状態を保持する構造体。</li>
+<li><code>CreateInitDecodingContext</code>: 新規スロット用のコンテキスト作成。</li>
+<li><code>CreateDecodingContext</code>: 既存スロット用のコンテキスト作成。</li>
+<li><code>FreeDecodingContext</code>: リソース解放とシャットダウン処理。</li>
+</ul>
+<h3>プラグイン・コールバックラッパー</h3>
+<ul>
+<li><code>startup_cb_wrapper</code> / <code>shutdown_cb_wrapper</code>: プラグインのライフサイクル管理。</li>
+<li><code>begin_cb_wrapper</code> / <code>commit_cb_wrapper</code>: トランザクション境界の処理。</li>
+<li><code>change_cb_wrapper</code> / <code>truncate_cb_wrapper</code>: DML/DDL変更の通知。</li>
+<li><code>stream_*_cb_wrapper</code>: ストリーミング転送用コールバック群。</li>
+</ul>
+<h3>スロット進捗管理</h3>
+<ul>
+<li><code>LogicalConfirmReceivedLocation</code>: 消費者が処理したLSNを記録し、<code>restart_lsn</code> や <code>catalog_xmin</code> を進める。</li>
+<li><code>LogicalIncreaseXminForSlot</code>: カタログの安全なxmin horizonを更新。</li>
+<li><code>LogicalIncreaseRestartDecodingForSlot</code>: WAL保持のための <code>restart_lsn</code> を更新。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckLogicalDecodingRequirements</code></li>
+<li><code>CreateDecodingContext</code></li>
+<li><code>CreateInitDecodingContext</code></li>
+<li><code>DecodingContextFindStartpoint</code></li>
+<li><code>DecodingContextReady</code></li>
+<li><code>FreeDecodingContext</code></li>
+<li><code>LogicalErrorCallbackState</code></li>
+<li><code>OutputPluginPrepareWrite</code></li>
+<li><code>OutputPluginUpdateProgress</code></li>
+<li><code>OutputPluginWrite</code></li>
+<li><code>ResetLogicalStreamingState</code></li>
+<li><code>StartupDecodingContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>Create*DecodingContext</code> が <code>ReorderBuffer</code> と <code>SnapBuild</code> を初期化し、プラグインをロードします。 2. **WAL読み込み**: <code>DecodingContextFindStartpoint</code> が <code>XLogReadRecord</code> をループし、<code>LogicalDecodingProcessRecord</code> を通じて <code>SnapBuild</code> が一貫性のある状態になるまでWALを消化します。 3. **デコード実行**: <code>ReorderBuffer</code> がWALレコードを蓄積・整列し、コミット時に <code>*_cb_wrapper</code> を呼び出します。 4. **ラッパー経由の出力**: 各ラッパーは <code>error_context_stack</code> に情報をプッシュし、プラグインのコールバックを実行します。プラグインは <code>OutputPluginPrepareWrite</code> / <code>OutputPluginWrite</code> を介してデータを書き出します。 5. **進捗報告**: 消費者が <code>LogicalConfirmReceivedLocation</code> を呼び出すと、スロットのメタデータが更新され、不要なWALや古いカタログ行が掃除可能になります。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/reorderbuffer.h</code>, <code>replication/snapbuild.h</code>: デコーディングの核となるロジック。</li>
+<li><code>replication/slot.h</code>: レプリケーションスロットの管理。</li>
+<li><code>access/xlogreader.h</code>: WAL解析の基盤。</li>
+<li><code>utils/memutils.h</code>: コンテキストごとのメモリ管理。</li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>fmgr.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/decode.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/replication/logical.h</code>: <code>LogicalDecodingContext</code> の定義。</li>
+<li><code>src/backend/replication/logical/decode.c</code>: WALレコードの解析ロジック。</li>
+<li><code>src/backend/replication/logical/logicalfuncs.c</code>: SQLインターフェースからの利用例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>LogicalDecodingContext</code> は専用の <code>MemoryContext</code> を持ちます。プラグインのコールバック実行時には、このコンテキストがアクティブになるよう注意が必要です。</li>
+<li>**エラーハンドリング**: プラグイン内でエラーが発生した場合、<code>output_plugin_error_callback</code> がスタックに積まれているため、どのLSNで失敗したかがログに詳細に出力されます。</li>
+<li>**制約**: <code>fast_forward</code> モードは、変更データを生成せずスロットの進捗のみを進めるための軽量モードです。</li>
+<li>**省略箇所**: 本ファイルは調整役であるため、WALレコードの具体的な解析ロジック（<code>LogicalDecodingProcessRecord</code> 等）は <code>decode.c</code> に委譲されています。また、並列適用ワーカーの詳細は <code>applyparallelworker.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__LogicalErrorCallbackState.html" target="wiki-view"><code>LogicalErrorCallbackState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__CheckLogicalDecodingRequirements.html" target="wiki-view"><code>CheckLogicalDecodingRequirements</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__StartupDecodingContext.html" target="wiki-view"><code>StartupDecodingContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__CreateInitDecodingContext.html" target="wiki-view"><code>CreateInitDecodingContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__CreateDecodingContext.html" target="wiki-view"><code>CreateDecodingContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__DecodingContextReady.html" target="wiki-view"><code>DecodingContextReady</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__DecodingContextFindStartpoint.html" target="wiki-view"><code>DecodingContextFindStartpoint</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__FreeDecodingContext.html" target="wiki-view"><code>FreeDecodingContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__OutputPluginPrepareWrite.html" target="wiki-view"><code>OutputPluginPrepareWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__OutputPluginWrite.html" target="wiki-view"><code>OutputPluginWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__OutputPluginUpdateProgress.html" target="wiki-view"><code>OutputPluginUpdateProgress</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logical_c__ResetLogicalStreamingState.html" target="wiki-view"><code>ResetLogicalStreamingState</code></a></li>
+</ul></body></html>

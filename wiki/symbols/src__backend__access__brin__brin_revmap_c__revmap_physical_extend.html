@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_revmap_c__revmap_physical_extend.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>revmap_physical_extend</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_revmap.c:521</code></li>
+</ul>
+<h2>目的</h2>
+<p>BRINインデックスのリバースレンジマップ（revmap）を物理的に拡張し、新しいrevmapページを割り当ててメタページを更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void revmap_physical_extend(BrinRevmap *revmap)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: <code>BrinRevmap *revmap</code> （対象インデックスのrevmap状態を保持する構造体）</li>
+<li>出力: なし（副作用としてメタページおよびインデックスの物理構造を更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>revmap-&gt;rm_metaBuf</code> がメタページを保持していること。</li>
+<li>メタページの <code>lastRevmapPage</code> が、現在のインデックスの物理的なrevmap末尾と整合していること。</li>
+<li>拡張対象のページが既存のBRINページと競合する場合、退避処理が優先されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. メタページを排他ロックし、キャッシュされた <code>lastRevmapPage</code> が最新か確認する。古い場合はロックを解除して終了する。 2. 次のrevmapページ番号を算出する。 3. 該当ブロックが既に存在する場合は読み込み、存在しない場合は <code>ExtendBufferedRel</code> でインデックスを物理拡張する。 4. 取得したページが既存のBRINページとして使用されている場合、<code>brin_evacuate_page</code> を呼び出してデータを退避させ、呼び出し元に制御を戻す。 5. ページが空または新規の場合、<code>brin_page_init</code> で <code>BRIN_PAGETYPE_REVMAP</code> として初期化する。 6. メタページの <code>lastRevmapPage</code> を更新し、WALログ（<code>XLOG_BRIN_REVMAP_EXTEND</code>）を記録する。 7. 最後にメタページと対象バッファのロックを解除する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>revmap_extend_and_get_blkno</code> （<code>src/backend/access/brin/brin_revmap.c:511</code>）</li>
+<li>呼び出し先: <code>LockBuffer</code>, <code>ReadBuffer</code>, <code>ExtendBufferedRel</code>, <code>brin_start_evacuating_page</code>, <code>brin_evacuate_page</code>, <code>brin_page_init</code>, <code>XLogInsert</code> 等</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BrinRevmap</code>: revmapのアクセス状態を管理。</li>
+<li><code>BrinMetaPageData</code>: インデックスのメタデータ（<code>lastRevmapPage</code> を保持）。</li>
+<li><code>Buffer</code>: バッファマネージャの管理単位。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**同時拡張**: 他のバックエンドが並行してインデックスを拡張した場合、<code>BufferGetBlockNumber</code> の不一致を検知して処理を中断する。</li>
+<li>**ページ破損**: 取得したページが <code>BRIN_IS_REGULAR_PAGE</code> でもなく新規でもない場合、<code>ERRCODE_INDEX_CORRUPTED</code> を発生させる。</li>
+<li>**退避発生**: ページが既に使用中の場合、退避処理を実行して終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメタページを排他ロックするため、頻繁な呼び出しはインデックス全体の競合を招く可能性がある。</li>
+<li><code>pd_lower</code> の設定は、古いバージョンのPostgreSQLとの互換性およびWALリプレイ時のメタデータ保護のために必須である。</li>
+</ul></body></html>

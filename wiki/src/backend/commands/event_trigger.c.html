@@ -1,0 +1,128 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/event_trigger.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/event_trigger.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のイベントトリガー機能のコア実装です。DDL コマンドの実行前後や、特定のイベント（<code>sql_drop</code>, <code>table_rewrite</code>, <code>login</code>）発生時にユーザー定義関数を呼び出すためのディスパッチ、状態管理、およびコマンドの収集（deparsing）を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>commands</code> モジュールの一部として、DDL 実行エンジン（<code>utility.c</code> 等）と密接に連携します。イベントトリガーは、DDL コマンドのライフサイクルに介入し、メタデータ操作や監査ログの記録、あるいは特定の操作の禁止を可能にします。</p>
+<h2>責務</h2>
+<ul>
+<li>**イベントトリガーの管理**: <code>CREATE</code>, <code>ALTER</code>, <code>DROP</code> コマンドによるイベントトリガー定義のカタログ（<code>pg_event_trigger</code>）操作。</li>
+<li>**実行ディスパッチ**: <code>EventTriggerInvoke</code> を通じたトリガー関数の実行と、実行コンテキスト（<code>EventTriggerData</code>）の提供。</li>
+<li>**状態管理**: <code>EventTriggerQueryState</code> を用いた、コマンド実行中のドロップ対象オブジェクトや実行済みコマンドの追跡。</li>
+<li>**DDL 収集**: <code>deparse_utility.h</code> と連携し、実行された DDL コマンドの履歴を保持してトリガー関数から参照可能にする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>currentEventTriggerState</code>: 現在のクエリ実行におけるイベントトリガーの状態を保持するスタックトップ。</li>
+<li><code>EventTriggerQueryState</code>: 実行中のコマンドに関連するドロップ対象オブジェクトリストや、収集されたコマンドリストを保持する構造体。</li>
+</ul>
+<h3>トリガー実行・ディスパッチ</h3>
+<ul>
+<li><code>EventTriggerDDLCommandStart</code> / <code>End</code>: DDL コマンドの開始・終了時に呼び出されるフック。</li>
+<li><code>EventTriggerSQLDrop</code>: オブジェクト削除時に呼び出されるフック。</li>
+<li><code>EventTriggerInvoke</code>: リストされたトリガー関数を順次実行するエンジン。</li>
+</ul>
+<h3>カタログ操作</h3>
+<ul>
+<li><code>CreateEventTrigger</code>: <code>pg_event_trigger</code> への新規登録。</li>
+<li><code>AlterEventTrigger</code>: トリガーの有効/無効状態の更新。</li>
+<li><code>SetDatabaseHasLoginEventTriggers</code>: <code>pg_database.dathasloginevt</code> フラグの管理。</li>
+</ul>
+<h3>ユーティリティ関数</h3>
+<ul>
+<li><code>pg_event_trigger_dropped_objects</code>: <code>sql_drop</code> トリガー内で削除対象オブジェクトを取得する関数。</li>
+<li><code>pg_event_trigger_ddl_commands</code>: 実行された DDL コマンドリストを取得する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterEventTrigger</code></li>
+<li><code>AlterEventTriggerOwner</code></li>
+<li><code>AlterEventTriggerOwner_internal</code></li>
+<li><code>AlterEventTriggerOwner_oid</code></li>
+<li><code>CreateEventTrigger</code></li>
+<li><code>EventTriggerCollectCreateOpClass</code></li>
+<li><code>EventTriggerCommonSetup</code></li>
+<li><code>EventTriggerDDLCommandStart</code></li>
+<li><code>EventTriggerGetTag</code></li>
+<li><code>EventTriggerQueryState</code></li>
+<li><code>SQLDropObject</code></li>
+<li><code>SetDatabaseHasLoginEventTriggers</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>ProcessUtility</code> が <code>EventTriggerDDLCommandStart</code> を呼び出し、キャッシュから該当するトリガーを検索。 2. **収集**: コマンド実行中、<code>EventTriggerSQLDropAddObject</code> や <code>EventTriggerCollectSimpleCommand</code> が呼び出され、<code>currentEventTriggerState</code> に情報が蓄積される。 3. **実行**: <code>EventTriggerInvoke</code> がトリガー関数を呼び出す際、<code>EventTriggerData</code> を <code>fcinfo-&gt;context</code> にセットし、関数側で <code>CALLED_AS_EVENT_TRIGGER</code> マクロにより情報を取得可能にする。 4. **終了**: <code>EventTriggerEndCompleteQuery</code> により、クエリ終了時にメモリコンテキストが解放され、状態が復元される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_event_trigger.h</code>: カタログ定義。</li>
+<li><code>utils/evtcache.h</code>: トリガーキャッシュの検索。</li>
+<li><code>tcop/deparse_utility.h</code>: DDL 収集用構造体。</li>
+<li><code>access/heapam.h</code>, <code>access/table.h</code>: カタログ更新用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_attrdef.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_parameter_acl.h</code></li>
+<li><code>catalog/pg_policy.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/event_trigger.h</code>: 公開インターフェース。</li>
+<li><code>src/backend/tcop/utility.c</code>: DDL 実行のメインフロー。</li>
+<li><code>src/backend/utils/cache/evtcache.c</code>: イベントトリガーキャッシュの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>EventTriggerQueryState</code> は <code>TopMemoryContext</code> ではなく、クエリごとに作成される専用のメモリコンテキストで管理されます。<code>EventTriggerEndCompleteQuery</code> で確実に解放される必要があります。</li>
+<li>**再入可能性**: イベントトリガー関数自体が DDL を実行する場合、<code>currentEventTriggerState</code> はスタック構造（<code>previous</code> ポインタ）になっており、再帰的な状態管理が可能です。</li>
+<li>**制約**: イベントトリガーはシングルユーザーモードでは無効化されます。また、<code>event_triggers</code> GUC で全体を無効化可能です。</li>
+<li>**未実装/浅い部分**: <code>EventTriggerCollectGrant</code> 等の収集関数は、特定の DDL コマンドに対してのみ実装されており、すべての DDL を網羅しているわけではありません。また、<code>FIXME</code> にある通り、トランザクションのサブトランザクションアボート時のコマンド収集の整合性には注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__EventTriggerQueryState.html" target="wiki-view"><code>EventTriggerQueryState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__SQLDropObject.html" target="wiki-view"><code>SQLDropObject</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__CreateEventTrigger.html" target="wiki-view"><code>CreateEventTrigger</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__SetDatabaseHasLoginEventTriggers.html" target="wiki-view"><code>SetDatabaseHasLoginEventTriggers</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__AlterEventTrigger.html" target="wiki-view"><code>AlterEventTrigger</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__AlterEventTriggerOwner.html" target="wiki-view"><code>AlterEventTriggerOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__AlterEventTriggerOwner_oid.html" target="wiki-view"><code>AlterEventTriggerOwner_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__AlterEventTriggerOwner_internal.html" target="wiki-view"><code>AlterEventTriggerOwner_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__EventTriggerGetTag.html" target="wiki-view"><code>EventTriggerGetTag</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__EventTriggerCommonSetup.html" target="wiki-view"><code>EventTriggerCommonSetup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__EventTriggerDDLCommandStart.html" target="wiki-view"><code>EventTriggerDDLCommandStart</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__event_trigger_c__EventTriggerCollectCreateOpClass.html" target="wiki-view"><code>EventTriggerCollectCreateOpClass</code></a></li>
+</ul></body></html>

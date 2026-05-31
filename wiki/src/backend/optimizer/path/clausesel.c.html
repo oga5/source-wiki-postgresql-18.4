@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/clausesel.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/clausesel.c</h1>
+<h2>概要</h2>
+<p>クエリプランナがコスト見積もりのために使用する「選択率（Selectivity）」を計算するためのルーチン群を提供します。SQLの <code>WHERE</code> 句や <code>JOIN</code> 条件に含まれる式が、テーブルの何割の行に適合するかを推定します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムにおいて、プランナがパス（実行計画の候補）を評価する際の基礎となる統計的根拠を生成します。他のパス生成モジュールが「この条件で絞り込んだ場合、何行残るか」を知るために呼び出されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**選択率の集約**: <code>AND</code> / <code>OR</code> で結合された条件リスト全体の選択率を計算します。</li>
+<li>**範囲クエリの最適化**: <code>x &gt; 10 AND x &lt; 20</code> のような同一変数に対する範囲条件を検出し、単純な積ではなく論理的に正しい範囲選択率を算出します。</li>
+<li>**統計情報の活用**: 拡張統計（Extended Statistics）を優先的に適用し、列間の相関を考慮した見積もりを行います。</li>
+<li>**キャッシュ管理**: <code>RestrictInfo</code> に計算結果を保持し、同一条件の再計算コストを削減します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>clauselist_selectivity</code>: <code>AND</code> 条件リストの選択率を計算する主要なエントリポイント。</li>
+<li><code>clause_selectivity_ext</code>: 個別の式に対する選択率計算。<code>RestrictInfo</code> のキャッシュを管理します。</li>
+<li><code>RangeQueryClause</code>: 範囲クエリの境界（上限・下限）を追跡するための内部データ構造。</li>
+<li><code>treat_as_join_clause</code>: 条件が制限（Restriction）か結合（Join）かを判定するヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>addRangeClause</code></li>
+<li><code>clause_selectivity</code></li>
+<li><code>clauselist_selectivity_ext</code></li>
+<li><code>clauselist_selectivity_or</code></li>
+<li><code>find_single_rel_for_clauses</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **エントリ**: <code>clauselist_selectivity</code> が条件リストを受け取ります。 2. **拡張統計の適用**: <code>find_single_rel_for_clauses</code> で単一リレーションかを確認し、利用可能な拡張統計があれば <code>statext_clauselist_selectivity</code> を呼び出します。 3. **個別計算**: 統計でカバーされない条件に対し、<code>clause_selectivity_ext</code> を再帰的に呼び出します。 4. **範囲クエリ処理**: <code>addRangeClause</code> を通じて範囲条件を収集し、最後に <code>hiselectivity + loselectivity - 1.0</code> などの式で補正します。 5. **キャッシュ**: 計算結果は <code>RestrictInfo</code> 構造体の <code>norm_selec</code> または <code>outer_selec</code> に格納されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/selfuncs.h</code>: 実際の選択率推定関数（<code>scalarlt</code> 等）の定義。</li>
+<li><code>optimizer/clauses.h</code>: 式の解析や分類用。</li>
+<li><code>optimizer/pathnode.h</code>: <code>RestrictInfo</code> や <code>RelOptInfo</code> 構造体。</li>
+<li><code>statistics/statistics.h</code>: 拡張統計の適用用。</li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 実際の統計計算ロジック（ヒストグラムやMCVの参照）が実装されています。</li>
+<li><code>src/backend/optimizer/path/costsize.c</code>: 本ファイルで計算された選択率を使用して、最終的なコスト見積もりを行うモジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの重要性**: <code>RestrictInfo</code> を介して呼び出すことで、プランナの探索フェーズにおける計算量を大幅に削減できます。</li>
+<li>**範囲クエリの補正**: <code>x &gt; 10 AND x &lt; 20</code> のようなケースで、単純な積（<code>s1 * s2</code>）ではなく、範囲の重なりを考慮した計算を行う点に注意してください。</li>
+<li>**拡張統計**: <code>use_extended_stats</code> フラグが <code>true</code> の場合、列間の相関が考慮されます。デバッグ時には、このフラグの有無で推定値がどう変わるかを確認するのが有効です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__RangeQueryClause.html" target="wiki-view"><code>RangeQueryClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__clauselist_selectivity.html" target="wiki-view"><code>clauselist_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__clauselist_selectivity_ext.html" target="wiki-view"><code>clauselist_selectivity_ext</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__clauselist_selectivity_or.html" target="wiki-view"><code>clauselist_selectivity_or</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__addRangeClause.html" target="wiki-view"><code>addRangeClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__find_single_rel_for_clauses.html" target="wiki-view"><code>find_single_rel_for_clauses</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__treat_as_join_clause.html" target="wiki-view"><code>treat_as_join_clause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__clause_selectivity.html" target="wiki-view"><code>clause_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__clausesel_c__clause_selectivity_ext.html" target="wiki-view"><code>clause_selectivity_ext</code></a></li>
+</ul></body></html>

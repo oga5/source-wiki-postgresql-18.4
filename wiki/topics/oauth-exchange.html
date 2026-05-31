@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/oauth-exchange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>oauth_exchange</h1>
+<h2>概念</h2>
+<p><code>oauth_exchange</code> は、PostgreSQL における SASL <code>OAUTHBEARER</code> 認証メカニズムにおいて、クライアントとサーバー間でのプロトコル交換（ハンドシェイク）を処理するための仕組みです。サーバー側（<code>src/backend/libpq/auth-oauth.c</code>）では、クライアントから送信されたトークンの検証や状態遷移の管理を行います。クライアント側（<code>src/interfaces/libpq/fe-auth-oauth.c</code>）にも同名のシンボルが存在し、プロトコル交換の対となる処理を担っています。</p>
+<h2>なぜ重要か</h2>
+<p>RFC 7628 に準拠した <code>OAUTHBEARER</code> 認証を安全かつ正確に実行するために重要です。クライアントから送られてくる認証トークンの抽出、検証、およびエラーハンドリングを適切に行い、メモリ上の機密情報（トークンなど）を安全に消去（<code>explicit_bzero</code>）することで、セキュアな認証プロセスを保証します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/libpq</code></li>
+<li><code>module:src/interfaces/libpq</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/libpq/auth-oauth.c#oauth_exchange</code>: サーバー側で SASL <code>OAUTHBEARER</code> 認証のプロトコル交換を処理する関数。</li>
+<li><code>symbol:src/interfaces/libpq/fe-auth-oauth.c#oauth_exchange</code>: クライアント側のプロトコル交換処理に関連するシンボル。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>サーバー側における処理の流れは以下の通りです：</p>
+<p>1. **初期ハンドシェイク**: クライアントからの入力 <code>input</code> が <code>NULL</code> の場合、空のチャレンジを返して継続します。 2. **状態チェック**: <code>OAUTH_STATE_INIT</code> または <code>OAUTH_STATE_ERROR</code> 状態であることを確認します。 3. **メッセージ解析**: クライアントからのメッセージを解析し、チャネルバインディングフラグ（&#x27;n&#x27; または &#x27;y&#x27;）と認証属性を確認します。 4. **トークン抽出**: <code>parse_kvpairs_for_auth</code> を使用して <code>auth</code> キーの値（トークン）を抽出します。 5. **検証**: <code>validate</code> 関数を呼び出してトークンを検証します。</p>
+<ul>
+<li>**成功時**: 状態を <code>OAUTH_STATE_FINISHED</code> に更新し、<code>PG_SASL_EXCHANGE_SUCCESS</code> を返します。</li>
+<li>**失敗時**: <code>generate_error_response</code> でエラー情報を生成し、状態を <code>OAUTH_STATE_ERROR</code> に遷移させて <code>PG_SASL_EXCHANGE_CONTINUE</code> を返します。</li>
+<p>6. **クリーンアップ**: トークンを含むメモリ領域を <code>explicit_bzero</code> で消去します。</p>
+</ul>
+<p>※ クライアント側（<code>fe-auth-oauth.c</code>）の具体的な内部処理、およびクライアントとサーバー間を跨ぐ完全なエンドツーエンドの相互作用の詳細は、提供されたコンテキストからはまだ判明していません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**入力と状態の整合性**: <code>input</code> が <code>NULL</code> の場合、セッション状態（<code>ctx-&gt;state</code>）は必ず <code>OAUTH_STATE_INIT</code> でなければなりません。</li>
+<li>**入力長の整合性**: <code>inputlen</code> は <code>input</code> の実際の文字列長と一致していなければなりません。</li>
+<li>**状態遷移**: 認証成功時には、セッション状態が必ず <code>OAUTH_STATE_FINISHED</code> に更新されます。</li>
+<li>**機密情報の消去**: 処理終了時には、トークンを含むメモリ領域（<code>input_copy</code>）が <code>explicit_bzero</code> によって確実に消去されなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**プロトコル違反**: メッセージが空、長さの不一致、不正なチャネルバインディングフラグ、または必須属性の欠如がある場合、<code>ERRCODE_PROTOCOL_VIOLATION</code> エラーが発生します。</li>
+<li>**未サポート機能**: 認可ID（authzid）が含まれている場合、<code>ERRCODE_FEATURE_NOT_SUPPORTED</code> が報告され処理が失敗します。</li>
+<li>**検証失敗時の挙動**: トークンが無効な場合、即座に完全に切断するのではなく、エラー応答を生成して認証を継続（再試行）させる状態（<code>OAUTH_STATE_ERROR</code>）に遷移します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/libpq/auth-oauth.c</code> (サーバー側の <code>oauth_exchange</code> 実装と <code>validate</code> などの関連関数)</li>
+<li><code>src/interfaces/libpq/fe-auth-oauth.c</code> (クライアント側の <code>oauth_exchange</code> 実装)</li>
+</ul></body></html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/amcheck/verify_heapam.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/amcheck/verify_heapam.c</h1>
+<h2>概要</h2>
+<p><code>verify_heapam.c</code> は、PostgreSQL のヒープリレーション（テーブル）の物理的・論理的な整合性を検証するための実装ファイルです。ページ内のタプル構造、HOT（Heap Only Tuple）チェーンの整合性、トランザクション可視性、および TOAST データの健全性をチェックします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>amcheck</code> モジュールの一部として、ヒープテーブルに対する <code>verify_heapam</code> SQL 関数を提供します。他の検証ファイル（<code>verify_nbtree.c</code> 等）がインデックス構造に特化しているのに対し、本ファイルはテーブルのデータページそのものの物理的な破損を検出する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ページ走査**: <code>ReadStream</code> API を利用し、指定された範囲のヒープページを効率的に走査する。</li>
+<li>**構造検証**: ページ内のラインポインタ、タプルヘッダー、属性オフセットの整合性を検証する。</li>
+<li>**可視性チェック**: トランザクション ID（XID/MXID）の妥当性と、可視性ルールに基づく HOT チェーンの整合性を検証する。</li>
+<li>**TOAST 検証**: メインテーブルの TOAST ポインタと、対応する TOAST テーブル内のチャンクの整合性を照合する。</li>
+<li>**破損報告**: 検出された破損情報を <code>tuplestore</code> に蓄積し、SQL レベルで結果を返す。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
+<ul>
+<li><code>HeapCheckContext</code>: 検証実行中の状態（リレーション情報、キャッシュされた XID 範囲、現在のページ/タプル位置、破損フラグ）を保持する構造体。</li>
+<li><code>HeapCheckReadStreamData</code>: <code>ReadStream</code> API 用のプライベートデータ。スキップオプション（<code>all-visible</code> 等）に基づきページを読み飛ばすロジックを制御する。</li>
+</ul>
+<h3>検証ロジック</h3>
+<ul>
+<li><code>verify_heapam</code>: SQL から呼び出されるメイン関数。引数の検証、リレーションのオープン、検証ループの実行を行う。</li>
+<li><code>check_tuple</code>: タプル単位の検証フロー（ヘッダー、可視性、属性の順）。</li>
+<li><code>check_tuple_header</code>: タプルヘッダーの物理的な整合性（オフセット、長さ、ビットマップ）をチェック。</li>
+<li><code>check_tuple_visibility</code>: XID/MXID の妥当性と、タプルが現在有効か（あるいは削除済みか）を判定。</li>
+<li><code>check_tuple_attribute</code>: 属性のオフセット計算と、TOAST データの存在チェック。</li>
+<li><code>check_toasted_attribute</code>: TOAST テーブルをスキャンし、チャンクのシーケンスとサイズを検証。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>report_corruption</code>: 破損情報を <code>tuplestore</code> に記録する。</li>
+<li><code>get_xid_status</code>: XID のコミット状態を判定し、範囲外の XID を検出する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FullTransactionIdFromXidAndCtx</code></li>
+<li><code>HeapCheckContext</code></li>
+<li><code>HeapCheckReadStreamData</code></li>
+<li><code>SkipPages</code></li>
+<li><code>ToastedAttribute</code></li>
+<li><code>XidBoundsViolation</code></li>
+<li><code>XidCommitStatus</code></li>
+<li><code>heapcheck_read_stream_next_unskippable</code></li>
+<li><code>report_corruption</code></li>
+<li><code>report_corruption_internal</code></li>
+<li><code>report_toast_corruption</code></li>
+<li><code>verify_heapam</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>verify_heapam</code> がリレーションを <code>AccessShareLock</code> でロックし、<code>HeapCheckContext</code> を初期化。 2. **走査**: <code>read_stream_begin_relation</code> を介してページを順次取得。<code>heapcheck_read_stream_next_unskippable</code> が可視性マップを参照して不要なページをスキップ。 3. **ページ内ループ**: ページ内の各ラインポインタを走査し、<code>check_tuple</code> を呼び出す。 4. **チェーン検証**: ページ内のタプル間リンク（HOT チェーン）を <code>predecessor</code>/<code>successor</code> 配列で追跡し、不整合をチェック。 5. **TOAST 検証**: メインテーブルのロックを解放した後、<code>toasted_attributes</code> リストに蓄積されたポインタに基づき、TOAST テーブルをスキャンして検証。 6. **終了**: <code>tuplestore</code> を通じて結果を返し、リソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>heaptoast.h</code>, <code>visibilitymap.h</code>, <code>table.h</code> 等（ヒープ AM の内部構造へのアクセス）。</li>
+<li><code>storage/</code>: <code>bufmgr.h</code>, <code>read_stream.h</code>（バッファ管理と効率的なページ読み込み）。</li>
+<li><code>catalog/</code>: <code>pg_class.h</code>（リレーション属性の取得）。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/toast_internals.h</code></li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/read_stream.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/amcheck/verify_common.c</code>: 共通のロック管理やエラー報告の基盤。</li>
+<li><code>src/backend/access/heap/</code>: ヒープ AM の実装（<code>heapam.c</code> 等）。本ファイルはこれらの内部構造を直接参照して検証を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>HeapCheckContext</code> 内の <code>toasted_attributes</code> リストは、ページごとの検証後に <code>list_free_deep</code> で解放されます。</li>
+<li>**安全性**: 本モジュールは破損したデータに対してもクラッシュしないよう設計されていますが、TOAST テーブル自体が深刻に破損している場合、インデックススキャン中にクラッシュする可能性があります。</li>
+<li>**制約**: <code>check_toast</code> オプションを有効にすると、TOAST テーブルへのインデックススキャンが発生するため、パフォーマンスに影響を与えます。</li>
+<li>**未実装/浅い部分**: 本ファイルはヒープの物理構造を検証しますが、論理的なデータ内容（型ごとの値の妥当性など）までは検証しません。また、<code>check_tuple_visibility</code> は一部の古いバイナリアップグレード用フラグ（<code>HEAP_MOVED_OFF</code> 等）を考慮した複雑なロジックを含んでいます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__XidBoundsViolation.html" target="wiki-view"><code>XidBoundsViolation</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__XidCommitStatus.html" target="wiki-view"><code>XidCommitStatus</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__SkipPages.html" target="wiki-view"><code>SkipPages</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__ToastedAttribute.html" target="wiki-view"><code>ToastedAttribute</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__HeapCheckContext.html" target="wiki-view"><code>HeapCheckContext</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__HeapCheckReadStreamData.html" target="wiki-view"><code>HeapCheckReadStreamData</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__verify_heapam.html" target="wiki-view"><code>verify_heapam</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__heapcheck_read_stream_next_unskippable.html" target="wiki-view"><code>heapcheck_read_stream_next_unskippable</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__report_corruption_internal.html" target="wiki-view"><code>report_corruption_internal</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__report_corruption.html" target="wiki-view"><code>report_corruption</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__report_toast_corruption.html" target="wiki-view"><code>report_toast_corruption</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_heapam_c__FullTransactionIdFromXidAndCtx.html" target="wiki-view"><code>FullTransactionIdFromXidAndCtx</code></a></li>
+</ul></body></html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tcop/utility.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tcop/utility.c</h1>
+<h2>概要</h2>
+<p><code>utility.c</code> は、PostgreSQL における「ユーティリティコマンド」（DDL、トランザクション制御、セッション管理など、通常の DML 以外の SQL）の実行を統括するモジュールです。<code>ProcessUtility</code> を中心として、コマンドの分類、実行前後の制約チェック、イベントトリガーのフック、および実行ディスパッチを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tcop</code> サブシステムの一部として、<code>postgres.c</code>（メインループ）から呼び出される実行の入り口です。クエリ実行エンジン（Executor）が扱う <code>PlannedStmt</code> のうち、<code>CMD_UTILITY</code> 型のコマンドを専門に処理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行ディスパッチ**: コマンドの種類（<code>NodeTag</code>）に基づき、適切なコマンド実行関数（<code>DefineIndex</code>, <code>AlterTable</code> 等）へ処理を振り分ける。</li>
+<li>**制約とセキュリティ**: 読み取り専用トランザクション、パラレルモード、リカバリ中、セキュリティ制限下での実行可否を検証する。</li>
+<li>**イベントトリガー管理**: DDL コマンドの開始・終了をイベントトリガーシステムに通知し、コマンドの収集を行う。</li>
+<li>**メタデータ生成**: コマンド完了タグ（<code>CommandTag</code>）の生成や、ログレベルの判定を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行ディスパッチャ</h3>
+<ul>
+<li><code>ProcessUtility</code>: 外部からのメインエントリーポイント。フック（<code>ProcessUtility_hook</code>）の確認と <code>standard_ProcessUtility</code> の呼び出しを行う。</li>
+<li><code>standard_ProcessUtility</code>: ユーティリティコマンドの実行フローを制御する中心関数。</li>
+<li><code>ProcessUtilitySlow</code>: イベントトリガー対応が必要なコマンドを処理するサブセット。</li>
+</ul>
+<h3>制約検証</h3>
+<ul>
+<li><code>CommandIsReadOnly</code>: <code>PlannedStmt</code> が真に読み取り専用か判定する。</li>
+<li><code>ClassifyUtilityCommandAsReadOnly</code>: 各コマンドが読み取り専用トランザクションやリカバリ中で実行可能かを分類する。</li>
+<li><code>PreventCommandIfReadOnly</code> / <code>PreventCommandIfParallelMode</code> / <code>PreventCommandDuringRecovery</code>: 各種状態に応じた実行拒否エラーを投げる。</li>
+</ul>
+<h3>メタデータ・ユーティリティ</h3>
+<ul>
+<li><code>CreateCommandTag</code>: <code>Node</code> からコマンド完了タグを生成する。</li>
+<li><code>UtilityReturnsTuples</code>: 結果セットを返すコマンド（<code>FETCH</code>, <code>EXPLAIN</code> 等）を判定する。</li>
+<li><code>GetCommandLogLevel</code>: コマンドのログレベルを決定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckRestrictedOperation</code></li>
+<li><code>CreateCommandTag</code></li>
+<li><code>ExecDropStmt</code></li>
+<li><code>PreventCommandDuringRecovery</code></li>
+<li><code>PreventCommandIfParallelMode</code></li>
+<li><code>ProcessUtility</code></li>
+<li><code>ProcessUtilityForAlterTable</code></li>
+<li><code>ProcessUtilitySlow</code></li>
+<li><code>QueryReturnsTuples</code></li>
+<li><code>UtilityContainsQuery</code></li>
+<li><code>UtilityReturnsTuples</code></li>
+<li><code>UtilityTupleDescriptor</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ProcessUtility</code> が呼び出され、必要に応じて <code>copyObject</code> でツリーを保護する。 2. **検証**: <code>ClassifyUtilityCommandAsReadOnly</code> を呼び出し、現在のトランザクション状態（ReadOnly, Parallel, Recovery）と照合して実行可否を決定する。 3. **ディスパッチ**: <code>standard_ProcessUtility</code> 内の巨大な <code>switch</code> 文でコマンドを分類。</p>
+<ul>
+<li>イベントトリガー非対応コマンドは直接実行。</li>
+<li>対応コマンドは <code>ProcessUtilitySlow</code> へ委譲。</li>
+<p>4. **イベントトリガー**: <code>ProcessUtilitySlow</code> 内で <code>EventTriggerDDLCommandStart</code> / <code>End</code> を呼び出し、DDL のライフサイクルを管理する。 5. **完了**: <code>CommandCounterIncrement()</code> を呼び出し、コマンドの副作用を可視化して終了する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: トランザクション管理、WAL、ロック制御。</li>
+<li><code>commands/</code>: 各種 DDL コマンドの実装（<code>tablecmds.c</code>, <code>indexcmds.c</code> 等）。</li>
+<li><code>parser/</code>: <code>parse_utilcmd.h</code> による解析状態の管理。</li>
+<li><code>tcop/utility.h</code>: インターフェース定義と定数。</li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/toasting.h</code></li>
+<li><code>commands/alter.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>commands/cluster.h</code></li>
+<li><code>commands/collationcmds.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/conversioncmds.h</code></li>
+<li><code>commands/copy.h</code></li>
+<li><code>commands/createas.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/discard.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/explain.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>commands/lockcmds.h</code></li>
+<li><code>commands/matview.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>commands/portalcmds.h</code></li>
+<li><code>commands/prepare.h</code></li>
+<li><code>commands/proclang.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>commands/schemacmds.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>commands/subscriptioncmds.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><code>commands/user.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>commands/view.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>rewrite/rewriteDefine.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/</code>: ユーティリティコマンドの具体的な実装群。</li>
+<li><code>src/backend/tcop/postgres.c</code>: <code>ProcessUtility</code> を呼び出す上位のメインループ。</li>
+<li><code>src/backend/commands/event_trigger.c</code>: DDL 実行時のフック処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>readOnlyTree</code> が真の場合、<code>copyObject</code> でツリーを複製します。これはパーサの木を破壊しないための安全策です。</li>
+<li>**再帰呼び出し**: <code>ProcessUtility</code> は再帰的に呼び出される可能性があるため、<code>check_stack_depth()</code> によるスタックオーバーフロー保護が行われています。</li>
+<li>**イベントトリガーの分離**: <code>standard_ProcessUtility</code> と <code>ProcessUtilitySlow</code> の分離は、トランザクション開始時など、イベントトリガーキャッシュを更新できない状況でトリガーを起動しないための重要な設計です。</li>
+<li>**網羅性**: <code>ClassifyUtilityCommandAsReadOnly</code> や <code>CreateCommandTag</code> は、新しいコマンドを追加するたびに更新が必要な巨大な <code>switch</code> 文です。追加時は漏れがないよう注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__PreventCommandIfParallelMode.html" target="wiki-view"><code>PreventCommandIfParallelMode</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__PreventCommandDuringRecovery.html" target="wiki-view"><code>PreventCommandDuringRecovery</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__CheckRestrictedOperation.html" target="wiki-view"><code>CheckRestrictedOperation</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__ProcessUtility.html" target="wiki-view"><code>ProcessUtility</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__ProcessUtilitySlow.html" target="wiki-view"><code>ProcessUtilitySlow</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__ProcessUtilityForAlterTable.html" target="wiki-view"><code>ProcessUtilityForAlterTable</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__ExecDropStmt.html" target="wiki-view"><code>ExecDropStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__UtilityReturnsTuples.html" target="wiki-view"><code>UtilityReturnsTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__UtilityTupleDescriptor.html" target="wiki-view"><code>UtilityTupleDescriptor</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__QueryReturnsTuples.html" target="wiki-view"><code>QueryReturnsTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__UtilityContainsQuery.html" target="wiki-view"><code>UtilityContainsQuery</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__utility_c__CreateCommandTag.html" target="wiki-view"><code>CreateCommandTag</code></a></li>
+</ul></body></html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/blockreftable.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BlockRefTable</h1>
+<h2>概念</h2>
+<p><code>BlockRefTable</code> は、特定の LSN（Log Sequence Number）範囲内で変更されたデータベースブロックをメモリ上で効率的に追跡・管理するためのメインデータ構造です。WALレコードの解析結果を保持し、ディスクなどの外部ストレージへのシリアライズおよびデシリアライズを仲介する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>増分バックアップ（<code>basebackup_incremental.c</code>）やWALサマライザ（<code>walsummarizer.c</code>）において、変更されたブロック情報を効率的に追跡・永続化するために不可欠です。メモリ効率を最適化するため、変更密度に応じて内部表現を「オフセット配列」から「ビットマップ」へ動的に切り替える高度な管理機構を備えています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/common</code></li>
+<li><code>module:src/include/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/common/blkreftable.c#BlockRefTable</code>**: メモリ上のメインデータ構造の実体定義。<code>lib/simplehash.h</code> を使用したハッシュテーブルなどを保持します。</li>
+<li>**<code>symbol:src/include/common/blkreftable.h#BlockRefTable</code>**: 外部モジュール向けに公開された不透明な構造体（typedef）定義。</li>
+<li>**<code>BlockRefTableRead</code> / <code>BlockRefTableReader</code>**: 外部ストレージからデータを読み込み、メモリ上に復元するためのコンテキスト。</li>
+<li>**<code>BlockRefTableWrite</code> / <code>BlockRefTableWriter</code> / <code>WriteBlockRefTable</code>**: メモリ上のデータをソートされたバイナリ形式で外部ストレージへシリアライズ・出力するためのコンテキストおよび関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **構築・初期化**: <code>CreateEmptyBlockRefTable</code> を呼び出して空の <code>BlockRefTable</code> インスタンスを生成します。 2. **変更の蓄積**: WALレコードの解析等に伴い、<code>BlockRefTableMarkBlockModified</code> を介して特定のブロックが変更済みとしてマークされます。また、リレーションの切り詰め等に対応するため、<code>BlockRefTableSetLimitBlock</code> で有効範囲が制御されます。 3. **シリアライズ（書き出し）**: <code>BlockRefTableWriter</code> または <code>WriteBlockRefTable</code> を使用し、コールバック関数を経由して外部ストレージへソートされたバイナリ形式で書き出します。 4. **デシリアライズ（読み込み）**: <code>BlockRefTableReader</code> を使用して外部ストレージからデータを読み込み、メモリ上に構造体を復元します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**管理単位**: 内部的には 64KB（<code>BLOCKS_PER_CHUNK</code>）単位のチャンクで管理されます。</li>
+<li>**表現の遷移**: 変更密度が <code>MAX_ENTRIES_PER_CHUNK</code> に達すると、メモリ効率化のためにオフセット配列からビットマップ形式へ動的に切り替わりますが、一度ビットマップへ変換されるとオフセット配列に戻ることはありません。</li>
+<li>**シリアライズの順序**: シリアライズを実行する際、データは必ず <code>tablespace</code> -&gt; <code>database</code> -&gt; <code>relfilenumber</code> -&gt; <code>forknumber</code> の順序でソートされている必要があります。</li>
+<li>**環境依存のメモリ管理**: <code>FRONTEND</code> 定義の有無により、構造体内部での <code>MemoryContext</code> の保持が条件付きとなります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ソート順序の違反**: 書き出し時にデータベース、テーブルスペース、リレーション、フォークの順序制約を満たさない場合、正しくシリアライズ処理が行われない可能性があります。</li>
+<li>**読み込み時の破損**: <code>BlockRefTableReader</code> による復元時にCRCチェックが行われ、不一致などの不整合が検出された場合はエラーとなります（エラーは <code>report_error_fn</code> を通じて通知されます）。</li>
+<li>**メモリ不足**: 大量の変更を追跡する際、<code>palloc</code> によるメモリ確保失敗のリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/common/blkreftable.c</code></li>
+<li><code>src/include/common/blkreftable.h</code></li>
+</ul></body></html>

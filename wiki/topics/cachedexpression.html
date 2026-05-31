@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/cachedexpression.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CachedExpression</h1>
+<h2>概念</h2>
+<p><code>CachedExpression</code> は、スカラー式の計画（プラン）を低コストで再利用するためにキャッシュする軽量な構造体（<code>struct CachedExpression</code>）です。計画化された式（<code>Node *expr</code>）を保持し、スキーマ変更などのイベントによって式が無効化されたかどうかを追跡する仕組みを提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLにおいて、スカラー式の計画を毎回再生成するのはコストがかかります。<code>CachedExpression</code> を使用することで、計画化された式をキャッシュして再利用することが可能になります。また、依存するリレーションやオブジェクトが変更された場合に、キャッシュされた式が現在も有効（<code>is_valid</code>）であるかどうかを追跡し、必要に応じて再計画を促すことで、一貫性とパフォーマンスを両立させます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/cache</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/plancache.h#CachedExpression</code>**: キャッシュされた式、有効性フラグ、依存関係、メモリコンテキストなどを保持する構造体。</li>
+<li>**<code>symbol:src/backend/utils/cache/plancache.c#FreeCachedExpression</code>**: <code>CachedExpression</code> オブジェクトを破棄し、関連するメモリリソースを解放する関数。</li>
+<li>**<code>GetCachedExpression</code>** (関数): 式から <code>CachedExpression</code> を構築・取得する関数（<code>plancache.c</code> 内に存在）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **構築**: <code>GetCachedExpression</code> を介して式が計画化され、<code>CachedExpression</code> 構造体が構築されます。この際、依存するリレーションの OID リスト（<code>relationOids</code>）やその他の依存関係（<code>invalItems</code>）が登録され、グローバルな <code>dlist</code> に追加されます。 2. **利用と検証**: キャッシュされた式（<code>expr</code>）を利用する際、<code>is_valid</code> フラグを確認します。 3. **無効化**: スキーマ変更等のイベントが発生すると、依存関係（<code>relationOids</code>, <code>invalItems</code>）に基づいて <code>is_valid</code> が <code>false</code> に更新されます。 4. **解放**: <code>FreeCachedExpression</code> を呼び出すことで、グローバルリストからノードが削除され、関連するメモリコンテキスト（<code>context</code>）ごとすべてのストレージが解放されます。</p>
+<p>*注意: <code>GetCachedExpression</code> の具体的な内部実装や、無効化イベントがトリガーされる詳細なエンドツーエンドの制御フローは、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**マジックナンバーの整合性**: <code>CachedExpression</code> の <code>magic</code> フィールドは、常に <code>CACHEDEXPR_MAGIC</code> と一致している必要があります。<code>FreeCachedExpression</code> などの処理でサニティチェック（<code>Assert</code>）として検証されます。</li>
+<li>**有効性フラグ**: <code>is_valid</code> が <code>false</code> の場合、キャッシュされた式は無効であり、再計画が必要です。</li>
+<li>**カプセル化**: <code>relationOids</code> 以降のフィールド（<code>relationOids</code>, <code>invalItems</code>, <code>context</code>, <code>node</code>）は <code>plancache.c</code> 内部でのみ使用されるプライベートな領域であり、外部モジュールから直接操作してはなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効化チェックの欠如**: <code>is_valid</code> フラグのチェックを怠ると、スキーマ変更等により無効化された古い計画を誤って使用してしまうリスクがあります。</li>
+<li>**解放後の参照（Use-After-Free）**: <code>FreeCachedExpression</code> は関連するメモリコンテキスト（<code>context</code>）全体を削除するため、この関数を呼び出した後に <code>cexpr</code> ポインタやその内部の式を参照すると、メモリ破損やクラッシュを引き起こします。</li>
+<li>**グローバルリストの前提**: <code>FreeCachedExpression</code> は内部で <code>dlist_delete</code> を使用しているため、対象のオブジェクトがグローバルリストに登録されていることが前提となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/cache/plancache.c</code></li>
+<li><code>src/include/utils/plancache.h</code></li>
+</ul></body></html>

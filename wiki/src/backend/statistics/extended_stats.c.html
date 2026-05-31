@@ -1,0 +1,96 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/statistics/extended_stats.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/extended_stats.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの「拡張統計情報（Extended Statistics）」機能のコアロジックを実装するファイルです。<code>CREATE STATISTICS</code> コマンドで作成された統計オブジェクトの計算、カタログへの保存、およびクエリプランナによる選択率推定時の利用をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/statistics</code> モジュールにおける中心的な制御層です。個別の統計手法（MCV, 依存関係, 多変量NDistinct）を呼び出し、それらを統合してカタログ（<code>pg_statistic_ext</code> / <code>pg_statistic_ext_data</code>）との橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の構築**: <code>ANALYZE</code> 実行時に、対象テーブルの統計オブジェクトを特定し、各手法（MCV, 依存関係等）を呼び出して計算を実行する。</li>
+<li>**ターゲット計算**: 統計オブジェクトごとの <code>stattarget</code> を、オブジェクト設定、属性設定、デフォルト値から決定する。</li>
+<li>**式（Expression）の評価**: 統計オブジェクトに含まれる式を評価し、その結果に対して統計を計算する。</li>
+<li>**カタログ管理**: 計算された統計情報を <code>pg_statistic_ext_data</code> にシリアライズして格納する。</li>
+<li>**プランナ支援**: クエリプランナがクエリの選択率を推定する際、最適な統計オブジェクトを選択し、推定ロジックを適用する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BuildRelationExtStatistics</code>: <code>ANALYZE</code> 中に呼び出され、拡張統計を構築するメイン関数。</li>
+<li><code>ComputeExtStatisticsRows</code>: 拡張統計の構築に必要なサンプル行数を計算する。</li>
+<li><code>StatExtEntry</code>: 統計オブジェクトの定義（対象列、式、種類）を保持する内部構造体。</li>
+<li><code>statext_compute_stattarget</code>: 統計の精度（ターゲット）を決定するロジック。</li>
+<li><code>statext_mcv_clauselist_selectivity</code>: MCVリストを用いた選択率推定のメインエントリ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AnlExprData</code></li>
+<li><code>examine_attribute</code></li>
+<li><code>examine_expression</code></li>
+<li><code>fetch_statentries_for_relation</code></li>
+<li><code>lookup_var_attr_stats</code></li>
+<li><code>multi_sort_init</code></li>
+<li><code>statext_is_kind_built</code></li>
+<li><code>statext_store</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **構築時**: <code>BuildRelationExtStatistics</code> が <code>pg_statistic_ext</code> をスキャンし、対象テーブルの統計オブジェクトをリストアップします。各オブジェクトに対し、<code>lookup_var_attr_stats</code> で必要な属性情報を収集し、<code>make_build_data</code> でサンプル行からデータを抽出・評価します。その後、各統計種別（NDistinct, Dependencies, MCV, Expressions）のビルド関数を呼び出し、結果を <code>statext_store</code> でカタログに書き込みます。 2.  **推定時**: プランナが <code>statext_clauselist_selectivity</code> を呼び出します。<code>choose_best_statistics</code> でクエリ内の句に適合する統計オブジェクトを探索し、<code>mcv_combine_selectivities</code> 等を用いて、単純な列統計と拡張統計を組み合わせた選択率を算出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic_ext.h</code>: 統計オブジェクトのカタログ定義。</li>
+<li><code>statistics/extended_stats_internal.h</code>: 内部的な統計計算用インターフェース。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>executor/executor.h</code>: 式評価（<code>ExecEvalExpr</code> 等）のための実行エンジン機能。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_statistic_ext_data.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/attoptcache.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/statistics/mcv.c</code>: MCV（最頻値）統計の計算と推定。</li>
+<li><code>src/backend/statistics/dependencies.c</code>: 関数従属性の計算と推定。</li>
+<li><code>src/backend/statistics/mvdistinct.c</code>: 多変量NDistinctの計算。</li>
+<li><code>src/backend/statistics/stat_utils.c</code>: 統計計算全般で利用されるユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 統計構築時は <code>AllocSetContextCreate</code> で専用のメモリコンテキストを作成し、大量のデータ処理によるメモリリークを防いでいます。</li>
+<li>**式評価**: 統計オブジェクト内の式は、<code>ExecPrepareExpr</code> を用いて実行エンジンで評価されます。この際、<code>WIDTH_THRESHOLD</code>（1024バイト）を超える大きな値は、統計の精度に寄与しないと判断され、計算から除外されます。</li>
+<li>**拡張性**: 新しい統計種別を追加する場合は、<code>statext_is_kind_built</code> や <code>statext_store</code> などのカタログ操作関数に新しい型を追加する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__StatExtEntry.html" target="wiki-view"><code>StatExtEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__AnlExprData.html" target="wiki-view"><code>AnlExprData</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__BuildRelationExtStatistics.html" target="wiki-view"><code>BuildRelationExtStatistics</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__ComputeExtStatisticsRows.html" target="wiki-view"><code>ComputeExtStatisticsRows</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__statext_compute_stattarget.html" target="wiki-view"><code>statext_compute_stattarget</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__statext_is_kind_built.html" target="wiki-view"><code>statext_is_kind_built</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__fetch_statentries_for_relation.html" target="wiki-view"><code>fetch_statentries_for_relation</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__examine_attribute.html" target="wiki-view"><code>examine_attribute</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__examine_expression.html" target="wiki-view"><code>examine_expression</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__lookup_var_attr_stats.html" target="wiki-view"><code>lookup_var_attr_stats</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__statext_store.html" target="wiki-view"><code>statext_store</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__extended_stats_c__multi_sort_init.html" target="wiki-view"><code>multi_sort_init</code></a></li>
+</ul></body></html>

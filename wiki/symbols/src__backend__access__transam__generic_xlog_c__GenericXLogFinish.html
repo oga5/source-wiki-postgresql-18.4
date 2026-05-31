@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__generic_xlog_c__GenericXLogFinish.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GenericXLogFinish</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/generic_xlog.c:336</code></li>
+</ul>
+<h2>目的</h2>
+<p>構築中の汎用WALレコードを確定させ、変更内容をバッファに適用し、必要に応じてWALレコードを書き込みます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>XLogRecPtr GenericXLogFinish(GenericXLogState *state)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>state</code> (<code>GenericXLogState *</code>) - <code>GenericXLogStart</code> で初期化され、バッファ登録済みの状態オブジェクト。</li>
+<li>**出力**: <code>XLogRecPtr</code> - 書き込まれたWALレコードのLSN。ログ出力が不要な（Unloggedな）場合は <code>InvalidXLogRecPtr</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>state</code> は有効なポインタである必要があります。</li>
+<li>呼び出し後、<code>state</code> が指すメモリ領域は <code>pfree</code> により解放されるため、呼び出し元で再利用してはなりません。</li>
+<li>ログ出力対象の場合、内部で <code>START_CRIT_SECTION()</code> が呼び出されるため、エラー発生時に中断できないクリティカルセクションとして動作します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ログ出力の判定**: <code>state-&gt;isLogged</code> に基づき処理を分岐します。 2. **ログ出力ありの場合**:</p>
+<ul>
+<li><code>XLogBeginInsert()</code> を呼び出し、クリティカルセクションを開始します。</li>
+<li>各バッファに対し、差分（デルタ）が必要な場合は <code>computeDelta</code> を実行します。</li>
+<li>ページイメージをバッファに適用し、<code>pd_lower</code> から <code>pd_upper</code> までの「ホール」領域をゼロクリアして物理的な不一致を防ぎます。</li>
+<li><code>MarkBufferDirty</code> でバッファをダーティにし、<code>XLogRegisterBuffer</code> / <code>XLogRegisterBufData</code> でWALレコードに登録します。</li>
+<li><code>XLogInsert</code> でWALを書き込み、各バッファのLSNを更新します。</li>
+<p>3. **ログ出力なしの場合**:</p>
+<li>差分計算を行わず、バッファへイメージを直接コピーしてダーティにします。</li>
+<p>4. **終了処理**: <code>state</code> をメモリから解放し、LSNを返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/bloom/blinsert.c</code>、<code>contrib/bloom/blutils.c</code>、<code>contrib/bloom/blvacuum.c</code> など。</li>
+<li>**呼び出し先**: <code>computeDelta</code>、<code>XLogBeginInsert</code>、<code>XLogInsert</code>、<code>XLogRegisterBuffer</code>、<code>XLogRegisterBufData</code>、<code>MarkBufferDirty</code>、<code>BufferGetPage</code>、<code>PageSetLSN</code>、<code>pfree</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GenericXLogState</code>: 構築中のWALレコードの状態を保持する構造体。</li>
+<li><code>GenericXLogPageData</code>: 各バッファの変更状態を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>BufferIsInvalid</code> なバッファはスキップされます。</li>
+<li><code>GENERIC_XLOG_FULL_IMAGE</code> フラグが設定されている場合、差分計算をスキップしページ全体を記録します。</li>
+<li>クリティカルセクション内でのエラー発生時は、PostgreSQLの標準的なエラーハンドリングによりプロセスがアボートされます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>ページ内の「ホール」領域のゼロクリアは、異なる環境間でのページ再構築時の不一致を防ぐための必須処理です。</li>
+<li><code>state</code> は本関数の最後で必ず解放されるため、呼び出し元で <code>GenericXLogFinish</code> を呼び出した後に <code>state</code> を参照しないよう注意してください。</li>
+</ul></body></html>

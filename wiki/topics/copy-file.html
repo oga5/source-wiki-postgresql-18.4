@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/copy-file.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>copy_file</h1>
+<h2>概念</h2>
+<p>PostgreSQL 18.4 において、<code>copy_file</code> は異なるコンテキスト（サーバーのバックエンド処理と、クライアント側のバックアップ結合ツール）で定義されている、ファイル複製のための関数です。</p>
+<ul>
+<li>**バックエンド側（<code>src/backend/storage/file/copydir.c</code>）**: OSキャッシュへの負荷を抑え、データ整合性を考慮しながらバッファリングコピーを行います。</li>
+<li>**クライアントツール側（<code>src/bin/pg_combinebackup/copy_file.c</code>）**: バックアップ再構築プロセスにおいて、指定された戦略（クローン、コピー、リンクなど）に基づいてファイルを転送する抽象化レイヤーを提供します。</li>
+</ul>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**バックエンド側**: アーカイブ処理（例: <code>basic_archive</code>）などで、OSキャッシュを圧迫せずに効率的かつ安全にファイルを複製し、システム全体のI/Oパフォーマンスを維持するために重要です。</li>
+<li>**クライアントツール側 (<code>pg_combinebackup</code>)**: 異なるコピー戦略（<code>CLONE</code>, <code>COPY</code>, <code>LINK</code> など）やチェックサム計算、ドライラン（シミュレーション）を統一的に扱う抽象化を提供し、バックアップ再構築の柔軟性と信頼性を確保するために重要です。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/bin/pg_combinebackup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/storage/file/copydir.c#copy_file</code>: バックエンドでバッファリングコピーを実行する関数。</li>
+<li><code>symbol:src/bin/pg_combinebackup/copy_file.c#copy_file</code>: <code>pg_combinebackup</code> で多様なコピー戦略を抽象化する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>それぞれのコンテキストにおける処理の流れは以下の通りです。なお、呼び出し元から本関数に至る全体的なエンドツーエンドのフロー（特に <code>pg_combinebackup</code> 内での具体的な呼び出し元）は、提供された情報からは未確定です。</p>
+<h3>バックエンド側 (<code>src/backend/storage/file/copydir.c</code>)</h3>
+<p>1. **初期化**: <code>COPY_BUF_SIZE</code>（8 * <code>BLCKSZ</code>）のバッファを確保します。 2. **ファイルオープン**: <code>OpenTransientFile</code> を使用し、ソースを読み取り専用、コピー先を書き込み専用（新規作成）で開きます。 3. **データコピー**:</p>
+<ul>
+<li>ループ内で <code>read</code> と <code>write</code> を繰り返し、データを転送します。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、シグナルによる中断を監視します。</li>
+<li><code>FLUSH_DISTANCE</code>（プラットフォームにより1MBまたは32MB）ごとに <code>pg_flush_data</code> を呼び出し、OSキャッシュをフラッシュします。</li>
+<li>転送中、<code>pgstat_report_wait_start/end</code> を使用して待機イベントを記録します。</li>
+<p>4. **終了処理**: 最後に残りのデータをフラッシュし、ファイルを閉じてバッファを解放します。 ※ 呼び出し元として <code>contrib/basic_archive/basic_archive.c</code> が確認されています。</p>
+</ul>
+<h3>クライアントツール側 (<code>src/bin/pg_combinebackup/copy_file.c</code>)</h3>
+<p>1. **ドライラン確認**: <code>dry_run</code> モードであれば、ソースファイルを開いて閉じ、存在を確認します。 2. **戦略選択**: <code>copy_method</code> に基づき、実行する関数ポインタ（<code>strategy_implementation</code>）とログ用名称を決定します。 3. **ログ出力**: 実行前（またはドライラン時）に、選択された戦略とチェックサムの有無をログ出力します。 4. **実行**: 選択された <code>strategy_implementation</code>（<code>copy_file_clone</code>, <code>copy_file_blocks</code>, <code>copy_file_by_range</code>, <code>copy_file_copyfile</code>, <code>copy_file_link</code> のいずれか）を呼び出し、実際の I/O を実行します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バックエンド側**:</li>
+<li>コピー元ファイル（<code>fromfile</code>）は読み取り可能でなければなりません。</li>
+<li>コピー先ファイル（<code>tofile</code>）は新規作成可能でなければなりません（既存ファイルがある場合は失敗します）。</li>
+<li><code>palloc</code> を使用するため、PostgreSQL のメモリコンテキストが有効である必要があります。</li>
+<li>**クライアントツール側**:</li>
+<li><code>dry_run</code> が <code>true</code> の場合であっても、ソースファイルが読み取り可能（<code>open</code> 可能）でなければなりません。</li>
+<li>Windows 環境において <code>COPY_METHOD_COPY</code> が指定された場合、自動的に <code>COPY_METHOD_COPYFILE</code> へ変換されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バックエンド側**:</li>
+<li>本関数は <code>fsync</code> を直接実行しません。そのため、データの永続性を保証するには、呼び出し側でコピー完了後に <code>fsync_fname</code> 等を用いて明示的に同期を行う必要があります。</li>
+<li><code>FLUSH_DISTANCE</code> はプラットフォーム（特にmacOS）の特性を考慮したチューニング値であるため、変更時には注意が必要です。</li>
+<li>**クライアントツール側**:</li>
+<li>OSが選択されたコピー戦略（例: クローンやハードリンク）をサポートしていない場合、呼び出された内部の実装関数内で <code>pg_fatal</code> が発生し、プロセスが終了する可能性があります。</li>
+<li><code>dry_run</code> モードは単なるログ出力のシミュレーションではなく、実際にファイルシステムへのアクセス権限を検証（<code>open</code> の実行）するため、ファイルが存在しない場合はエラーとなります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/file/copydir.c</code></li>
+<li><code>src/bin/pg_combinebackup/copy_file.c</code></li>
+</ul></body></html>

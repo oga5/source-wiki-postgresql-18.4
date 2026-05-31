@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_delete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_xlog_delete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_xlog.c:340</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページに対する削除操作のWAL（Write-Ahead Log）リプレイを実行し、ページ上のタプル状態を更新して整合性を維持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void heap_xlog_delete(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファおよび可視性マップを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> は <code>xl_heap_delete</code> 構造体を含む有効なWALレコードであること。</li>
+<li>対象ページが <code>XLogReadBufferForRedo</code> によって取得可能であること。</li>
+<li>ページ上の <code>ItemId</code> が正常（<code>ItemIdIsNormal</code>）であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **可視性マップの更新**: <code>XLH_DELETE_ALL_VISIBLE_CLEARED</code> フラグが設定されている場合、対象ブロックの可視性マップビットをクリアする。 2. **バッファの読み込み**: <code>XLogReadBufferForRedo</code> を呼び出し、ページが最新でない（<code>BLK_NEEDS_REDO</code>）場合にのみ以下の更新を行う。</p>
+<ul>
+<li>**タプルヘッダーの更新**: <code>infomask</code> および <code>infomask2</code> を修正し、HOT更新フラグをクリアする。</li>
+<li>**Xmax/Xminの設定**: <code>XLH_DELETE_IS_SUPER</code> フラグに基づき、Xmaxを設定するか、Xminを無効化する。</li>
+<li>**Cmaxの設定**: <code>FirstCommandId</code> を設定する。</li>
+<li>**メタデータ更新**: ページをプルーニング候補としてマークし、必要に応じて <code>PageClearAllVisible</code> を実行する。</li>
+<li>**ctidの更新**: パーティション移動フラグに応じて <code>t_ctid</code> を設定する。</li>
+<p>3. **コミット**: ページのLSNを更新し、バッファをダーティとしてマークする。 4. **終了処理**: バッファが取得されている場合はロックを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/heapam_xlog.c</code> 内の <code>heap_redo</code>（推測されるディスパッチャ）。</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogRecGetBlockTag</code>, <code>visibilitymap_pin</code>, <code>visibilitymap_clear</code>, <code>XLogReadBufferForRedo</code>, <code>PageGetItemId</code>, <code>fix_infomask_from_infobits</code>, <code>PageSetPrunable</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_heap_delete</code>: 削除操作のWALレコード構造体。</li>
+<li><code>XLogReaderState</code>: WALレコード読み取り状態。</li>
+<li><code>Buffer</code>: ヒープページを保持するバッファ。</li>
+<li><code>HeapTupleHeader</code>: 更新対象のタプルヘッダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber(page) &lt; xlrec-&gt;offnum</code> または <code>!ItemIdIsNormal(lp)</code> の場合、<code>PANIC</code> を発生させてリプレイを停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は物理的なページ操作に特化している。論理的な整合性はWAL生成側（<code>heapam.c</code>）で保証されている前提である。</li>
+<li><code>XLH_DELETE_ALL_VISIBLE_CLEARED</code> フラグの処理は、ヒープページが既に最新であっても実行される必要があるため、バッファ取得の条件分岐の外側に配置されている。</li>
+</ul></body></html>

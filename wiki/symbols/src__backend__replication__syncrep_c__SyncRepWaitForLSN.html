@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SyncRepWaitForLSN</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/syncrep.c:147</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクションのコミット時、指定されたLSN（Log Sequence Number）が同期スタンバイサーバーへ確実にレプリケートされるまで、ユーザーバックエンドを待機させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>lsn</code> (XLogRecPtr): 待機対象となるWALの終了位置。</li>
+<li><code>commit</code> (bool): トランザクションのコミットであるか否か。<code>false</code> の場合、待機レベルは <code>SYNC_REP_WAIT_FLUSH</code> を上限として制限される。</li>
+<li>**出力**: なし（完了時に復帰）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し時に <code>InterruptHoldoffCount &gt; 0</code> であること（割り込みを禁止した状態で呼び出す必要がある）。</li>
+<li><code>MyProc-&gt;syncRepLinks</code> がデタッチ状態であること。</li>
+<li><code>WalSndCtl</code> が初期化されていること。</li>
+<li>待機キューは常にLSN順にソートされていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **早期終了判定**: 同期レプリケーションが要求されていない場合、または同期スタンバイが未定義の場合は即座に復帰する。 2. **待機モード設定**: <code>commit</code> 引数に基づき、待機レベル（Write/Flush/Apply）を決定する。 3. **キューイング**: <code>SyncRepLock</code> を排他獲得し、<code>MyProc</code> の <code>waitLSN</code> を設定して <code>SyncRepQueueInsert</code> を実行し、待機状態へ移行する。 4. **待機ループ**: <code>MyLatch</code> を使用して、<code>syncRepState</code> が <code>SYNC_REP_WAIT_COMPLETE</code> になるまで待機する。 5. **割り込み処理**: 待機中に <code>ProcDiePending</code> や <code>QueryCancelPending</code> が発生した場合、警告を発行して <code>SyncRepCancelWait</code> を呼び出し、待機を中断する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/twophase.c</code> (prepare/commit処理)</li>
+<li><code>src/backend/access/transam/xact.c</code> (トランザクションコミット処理)</li>
+<li>**呼び出し先**:</li>
+<li><code>SyncRepQueueInsert</code></li>
+<li><code>SyncRepCancelWait</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>SetLatch</code> / <code>ResetLatch</code></li>
+<li><code>set_ps_display_suffix</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSndCtl</code>: 同期レプリケーションの状態を保持する共有メモリ構造体。</li>
+<li><code>PGPROC</code> (<code>MyProc</code>): 現在のバックエンドのプロセス情報と待機状態（<code>syncRepState</code>）。</li>
+<li><code>SyncRepLock</code>: 待機キューを保護するLWLock。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**管理者の介入**: 待機中に管理者が接続を終了させた場合、警告を発して待機を中断する。</li>
+<li>**クエリキャンセル**: ユーザーがキャンセルを要求した場合、警告を発して待機を中断する。</li>
+<li>**競合状態**: <code>SyncRepUpdateSyncStandbysDefined</code> との競合を避けるため、ロック取得前後で <code>sync_standbys_status</code> を慎重に検証する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はコミットのたびに呼び出されるため、同期レプリケーションが不要な場合の早期終了パスは極めて重要である。</li>
+<li>待機中に <code>ProcDiePending</code> が発生しても、ローカルでのコミットは完了しているため、エラーではなく警告を発行して処理を継続する設計となっている。</li>
+</ul></body></html>

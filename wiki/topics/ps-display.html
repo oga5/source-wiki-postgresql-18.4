@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/ps-display.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Ps Display</h1>
+<h2>概念</h2>
+<p><code>Ps Display</code> は、PostgreSQLの各バックエンドプロセスが現在実行している活動内容や状態（プロセス名、プログラム名、クラスタ名、プロセス種別など）を、OSのプロセス一覧（<code>ps</code> コマンドなど）に表示・反映させるための仕組みです。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**プロセスの可視化**: 運用管理者や開発者が <code>ps</code> コマンド等を通じて、各バックエンドプロセスが現在どのような活動（例: autovacuum、リカバリ、ベースバックアップなど）を行っているかをリアルタイムで監視できるようにします。</li>
+<li>**ログ出力との連携**: 現在のプロセス表示用文字列（可変部分）を取得して、CSVログ、JSONログ、または <code>elog</code> などのログ出力処理にプロセス状態を記録するために利用されます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/misc</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/misc/ps_status.c#init_ps_display</code>**: バックエンドプロセスのタイトル（固定プレフィックスなど）を初期化する関数。</li>
+<li>**<code>symbol:src/include/utils/ps_status.h#set_ps_display</code>**: プロセスの現在の活動内容をOSのプロセス名に反映させるためのインライン関数。</li>
+<li>**<code>symbol:src/backend/utils/misc/ps_status.c#get_ps_display</code>**: 現在保持している表示用文字列のうち、固定部分を除いた可変部分（活動内容）のポインタと長さを取得する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: バックエンドプロセスの起動時（<code>autovacuum.c</code>, <code>bgworker.c</code>, <code>backend_startup.c</code> などから呼び出される）、<code>init_ps_display</code> が呼び出され、プログラム名やクラスタ名、プロセス種別を含む固定プレフィックスが <code>ps_buffer</code> に設定され、初期状態がOSに反映されます。 2. **状態更新**: プロセスが特定の処理（リカバリ、バックアップ、非同期処理など）を実行する際、<code>set_ps_display</code> を呼び出して現在の活動内容（<code>activity</code>）をOSのプロセス名に反映させます。これは内部的に <code>set_ps_display_with_len</code> を介してプラットフォーム固有の手段（<code>setproctitle</code> や <code>argv</code> 領域の書き換え）で行われます。 3. **状態取得（ログ出力等）**: ログ出力処理（<code>csvlog.c</code>, <code>jsonlog.c</code>, <code>elog.c</code>）において、現在のプロセスの活動状態を記録するために <code>get_ps_display</code> が呼び出され、可変部分の文字列とその長さが取得されます。</p>
+<p>*注意: OS固有の引数領域の保護（<code>save_ps_display_args</code>）から始まる完全な初期化ライフサイクルや、プラットフォームごとの詳細な切り替えロジックの全貌は、提供された情報からは完全には網羅されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の前提条件**: <code>init_ps_display</code> を呼び出す前に、<code>save_ps_display_args()</code> が事前に呼び出されている必要があります。また、<code>IsUnderPostmaster</code> が真である必要があります（スタンドアローンバックエンドでは動作しません）。</li>
+<li>**更新の前提条件**: <code>set_ps_display</code> によるOS側のプロセス名更新は、<code>update_process_title</code> GUC変数が有効である場合にのみ実行されます。</li>
+<li>**プラットフォーム依存のバッファ管理**:</li>
+<li><code>PS_USE_CLOBBER_ARGV</code> 環境下では、<code>ps_buffer</code> が未初期化の場合、<code>get_ps_display</code> は安全に空文字列（長さ0）を返します。</li>
+<li><code>PS_USE_NONE</code> 環境下では、<code>get_ps_display</code> は常に空文字列（長さ0）を返し、<code>init_ps_display</code> は何もしません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**プラットフォームによる挙動と性能の差異**: Windows環境ではプロセス名更新のオーバーヘッドが大きいため、デフォルトで無効化されています。</li>
+<li>**副作用**: Linux等の環境において、<code>set_ps_display</code> による <code>argv</code> 領域の直接書き換えが <code>/proc/$pid/environ</code> の内容を破壊する可能性があることが指摘されています。</li>
+<li>**初期化未実施時の動作**: <code>save_ps_display_args()</code> が未実行、または <code>ps_buffer</code> が確保されていない場合、<code>init_ps_display</code> は何もせず終了します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/utils/misc/ps_status.c</code>**: プラットフォーム固有の <code>#ifdef</code> 分岐や、<code>ps_buffer</code> のメモリ操作を含む実装詳細。</li>
+<li>**<code>src/include/utils/ps_status.h</code>**: <code>set_ps_display</code> インライン関数の定義とインターフェース。</li>
+</ul></body></html>

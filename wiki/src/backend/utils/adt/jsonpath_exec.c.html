@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonpath_exec.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonpath_exec.c</h1>
+<h2>概要</h2>
+<p>SQL/JSON パス言語の実行エンジンを実装するファイルです。<code>jsonb</code> データ型に対して <code>jsonpath</code> を適用し、フィルタリング、抽出、変換、および <code>JSON_TABLE</code> 演算を実行します。PostgreSQL の JSONB 構造を再帰的に走査し、標準仕様に基づいたパス評価を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、JSONB 関連の SQL 関数（<code>jsonb_path_exists</code>, <code>jsonb_path_query</code> 等）のバックエンドロジックを提供します。プランナやエグゼキュータが利用する <code>TableFuncRoutine</code> インターフェースを介して、<code>JSON_TABLE</code> 演算の実行状態管理も担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**パス実行**: <code>executeJsonPath</code> を起点とした再帰的なパス走査と評価。</li>
+<li>**型変換と演算**: JSONB 値の数値・文字列・日時型へのキャスト、算術演算、比較演算。</li>
+<li>**エラーハンドリング**: <code>lax</code> モードと <code>strict</code> モードに応じたエラーの抑制または報告。</li>
+<li>**JSON_TABLE 実行**: 行パターン生成、ネストされたパスの結合、列値の抽出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行コンテキスト</h3>
+<ul>
+<li><code>JsonPathExecContext</code>: パス実行中のグローバル状態（変数、ルート/カレントアイテム、モードフラグ、タイムゾーン設定）。</li>
+<li><code>JsonTableExecContext</code>: <code>JSON_TABLE</code> 実行時のプラン状態と列ごとの実行コンテキスト。</li>
+</ul>
+<h3>実行結果・型</h3>
+<ul>
+<li><code>JsonPathExecResult</code>: 実行結果（<code>jperOk</code>, <code>jperNotFound</code>, <code>jperError</code>）。</li>
+<li><code>JsonPathBool</code>: 述語評価結果（<code>jpbTrue</code>, <code>jpbFalse</code>, <code>jpbUnknown</code>）。</li>
+<li><code>JsonValueList</code>: 評価結果のシーケンスを保持するリスト構造。</li>
+</ul>
+<h3>主要なエントリポイント</h3>
+<ul>
+<li><code>executeJsonPath</code>: パス実行のメインエントリ。</li>
+<li><code>jsonb_path_exists_internal</code> / <code>jsonb_path_match_internal</code>: SQL 関数から呼び出されるラッパー。</li>
+<li><code>JsonTableGetValue</code>: <code>JSON_TABLE</code> の列値抽出関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>JsonBaseObjectInfo</code></li>
+<li><code>JsonLikeRegexContext</code></li>
+<li><code>JsonPathBool</code></li>
+<li><code>JsonPathCountVarsCallback</code></li>
+<li><code>JsonPathExecContext</code></li>
+<li><code>JsonPathExecResult</code></li>
+<li><code>JsonTableExecContext</code></li>
+<li><code>JsonTablePlanRowSource</code></li>
+<li><code>JsonTablePlanState</code></li>
+<li><code>JsonValueList</code></li>
+<li><code>JsonValueListIterator</code></li>
+<li><code>JsonbValue</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>executeJsonPath</code> が <code>JsonPathExecContext</code> を構築し、ルートアイテムをセット。 2. **再帰的走査**: <code>executeItem</code> がパスアイテムの型に応じて分岐。配列のアンラップが必要な場合は <code>executeItemOptUnwrapTarget</code> を経由。 3. **述語評価**: <code>executeBoolItem</code> がフィルタ条件を評価。<code>executePredicate</code> が左右のオペランドをシーケンスとして取得し、比較関数（<code>executeComparison</code> 等）を適用。 4. **結果収集**: 評価された値は <code>JsonValueList</code> に蓄積され、次のパスアイテムへ渡されるか、最終結果として返される。 5. **JSON_TABLE フロー**: <code>JsonTableSetDocument</code> で行パターンをリセットし、<code>JsonTablePlanNextRow</code> が再帰的にネストされたパスを結合して行を生成。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/jsonpath.h</code>: パス構造体とアイテム定義。</li>
+<li><code>utils/jsonb.h</code>: JSONB コンテナ操作。</li>
+<li><code>nodes/nodeFuncs.h</code>: エクスプレッション評価。</li>
+<li><code>utils/datetime.h</code>, <code>utils/numeric.h</code>: 型変換と算術演算。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>regex/regex.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/json.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/jsonb.c</code>: JSONB の基本操作。</li>
+<li><code>src/backend/utils/adt/jsonfuncs.c</code>: JSON 関連の SQL 関数群。</li>
+<li><code>src/include/utils/jsonpath.h</code>: パス言語の構文定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>JsonValueList</code> は <code>palloc</code> を多用します。<code>JSON_TABLE</code> 実行時は <code>MemoryContext</code> を切り替えてメモリリークを防いでいます。</li>
+<li>**再帰の深さ**: <code>check_stack_depth()</code> が各再帰ステップで呼ばれており、深いパスによるスタックオーバーフローを防止しています。</li>
+<li>**lax/strict モード**: <code>jspAutoUnwrap</code> などのマクロでモード判定を行います。<code>lax</code> モードでは構造エラーが無視され、配列の自動アンラップが行われます。</li>
+<li>**省略された詳細**: 正規表現のコンパイル詳細や、各算術演算子の具体的な数値変換ロジックは、PostgreSQL の既存の数値型関数（<code>numeric_add</code> 等）に委譲されているため、本ファイルでは主に呼び出しの制御に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonBaseObjectInfo.html" target="wiki-view"><code>JsonBaseObjectInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonbValue.html" target="wiki-view"><code>JsonbValue</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonPathCountVarsCallback.html" target="wiki-view"><code>JsonPathCountVarsCallback</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonPathExecContext.html" target="wiki-view"><code>JsonPathExecContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonLikeRegexContext.html" target="wiki-view"><code>JsonLikeRegexContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonPathBool.html" target="wiki-view"><code>JsonPathBool</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonPathExecResult.html" target="wiki-view"><code>JsonPathExecResult</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonValueList.html" target="wiki-view"><code>JsonValueList</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonValueListIterator.html" target="wiki-view"><code>JsonValueListIterator</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonTablePlanRowSource.html" target="wiki-view"><code>JsonTablePlanRowSource</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonTablePlanState.html" target="wiki-view"><code>JsonTablePlanState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_exec_c__JsonTableExecContext.html" target="wiki-view"><code>JsonTableExecContext</code></a></li>
+</ul></body></html>

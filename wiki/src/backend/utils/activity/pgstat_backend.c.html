@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_backend.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_backend.c</h1>
+<h2>概要</h2>
+<p>各バックエンドプロセス固有の統計情報（I/O および WAL 使用量）を管理するための実装ファイルです。プロセス生存期間中の統計を保持し、共有メモリ上の統計領域へ定期的にフラッシュする役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgstat.c</code> が統計サブシステムの全体的なアクセス・ストレージ管理を行うのに対し、本ファイルは「バックエンド」という特定の統計種別に特化したロジックを分離・カプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ローカル統計の保持**: プロセスごとの I/O および WAL 統計を <code>PendingBackendStats</code> に蓄積し、クリティカルセクション内でも安全に更新可能にする。</li>
+<li>**共有メモリへのフラッシュ**: 蓄積された統計を共有メモリ上の <code>PgStatShared_Backend</code> 構造体に反映する。</li>
+<li>**統計対象の判定**: <code>pgstat_tracks_backend_bktype</code> を通じて、どのバックエンド種別が統計収集の対象となるかを制御する。</li>
+<li>**ライフサイクル管理**: プロセス起動時の初期化および終了時の統計処理（間接的）をサポートする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PendingBackendStats</code>: プロセスローカルな統計保持用構造体。メモリ割り当てを避けるため静的領域に配置。</li>
+<li><code>pgstat_count_backend_io_op(_time)</code>: I/O 統計をローカルバッファに加算する関数。</li>
+<li><code>pgstat_flush_backend</code>: 蓄積された統計を共有メモリへ書き出すメイン関数。</li>
+<li><code>pgstat_tracks_backend_bktype</code>: 統計収集対象のバックエンド種別を判定するフィルタ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgstat_backend_flush_cb</code></li>
+<li><code>pgstat_backend_reset_timestamp_cb</code></li>
+<li><code>pgstat_backend_wal_have_pending</code></li>
+<li><code>pgstat_count_backend_io_op</code></li>
+<li><code>pgstat_count_backend_io_op_time</code></li>
+<li><code>pgstat_create_backend</code></li>
+<li><code>pgstat_fetch_stat_backend</code></li>
+<li><code>pgstat_fetch_stat_backend_by_pid</code></li>
+<li><code>pgstat_flush_backend_entry_io</code></li>
+<li><code>pgstat_flush_backend_entry_wal</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **蓄積**: 各種操作（I/O や WAL）が発生すると、<code>pgstat_count_...</code> 系関数が <code>PendingBackendStats</code> を更新し、<code>backend_has_iostats</code> フラグを立てる。 2.  **フラッシュ要求**: <code>pgstat_backend_flush_cb</code> が呼び出されると、<code>pgstat_flush_backend</code> が実行される。 3.  **同期**: <code>pgstat_get_entry_ref_locked</code> で共有メモリ上のエントリをロックし、<code>pgstat_flush_backend_entry_io</code> および <code>pgstat_flush_backend_entry_wal</code> がローカル値を共有メモリへ加算（Accumulate）する。 4.  **リセット**: フラッシュ完了後、ローカルバッファをクリアし、WAL 統計計算用の基準値（<code>prevBackendWalUsage</code>）を更新する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: プロセス識別およびバックエンド状態の取得に使用。</li>
+<li><code>executor/instrument.h</code>: I/O 時間計測用。</li>
+<li><code>utils/pgstat_internal.h</code>: 統計サブシステムの内部定義および共有メモリ構造体へのアクセス。</li>
+<li><code>access/xlog.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計サブシステムの基盤。本ファイルのフラッシュ処理を呼び出す起点。</li>
+<li><code>src/backend/utils/activity/pgstat_io.c</code>: I/O 統計の定義と関連する共通ロジック。</li>
+<li><code>src/backend/utils/activity/pgstat_wal.c</code>: WAL 統計の定義と関連する共通ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**クリティカルセクション**: 本ファイル内の統計更新は、メモリ割り当てを行わない設計になっています。これは、メモリ確保が禁止されているクリティカルセクション内から統計を報告できるようにするためです。</li>
+<li>**永続化**: バックエンド統計はプロセス終了とともに消滅するため、ディスク上の統計ファイルには書き出されません。</li>
+<li>**WAL 統計**: <code>prevBackendWalUsage</code> を用いて、前回のフラッシュ時からの差分を計算する差分更新方式を採用しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_count_backend_io_op_time.html" target="wiki-view"><code>pgstat_count_backend_io_op_time</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_count_backend_io_op.html" target="wiki-view"><code>pgstat_count_backend_io_op</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_fetch_stat_backend.html" target="wiki-view"><code>pgstat_fetch_stat_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_fetch_stat_backend_by_pid.html" target="wiki-view"><code>pgstat_fetch_stat_backend_by_pid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_flush_backend_entry_io.html" target="wiki-view"><code>pgstat_flush_backend_entry_io</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_backend_wal_have_pending.html" target="wiki-view"><code>pgstat_backend_wal_have_pending</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_flush_backend_entry_wal.html" target="wiki-view"><code>pgstat_flush_backend_entry_wal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_flush_backend.html" target="wiki-view"><code>pgstat_flush_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_backend_flush_cb.html" target="wiki-view"><code>pgstat_backend_flush_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_create_backend.html" target="wiki-view"><code>pgstat_create_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_tracks_backend_bktype.html" target="wiki-view"><code>pgstat_tracks_backend_bktype</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_backend_c__pgstat_backend_reset_timestamp_cb.html" target="wiki-view"><code>pgstat_backend_reset_timestamp_cb</code></a></li>
+</ul></body></html>

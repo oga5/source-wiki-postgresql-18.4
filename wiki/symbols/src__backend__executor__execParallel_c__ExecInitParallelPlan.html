@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execParallel_c__ExecInitParallelPlan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecInitParallelPlan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execParallel.c:598</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行のための初期化処理を行い、リーダープロセスとワーカープロセス間で共有される動的共有メモリ（DSM）のセットアップとプランのシリアライズを担う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ParallelExecutorInfo *ExecInitParallelPlan(PlanState *planstate, EState *estate,
+                                           Bitmapset *sendParams, int nworkers,
+                                           int64 tuples_needed)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>planstate</code>: 実行するプランツリーのルートノード。</li>
+<li><code>estate</code>: 現在のクエリ実行状態。</li>
+<li><code>sendParams</code>: ワーカーへ転送するパラメータのセット。</li>
+<li><code>nworkers</code>: 起動するワーカープロセスの数。</li>
+<li><code>tuples_needed</code>: ワーカーが生成すべきタプル数の目安。</li>
+<li>**出力**:</li>
+<li>並列実行の管理情報を含む <code>ParallelExecutorInfo</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>GetActiveSnapshot() == estate-&gt;es_snapshot</code> であること（スナップショットの一貫性）。</li>
+<li><code>ExecSetParamPlanMulti</code> により、ワーカーへ渡す <code>initplan</code> の出力が評価済みであること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **プランのシリアライズ**: <code>ExecSerializePlan</code> を呼び出し、プランツリーをワーカーが再構築可能な形式に変換する。 2. **コンテキスト作成**: <code>CreateParallelContext</code> で並列実行コンテキストを生成する。 3. **空間の推定**: <code>shm_toc_estimate_chunk</code> を使用し、固定状態、クエリ文字列、シリアライズ済みプラン、パラメータ、統計情報（BufferUsage/WalUsage）、タプルキュー、およびDSA領域に必要なメモリ量を算出する。 4. **ノードごとの推定**: <code>ExecParallelEstimate</code> を呼び出し、並列対応ノードが必要とする追加メモリ量を加算する。 5. **DSMの確保**: <code>InitializeParallelDSM</code> を呼び出し、算出されたサイズに基づいて共有メモリセグメントを確保する。 6. **データ格納**: <code>shm_toc_allocate</code> と <code>shm_toc_insert</code> を使用し、各データをDSM上の適切なキー（<code>PARALLEL_KEY_*</code>）に配置する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/executor/nodeGather.c</code></li>
+<li><code>src/backend/executor/nodeGatherMerge.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ExecSetParamPlanMulti</code>, <code>ExecSerializePlan</code>, <code>CreateParallelContext</code>, <code>shm_toc_estimate_chunk</code>, <code>shm_toc_estimate_keys</code>, <code>ExecParallelEstimate</code>, <code>InitializeParallelDSM</code>, <code>shm_toc_allocate</code>, <code>shm_toc_insert</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelExecutorInfo</code>: 並列実行の全体状態を保持。</li>
+<li><code>ParallelContext</code>: 並列実行の基盤コンテキスト。</li>
+<li><code>FixedParallelExecutorState</code>: DSM内に格納される固定サイズの実行状態。</li>
+<li><code>SharedExecutorInstrumentation</code>: 実行統計情報の共有領域。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nworkers</code> が 0 の場合や、メモリ確保が失敗した際の挙動は <code>shm_toc</code> および <code>dsa</code> の実装に依存する。</li>
+<li><code>estate-&gt;es_instrument</code> が有効な場合、ノード数に応じた統計情報領域の計算が必須となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はプランツリーを再帰的に走査する <code>ExecParallelEstimate</code> を含むため、新しい並列対応ノードを追加する際は、推定ロジックの更新が必要。</li>
+<li><code>PARALLEL_KEY_*</code> 定数はDSM内のオフセット管理に直結するため、キーの追加・変更時には競合を避けること。</li>
+<li><code>ExecSetParamPlanMulti</code> の呼び出しによるメモリリークのリスクについては、将来的なAPI変更の検討対象である。</li>
+</ul></body></html>

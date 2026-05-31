@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginfast_c__ginHeapTupleFastInsert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginHeapTupleFastInsert</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/gin/ginfast.c:218</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスの「ペンディングリスト（Pending List）」に対し、タプルを効率的に挿入する。インデックスへの直接挿入負荷を避けるため、データを一時的なページに蓄積する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ginstate</code>: GINインデックスの状態管理構造体。</li>
+<li><code>collector</code>: 挿入対象のタプル群とサイズ情報を保持する構造体。</li>
+<li>**出力**: なし（副作用としてインデックスのペンディングリストを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>collector-&gt;ntuples</code> が 0 の場合、処理は即座に終了する。</li>
+<li>ペンディングリストの操作は、メタページ（<code>GIN_METAPAGE_BLKNO</code>）の排他ロック下で行われる。</li>
+<li>シリアライザブルなスキャンとの競合を避けるため、メタページへのアクセス時に <code>CheckForSerializableConflictIn</code> が呼び出される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **挿入戦略の決定**:</p>
+<ul>
+<li>挿入データが単一ページに収まらない、または現在のテールページに空きがない場合、<code>makeSublist</code> を用いて新しいサブリストを作成する。</li>
+<li>収まる場合は、既存のテールページへ直接追記する。</li>
+<p>2. **サブリスト作成時**:</p>
+<li>新規サブリストを作成し、既存リストの末尾（<code>metadata-&gt;tail</code>）にリンクする。</li>
+<li>メタページの <code>head</code>, <code>tail</code>, <code>nPendingPages</code>, <code>nPendingHeapTuples</code> を更新する。</li>
+<p>3. **テールページ直接挿入時**:</p>
+<li>現在のテールページをロックし、<code>PageAddItem</code> を用いてタプルを順次追加する。</li>
+<li>メタページの <code>nPendingHeapTuples</code> およびページ内の <code>maxoff</code> をインクリメントする。</li>
+<p>4. **WAL記録**:</p>
+<li><code>RelationNeedsWAL</code> が真の場合、<code>XLogBeginInsert</code> を呼び出し、メタページやデータページの変更をWALに記録する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/gin/gininsert.c:890</code></li>
+<li>**呼び出し先**:</li>
+<li><code>makeSublist</code> (サブリスト作成時)</li>
+<li><code>ReadBuffer</code>, <code>LockBuffer</code>, <code>PageAddItem</code> (ストレージ操作)</li>
+<li><code>XLogBeginInsert</code>, <code>XLogRegisterBuffer</code> (WAL記録)</li>
+<li><code>CheckForSerializableConflictIn</code> (シリアライザブル整合性チェック)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GinState</code>: GINインデックスの操作状態。</li>
+<li><code>GinTupleCollector</code>: 挿入待ちタプルのバッファ。</li>
+<li><code>GinMetaPageData</code>: ペンディングリストのヘッド/テールを管理するメタページ構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合、<code>elog(ERROR)</code> により処理を中断する。</li>
+<li>ペンディングリストのサイズが <code>GinListPageSize</code> を超える場合、強制的にサブリスト化が行われる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はペンディングリストの整合性を維持するため、クリティカルセクション（<code>START_CRIT_SECTION</code>）内でメタページおよびデータページの更新を行う。</li>
+<li>高い並行性を維持するため、サブリスト作成の準備段階ではメタページのロックを一時的に解放する設計となっている。</li>
+</ul></body></html>

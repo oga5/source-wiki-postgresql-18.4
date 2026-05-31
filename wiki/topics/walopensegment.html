@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/walopensegment.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WALOpenSegment</h1>
+<h2>概念</h2>
+<p><code>WALOpenSegment</code> は、PostgreSQLにおいて現在読み込み中（オープン状態）のWAL（Write-Ahead Logging）セグメントファイルの状態を管理するための構造体です。ファイル記述子、セグメント番号、およびタイムラインIDを保持し、WALの読み込み処理においてどのセグメントが現在開かれているかを識別・管理する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>WALの読み込み処理（リカバリ、レプリケーション、または <code>pg_waldump</code> などのユーティリティによる解析）において、現在オープンしているWALセグメントのメタデータを正確に追跡することは不可欠です。<code>WALOpenSegment</code> は、ファイル記述子（<code>ws_file</code>）と、それが対応するセグメント番号（<code>ws_segno</code>）およびタイムラインID（<code>ws_tli</code>）を紐付けて管理することで、誤ったセグメントからの読み込みを防ぎ、安全なWALレコードの解析を可能にします。また、バックエンド（<code>xlogreader.c</code>）とフロントエンド（<code>pg_waldump</code>）の双方で共有される共通のデータ構造であるため、一貫したWALセグメント管理を提供する点でも重要です。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたコンテキストに基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/xlogreader.h#WALOpenSegment</code>** (構造体)</li>
+<p>現在開いているWALセグメントのファイル記述子 (<code>ws_file</code>)、セグメント番号 (<code>ws_segno</code>)、タイムラインID (<code>ws_tli</code>) を保持する構造体。</p>
+<li>**<code>symbol:src/backend/access/transam/xlogreader.c#WALOpenSegmentInit</code>** (関数)</li>
+<p><code>WALOpenSegment</code> および関連する <code>WALSegmentContext</code> を初期化するための内部（<code>static</code>）関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>XLogReaderAllocate</code> などの呼び出し元から、<code>WALOpenSegmentInit</code> が呼び出されます。この際、<code>WALOpenSegment</code> の <code>ws_file</code> は <code>-1</code>（未オープン状態）に設定され、<code>ws_segno</code> と <code>ws_tli</code> は <code>0</code> に初期化されます。 2. **セグメントのオープンと更新**: WALの読み込み処理が進むにつれて、対象のセグメントファイルがオープンされ、<code>WALOpenSegment</code> 構造体の各フィールド（<code>ws_file</code>, <code>ws_segno</code>, <code>ws_tli</code>）が現在開いているファイルの情報で更新されます。 3. **参照とエラー報告**: WALの読み込み中、<code>xlogutils.c</code> や <code>pg_waldump.c</code> などの呼び出し元が、エラー発生時や状態確認のために <code>WALOpenSegment</code> の情報を参照します。</p>
+<p>※なお、セグメントが切り替わる際の具体的なクローズ・再オープンの詳細な制御フロー（どの関数がどのタイミングでファイルをオープンし、<code>WALOpenSegment</code> を更新するか）の全容は、提供されたモジュール情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**未オープン状態の表現**:</li>
+<p>セグメントファイルが開かれていない、または初期化直後の状態では、<code>ws_file</code> は必ず <code>-1</code> でなければなりません。</p>
+<li>**ファイルとメタデータの一致**:</li>
+<p><code>ws_file</code> が有効なファイル記述子（<code>&gt;= 0</code>）を指している場合、そのファイル記述子が指す実体は、<code>ws_segno</code> および <code>ws_tli</code> に対応するWALセグメントファイルである必要があります。</p>
+<li>**バッファサイズ制限**:</li>
+<p><code>WALOpenSegmentInit</code> において、<code>waldir</code> が指定された場合、コピー先である <code>WALSegmentContext</code> の <code>ws_dir</code> は <code>MAXPGPATH</code> 以上のバッファサイズを持つ必要があります。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**フロントエンドとバックエンドの共有**:</li>
+<p><code>WALOpenSegment</code> は <code>xlogreader.h</code> で定義されており、バックエンド（サーバープロセス）だけでなく、フロントエンドツール（<code>pg_waldump</code> など）でも共有されています。そのため、この構造体のレイアウトやフィールドを変更すると、両方のバイナリ互換性に影響を与えるため注意が必要です。</p>
+<li>**パスの切り詰め**:</li>
+<p><code>WALOpenSegmentInit</code> で <code>waldir</code> を <code>segcxt-&gt;ws_dir</code> にコピーする際、<code>waldir</code> の長さが <code>MAXPGPATH</code> を超えていると、<code>snprintf</code> によりパスが途中で切り詰められる可能性があります。</p>
+<li>**無効なセグメント情報**:</li>
+<p><code>ws_file</code> が有効であるにもかかわらず、<code>ws_segno</code> や <code>ws_tli</code> に誤った値が設定された場合、後続のWALレコード読み込み処理で予期せぬエラーや不正なデータ読み込みが発生する危険性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/access/xlogreader.h</code> (構造体 <code>WALOpenSegment</code> の定義と周辺のデータ構造)</li>
+<li><code>src/backend/access/transam/xlogreader.c</code> (初期化関数 <code>WALOpenSegmentInit</code> の実装と <code>XLogReaderAllocate</code> での利用箇所)</li>
+</ul></body></html>

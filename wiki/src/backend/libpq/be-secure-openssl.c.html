@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/be-secure-openssl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/be-secure-openssl.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL バックエンドにおける OpenSSL を用いた TLS 通信機能の実装です。サーバー側の SSL コンテキストの初期化、証明書と秘密鍵の読み込み、およびクライアントとのセキュアな接続確立とデータ送受信を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/libpq</code> サブシステムの一部として、<code>be-secure.c</code> が提供する抽象化レイヤーの背後で OpenSSL 固有の処理をカプセル化します。PostgreSQL の通信プロトコル（<code>pqcomm.c</code>）と OpenSSL ライブラリの橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**SSL コンテキスト管理**: <code>SSL_CTX</code> の生成、プロトコルバージョン制限、暗号スイートの設定、証明書・CRL の読み込み。</li>
+<li>**セキュアな I/O**: OpenSSL の <code>BIO</code> インターフェースをカスタマイズし、PostgreSQL のソケット処理と統合。</li>
+<li>**認証と検証**: クライアント証明書の検証、ALPN（Application-Layer Protocol Negotiation）のネゴシエーション。</li>
+<li>**鍵管理**: DH/ECDH パラメータの読み込みと設定、パスフレーズ保護された秘密鍵のハンドリング。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>be_tls_init</code>: SSL コンテキストを構築し、GUC 設定に基づいて環境をセットアップする。</li>
+<li><code>be_tls_open_server</code>: TLS ハンドシェイクを実行し、クライアント証明書情報を抽出する。</li>
+<li><code>be_tls_read</code> / <code>be_tls_write</code>: OpenSSL を介したセキュアなデータ送受信。</li>
+<li><code>SSL_context</code>: サーバー全体で共有される現在の SSL 設定状態。</li>
+<li><code>port_bio_method</code>: PostgreSQL のソケットを OpenSSL の BIO に適合させるためのメソッド定義。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SSLerrmessage</code></li>
+<li><code>SSLerrmessageExt</code></li>
+<li><code>X509_NAME_to_cstring</code></li>
+<li><code>be_tls_close</code></li>
+<li><code>be_tls_destroy</code></li>
+<li><code>port_bio_ctrl</code></li>
+<li><code>port_bio_read</code></li>
+<li><code>port_bio_write</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>be_tls_init</code> が呼び出され、証明書ファイルやプロトコル設定を読み込み <code>SSL_CTX</code> を作成します。 2. **接続確立**: <code>be_tls_open_server</code> が <code>SSL_accept</code> を呼び出し、ハンドシェイクを行います。この際、<code>port_bio_read/write</code> を通じて PostgreSQL のソケットからデータを読み書きします。 3. **データ転送**: <code>be_tls_read/write</code> がアプリケーション層からの要求を受け取り、OpenSSL の <code>SSL_read/write</code> を実行します。 4. **終了**: <code>be_tls_close</code> によりセッションを適切にシャットダウンし、リソースを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**PostgreSQL ヘッダー**: <code>postgres.h</code>, <code>libpq/libpq.h</code>, <code>storage/fd.h</code>, <code>utils/guc.h</code> 等。</li>
+<li>**OpenSSL ヘッダー**: <code>openssl/ssl.h</code> (common/openssl.h 経由), <code>openssl/x509v3.h</code>, <code>openssl/dh.h</code> 等。</li>
+<li>**システムヘッダー**: <code>sys/socket.h</code>, <code>netinet/in.h</code> 等のネットワーク関連。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>common/openssl.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>openssl/bn.h</code></li>
+<li><code>openssl/conf.h</code></li>
+<li><code>openssl/ec.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/libpq/be-secure.c</code>: SSL 抽象化レイヤーの呼び出し元。</li>
+<li><code>src/backend/libpq/pqcomm.c</code>: 通信の基盤となるソケット処理。</li>
+<li><code>src/include/libpq/libpq.h</code>: <code>Port</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**BIO のカスタマイズ**: OpenSSL 標準の BIO ではなく、PostgreSQL のシグナル処理や非ブロッキング I/O と整合させるために <code>port_bio_read/write</code> が定義されています。</li>
+<li>**エラー処理**: OpenSSL のエラーキューはスレッドローカルであるため、<code>ERR_clear_error()</code> と <code>ERR_get_error()</code> の呼び出し順序が重要です。</li>
+<li>**パスフレーズ**: サーバー起動時や設定リロード時に秘密鍵のパスフレーズを安全に扱うため、<code>ssl_passphrase_command</code> を介した外部コマンド実行機能が組み込まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_init.html" target="wiki-view"><code>be_tls_init</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_destroy.html" target="wiki-view"><code>be_tls_destroy</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_open_server.html" target="wiki-view"><code>be_tls_open_server</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_close.html" target="wiki-view"><code>be_tls_close</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_read.html" target="wiki-view"><code>be_tls_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__be_tls_write.html" target="wiki-view"><code>be_tls_write</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__port_bio_read.html" target="wiki-view"><code>port_bio_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__port_bio_write.html" target="wiki-view"><code>port_bio_write</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__port_bio_ctrl.html" target="wiki-view"><code>port_bio_ctrl</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__SSLerrmessageExt.html" target="wiki-view"><code>SSLerrmessageExt</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__SSLerrmessage.html" target="wiki-view"><code>SSLerrmessage</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-openssl_c__X509_NAME_to_cstring.html" target="wiki-view"><code>X509_NAME_to_cstring</code></a></li>
+</ul></body></html>

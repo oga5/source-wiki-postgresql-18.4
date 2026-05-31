@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/citext/citext.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/citext/citext.c</h1>
+<h2>概要</h2>
+<p><code>citext.c</code> は、PostgreSQL において大文字・小文字を区別しない文字列型（<code>citext</code>）を実現するためのコア実装です。標準の <code>text</code> 型の挙動を拡張し、比較、ソート、ハッシュ計算において大文字・小文字を無視した処理を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/citext</code> モジュールの唯一のソースファイルとして、SQL レベルで定義された <code>citext</code> 型の演算子や関数を C 言語で実装しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**正規化**: 入力文字列を <code>str_tolower</code> を用いて小文字に変換し、比較やハッシュ計算の基盤とする。</li>
+<li>**比較演算**: <code>citext</code> 型に対する等価性、不等価性、大小比較の提供。</li>
+<li>**インデックスサポート**: ハッシュインデックスや B-tree インデックスで利用可能な比較・ハッシュ関数の提供。</li>
+<li>**集約関数**: <code>min()</code> や <code>max()</code> で利用される <code>citext_smaller</code> / <code>citext_larger</code> の実装。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>citextcmp</code>: 内部的な比較関数。<code>str_tolower</code> で正規化した後、<code>varstr_cmp</code> で照合順序（Collation）を考慮した比較を行う。</li>
+<li><code>internal_citext_pattern_cmp</code>: パターンマッチング用の比較関数。照合順序を無視したバイナリ比較を行う。</li>
+<li><code>citext_hash</code> / <code>citext_hash_extended</code>: ハッシュインデックス用のハッシュ計算関数。</li>
+<li><code>citext_eq</code> / <code>citext_ne</code>: 等価・不等価判定。<code>strcmp</code> を使用して効率化されている。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>citext_cmp</code></li>
+<li><code>citext_ge</code></li>
+<li><code>citext_gt</code></li>
+<li><code>citext_le</code></li>
+<li><code>citext_lt</code></li>
+<li><code>citext_pattern_cmp</code></li>
+<li><code>citext_pattern_lt</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **正規化**: すべての比較・ハッシュ関数は、まず <code>str_tolower</code> を呼び出し、入力された <code>text</code> 型データを小文字の C 文字列に変換します。 2. **比較**:</p>
+<ul>
+<li>通常の比較（<code>citext_cmp</code> 等）では、正規化後に <code>varstr_cmp</code> を呼び出し、PostgreSQL の照合順序設定に従って比較します。</li>
+<li>パターン比較（<code>citext_pattern_cmp</code> 等）では、正規化後に <code>memcmp</code> を用いたバイナリ比較を行い、照合順序の影響を排除します。</li>
+<p>3. **メモリ管理**: <code>str_tolower</code> で生成された一時的な文字列は、処理終了後に必ず <code>pfree</code> で解放されます。また、<code>PG_FREE_IF_COPY</code> を使用して、TOAST された入力データのメモリリークを防ぎます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>fmgr.h</code>: 関数マネージャインターフェース。</li>
+<li><code>utils/formatting.h</code>: <code>str_tolower</code> 等の文字列変換ユーティリティ。</li>
+<li><code>utils/varlena.h</code> / <code>varatt.h</code>: 可変長データ型（<code>text</code>）の操作用。</li>
+<li><code>common/hashfn.h</code>: <code>hash_any</code> 等のハッシュ計算用。</li>
+<li><code>catalog/pg_collation.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>catalog/pg_collation.h</code>: 照合順序の定義。</li>
+<li>PostgreSQL コアの <code>src/backend/utils/adt/varlena.c</code>: <code>varstr_cmp</code> 等の比較ロジックの基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**照合順序の扱い**: 現在の実装では、<code>str_tolower</code> に <code>DEFAULT_COLLATION_OID</code> を固定で使用しています。これは、大文字・小文字の変換ルールが照合順序に依存しないようにするためです。</li>
+<li>**パフォーマンス**: <code>citext_eq</code> 等の等価判定では、<code>strcoll</code> のような重い照合順序依存の比較を避け、<code>strcmp</code> を使用して最適化されています。</li>
+<li>**拡張性**: 今後の PostgreSQL コアのインフラが照合順序依存のハッシュや等価比較を完全にサポートすれば、この実装も簡素化される可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__citext__citext_c__internal_citext_pattern_cmp.html" target="wiki-view"><code>internal_citext_pattern_cmp</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_cmp.html" target="wiki-view"><code>citext_cmp</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_pattern_cmp.html" target="wiki-view"><code>citext_pattern_cmp</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_hash.html" target="wiki-view"><code>citext_hash</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_hash_extended.html" target="wiki-view"><code>citext_hash_extended</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_eq.html" target="wiki-view"><code>citext_eq</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_ne.html" target="wiki-view"><code>citext_ne</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_lt.html" target="wiki-view"><code>citext_lt</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_le.html" target="wiki-view"><code>citext_le</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_gt.html" target="wiki-view"><code>citext_gt</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_ge.html" target="wiki-view"><code>citext_ge</code></a></li>
+<li><a href="../../symbols/contrib__citext__citext_c__citext_pattern_lt.html" target="wiki-view"><code>citext_pattern_lt</code></a></li>
+</ul></body></html>

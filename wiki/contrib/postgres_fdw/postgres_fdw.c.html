@@ -1,0 +1,119 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/postgres_fdw/postgres_fdw.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/postgres_fdw/postgres_fdw.c</h1>
+<h2>概要</h2>
+<p><code>postgres_fdw.c</code> は、PostgreSQL の外部データラッパー（FDW）のメインエントリポイントです。リモートの PostgreSQL サーバーに対するクエリのプランニング、実行、およびデータ操作（DML）のライフサイクルを管理します。本ファイルは、PostgreSQL コアのプランナやエグゼキュータから呼び出されるコールバック関数群を実装し、リモートサーバーとの通信やクエリの変換を調整するハブの役割を果たします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postgres_fdw</code> モジュールにおける「司令塔」です。<code>deparse.c</code>（SQL生成）、<code>connection.c</code>（接続管理）、<code>option.c</code>（設定検証）といった各サブコンポーネントを統合し、プランナが生成したパスを実際の実行プランに変換したり、実行時のタプル変換やエラーハンドリングを制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プランニング**: <code>GetForeignRelSize</code> や <code>GetForeignPaths</code> を通じて、リモートテーブルのコスト見積もりと実行パスの生成を行う。</li>
+<li>**実行**: <code>BeginForeignScan</code> / <code>IterateForeignScan</code> を介したリモートカーソルの管理とタプル取得。</li>
+<li>**データ操作**: <code>PlanForeignModify</code> や <code>ExecForeignInsert</code> 等によるリモート DML 操作の実行と、RETURNING 句の処理。</li>
+<li>**最適化**: リモートサーバーの統計情報を利用したコスト見積もり（<code>estimate_path_cost_size</code>）と、結合・集約のプッシュダウン判定。</li>
+<li>**リソース管理**: リモート接続のライフサイクル管理と、実行コンテキスト（メモリコンテキスト）の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プランニング用構造体</h3>
+<ul>
+<li><code>PgFdwRelationInfo</code>: プランナが使用するリモートテーブルの最適化情報（コスト、条件、プッシュダウン可否など）。</li>
+<li><code>PgFdwPathExtraData</code>: コスト見積もり時に使用する追加情報（LIMIT、ソート情報など）。</li>
+</ul>
+<h3>実行状態管理構造体</h3>
+<ul>
+<li><code>PgFdwScanState</code>: <code>ForeignScan</code> ノードの実行状態（接続、カーソル、タプルバッファ）。</li>
+<li><code>PgFdwModifyState</code>: <code>ModifyTable</code> ノードの実行状態（INSERT/UPDATE/DELETE 用）。</li>
+<li><code>PgFdwDirectModifyState</code>: 直接的なリモート更新（UPDATE/DELETE）の実行状態。</li>
+<li><code>PgFdwAnalyzeState</code>: <code>ANALYZE</code> 実行時のサンプリング状態。</li>
+</ul>
+<h3>コールバック関数群</h3>
+<ul>
+<li><code>postgres_fdw_handler</code>: FDW の全コールバック関数を登録するエントリポイント。</li>
+<li><code>postgresGetForeignRelSize</code> / <code>postgresGetForeignPaths</code>: プランナが呼び出すパス生成の起点。</li>
+<li><code>postgresGetForeignPlan</code>: プランナが最終的な <code>ForeignScan</code> ノードを作成する際に呼び出す。</li>
+<li><code>postgresIterateForeignScan</code>: エグゼキュータがタプルをフェッチする際に呼び出す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ConversionLocation</code></li>
+<li><code>FdwDirectModifyPrivateIndex</code></li>
+<li><code>FdwModifyPrivateIndex</code></li>
+<li><code>FdwPathPrivateIndex</code></li>
+<li><code>FdwScanPrivateIndex</code></li>
+<li><code>PgFdwAnalyzeState</code></li>
+<li><code>PgFdwDirectModifyState</code></li>
+<li><code>PgFdwModifyState</code></li>
+<li><code>PgFdwPathExtraData</code></li>
+<li><code>PgFdwScanState</code></li>
+<li><code>ec_member_foreign_arg</code></li>
+<li><code>postgresExecForeignDelete</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **プランニング**: <code>postgresGetForeignRelSize</code> が <code>PgFdwRelationInfo</code> を初期化し、<code>classifyConditions</code> でプッシュダウン可能な条件を分離します。<code>estimate_path_cost_size</code> がリモートの <code>EXPLAIN</code> を実行してコストを算出します。 2. **実行**: <code>postgresBeginForeignScan</code> でリモート接続を確立し、<code>DECLARE CURSOR</code> を発行します。<code>postgresIterateForeignScan</code> が <code>FETCH</code> を繰り返し、<code>make_tuple_from_result_row</code> でリモートのテキスト形式データをローカルのタプル形式に変換します。 3. **DML**: <code>postgresPlanForeignModify</code> がリモート SQL を生成し、<code>execute_foreign_modify</code> がプリペアドステートメントを使用して実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq</code>: リモートサーバーとの通信。</li>
+<li><code>nodes/pathnodes.h</code>, <code>optimizer/pathnode.h</code>: プランナのノード定義。</li>
+<li><code>foreign/fdwapi.h</code>: FDW API の定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/explain_format.h</code></li>
+<li><code>commands/explain_state.h</code></li>
+<li><code>executor/execAsync.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/inherit.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fdw.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/sampling.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>deparse.c</code>: SQL 生成ロジックの心臓部。</li>
+<li><code>connection.c</code>: <code>GetConnection</code> 等の接続管理ロジック。</li>
+<li><code>option.c</code>: <code>apply_server_options</code> 等の設定処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PgFdwScanState</code> 等の構造体は <code>estate-&gt;es_query_cxt</code> に割り当てられ、クエリ終了時に自動解放されます。タプル変換には <code>temp_cxt</code> を使用し、メモリリークを防いでいます。</li>
+<li>**エラーハンドリング**: リモートエラーは <code>pgfdw_report_error</code> を通じてローカルの PostgreSQL エラーとして報告されます。<code>conversion_error_callback</code> により、変換失敗時にどのカラムでエラーが起きたか特定可能です。</li>
+<li>**制約**: <code>postgres_fdw</code> はリモートのトランザクション状態をローカルと同期させますが、分散トランザクションの完全な原子性は保証されません。</li>
+<li>**未実装**: 複雑な結合や集約のプッシュダウンは <code>deparse.c</code> に依存しており、本ファイルはそれらの実行を仲介する役割に徹しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwScanPrivateIndex.html" target="wiki-view"><code>FdwScanPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwModifyPrivateIndex.html" target="wiki-view"><code>FdwModifyPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwDirectModifyPrivateIndex.html" target="wiki-view"><code>FdwDirectModifyPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwScanState.html" target="wiki-view"><code>PgFdwScanState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwModifyState.html" target="wiki-view"><code>PgFdwModifyState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwDirectModifyState.html" target="wiki-view"><code>PgFdwDirectModifyState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwAnalyzeState.html" target="wiki-view"><code>PgFdwAnalyzeState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwPathPrivateIndex.html" target="wiki-view"><code>FdwPathPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwPathExtraData.html" target="wiki-view"><code>PgFdwPathExtraData</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__ConversionLocation.html" target="wiki-view"><code>ConversionLocation</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__ec_member_foreign_arg.html" target="wiki-view"><code>ec_member_foreign_arg</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__postgresExecForeignDelete.html" target="wiki-view"><code>postgresExecForeignDelete</code></a></li>
+</ul></body></html>

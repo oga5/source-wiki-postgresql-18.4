@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/nodes/execnodes.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/nodes/execnodes.h</h1>
+<h2>概要</h2>
+<p><code>src/include/nodes/execnodes.h</code> は、PostgreSQL のエグゼキュータ（実行エンジン）がクエリ実行時に使用する「実行時状態ノード」のデータ構造を定義するヘッダーファイルです。<code>plannodes.h</code> で定義された静的な実行計画ツリーに対し、実行時の動的な状態（タプル、メモリコンテキスト、評価結果など）を保持するツリー構造を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>nodes</code> モジュールにおける「実行時状態」層の中核です。プランナーが生成した計画（<code>Plan</code>）をエグゼキュータが受け取り、対応する実行状態（<code>PlanState</code>）へ変換する際の基盤となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行時状態の管理**: クエリ実行中の各ノードの状態（<code>PlanState</code>）および式評価の状態（<code>ExprState</code>）の定義。</li>
+<li>**式評価のコンテキスト**: 式の評価に必要な変数（タプル、パラメータ、集約値）を保持する <code>ExprContext</code> の提供。</li>
+<li>**タプル処理のサポート**: プロジェクション（<code>ProjectionInfo</code>）、ジャンクフィルタ（<code>JunkFilter</code>）、および更新対象リレーション（<code>ResultRelInfo</code>）の管理。</li>
+<li>**並列実行と統計**: 並列クエリのワーカー間連携や、<code>EXPLAIN ANALYZE</code> 用の計測データの保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行状態の基盤</h3>
+<ul>
+<li><code>PlanState</code>: 全実行ノードの抽象基底クラス。<code>Plan</code> ノードと 1 対 1 で対応し、実行時のタプル取得関数（<code>ExecProcNode</code>）や子ノードへのリンクを持つ。</li>
+<li><code>EState</code>: クエリ実行全体を統括する最上位のコンテキスト。リレーション、パラメータ、メモリコンテキスト、トリガー情報などを保持する。</li>
+</ul>
+<h3>式評価</h3>
+<ul>
+<li><code>ExprState</code>: 式ツリーの実行時状態。評価ステップ（<code>ExprEvalStep</code>）を保持し、<code>ExecEvalExpr</code> 等で実行される。</li>
+<li><code>ExprContext</code>: 式評価の実行環境。スキャン対象のタプルや集約値、メモリコンテキスト（クエリ寿命/タプル寿命）を管理する。</li>
+</ul>
+<h3>リレーション・更新処理</h3>
+<ul>
+<li><code>ResultRelInfo</code>: 更新対象リレーションの実行時情報。インデックス、トリガー、制約チェック、FDW 状態などを含む。</li>
+<li><code>JunkFilter</code>: 不要なジャンク属性（<code>ctid</code> 等）をフィルタリングするための構造体。</li>
+</ul>
+<h3>結合・スキャン状態</h3>
+<ul>
+<li><code>JoinState</code> / <code>NestLoopState</code> / <code>HashJoinState</code>: 各種結合アルゴリズムの実行状態。</li>
+<li><code>ScanState</code> / <code>SeqScanState</code> / <code>IndexScanState</code>: 各種スキャンアルゴリズムの実行状態。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Datum</code></li>
+<li><code>ExprContext</code></li>
+<li><code>ExprContext_CB</code></li>
+<li><code>ExprDoneCond</code></li>
+<li><code>ExprState</code></li>
+<li><code>IndexInfo</code></li>
+<li><code>JunkFilter</code></li>
+<li><code>MergeActionState</code></li>
+<li><code>OnConflictSetState</code></li>
+<li><code>ProjectionInfo</code></li>
+<li><code>ReturnSetInfo</code></li>
+<li><code>SetFunctionReturnMode</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecutorStart</code> が <code>EState</code> を作成し、<code>Plan</code> ツリーを再帰的に走査して <code>PlanState</code> ツリーを構築する。 2. **実行**: <code>ExecProcNode</code> が呼び出されると、各ノードは子ノードからタプルを取得し、<code>ExprContext</code> を用いて <code>qual</code>（条件）や <code>targetlist</code>（プロジェクション）を評価する。 3. **状態更新**: <code>ExprContext</code> のメモリコンテキスト（<code>ecxt_per_tuple_memory</code>）はタプルごとにリセットされ、メモリリークを防ぐ。 4. **終了**: <code>ExecutorEnd</code> が <code>EState</code> を解放し、関連するメモリコンテキストやリソースをクリーンアップする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/plannodes.h</code>: 実行状態の元となる計画ノード定義。</li>
+<li><code>utils/tuplestore.h</code>, <code>utils/tuplesort.h</code>: 中間結果の保持やソート用。</li>
+<li><code>executor/instrument.h</code>: 実行統計情報の記録用。</li>
+<li><code>lib/simplehash.h</code>: タプルハッシュテーブルの実装用。</li>
+<li><code>access/tupconvert.h</code></li>
+<li><code>fmgr.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>lib/pairingheap.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>nodes/params.h</code></li>
+<li><code>nodes/tidbitmap.h</code></li>
+<li><code>partitioning/partdefs.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/queryenvironment.h</code></li>
+<li><code>utils/reltrigger.h</code></li>
+<li><code>utils/sharedtuplestore.h</code></li>
+<li><code>utils/snapshot.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/</code>: 本ヘッダーで定義された構造体を操作する実装群（<code>nodeAgg.c</code>, <code>nodeHashjoin.c</code> 等）。</li>
+<li><code>src/include/nodes/plannodes.h</code>: 計画ノードの定義。</li>
+<li><code>src/include/executor/execExpr.h</code>: <code>ExprState</code> の詳細な評価ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>EState</code> はクエリ実行期間中生存するメモリコンテキスト（<code>es_query_cxt</code>）を所有します。<code>ExprContext</code> はタプルごとの短命なメモリ管理を担うため、評価前に <code>CurrentMemoryContext</code> を適切に切り替える必要があります。</li>
+<li>**設計の意図**: 本ファイル内のノードは、<code>copy</code>/<code>equal</code>/<code>read</code> などのノードサポート関数を意図的に持たず、実行時専用の軽量な構造体として設計されています。</li>
+<li>**省略された詳細**: <code>CustomScanState</code> や <code>ForeignScanState</code> などの拡張用ノードは、外部モジュールによる拡張を前提としているため、本ファイルでは最小限の定義に留まっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ExprContext.html" target="wiki-view"><code>ExprContext</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ExprState.html" target="wiki-view"><code>ExprState</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__IndexInfo.html" target="wiki-view"><code>IndexInfo</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ExprContext_CB.html" target="wiki-view"><code>ExprContext_CB</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ExprDoneCond.html" target="wiki-view"><code>ExprDoneCond</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__SetFunctionReturnMode.html" target="wiki-view"><code>SetFunctionReturnMode</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ReturnSetInfo.html" target="wiki-view"><code>ReturnSetInfo</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__ProjectionInfo.html" target="wiki-view"><code>ProjectionInfo</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__JunkFilter.html" target="wiki-view"><code>JunkFilter</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__OnConflictSetState.html" target="wiki-view"><code>OnConflictSetState</code></a></li>
+<li><a href="../../../symbols/src__include__nodes__execnodes_h__MergeActionState.html" target="wiki-view"><code>MergeActionState</code></a></li>
+</ul></body></html>

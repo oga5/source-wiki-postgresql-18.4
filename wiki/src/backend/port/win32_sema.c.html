@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/port/win32_sema.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/port/win32_sema.c</h1>
+<h2>概要</h2>
+<p>Windows環境におけるPostgreSQLのセマフォ実装を提供します。Win32 APIの <code>CreateSemaphore</code> および <code>WaitForMultipleObjectsEx</code> を利用して、PostgreSQLの標準的なセマフォインターフェースをエミュレートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/port</code> モジュールの一部として、プラットフォーム固有の同期プリミティブを抽象化します。他のOS（System VやPOSIX）の実装と異なり、Windowsでは共有メモリを介したセマフォ管理を必要としないため、非常に軽量な実装となっています。</p>
+<h2>責務</h2>
+<ul>
+<li>**セマフォのライフサイクル管理**: プロセス終了時にセマフォハンドルを解放するためのクリーンアップ処理。</li>
+<li>**同期操作の抽象化**: <code>PGSemaphoreLock</code> 等の共通APIをWin32 APIへマッピング。</li>
+<li>**シグナル処理の統合**: <code>WaitForMultipleObjectsEx</code> を使用し、セマフォ待機中にPostgreSQLのシグナル（<code>pgwin32_signal_event</code>）を適切に処理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PGSemaphoreCreate</code>: Win32の匿名セマフォを作成し、ハンドルを返します。</li>
+<li><code>PGSemaphoreLock</code>: セマフォの取得を試みます。待機中にシグナルが発生した場合は、シグナル処理を優先します。</li>
+<li><code>PGSemaphoreTryLock</code>: ブロックせずにセマフォの取得を試みます。</li>
+<li><code>mySemSet</code>: 現在のプロセスで確保されたセマフォハンドルを追跡する静的配列。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PGReserveSemaphores</code></li>
+<li><code>PGSemaphoreReset</code></li>
+<li><code>PGSemaphoreShmemSize</code></li>
+<li><code>PGSemaphoreUnlock</code></li>
+<li><code>ReleaseSemaphores</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>PGReserveSemaphores</code> が呼び出され、ハンドルを格納する配列を確保し、終了時のクリーンアップ関数を登録します。 2.  **作成**: <code>PGSemaphoreCreate</code> で <code>CreateSemaphore</code> を呼び出し、ハンドルを <code>mySemSet</code> に記録します。 3.  **待機**: <code>PGSemaphoreLock</code> は <code>WaitForMultipleObjectsEx</code> をループ内で実行します。</p>
+<ul>
+<li><code>pgwin32_signal_event</code> がシグナルされた場合、<code>pgwin32_dispatch_queued_signals</code> を実行して割り込みを処理します。</li>
+<li>セマフォが利用可能になるまで待機を継続します。</li>
+<p>4.  **解放**: プロセス終了時に <code>ReleaseSemaphores</code> が呼ばれ、<code>CloseHandle</code> で全ハンドルをクローズします。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>miscadmin.h</code>: <code>IsUnderPostmaster</code> 等の管理用フラグ。</li>
+<li><code>storage/ipc.h</code>: プロセス間通信の基本定義。</li>
+<li><code>storage/pg_sema.h</code>: セマフォAPIのインターフェース定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/port/win32_shmem.c</code>: Windows環境における共有メモリ管理。</li>
+<li><code>src/include/storage/pg_sema.h</code>: セマフォ操作の共通ヘッダー。</li>
+<li><code>src/backend/port/posix_sema.c</code> / <code>sysv_sema.c</code>: 他プラットフォームでの同等実装（比較用）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**共有メモリ不要**: Windows実装ではセマフォ自体がカーネルオブジェクトとして管理されるため、<code>PGSemaphoreShmemSize</code> は常に0を返します。</li>
+<li>**シグナル処理**: <code>PGSemaphoreLock</code> 内の <code>WaitForMultipleObjectsEx</code> は、PostgreSQLのシグナルイベントを第一引数に配置しています。これは、セマフォ待機中であっても確実にシグナルを検知し、デッドロックや応答不能を防ぐための重要な設計です。</li>
+<li>**匿名セマフォ**: ここで作成されるセマフォは名前を持たないため、プロセス終了時に自動的にクリーンアップされますが、明示的な <code>CloseHandle</code> も行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreShmemSize.html" target="wiki-view"><code>PGSemaphoreShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGReserveSemaphores.html" target="wiki-view"><code>PGReserveSemaphores</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__ReleaseSemaphores.html" target="wiki-view"><code>ReleaseSemaphores</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreCreate.html" target="wiki-view"><code>PGSemaphoreCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreReset.html" target="wiki-view"><code>PGSemaphoreReset</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreLock.html" target="wiki-view"><code>PGSemaphoreLock</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreUnlock.html" target="wiki-view"><code>PGSemaphoreUnlock</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_sema_c__PGSemaphoreTryLock.html" target="wiki-view"><code>PGSemaphoreTryLock</code></a></li>
+</ul></body></html>

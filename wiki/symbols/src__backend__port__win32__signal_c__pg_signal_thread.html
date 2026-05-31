@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32__signal_c__pg_signal_thread.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_signal_thread</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/win32/signal.c:273</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows環境において、名前付きパイプを介して外部プロセスからのシグナル要求を待機・受信し、PostgreSQLバックエンドへシグナルを伝達するバックグラウンドスレッドとして機能します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static DWORD WINAPI pg_signal_thread(LPVOID param);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>param</code> (LPVOID) - スレッド起動時に渡される引数（本実装では未使用）。</li>
+<li>**出力**: <code>DWORD</code> - スレッド終了コード（無限ループのため通常は戻らない）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pgwin32_initial_signal_pipe</code> が初期化済みであるか、または <code>INVALID_HANDLE_VALUE</code> であること。</li>
+<li>プロセスIDに基づいた一意な名前付きパイプ (<code>\\.\pipe\pgsignal_&lt;PID&gt;</code>) が利用可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **パイプの準備**: プロセスIDを含む名前付きパイプを作成または再接続します。 2. **接続待機**: <code>ConnectNamedPipe</code> を使用して、シグナル送信側からの接続を待機します。 3. **シグナル受信**: パイプ経由で1バイトのシグナル番号 (<code>sigNum</code>) を読み取ります。 4. **キューイング**: <code>pg_queue_signal(sigNum)</code> を呼び出し、シグナルを内部キューへ格納します。これにより、送信側の <code>kill()</code> 完了後に受信側が確実にシグナルを検知できることを保証します。 5. **応答**: 送信側の <code>CallNamedPipe()</code> が終了できるよう、パイプへ応答を書き込み、<code>FlushFileBuffers</code> で送信完了を待ちます。 6. **切断**: <code>DisconnectNamedPipe</code> を呼び出し、次の接続に備えてパイプを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/port/win32/signal.c</code> 内の <code>pgwin32_signal_initialize</code> において <code>CreateThread</code> により起動されます。</li>
+<li>**呼び出し先**: </li>
+<li><code>pg_queue_signal</code> (シグナルのキューイング)</li>
+<li>Windows API: <code>CreateNamedPipe</code>, <code>ConnectNamedPipe</code>, <code>ReadFile</code>, <code>WriteFile</code>, <code>FlushFileBuffers</code>, <code>DisconnectNamedPipe</code>, <code>CloseHandle</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_signal_queue</code>: 受信したシグナルを保持する共有ビットマスク。</li>
+<li><code>pgwin32_initial_signal_pipe</code>: 初期化時に使用されるパイプハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**パイプ作成失敗**: <code>CreateNamedPipe</code> が失敗した場合、エラーログを出力し、500ms待機後に再試行します。</li>
+<li>**接続失敗**: <code>ConnectNamedPipe</code> が失敗した場合、ハンドルをクローズして再作成を試みます。</li>
+<li>**読み取り失敗**: パイプからの読み取りが失敗した場合、クライアント側の問題とみなし、接続を切断して次の待機へ移行します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は無限ループで動作します。</li>
+<li><code>pg_queue_signal</code> への呼び出しは、Windows特有のタイミング問題を回避するための強力な同期保証として機能しています。</li>
+<li>パイプの再作成ロジックは、シグナル受信の欠落を防ぐためのフォールバックとして実装されています。</li>
+</ul></body></html>

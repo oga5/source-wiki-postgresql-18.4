@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/collationcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/collationcmds.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける照合順序（Collation）オブジェクトの作成、変更、およびシステム提供の照合順序のインポートを管理するコマンド処理の実装です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、SQLの <code>CREATE COLLATION</code>、<code>ALTER COLLATION</code>、およびシステムカタログ <code>pg_collation</code> を操作するユーティリティ関数を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**照合順序の定義**: <code>CREATE COLLATION</code> 文の解析と、プロバイダ（libc, icu, builtin）ごとの妥当性検証およびカタログ登録。</li>
+<li>**照合順序の更新**: <code>ALTER COLLATION</code> によるバージョン情報の更新処理。</li>
+<li>**システム照合順序のインポート**: OSやライブラリ（libc, ICU, Win32）から利用可能な照合順序を検出し、<code>pg_collation</code> に一括登録する機能。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DefineCollation</code>: <code>CREATE COLLATION</code> 文を実行するメイン関数。</li>
+<li><code>AlterCollation</code>: 照合順序のバージョン更新を処理する関数。</li>
+<li><code>pg_import_system_collations</code>: OS環境から照合順序を自動検出してカタログへ取り込む関数。</li>
+<li><code>CollAliasData</code>: libcのロケール名とエイリアスを管理するための内部構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CollParam</code></li>
+<li><code>IsThereCollationInNamespace</code></li>
+<li><code>cmpaliases</code></li>
+<li><code>create_collation_from_locale</code></li>
+<li><code>get_icu_locale_comment</code></li>
+<li><code>normalize_libc_locale_name</code></li>
+<li><code>pg_collation_actual_version</code></li>
+<li><code>win32_read_locale</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **定義処理**: <code>DefineCollation</code> が <code>ParseState</code> から引数を抽出し、プロバイダに応じた検証（<code>icu_validate_locale</code> 等）を経て <code>CollationCreate</code> を呼び出しカタログを更新します。 2. **インポート処理**: <code>pg_import_system_collations</code> がプラットフォーム固有のAPI（<code>locale -a</code>, <code>EnumSystemLocalesEx</code>, <code>uloc_getAvailable</code>）を呼び出し、検出したロケールを <code>create_collation_from_locale</code> を介してカタログへ挿入します。 3. **バージョン管理**: <code>get_collation_actual_version</code> を使用して、現在のライブラリ環境における照合順序のバージョンを特定し、カタログの <code>collversion</code> 列を更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_collation.h</code>: 照合順序カタログの定義。</li>
+<li><code>utils/pg_locale.h</code>: ロケール関連のユーティリティ関数。</li>
+<li><code>utils/syscache.h</code>: システムキャッシュによるカタログ検索。</li>
+<li><code>commands/collationcmds.h</code>: 公開プロトタイプ定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/pg_locale.c</code>: ロケールの正規化や検証ロジックの実装。</li>
+<li><code>src/backend/catalog/pg_collation.c</code>: カタログ操作の低レイヤー関数。</li>
+<li><code>src/include/catalog/pg_collation.h</code>: カタログのスキーマ定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはプラットフォーム依存のコード（<code>#ifdef WIN32</code> 等）を多く含みます。特にロケールの列挙ロジックはOSごとに大きく異なるため、移植や修正の際は注意が必要です。</li>
+<li><code>COLLPROVIDER_DEFAULT</code> は特別な扱いであり、ユーザーが直接作成することはできません。</li>
+<li>ICUプロバイダを使用する場合、非ASCII文字を含むロケール名はカタログ登録時にフィルタリングされる仕様になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__CollAliasData.html" target="wiki-view"><code>CollAliasData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__DefineCollation.html" target="wiki-view"><code>DefineCollation</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__IsThereCollationInNamespace.html" target="wiki-view"><code>IsThereCollationInNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__AlterCollation.html" target="wiki-view"><code>AlterCollation</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__pg_collation_actual_version.html" target="wiki-view"><code>pg_collation_actual_version</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__normalize_libc_locale_name.html" target="wiki-view"><code>normalize_libc_locale_name</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__cmpaliases.html" target="wiki-view"><code>cmpaliases</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__get_icu_locale_comment.html" target="wiki-view"><code>get_icu_locale_comment</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__create_collation_from_locale.html" target="wiki-view"><code>create_collation_from_locale</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__CollParam.html" target="wiki-view"><code>CollParam</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__win32_read_locale.html" target="wiki-view"><code>win32_read_locale</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__collationcmds_c__pg_import_system_collations.html" target="wiki-view"><code>pg_import_system_collations</code></a></li>
+</ul></body></html>

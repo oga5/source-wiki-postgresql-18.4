@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/replicationslot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReplicationSlot</h1>
+<h2>概念</h2>
+<p><code>ReplicationSlot</code>（レプリケーションスロット）は、PostgreSQLにおいてプライマリ（送信側）サーバーが、スタンバイや論理レプリケーションクライアント（受信側）のために必要なWAL（Write-Ahead Log）や古いシステムカタログのタプルを保持し続けるための状態管理機構です。</p>
+<p>メモリ内では <code>ReplicationSlot</code> 構造体として表現され、物理レプリケーションと論理レプリケーションの双方をサポートします。</p>
+<h2>なぜ重要か</h2>
+<p>レプリケーションスロットがない場合、受信側の処理が遅延すると、送信側で不要と判断されたWALファイルが削除されたり、バキュームによって古いタプルが回収されたりして、レプリケーションが継続不可能になるリスクがあります。<code>ReplicationSlot</code> は、受信側が必要とする最小限の進捗（LSNやxmin）を送信側に登録・維持させることで、データの早期消失を防ぎ、レプリケーションの整合性と継続性を保証します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li>**<code>module:src/backend/replication</code>**: サーバー側におけるスロットの作成、管理、およびWAL送信（walsender）などのコアロジック。</li>
+<li>**<code>module:src/bin/pg_basebackup</code>**: クライアントツール（<code>pg_basebackup</code>, <code>pg_receivewal</code>, <code>pg_recvlogical</code>）におけるスロットの作成・利用。</li>
+<li>**<code>module:src/include/replication</code>**: <code>ReplicationSlot</code> 構造体などのデータ定義。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>struct ReplicationSlot</code>** (<code>src/include/replication/slot.h</code>): 共有メモリ上のスロット状態を保持する構造体。</li>
+<li>**<code>ReplicationSlotCreate</code>** (<code>src/backend/replication/slot.c</code>): サーバー側で新しいスロットを割り当て、ディスク上に永続化し、共有メモリ上でアクティブ化する関数。</li>
+<li>**<code>CreateReplicationSlot</code> (サーバー側)** (<code>src/backend/replication/walsender.c</code>): クライアントからの <code>CREATE_REPLICATION_SLOT</code> コマンドを処理し、物理または論理スロットを作成・初期化する。</li>
+<li>**<code>CreateReplicationSlot</code> (クライアント側)** (<code>src/bin/pg_basebackup/streamutil.c</code>): <code>libpq</code> を介してサーバーに対して <code>CREATE_REPLICATION_SLOT</code> コマンドを発行するヘルパー関数。</li>
+<li>**クライアント側変数 <code>replication_slot</code>**: <code>pg_basebackup.c</code>, <code>pg_receivewal.c</code>, <code>pg_recvlogical.c</code> で定義され、コマンドライン引数などから指定された対象スロット名を保持する。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **クライアントからの要求**: <code>pg_basebackup</code> などのクライアントツールが、<code>streamutil.c</code> の <code>CreateReplicationSlot</code> を呼び出し、接続先サーバーに対して <code>CREATE_REPLICATION_SLOT</code> コマンドを送信します。 2. **サーバー側でのコマンド受信と解析**: <code>walsender.c</code> の <code>CreateReplicationSlot</code> がコマンドを受信し、物理スロットか論理スロットかに応じてオプションを解析します。 3. **スロットの作成と初期化**:</p>
+<ul>
+<li>サーバーは <code>ReplicationSlotCreate</code> を呼び出し、共有メモリ上に <code>ReplicationSlot</code> を確保し、ディスク上に永続化用のディレクトリを作成します。</li>
+<li>物理スロットの場合、必要に応じて WAL を予約します（<code>ReplicationSlotReserveWal</code>）。</li>
+<li>論理スロットの場合、デコーディングコンテキスト（<code>LogicalDecodingContext</code>）を初期化し、開始地点（LSN）を特定してスナップショットのエクスポートなどを行います。</li>
+<p>4. **結果の返却**: 作成されたスロットの情報（LSNやスナップショット名など）がクライアントに返却されます。</p>
+</ul>
+<p>*※なお、作成されたスロットを用いた継続的なWALストリーミングやデコーディングの具体的な詳細フロー（エンドツーエンドの全体像）については、提供されたモジュール情報からは完全には網羅されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**単一所有権**: スロットを作成または使用する際、現在のバックエンドプロセス（<code>MyReplicationSlot</code>）は既に別のスロットを所有していてはなりません（<code>MyReplicationSlot</code> が <code>NULL</code> であること）。</li>
+<li>**排他制御**:</li>
+<li>スロットの追加・削除には <code>ReplicationSlotControlLock</code>（LWLock）の取得が必要です。</li>
+<li>スロットの作成・割り当て時には <code>ReplicationSlotAllocationLock</code> を排他モードで取得します。</li>
+<li>スロット内の個別フィールドの更新には、スロット固有の <code>mutex</code>（スピンロック）の取得が必須です。</li>
+<li>**物理と論理のパラメータ制約**:</li>
+<li>物理スロット作成時は、出力プラグイン（<code>plugin</code>）が <code>NULL</code> でなければなりません。</li>
+<li>論理スロット作成時は、<code>plugin</code> が <code>NULL</code> であってはなりません。また、<code>two_phase</code> や <code>failover</code> などの論理専用オプションは物理スロットと同時に指定できません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の衝突**: 同名のスロットが既に存在する場合、<code>ERRCODE_DUPLICATE_OBJECT</code> エラーが発生します。ただし、クライアント側で <code>slot_exists_ok</code> が <code>true</code> に設定されている場合は、エラーを無視して成功とみなすことができます。</li>
+<li>**リソース制限**: <code>max_replication_slots</code> 設定値の上限に達している場合、新しいスロットの作成は <code>ERRCODE_CONFIGURATION_LIMIT_EXCEEDED</code> で失敗します。</li>
+<li>**トランザクション制約**: 論理スロット作成時にスナップショット操作（<code>CRS_USE_SNAPSHOT</code>）を行う場合、トランザクションブロック内であること、<code>REPEATABLE READ</code> 隔離レベルであること、読み取り専用であることなど、厳しいトランザクション状態の制約を満たさないとエラーになります。</li>
+<li>**バージョン互換性**: クライアント（<code>streamutil.c</code>）がサーバーにコマンドを送る際、PostgreSQL 15以降で導入された括弧付きの新しいオプション構文とそれ以前の構文の差異を考慮する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/replication/slot.c</code> (サーバー側スロット管理のコアロジック)</li>
+<li><code>src/backend/replication/walsender.c</code> (レプリケーションコマンドの処理)</li>
+<li><code>src/include/replication/slot.h</code> (スロット構造体の定義)</li>
+<li><code>src/bin/pg_basebackup/streamutil.c</code> (クライアント側からのスロット作成ヘルパー)</li>
+</ul></body></html>

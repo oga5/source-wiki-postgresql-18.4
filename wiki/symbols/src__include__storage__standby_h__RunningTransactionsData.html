@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__standby_h__RunningTransactionsData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RunningTransactionsData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/standby.h:86</code></li>
+</ul>
+<h2>目的</h2>
+<p>ホットスタンバイ環境において、プライマリサーバーで実行中のトランザクション状態をスタンバイ側で再現・保持するために使用されます。スタンバイ起動時のスナップショット作成や、リカバリ中のクエリ競合判定の基礎データとなります。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct RunningTransactionsData
+{
+	int			xcnt;			/* xids[] 内のトランザクションID数 */
+	int			subxcnt;		/* xids[] 内のサブトランザクションID数 */
+	subxids_array_status subxid_status;
+	TransactionId nextXid;		/* プライマリの nextXid */
+	TransactionId oldestRunningXid; /* 実行中の最古のXID */
+	TransactionId oldestDatabaseRunningXid; /* 現在のデータベース内での最古のXID */
+	TransactionId latestCompletedXid;	/* xmax決定用の最新完了XID */
+	TransactionId *xids;		/* 実行中の(サブ)トランザクションID配列 */
+} RunningTransactionsData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: プライマリサーバーから送信されるWALレコード（<code>xl_running_xacts</code>等）から情報を読み取り、本構造体に格納します。</li>
+<li>**出力**: スタンバイ側でのスナップショット生成や、<code>ResolveRecoveryConflictWith...</code> 関数群による競合解決の判断材料として利用されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>oldestRunningXid</code> は <code>oldestXmin</code> とは異なります。</li>
+<li><code>xids</code> 配列には、実行中のトランザクションおよびサブトランザクションのIDが格納されます。</li>
+<li><code>subxid_status</code> は、サブトランザクションID配列の状態（オーバーフローの有無など）を保持します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. スタンバイプロセスがWALから実行中トランザクション情報を読み込み、本構造体を初期化します。 2. リカバリ中にクエリが実行される際、この構造体を参照して、プライマリ側の変更と競合するかを判定します。 3. 競合が検出された場合、<code>ResolveRecoveryConflictWith...</code> 関数が呼び出され、待機またはクエリの中断が行われます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xlog.c</code> および <code>src/backend/storage/ipc/standby.c</code> にて、WAL適用時の状態保持用としてインスタンス化されます。</li>
+<li>**呼び出し先**: <code>src/backend/storage/ipc/procarray.c</code> にて、スナップショットのオーバーフロー判定やトランザクション管理のロジックから参照されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RunningTransactions</code>: <code>RunningTransactionsData *</code> 型のエイリアス。</li>
+<li><code>subxids_array_status</code>: サブトランザクションID配列の状態を示す列挙型。</li>
+<li><code>xl_running_xacts</code>: WALレコードとして書き出される際の対応構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>subxid_status</code> がオーバーフローを示している場合、サブトランザクションの追跡が不完全になる可能性があります。</li>
+<li><code>xids</code> 配列のメモリ管理は、リカバリプロセスのライフサイクルに依存します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>snapmgr.h</code> で管理される通常のスナップショットとは独立しています。</li>
+<li>スタンバイ特有のデータ構造であるため、通常のトランザクション管理ロジックと混同しないよう注意してください。</li>
+<li><code>max_standby_archive_delay</code> 等のGUCパラメータが、本構造体に基づく競合解決の待機時間に影響を与えます。</li>
+</ul></body></html>

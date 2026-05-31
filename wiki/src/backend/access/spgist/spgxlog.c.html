@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spgxlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgxlog.c</h1>
+<h2>概要</h2>
+<p>SP-GiST インデックスの WAL（Write-Ahead Log）リプレイ処理を実装するファイルです。クラッシュリカバリやスタンバイサーバーでのインデックス状態復元において、記録された操作をインデックスページ上で再現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/spgist</code> モジュールにおける WAL 再生エンジンです。インデックスの構造変更（ノード追加、分割、バキューム等）を物理的なページ操作に変換し、インデックスの整合性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**WAL リプレイのディスパッチ**: <code>spg_redo</code> 関数を起点に、レコードタイプに応じた適切なリプレイ関数を呼び出す。</li>
+<li>**ページ状態の復元**: <code>XLogReadBufferForRedo</code> を用いて必要なページを読み込み、インデックスの論理構造（リーフ、内部ノード、リダイレクト）を再構築する。</li>
+<li>**メモリ管理**: リプレイ中に必要な一時的なメモリコンテキスト（<code>opCtx</code>）の管理。</li>
+<li>**ページマスク**: <code>spg_mask</code> を通じて、ページチェックサムや LSN などの非決定的な情報をマスクし、リカバリ後の整合性検証を可能にする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>spg_redo</code>: WAL レコードを解析し、各操作（<code>spgRedoAddLeaf</code> 等）へ振り分けるメインエントリポイント。</li>
+<li><code>fillFakeState</code>: リプレイ時に必要な最小限の <code>SpGistState</code> を構築するヘルパー。</li>
+<li><code>addOrReplaceTuple</code>: ページへのタプル追加またはプレースホルダー置換を行う共通関数。</li>
+<li><code>spg_mask</code>: ページ検証用のマスク処理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>spgRedoAddNode</code></li>
+<li><code>spgRedoMoveLeafs</code></li>
+<li><code>spgRedoPickSplit</code></li>
+<li><code>spgRedoSplitTuple</code></li>
+<li><code>spgRedoVacuumLeaf</code></li>
+<li><code>spg_xlog_cleanup</code></li>
+<li><code>spg_xlog_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>spg_xlog_startup</code> で <code>opCtx</code> を作成。 2. **ディスパッチ**: <code>spg_redo</code> がレコードタイプを判定。 3. **リプレイ実行**:</p>
+<ul>
+<li>各 <code>spgRedo*</code> 関数が <code>XLogRecGetData</code> でペイロードを読み取る。</li>
+<li><code>XLogReadBufferForRedo</code> で対象ページをロック・取得。</li>
+<li><code>PageAddItem</code> や <code>PageIndexMultiDelete</code> 等の低レベル関数でページを更新。</li>
+<li><code>MarkBufferDirty</code> で変更を確定し、LSN を更新。</li>
+<p>4. **終了**: <code>spg_xlog_cleanup</code> でメモリコンテキストを解放。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/spgist_private.h</code>: SP-GiST の内部構造体定義。</li>
+<li><code>access/spgxlog.h</code>: WAL レコード構造体と定数。</li>
+<li><code>access/xlogutils.h</code>: WAL リプレイ用ユーティリティ。</li>
+<li><code>storage/standby.h</code>: ホットスタンバイ時の競合解決。</li>
+<li><code>access/bufmask.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/spgxlog.h</code>: リプレイ対象となる WAL レコードのデータ構造定義。</li>
+<li><code>src/backend/access/spgist/spgutils.c</code>: インデックス操作の共通ユーティリティ（<code>spgUpdateNodeLink</code> 等）。</li>
+<li><code>src/backend/access/spgist/spgdoinsert.c</code>: インデックス挿入時のロジック（WAL 生成側）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**順序の重要性**: リプレイ関数内では、親ノードの更新よりも子ページ（リーフや新しいノード）の更新を優先するケースが多いです。これは、スタンバイ側で読み取りが発生した際に、リンクが切れないようにするためです。</li>
+<li>**アライメント**: WAL レコード内のタプルはアライメントされていないため、アクセス時には必ず <code>memcpy</code> でヘッダーをコピーしてから操作する必要があります。</li>
+<li>**プレースホルダー**: SP-GiST は削除時に即座に領域を解放せず、プレースホルダーとしてマークすることが多いため、リプレイ時もこの状態遷移を正確に再現する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__fillFakeState.html" target="wiki-view"><code>fillFakeState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__addOrReplaceTuple.html" target="wiki-view"><code>addOrReplaceTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoAddLeaf.html" target="wiki-view"><code>spgRedoAddLeaf</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoMoveLeafs.html" target="wiki-view"><code>spgRedoMoveLeafs</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoAddNode.html" target="wiki-view"><code>spgRedoAddNode</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoSplitTuple.html" target="wiki-view"><code>spgRedoSplitTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoPickSplit.html" target="wiki-view"><code>spgRedoPickSplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spgRedoVacuumLeaf.html" target="wiki-view"><code>spgRedoVacuumLeaf</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spg_redo.html" target="wiki-view"><code>spg_redo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spg_xlog_startup.html" target="wiki-view"><code>spg_xlog_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spg_xlog_cleanup.html" target="wiki-view"><code>spg_xlog_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgxlog_c__spg_mask.html" target="wiki-view"><code>spg_mask</code></a></li>
+</ul></body></html>

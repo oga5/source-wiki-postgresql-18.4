@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/read_stream.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/read_stream.c</h1>
+<h2>概要</h2>
+<p><code>read_stream.c</code> は、PostgreSQL におけるリレーションデータの読み込みを効率化するための「先読み（Look-ahead）」メカニズムを提供します。単一ブロックごとの <code>ReadBuffer()</code> 呼び出しによる I/O 待機やオーバーヘッドを回避し、適応的な先読み距離を用いて複数のブロックをバッチ処理（<code>StartReadBuffers</code> / <code>WaitReadBuffers</code>）します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/aio</code> サブシステムの一部として、非同期 I/O（AIO）やバッチ処理を活用するための高レベルな抽象化レイヤーです。バッファマネージャと連携し、シーケンシャルアクセスやデータ駆動型のアクセスパターンにおいて、I/O 効率を最大化する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**先読み制御**: キャッシュヒット率に基づき、先読み距離を動的に調整する。</li>
+<li>**バッチ I/O 管理**: ユーザー提供のコールバックからブロック番号を取得し、可能な限り隣接ブロックをマージして <code>StartReadBuffers</code> を呼び出す。</li>
+<li>**バッファ管理**: 循環キューを用いて、ピン留めされたバッファと進行中の I/O を追跡・管理する。</li>
+<li>**リソース解放**: ストリーム終了時のバッファ解放およびメモリ管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ReadStream</code>: ストリームの状態（キュー、先読み距離、進行中の I/O など）を保持するメイン構造体。</li>
+<li><code>read_stream_begin_relation</code>: ストリームを開始するための主要なエントリポイント。</li>
+<li><code>read_stream_next_buffer</code>: ストリームから次のバッファを取得する。必要に応じて I/O 待機や先読み処理をトリガーする。</li>
+<li><code>read_stream_start_pending_read</code>: 蓄積されたブロック要求を実際の I/O 操作へ変換する。</li>
+<li><code>read_stream_look_ahead</code>: ストリームの先読み距離を維持するために、コールバックからブロック番号を補充する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InProgressIO</code></li>
+<li><code>block_range_read_stream_cb</code></li>
+<li><code>get_per_buffer_data</code></li>
+<li><code>read_stream_begin_impl</code></li>
+<li><code>read_stream_begin_smgr_relation</code></li>
+<li><code>read_stream_get_block</code></li>
+<li><code>read_stream_unget_block</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>read_stream_begin_relation</code> でストリームを生成し、コールバック関数を登録する。 2. **バッファ取得**: <code>read_stream_next_buffer</code> が呼ばれると、キュー内のバッファを返却する。 3. **先読み**: <code>read_stream_look_ahead</code> がコールバックを呼び出し、次に必要なブロックを特定する。 4. **I/O 実行**: 連続するブロックは <code>pending_read</code> に蓄積され、一定量に達するか制限に達した時点で <code>StartReadBuffers</code> が発行される。 5. **待機と消費**: <code>WaitReadBuffers</code> により I/O 完了を待ち、バッファを消費者に引き渡す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>miscadmin.h</code>: 基本的な型定義とシステム設定。</li>
+<li><code>storage/aio.h</code>, <code>storage/fd.h</code>, <code>storage/smgr.h</code>: I/O 操作およびストレージ管理。</li>
+<li><code>storage/read_stream.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/rel.h</code>, <code>utils/spccache.h</code>: リレーションおよびテーブルスペース情報の取得。</li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/read_stream.h</code>: ストリームのフラグやコールバック型の定義。</li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: <code>StartReadBuffers</code> 等の低レベルなバッファ読み込み実装。</li>
+<li><code>src/backend/storage/aio/aio.c</code>: AIO サブシステムの基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**先読み距離**: キャッシュヒット時は距離が 1 に縮小され、I/O が発生すると指数関数的に増加します。</li>
+<li>**バッチモード**: <code>READ_STREAM_USE_BATCHING</code> フラグを使用する場合、コールバック関数は <code>pgaio_enter_batchmode()</code> の制約（デッドロック回避など）を遵守する必要があります。</li>
+<li>**Fast Path**: キャッシュヒット率が高い場合、キュー管理をスキップする最適化パスが有効になります。デバッグ時はこの挙動に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__InProgressIO.html" target="wiki-view"><code>InProgressIO</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__ReadStream.html" target="wiki-view"><code>ReadStream</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__get_per_buffer_data.html" target="wiki-view"><code>get_per_buffer_data</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__block_range_read_stream_cb.html" target="wiki-view"><code>block_range_read_stream_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_get_block.html" target="wiki-view"><code>read_stream_get_block</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_unget_block.html" target="wiki-view"><code>read_stream_unget_block</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_start_pending_read.html" target="wiki-view"><code>read_stream_start_pending_read</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_look_ahead.html" target="wiki-view"><code>read_stream_look_ahead</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_begin_impl.html" target="wiki-view"><code>read_stream_begin_impl</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_begin_relation.html" target="wiki-view"><code>read_stream_begin_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_begin_smgr_relation.html" target="wiki-view"><code>read_stream_begin_smgr_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__read_stream_c__read_stream_next_buffer.html" target="wiki-view"><code>read_stream_next_buffer</code></a></li>
+</ul></body></html>

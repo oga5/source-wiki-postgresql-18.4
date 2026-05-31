@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__constraint_c__unique_key_recheck.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>unique_key_recheck</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/constraint.c:38</code></li>
+</ul>
+<h2>目的</h2>
+<p>遅延制約（Deferrable Constraints）の検証を行うトリガー関数。トランザクションのコミット時や <code>SET CONSTRAINTS</code> コマンド実行時に、挿入または更新された行が一意性制約や排他制約に違反していないかを事後的に再確認する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum unique_key_recheck(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PG_FUNCTION_ARGS</code>（トリガー実行コンテキスト <code>TriggerData</code> を含む）。</li>
+<li>**出力**: <code>Datum</code> 型（常に <code>PointerGetDatum(NULL)</code> を返す）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>AFTER ROW</code> トリガーとして呼び出される必要がある。</li>
+<li><code>INSERT</code> または <code>UPDATE</code> イベントに対してのみ有効。</li>
+<li>呼び出し元がトリガーマネージャであることを前提とする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **プロトコル検証**: <code>CALLED_AS_TRIGGER</code> および <code>TRIGGER_FIRED_AFTER</code> / <code>TRIGGER_FIRED_FOR_ROW</code> を確認し、違反時はエラーを投げる。 2. **行の取得**: <code>TriggerData</code> から対象行の TID を取得。 3. **生存確認**: <code>table_index_fetch_tuple</code> を使用し、対象行が現在も有効か確認する。無効な場合はチェックをスキップして終了する。 4. **準備**: 対象インデックスを開き（<code>RowExclusiveLock</code>）、<code>BuildIndexInfo</code> で情報を取得。式や排他制約がある場合は <code>EState</code> を作成する。 5. **値抽出**: <code>FormIndexDatum</code> でインデックスキー値を抽出する。 6. **制約チェック**:</p>
+<ul>
+<li>**一意性制約**: <code>index_insert</code> を <code>UNIQUE_CHECK_EXISTING</code> モードで呼び出し、既存エントリとの衝突を確認する。</li>
+<li>**排他制約**: <code>check_exclusion_constraint</code> を呼び出し、競合をチェックする。</li>
+<p>7. **後処理**: <code>EState</code> の解放、スロットの破棄、インデックスのクローズを行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: トリガーマネージャ（<code>src/backend/catalog/index.c</code> 等でトリガーとして登録）。</li>
+<li>**呼び出し先**: <code>table_index_fetch_tuple</code>, <code>index_open</code>, <code>BuildIndexInfo</code>, <code>FormIndexDatum</code>, <code>index_insert</code>, <code>check_exclusion_constraint</code>, <code>index_insert_cleanup</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TriggerData</code>: トリガーの実行情報。</li>
+<li><code>IndexInfo</code>: インデックスのメタデータ。</li>
+<li><code>EState</code>: 式評価のための実行状態。</li>
+<li><code>TupleTableSlot</code>: 行データを保持するスロット。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**プロトコル違反**: トリガー以外からの呼び出し、または <code>AFTER ROW</code> 以外のイベントで呼び出された場合にエラーとなる。</li>
+<li>**行の削除**: 挿入後に削除された行についてはチェックをスキップする。</li>
+<li>**HOT更新**: HOT更新によりトリガーが起動しない場合があるため、インデックスAM側のチェックと本関数の役割分担が重要となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>歴史的経緯により、関数名は <code>unique_key_recheck</code> だが、排他制約のチェックも包含している。</li>
+<li><code>index_insert</code> 呼び出し時に <code>UNIQUE_CHECK_EXISTING</code> を使用している点は、実際の挿入ではなく既存データの検証であることを示している。</li>
+</ul></body></html>

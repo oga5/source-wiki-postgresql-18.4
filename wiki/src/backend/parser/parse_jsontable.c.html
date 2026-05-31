@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_jsontable.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_jsontable.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの <code>JSON_TABLE</code> 構文を解析し、クエリ実行に必要な <code>TableFunc</code> 構造体へ変換するためのパーサーモジュールです。SQL標準の <code>JSON_TABLE</code> が提供する、JSONドキュメントからリレーショナルな行セットを生成する機能をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムの一部として、<code>transformExpr</code> 等の解析プロセスから呼び出されます。生の構文解析木（<code>JsonTable</code> ノード）を、プランナが理解可能な <code>TableFunc</code> ノードへと変換する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li><code>JSON_TABLE</code> 句の構文チェック（<code>ON ERROR</code> 句の妥当性など）。</li>
+<li>カラム名やパス名の重複チェックと一意な名前の自動生成。</li>
+<li><code>JSON_TABLE</code> 内の各カラム定義（<code>REGULAR</code>, <code>FORMATTED</code>, <code>EXISTS</code>, <code>NESTED</code>）を、対応する <code>JSON_VALUE</code> や <code>JSON_QUERY</code> 等の関数式へ変換。</li>
+<li>ネストされたカラム構造を再帰的に処理し、実行計画ツリー（<code>JsonTablePlan</code>）を構築。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>transformJsonTable</code>: 本ファイルのメインエントリポイント。<code>JsonTable</code> ノードを <code>TableFunc</code> に変換します。</li>
+<li><code>JsonTableParseContext</code>: 解析中に共有されるコンテキスト（パーサ状態、カラムリスト、パス名IDなど）を保持する構造体。</li>
+<li><code>transformJsonTableColumns</code>: カラム定義を走査し、<code>TableFunc</code> の列情報（型、照合順序、式）を構築する再帰関数。</li>
+<li><code>makeJsonTablePathScan</code> / <code>makeJsonTableSiblingJoin</code>: 実行計画の各ノードを生成するヘルパー関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckDuplicateColumnOrPathNames</code></li>
+<li><code>LookupPathOrColumnName</code></li>
+<li><code>generateJsonTablePathName</code></li>
+<li><code>isCompositeType</code></li>
+<li><code>transformJsonTableColumn</code></li>
+<li><code>transformJsonTableNestedColumns</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>transformJsonTable</code> が呼び出され、<code>JsonTableParseContext</code> を初期化します。 2. **検証**: <code>CheckDuplicateColumnOrPathNames</code> により名前の衝突を排除します。 3. **変換**:</p>
+<ul>
+<li><code>transformJsonTableColumns</code> が各カラムを順次処理します。</li>
+<li><code>transformJsonTableColumn</code> が個々のカラムを <code>JsonFuncExpr</code>（<code>JSON_VALUE</code> 等）に変換し、<code>TableFunc</code> に登録します。</li>
+<li><code>transformJsonTableNestedColumns</code> が <code>NESTED</code> 句を再帰的に処理し、<code>JsonTableSiblingJoin</code> を用いてプランを結合します。</li>
+<p>4. **終了**: 構築された <code>TableFunc</code> を <code>addRangeTableEntryForTableFunc</code> を通じて <code>RangeTableEntry</code> として登録します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/parse_expr.h</code>: 式の変換（<code>transformExpr</code>）に使用。</li>
+<li><code>utils/json.h</code>: JSON関連の定数や関数定義。</li>
+<li><code>catalog/pg_type.h</code>: 型情報の取得に使用。</li>
+<li><code>nodes/makefuncs.h</code>: ノード生成用ユーティリティ。</li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/nodes/parsenodes.h</code>: <code>JsonTable</code> 構造体の定義。</li>
+<li><code>src/backend/executor/nodeTableFunc.c</code>: ここで生成された <code>TableFunc</code> を実行時に処理するノード。</li>
+<li><code>src/backend/parser/parse_func.c</code>: 関数呼び出しの解析全般。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>LATERAL</code> 結合の挙動を前提としており、<code>pstate-&gt;p_lateral_active</code> を一時的に有効化して解析を行います。</li>
+<li><code>NESTED</code> カラムの処理は再帰的であり、<code>JsonTableSiblingJoin</code> を介して複数のパスが結合される点に注意してください。</li>
+<li><code>isCompositeType</code> 関数は、JSONの型を <code>JSON_VALUE</code> で扱うか <code>JSON_QUERY</code> で扱うかを決定する重要な判定ロジックです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__JsonTableParseContext.html" target="wiki-view"><code>JsonTableParseContext</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__transformJsonTable.html" target="wiki-view"><code>transformJsonTable</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__CheckDuplicateColumnOrPathNames.html" target="wiki-view"><code>CheckDuplicateColumnOrPathNames</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__LookupPathOrColumnName.html" target="wiki-view"><code>LookupPathOrColumnName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__generateJsonTablePathName.html" target="wiki-view"><code>generateJsonTablePathName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__transformJsonTableColumns.html" target="wiki-view"><code>transformJsonTableColumns</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__isCompositeType.html" target="wiki-view"><code>isCompositeType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__transformJsonTableColumn.html" target="wiki-view"><code>transformJsonTableColumn</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__transformJsonTableNestedColumns.html" target="wiki-view"><code>transformJsonTableNestedColumns</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__makeJsonTablePathScan.html" target="wiki-view"><code>makeJsonTablePathScan</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_jsontable_c__makeJsonTableSiblingJoin.html" target="wiki-view"><code>makeJsonTableSiblingJoin</code></a></li>
+</ul></body></html>

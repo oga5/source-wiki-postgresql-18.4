@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-cancel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-cancel.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLサーバーに対して実行中のクエリをキャンセルするためのリクエスト送信機能を実装しています。非同期（ノンブロッキング）な新しいAPIと、シグナルハンドラ内での呼び出しを想定した従来のブロッキングAPIの両方を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> クライアントライブラリの一部として、接続状態とは独立した「キャンセル専用」の通信経路を確立・管理します。既存の <code>PGconn</code> から必要な認証情報（PIDおよびキャンセルキー）を抽出し、サーバーへキャンセル要求を伝達する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャンセル情報の抽出**: <code>PQgetCancel</code> を通じて、既存接続からキャンセルに必要なトークンを安全にコピーする。</li>
+<li>**キャンセル実行**: </li>
+<li><code>PQcancelCreate</code> / <code>PQcancelStart</code> / <code>PQcancelPoll</code>: 非同期かつスレッドセーフなキャンセル要求の送信。</li>
+<li><code>PQcancel</code>: 従来のシグナル安全なブロッキングキャンセル要求。</li>
+<li>**リソース管理**: キャンセル用接続の作成、ソケット設定、および終了処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>struct pg_cancel</code>: キャンセル要求に必要な情報（PID、キー、ソケット設定）を保持する構造体。</li>
+<li><code>PQcancelCreate</code>: キャンセル専用の <code>PGcancelConn</code> を作成する。</li>
+<li><code>PQcancel</code>: シグナルハンドラ内での使用を想定した、低レベルなブロッキングキャンセル関数。</li>
+<li><code>PQsendCancelRequest</code>: 確立済みのキャンセル用接続を通じてパケットを送信する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQcancelBlocking</code></li>
+<li><code>PQcancelErrorMessage</code></li>
+<li><code>PQcancelFinish</code></li>
+<li><code>PQcancelPoll</code></li>
+<li><code>PQcancelReset</code></li>
+<li><code>PQcancelSocket</code></li>
+<li><code>PQcancelStart</code></li>
+<li><code>PQcancelStatus</code></li>
+<li><code>PQgetCancel</code></li>
+<li><code>pg_cancel</code></li>
+<li><code>pg_cancel_conn</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PQgetCancel</code> または <code>PQcancelCreate</code> により、対象接続の認証情報とアドレスをコピーしたオブジェクトを生成する。 2. **接続**:</p>
+<ul>
+<li>非同期フローでは <code>PQcancelStart</code> で接続を開始し、<code>PQcancelPoll</code> でソケットの準備完了を待機する。</li>
+<li><code>PQcancel</code> では、直接 <code>socket()</code> -&gt; <code>connect()</code> を行い、ブロッキングで送信する。</li>
+<p>3. **送信**: <code>CancelRequestPacket</code> を構築し、サーバーへ送信する。 4. **完了待機**: サーバーがキャンセル要求を受理し、接続を閉じる（EOF）のを待機する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>libpq-fe.h</code> / <code>libpq-int.h</code>: <code>libpq</code> の公開および内部インターフェース。</li>
+<li><code>unistd.h</code>: POSIX システムコール用。</li>
+<li><code>port/pg_bswap.h</code>: ネットワークバイトオーダー変換用。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-connect.c</code>: 接続確立のロジックを共有（<code>pqConnectDBStart</code> 等）。</li>
+<li><code>fe-misc.c</code>: ソケット操作やメッセージ送信の補助関数を提供。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**シグナル安全性**: <code>PQcancel</code> はシグナルハンドラ内での呼び出しを考慮し、<code>malloc</code> や <code>sprintf</code> 等の非リエントラントな関数を避けて実装されています。この関数を修正する際は、この制約を維持してください。</li>
+<li>**Windowsの挙動**: Windows環境ではソケットのEOF検知の挙動が異なるため、<code>PQcancelPoll</code> 等でプラットフォーム固有の分岐が存在します。</li>
+<li>**非同期APIの推奨**: 新規開発では、スレッドセーフで柔軟な <code>PQcancelCreate</code> を含む非同期API群の使用が推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__pg_cancel_conn.html" target="wiki-view"><code>pg_cancel_conn</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__pg_cancel.html" target="wiki-view"><code>pg_cancel</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelCreate.html" target="wiki-view"><code>PQcancelCreate</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelBlocking.html" target="wiki-view"><code>PQcancelBlocking</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelStart.html" target="wiki-view"><code>PQcancelStart</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelPoll.html" target="wiki-view"><code>PQcancelPoll</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelStatus.html" target="wiki-view"><code>PQcancelStatus</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelSocket.html" target="wiki-view"><code>PQcancelSocket</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelErrorMessage.html" target="wiki-view"><code>PQcancelErrorMessage</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelReset.html" target="wiki-view"><code>PQcancelReset</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQcancelFinish.html" target="wiki-view"><code>PQcancelFinish</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-cancel_c__PQgetCancel.html" target="wiki-view"><code>PQgetCancel</code></a></li>
+</ul></body></html>

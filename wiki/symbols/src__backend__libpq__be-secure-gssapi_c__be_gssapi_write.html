@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_write.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>be_gssapi_write</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/libpq/be-secure-gssapi.c:102</code></li>
+</ul>
+<h2>目的</h2>
+<p>GSSAPIを使用して、クライアントへの送信データを暗号化し、トランスポート層へ書き出す。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>port</code>: 接続情報を保持する <code>Port</code> 構造体。</li>
+<li><code>ptr</code>: 送信対象のデータバッファ。</li>
+<li><code>len</code>: 送信データのバイト数。</li>
+<li>**出力**:</li>
+<li>成功時: 送信完了したバイト数（<code>len</code> と一致）。</li>
+<li>失敗時: <code>-1</code> を返し、<code>errno</code> を設定する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>GSSAPI認証が完了し、<code>port-&gt;gss-&gt;ctx</code> が有効であること。</li>
+<li>呼び出し元は、前回の呼び出しで送信しきれなかったデータ（<code>PqGSSSendConsumed</code>）を再送する必要がある。</li>
+<li>内部状態 <code>PqGSSSendConsumed</code> は、送信完了時に <code>0</code> にリセットされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **再送チェック**: <code>len &lt; PqGSSSendConsumed</code> の場合、エラーとして処理する。 2. **バッファ送信**: <code>PqGSSSendLength</code> にデータが残っている場合、<code>secure_raw_write</code> を呼び出し、送信を試みる。送信が完了するまでループする。 3. **暗号化**: 未送信データがある場合、<code>gss_wrap</code> を使用してデータを暗号化する。</p>
+<ul>
+<li><code>PQ_GSS_MAX_PACKET_SIZE</code> を超えないよう分割して処理する。</li>
+<li>暗号化されたデータに4バイトのネットワークバイトオーダーの長さヘッダーを付与し、<code>PqGSSSendBuffer</code> に格納する。</li>
+<p>4. **ループ**: 全データが暗号化・送信されるまで繰り返す。 5. **完了**: <code>PqGSSSendConsumed</code> をリセットし、送信バイト数を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/libpq/be-secure.c</code> (直接確認済み)</li>
+<li>**呼び出し先**:</li>
+<li><code>secure_raw_write</code> (トランスポート層への書き出し)</li>
+<li><code>gss_wrap</code> (GSSAPI暗号化)</li>
+<li><code>gss_release_buffer</code> (GSSAPIバッファ解放)</li>
+<li><code>pg_hton32</code> (バイトオーダー変換)</li>
+<li><code>pg_GSS_error</code> / <code>ereport</code> (エラーハンドリング)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Port</code>: 接続状態を保持。</li>
+<li><code>PqGSSSendBuffer</code>: 暗号化済みデータの一時保存用静的バッファ。</li>
+<li><code>PqGSSSendLength</code>, <code>PqGSSSendNext</code>, <code>PqGSSSendConsumed</code>: 送信状態を管理する静的変数。</li>
+<li><code>PQ_GSS_MAX_PACKET_SIZE</code>: 最大パケットサイズ定数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**GSSAPIエラー**: <code>gss_wrap</code> が <code>GSS_S_COMPLETE</code> 以外を返した場合、<code>-1</code> を返し <code>ECONNRESET</code> を設定。</li>
+<li>**暗号化不備**: <code>conf_state</code> が <code>0</code>（機密性なし）の場合、エラーとして処理。</li>
+<li>**パケットサイズ超過**: 暗号化後のサイズが <code>PQ_GSS_MAX_PACKET_SIZE</code> を超える場合、エラーとして処理。</li>
+<li>**再送不整合**: 呼び出し元が期待される再送データを提供しない場合、<code>COMMERROR</code> をログ出力し、<code>ECONNRESET</code> を設定。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は静的変数を用いて状態を保持するため、単一のGSSAPI接続を前提としている。</li>
+<li>エラー発生時は <code>elog(FATAL)</code> を避け、<code>elog(COMMERROR)</code> を使用して無限再帰を防止すること。</li>
+<li>パケットサイズはプロトコル仕様の一部であるため、変更時はクライアントとの互換性に注意が必要。</li>
+</ul></body></html>

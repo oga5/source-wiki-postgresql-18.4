@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__pmsignal_c__PMSignalData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PMSignalData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/pmsignal.c:72</code></li>
+</ul>
+<h2>目的</h2>
+<p>Postmaster（親プロセス）とバックエンドプロセス（子プロセス）間での非同期通信および状態管理を行うための共有メモリ構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct PMSignalData
+{
+    sig_atomic_t PMSignalFlags[NUM_PMSIGNALS];
+    QuitSignalReason sigquit_reason;
+    int            num_child_flags;
+    sig_atomic_t   PMChildFlags[FLEXIBLE_ARRAY_MEMBER];
+};</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造ですが、共有メモリを介して以下の入出力を行います。</p>
+<ul>
+<li>**入力**: 子プロセスによる <code>PMSignalFlags</code> の更新（通知）、Postmasterによる <code>PMChildFlags</code> の状態管理。</li>
+<li>**出力**: Postmasterが読み取るシグナルフラグ、子プロセスが読み取る <code>sigquit_reason</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ上に配置される必要があります。</li>
+<li><code>PMSignalFlags</code> および <code>PMChildFlags</code> は <code>sig_atomic_t</code> 型であり、シグナルハンドラ内での更新がアトミックに行われることが保証されています。</li>
+<li><code>PMChildFlags</code> は可変長配列として定義されており、メモリ確保時に <code>num_child_flags</code> に基づいてサイズが決定されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**シグナル通知**: 子プロセスが <code>PMSignalFlags</code> を更新し、Postmasterへ <code>SIGUSR1</code> を送信することで非同期イベントを伝達します。</li>
+<li>**シャットダウン理由の伝達**: Postmasterが <code>SIGQUIT</code> を送出する際、その理由を <code>sigquit_reason</code> に格納し、子プロセスがこれを参照します。</li>
+<li>**状態追跡**: <code>PMChildFlags</code> を用いて、各バックエンドプロセスの状態（UNUSED/ASSIGNED/ACTIVE/WALSENDER等）を管理します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**参照元**: <code>src/backend/postmaster/launch_backend.c</code> および <code>src/backend/storage/ipc/pmsignal.c</code> 内のグローバル変数 <code>PMSignalState</code> を通じてアクセスされます。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。操作は <code>SendPostmasterSignal</code> や <code>CheckPostmasterSignal</code> 等のモジュール内関数を介して行われます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PMSignalState</code>: <code>PMSignalData</code> を指すグローバルなポインタ。</li>
+<li><code>QuitSignalReason</code>: シャットダウン理由を保持する列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PMChildFlags</code> のサイズは <code>num_child_flags</code> に依存するため、共有メモリ確保時のサイズ計算（<code>offsetof</code> を使用）が不適切である場合、メモリ破壊やアクセス違反が発生する可能性があります。</li>
+<li>共有メモリが初期化される前にアクセスした場合、<code>PMSignalState</code> が <code>NULL</code> であるためクラッシュします。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は不透明な構造体として扱われるべきであり、詳細は <code>pmsignal.c</code> 内に限定されています。</li>
+<li><code>PMChildFlags</code> の可変長配列部分は、<code>PMSignalShmemSize()</code> で計算されるサイズと整合している必要があります。</li>
+<li>変更を加える際は、シグナルハンドラ内での安全性を維持するため、ロックを使用しない設計を維持してください。</li>
+</ul></body></html>

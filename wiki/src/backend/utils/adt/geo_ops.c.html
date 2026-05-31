@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/geo_ops.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/geo_ops.c</h1>
+<h2>概要</h2>
+<p><code>geo_ops.c</code> は、PostgreSQL における 2 次元幾何データ型（<code>point</code>, <code>line</code>, <code>lseg</code>, <code>box</code>, <code>circle</code>, <code>path</code>, <code>polygon</code>）の内部表現、I/O 処理、および演算子を実装するモジュールです。幾何学的な計算（交差判定、距離計算、包含関係）のバックエンドロジックを担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で幾何データ型の演算を統括します。プランナやインデックス（GiST 等）が利用する選択率推定やコスト計算は <code>geo_selfuncs.c</code> に分離されており、本ファイルは純粋なデータ型操作と演算に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ型 I/O**: SQL 文字列形式と内部バイナリ形式の相互変換（<code>_in</code>, <code>_out</code>, <code>_recv</code>, <code>_send</code>）。</li>
+<li>**幾何演算**: 2 点間の距離、線分の交差、包含判定、面積計算などの幾何学的プリミティブの提供。</li>
+<li>**算術演算**: 幾何オブジェクトに対する移動、回転、スケーリング等の演算。</li>
+<li>**正規化**: 内部表現の整合性維持（例：<code>box</code> の座標順序の入れ替え、<code>polygon</code> のバウンディングボックス計算）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>型変換・I/O</h3>
+<ul>
+<li><code>box_in</code>, <code>box_out</code>, <code>box_recv</code>, <code>box_send</code>: <code>BOX</code> 型の入出力。</li>
+<li><code>path_in</code>, <code>path_out</code>, <code>path_recv</code>, <code>path_send</code>: <code>PATH</code> 型の入出力。</li>
+<li><code>poly_in</code>, <code>poly_out</code>, <code>poly_recv</code>, <code>poly_send</code>: <code>POLYGON</code> 型の入出力。</li>
+</ul>
+<h3>幾何演算・判定</h3>
+<ul>
+<li><code>lseg_interpt_lseg</code>: 線分同士の交差判定。</li>
+<li><code>box_contain_box</code>: <code>BOX</code> 同士の包含判定。</li>
+<li><code>point_inside</code>: <code>POLYGON</code> 内の点判定（レイキャスティング法）。</li>
+<li><code>dist_ppoly_internal</code>: 点と多角形の距離計算。</li>
+</ul>
+<h3>算術・構築</h3>
+<ul>
+<li><code>line_construct</code>: 2 点から直線式 $Ax + By + C = 0$ を構築。</li>
+<li><code>statlseg_construct</code>: 2 点から線分を構築。</li>
+<li><code>box_construct</code>: 2 点から <code>BOX</code> を構築（座標の正規化を含む）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>box_in</code></li>
+<li><code>box_out</code></li>
+<li><code>box_recv</code></li>
+<li><code>box_send</code></li>
+<li><code>pair_count</code></li>
+<li><code>pair_decode</code></li>
+<li><code>pair_encode</code></li>
+<li><code>path_decode</code></li>
+<li><code>path_delim</code></li>
+<li><code>path_encode</code></li>
+<li><code>single_decode</code></li>
+<li><code>single_encode</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力処理**: <code>_in</code> 関数が文字列をパースし、<code>path_decode</code> や <code>pair_decode</code> を経由して <code>Point</code> 配列等の内部構造体に変換します。 2. **正規化**: <code>box_in</code> や <code>poly_in</code> は、入力後に座標の大小関係を整理（<code>box_construct</code> や <code>make_bound_box</code>）し、一貫した内部表現を保証します。 3. **演算**: SQL 演算子から呼び出される関数は、<code>Point</code> や <code>LSEG</code> などのプリミティブを引数に取り、<code>FPeq</code> や <code>FPlt</code> などの浮動小数点比較マクロを用いて計算します。 4. **出力処理**: <code>_out</code> 関数は <code>path_encode</code> 等を用いて内部構造体を SQL 互換の文字列にシリアライズします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>math.h</code>: <code>sqrt</code>, <code>fabs</code>, <code>cos</code>, <code>sin</code> 等の数学関数。</li>
+<li><code>utils/geo_decls.h</code>: 幾何データ型の構造体定義（<code>Point</code>, <code>BOX</code>, <code>LSEG</code>, <code>PATH</code>, <code>POLYGON</code>, <code>CIRCLE</code>）。</li>
+<li><code>utils/float.h</code>: 浮動小数点の比較マクロ（<code>FPeq</code>, <code>FPlt</code> 等）。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ I/O 用のメッセージ処理。</li>
+<li><code>ctype.h</code></li>
+<li><code>float.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/geo_selfuncs.c</code>: 幾何演算の選択率推定（プランナ用）。</li>
+<li><code>src/include/utils/geo_decls.h</code>: 幾何データ型の定義と関数プロトタイプ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**浮動小数点の扱い**: 幾何計算には <code>float8</code> を使用しており、比較には <code>FPeq</code> 等の epsilon を考慮したマクロが必須です。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用します。特に <code>PATH</code> や <code>POLYGON</code> は可変長データ型（<code>varlena</code>）として扱われるため、<code>SET_VARSIZE</code> によるサイズ設定が重要です。</li>
+<li>**未実装・浅い部分**: <code>point_inside</code> はレイキャスティング法を用いていますが、複雑な多角形に対する最適化（空間インデックス等）は含まれていません。</li>
+<li>**注意点**: <code>line_construct</code> 等で生成される直線式は、垂直線や水平線で特殊な係数（<code>A=0</code> や <code>B=0</code>）を取るため、ゼロ除算を避けるロジックが随所に含まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__path_delim.html" target="wiki-view"><code>path_delim</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__single_decode.html" target="wiki-view"><code>single_decode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__single_encode.html" target="wiki-view"><code>single_encode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__pair_decode.html" target="wiki-view"><code>pair_decode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__pair_encode.html" target="wiki-view"><code>pair_encode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__path_decode.html" target="wiki-view"><code>path_decode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__path_encode.html" target="wiki-view"><code>path_encode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__pair_count.html" target="wiki-view"><code>pair_count</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__box_in.html" target="wiki-view"><code>box_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__box_out.html" target="wiki-view"><code>box_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__box_recv.html" target="wiki-view"><code>box_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__geo_ops_c__box_send.html" target="wiki-view"><code>box_send</code></a></li>
+</ul></body></html>

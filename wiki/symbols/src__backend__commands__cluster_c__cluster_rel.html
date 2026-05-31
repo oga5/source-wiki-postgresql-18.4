@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__cluster_c__cluster_rel.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>cluster_rel</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/cluster.c:310</code></li>
+</ul>
+<h2>目的</h2>
+<p>単一のリレーション（テーブルまたはマテリアライズドビュー）に対して、指定されたインデックスに基づく物理的なクラスタリング、または <code>VACUUM FULL</code> に相当する物理再構築を実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void cluster_rel(Relation OldHeap, Oid indexOid, ClusterParams *params)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>OldHeap</code>: 対象リレーションのオープン済み <code>Relation</code> 構造体。</li>
+<li><code>indexOid</code>: クラスタリングに使用するインデックスの OID（<code>VACUUM FULL</code> の場合は <code>InvalidOid</code>）。</li>
+<li><code>params</code>: 実行オプション（<code>CLUOPT_VERBOSE</code>, <code>CLUOPT_RECHECK</code> 等）を含む <code>ClusterParams</code> 構造体。</li>
+<li>**出力**: なし（副作用としてリレーションの物理再構築を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>OldHeap</code> に対して <code>AccessExclusiveLock</code> が取得されている必要がある。</li>
+<li>呼び出し元でトランザクション管理が行われていること（本関数は単一テーブルの再構築を完結させる）。</li>
+<li>共有カタログのクラスタリングは禁止されている。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: プログレスモニタの開始、実行ユーザー権限の切り替え、GUC 設定のネストレベル保存を行う。 2. **検証 (<code>recheck</code> 時)**: 権限確認、一時テーブルの除外、インデックスの存在確認および <code>indisclustered</code> フラグの整合性チェックを行う。 3. **制約チェック**: 共有カタログや他セッションの一時テーブルに対する操作をエラーとして拒否する。 4. **使用状況確認**: <code>CheckTableNotInUse</code> により、対象テーブルに対するアクティブなスキャンや保留中のトリガーイベントがないか確認する。 5. **ロック昇格**: 物理再構築に伴い、タプルやページに対する述語ロックをリレーション全体のロックへ昇格させる。 6. **再構築**: <code>rebuild_relation</code> を呼び出し、新規ヒープ作成、データコピー、ファイルスワップを実行する。 7. **終了処理**: GUC 設定のロールバック、ユーザー権限の復元、プログレスモニタの終了を行う。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/cluster.c</code> (複数リレーションのクラスタリング処理)</li>
+<li><code>src/backend/commands/vacuum.c</code> (<code>VACUUM FULL</code> 実行時)</li>
+<li>**呼び出し先**:</li>
+<li><code>rebuild_relation</code> (再構築のメイン処理)</li>
+<li><code>check_index_is_clusterable</code> (インデックスの妥当性検証)</li>
+<li><code>TransferPredicateLocksToHeapRelation</code> (述語ロックの昇格)</li>
+<li><code>index_open</code> (インデックスのオープン)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: 対象テーブルのメタデータ。</li>
+<li><code>ClusterParams</code>: 実行オプションを保持。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: 共有カタログのクラスタリング、他セッションの一時テーブル操作、使用中のテーブルに対する操作は <code>ereport(ERROR, ...)</code> により中断される。</li>
+<li>**スキップ**: マテリアライズドビューが未投入（populated）の場合、エラーを発生させずに処理を終了する。</li>
+<li>**中断**: <code>CHECK_FOR_INTERRUPTS()</code> により、ユーザーによる中断要求を検知する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>OldHeap</code> をクローズし、インデックスが指定されている場合はそれもクローズする。</li>
+<li><code>recheck</code> フラグが有効な場合、複数テーブル処理の合間にリレーションの状態が変化していないかを厳密に検証する。</li>
+<li>ファイルスワップは <code>rebuild_relation</code> 内で行われるため、物理的な整合性に関する変更を行う際は <code>rebuild_relation</code> および <code>finish_heap_swap</code> の挙動を併せて確認すること。</li>
+</ul></body></html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/durable-rename.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>durable_rename</h1>
+<h2>概念</h2>
+<p><code>durable_rename</code> は、ファイルシステム上でのファイル移動（リネーム）操作において、クラッシュ耐性を保証するために、メタデータおよびデータ内容の同期（<code>fsync</code>）を伴う安全なリネームを実行する機能です。</p>
+<h2>なぜ重要か</h2>
+<p>システムのクラッシュや予期せぬ電源断が発生した場合でも、リネーム前後のファイルデータおよびディレクトリのメタデータがディスク上に確実に永続化されていることを保証し、データの破損や消失を防ぐために極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/storage/file/fd.c#durable_rename</code></li>
+<li><code>symbol:src/common/file_utils.c#durable_rename</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>src/common/file_utils.c</code> における <code>durable_rename(oldfile, newfile)</code> の具体的な処理フローは以下の通りです。</p>
+<p>1. **事前同期**: <code>fsync_fname(oldfile)</code> を呼び出し、移動元ファイルの永続化を保証します。 2. **ターゲット同期**: <code>newfile</code> が既に存在する場合、それをオープンして <code>fsync</code> を実行し、既存の移動先ファイルを永続化します。 3. **リネーム実行**: <code>rename(oldfile, newfile)</code> を実行します。 4. **事後同期**:</p>
+<ul>
+<li><code>fsync_fname(newfile)</code> を呼び出し、リネーム後のファイル内容を永続化します。</li>
+<li><code>fsync_parent_path(newfile)</code> を呼び出し、親ディレクトリのメタデータを更新してリネーム操作を永続化します。</li>
+</ul>
+<p>なお、<code>src/backend/storage/file/fd.c#durable_rename</code> を含めたシステム全体における詳細なエンドツーエンドの呼び出しフローや、両モジュール間での具体的な統合・呼び出し関係の全容は現時点では完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>oldfile</code> は存在し、アクセス可能でなければなりません。</li>
+<li><code>newfile</code> が既に存在する場合、そのファイルも同期対象として扱われます。</li>
+<li>OSが <code>fsync</code> をサポートしている環境である必要があります。</li>
+<li><code>newfile</code> が存在しない場合の <code>open</code> エラー（<code>ENOENT</code>）は正常系として許容されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**フロントエンドとバックエンドの差異**: 本関数はフロントエンドツールおよびバックエンドの両方から利用される可能性があるため、<code>FRONTEND</code> マクロの定義状況に注意する必要があります。</li>
+<li>**プラットフォームの制限**: <code>fsync_parent_path</code> はプラットフォームによってはディレクトリの同期をサポートしていない場合があり、その場合はエラーが無視される設計となっています。</li>
+<li>**エラーハンドリング**: <code>oldfile</code> の同期失敗、<code>newfile</code> のオープン・同期失敗、<code>rename</code> システムコールの失敗、あるいは事後同期の失敗時には <code>-1</code> が返されるため、呼び出し側で適切に処理する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/common/file_utils.c</code></li>
+<li><code>src/backend/storage/file/fd.c</code></li>
+</ul></body></html>

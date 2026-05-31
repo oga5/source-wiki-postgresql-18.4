@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/statistics/attribute_stats.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/attribute_stats.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのシステムカタログ <code>pg_statistic</code> に対するリレーション属性の統計情報の操作（挿入、更新、削除）をサポートする関数群を提供します。主に <code>ANALYZE</code> コマンドが生成する統計情報と同様のデータを、外部から直接インポートまたは操作するためのインターフェースを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/statistics</code> モジュールにおいて、個別の属性（カラム）レベルの統計情報の永続化を担う低レベルなユーティリティ層です。他のファイルが拡張統計（<code>extended_stats.c</code>）や依存関係（<code>dependencies.c</code>）を扱うのに対し、本ファイルは単一属性の統計スロット管理に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li><code>pg_statistic</code> テーブルに対する行の挿入・更新（Upsert）および削除。</li>
+<li>属性の型情報（データ型、演算子、照合順序）の導出。</li>
+<li>外部から提供されたテキスト形式の統計データ（配列など）の型変換と検証。</li>
+<li>統計スロット（<code>stakind</code>）の管理と、空きスロットへの適切な配置。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_restore_attribute_stats</code>: 外部から統計情報をインポートするための公開関数。</li>
+<li><code>pg_clear_attribute_stats</code>: 特定の属性の統計情報を削除する公開関数。</li>
+<li><code>attribute_statistics_update</code>: 統計情報の更新ロジックをカプセル化した内部関数。</li>
+<li><code>set_stats_slot</code>: <code>pg_statistic</code> のスロット（<code>stakind1</code>〜<code>stakind5</code>）を管理するヘルパー。</li>
+<li><code>attarginfo</code>: 統計更新関数が受け取る引数の定義テーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>attribute_stats_argnum</code></li>
+<li><code>clear_attribute_stats_argnum</code></li>
+<li><code>delete_pg_statistic</code></li>
+<li><code>get_attr_expr</code></li>
+<li><code>get_attr_stat_type</code></li>
+<li><code>get_elem_stat_type</code></li>
+<li><code>init_empty_stats_tuple</code></li>
+<li><code>text_to_stavalues</code></li>
+<li><code>upsert_pg_statistic</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力解析**: <code>pg_restore_attribute_stats</code> が引数ペアを解析し、<code>attribute_statistics_update</code> へ渡します。 2. **属性検証**: <code>RangeVarGetRelidExtended</code> で対象テーブルをロックし、属性の存在確認と型情報（<code>get_attr_stat_type</code>）を取得します。 3. **データ変換**: <code>text_to_stavalues</code> を使用し、入力されたテキストデータを属性の型に合わせた配列へ変換します。 4. **スロット更新**: <code>set_stats_slot</code> が <code>pg_statistic</code> の既存スロットを検索し、一致する <code>stakind</code> があれば更新、なければ空きスロットを割り当てます。 5. **永続化**: <code>upsert_pg_statistic</code> が <code>CatalogTupleUpdate</code> または <code>CatalogTupleInsert</code> を呼び出し、システムカタログを更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic.h</code> (暗黙的): 統計情報の構造定義。</li>
+<li><code>utils/syscache.h</code>: <code>pg_attribute</code> や <code>pg_statistic</code> のキャッシュ検索。</li>
+<li><code>utils/lsyscache.h</code>: 型情報や演算子の検索。</li>
+<li><code>statistics/stat_utils.h</code>: 統計操作用の共通ユーティリティ。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/analyze.c</code>: 本ファイルが提供する機能の本来の利用者であり、統計生成のメインロジック。</li>
+<li><code>src/backend/statistics/stat_utils.c</code>: 統計情報の引数チェックや共通処理を共有。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スロットの制約**: <code>pg_statistic</code> はスロット数に制限（<code>STATISTIC_NUM_SLOTS</code>）があります。本ファイルは既存スロットの再利用を試みますが、上限を超えるとエラーになります。</li>
+<li>**エラーハンドリング**: 統計情報の変換失敗は <code>WARNING</code> として報告され、可能な限り他の統計情報の更新を継続する設計になっています。</li>
+<li>**システム列**: システム列（<code>attnum &lt; 0</code>）に対する統計操作はサポートされていません。</li>
+<li>**拡張統計との違い**: 本ファイルは単一属性の統計のみを扱います。複数列にまたがる統計については <code>extended_stats.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__attribute_stats_argnum.html" target="wiki-view"><code>attribute_stats_argnum</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__clear_attribute_stats_argnum.html" target="wiki-view"><code>clear_attribute_stats_argnum</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__attribute_statistics_update.html" target="wiki-view"><code>attribute_statistics_update</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__get_attr_expr.html" target="wiki-view"><code>get_attr_expr</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__get_attr_stat_type.html" target="wiki-view"><code>get_attr_stat_type</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__get_elem_stat_type.html" target="wiki-view"><code>get_elem_stat_type</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__text_to_stavalues.html" target="wiki-view"><code>text_to_stavalues</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__set_stats_slot.html" target="wiki-view"><code>set_stats_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__upsert_pg_statistic.html" target="wiki-view"><code>upsert_pg_statistic</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__delete_pg_statistic.html" target="wiki-view"><code>delete_pg_statistic</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__init_empty_stats_tuple.html" target="wiki-view"><code>init_empty_stats_tuple</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__attribute_stats_c__pg_clear_attribute_stats.html" target="wiki-view"><code>pg_clear_attribute_stats</code></a></li>
+</ul></body></html>

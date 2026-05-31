@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpgsql/src/pl_exec.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/pl/plpgsql/src/pl_exec.c</h1>
+<h2>概要</h2>
+<p>PL/pgSQL の実行エンジンを実装する中心的なファイルです。コンパイル済みの <code>PLpgSQL_function</code> を受け取り、<code>PLpgSQL_execstate</code> を用いてステートメントを再帰的に実行します。SPI（Server Programming Interface）を介した SQL 実行、変数管理、例外処理、およびトリガー/イベントトリガーの実行を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>PL/pgSQL サブシステムの実行フェーズを統括します。<code>pl_comp.c</code> で生成された抽象構文木（AST）を解釈し、PostgreSQL の実行コンテキストと PL/pgSQL の変数状態を橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行制御**: <code>exec_stmts</code> を中心としたステートメントの逐次実行と制御フロー（ループ、条件分岐、例外処理）の管理。</li>
+<li>**変数管理**: <code>PLpgSQL_datum</code> のコピー、代入、および型変換（キャスト）。</li>
+<li>**SPI 連携**: SQL クエリの準備、実行、結果の取得、およびカーソル操作。</li>
+<li>**メモリ管理**: 実行状態ごとのメモリコンテキスト（関数、ステートメント、式評価）の分離とクリーンアップ。</li>
+<li>**エラーハンドリング**: <code>ErrorContextCallback</code> を用いたスタックトレースの生成と例外ブロックの制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行状態とコンテキスト</h3>
+<ul>
+<li><code>PLpgSQL_execstate</code>: 関数の実行時状態を保持するメイン構造体。</li>
+<li><code>SimpleEcontextStackEntry</code>: 式評価用 <code>ExprContext</code> のスタック管理用構造体。</li>
+<li><code>shared_simple_eval_estate</code>: トランザクション内で共有される式評価用 EState。</li>
+</ul>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><code>cast_expr_hash</code>: セッション全体で共有されるキャスト式ツリーのキャッシュ。</li>
+<li><code>shared_cast_hash</code>: キャスト評価状態のキャッシュ。</li>
+</ul>
+<h3>エントリーポイント</h3>
+<ul>
+<li><code>plpgsql_exec_function</code>: 通常の関数および <code>DO</code> ブロックの実行開始点。</li>
+<li><code>plpgsql_exec_trigger</code>: トリガー実行の開始点。</li>
+<li><code>plpgsql_exec_event_trigger</code>: イベントトリガー実行の開始点。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SimpleEcontextStackEntry</code></li>
+<li><code>coerce_function_result_tuple</code></li>
+<li><code>count_param_references_context</code></li>
+<li><code>exec_check_assignable</code></li>
+<li><code>exec_check_rw_parameter</code></li>
+<li><code>exec_init_tuple_store</code></li>
+<li><code>plpgsql_CastExprHashEntry</code></li>
+<li><code>plpgsql_CastHashEntry</code></li>
+<li><code>plpgsql_CastHashKey</code></li>
+<li><code>plpgsql_exec_event_trigger</code></li>
+<li><code>plpgsql_exec_function</code></li>
+<li><code>plpgsql_exec_trigger</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>plpgsql_estate_setup</code> がメモリコンテキストと SPI 接続を準備。<code>copy_plpgsql_datums</code> が関数定義から実行用変数領域を作成。 2. **実行**: <code>exec_toplevel_block</code> から再帰的に <code>exec_stmts</code> を呼び出し、各ステートメント型に応じた <code>exec_stmt_*</code> 関数へディスパッチ。 3. **式評価**: <code>exec_eval_expr</code> が SPI を介してクエリを実行するか、<code>exec_eval_simple_expr</code> が最適化されたパスで式を評価。 4. **終了**: <code>plpgsql_destroy_econtext</code> と <code>exec_eval_cleanup</code> により、一時的なメモリコンテキストを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/spi.h</code>: SQL 実行の基盤。</li>
+<li><code>plpgsql.h</code>: 共有データ構造定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>executor/execExpr.h</code>: 式評価エンジン。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tupconvert.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/tstoreReceiver.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/stringinfo_mb.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>tcop/cmdtag.h</code></li>
+<li><code>tcop/pquery.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pl_comp.c</code>: AST の構築とコンパイル。</li>
+<li><code>pl_handler.c</code>: PL/pgSQL の関数呼び出しハンドラ。</li>
+<li><code>pl_funcs.c</code>: ユーティリティ関数群。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>estate-&gt;datum_context</code> は関数生存期間、<code>stmt_mcontext</code> はステートメント生存期間、<code>eval_econtext</code> は式評価生存期間と、メモリ寿命が厳密に管理されています。<code>exec_eval_cleanup</code> の呼び出し漏れはメモリリークに直結します。</li>
+<li>**最適化**: 「単純な式（Simple Expression）」は SPI をバイパスして直接実行されます。このキャッシュはトランザクション境界でリセットされるため、<code>COMMIT</code>/<code>ROLLBACK</code> を含む関数では再構築が行われます。</li>
+<li>**未実装・浅い領域**: <code>EXECUTE</code> 文の <code>SELECT INTO</code> は現在未実装です。また、<code>LOOP_RC_PROCESSING</code> マクロは制御フローの複雑さを隠蔽していますが、デバッグ時にはスタックトレースを追う際に注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__SimpleEcontextStackEntry.html" target="wiki-view"><code>SimpleEcontextStackEntry</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_CastHashKey.html" target="wiki-view"><code>plpgsql_CastHashKey</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_CastExprHashEntry.html" target="wiki-view"><code>plpgsql_CastExprHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_CastHashEntry.html" target="wiki-view"><code>plpgsql_CastHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__count_param_references_context.html" target="wiki-view"><code>count_param_references_context</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_exec_function.html" target="wiki-view"><code>plpgsql_exec_function</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__coerce_function_result_tuple.html" target="wiki-view"><code>coerce_function_result_tuple</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_exec_trigger.html" target="wiki-view"><code>plpgsql_exec_trigger</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_exec_event_trigger.html" target="wiki-view"><code>plpgsql_exec_event_trigger</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__exec_init_tuple_store.html" target="wiki-view"><code>exec_init_tuple_store</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__exec_check_rw_parameter.html" target="wiki-view"><code>exec_check_rw_parameter</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_exec_c__exec_check_assignable.html" target="wiki-view"><code>exec_check_assignable</code></a></li>
+</ul></body></html>

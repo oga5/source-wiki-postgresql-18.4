@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeLockRows.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeLockRows.c</h1>
+<h2>概要</h2>
+<p><code>nodeLockRows.c</code> は、SQLの <code>SELECT ... FOR UPDATE</code> や <code>FOR SHARE</code> 構文によって要求される行レベルのロック処理を実装する実行ノードです。クエリ実行中に取得されたタプルに対し、指定されたロックモードを適用し、必要に応じて同時実行制御（EvalPlanQual: EPQ）による再評価を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> におけるプラン実行ノードの一つです。主に <code>ModifyTable</code> ノードや <code>LockRows</code> ノードが関与するクエリにおいて、データ取得とロックの同期を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**行ロックの適用**: 下位ノードから取得したタプルに対し、<code>rowMarks</code> に基づいて適切なロック（Exclusive, Share等）をテーブルに対して要求する。</li>
+<li>**同時実行制御 (EPQ)**: ロック取得時にタプルが更新されていた場合、最新バージョンに対してクエリ条件を再評価し、結果をフィルタリングする。</li>
+<li>**外部テーブル対応**: FDW（Foreign Data Wrapper）経由のテーブルに対するロック要求を適切なルーチンへ委譲する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecLockRows</code>: ノードのメインループ。下位ノードからタプルを取得し、ロックを試行し、EPQが必要な場合は再評価を行う。</li>
+<li><code>ExecInitLockRows</code>: ノードの初期化。<code>rowMarks</code> を解析し、ロック対象とEPQ対象のマークを分類・構築する。</li>
+<li><code>LockRowsState</code>: このノードの実行時状態を保持する構造体。EPQの状態管理（<code>lr_epqstate</code>）を含む。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndLockRows</code></li>
+<li><code>ExecReScanLockRows</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ExecInitLockRows</code> がプランツリーを走査し、ロックが必要なリレーションを <code>lr_arowMarks</code> に、EPQが必要なものを <code>epq_arowmarks</code> に分類します。 2.  **タプル取得**: <code>ExecLockRows</code> が下位ノードからタプルをフェッチします。 3.  **ロック試行**: <code>table_tuple_lock</code> を呼び出し、対象行をロックします。<code>TM_Updated</code> や <code>TM_Deleted</code> が返された場合、同時実行による競合と判断し、必要に応じてEPQへ遷移します。 4.  **EPQ再評価**: ロック取得時にデータが更新されていた場合、<code>EvalPlanQualNext</code> を通じて最新のタプルで条件を再評価します。条件を満たさない場合はその行をスキップし、次のタプルへ進みます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッド（行ロック処理）へのアクセス。</li>
+<li><code>executor/executor.h</code>: 実行エンジン全般の定義。</li>
+<li><code>foreign/fdwapi.h</code>: 外部テーブルのロック処理用インターフェース。</li>
+<li><code>executor/nodeLockRows.h</code>: ノードの公開インターフェース定義。</li>
+<li><code>access/xact.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: クエリ実行の全体フロー。</li>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: <code>UPDATE</code>/<code>DELETE</code> 時のロック処理との比較対象。</li>
+<li><code>src/backend/executor/execMain.c</code> 内の <code>EvalPlanQual</code> 関連関数: EPQの具体的な再評価ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックのタイミング**: このノードは、下位ノードからタプルが返された直後にロックを試みます。そのため、プランツリー上でロック対象のテーブルをスキャンするノードよりも上位に配置されます。</li>
+<li>**EPQの重要性**: <code>FOR UPDATE</code> 時に他トランザクションによる更新があった場合、単にロックするだけでなく、その更新後の値がクエリの <code>WHERE</code> 句を満たすかを再確認する必要があります。この複雑なロジックが <code>EvalPlanQual</code> 機構に隠蔽されています。</li>
+<li>**デバッグ**: <code>table_tuple_lock</code> の戻り値（<code>TM_Result</code>）の分岐が、このノードの挙動を理解する鍵となります。特に <code>TM_WouldBlock</code>（<code>SKIP LOCKED</code> 時）や <code>TM_SelfModified</code> の扱いに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeLockRows_c__ExecLockRows.html" target="wiki-view"><code>ExecLockRows</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeLockRows_c__ExecInitLockRows.html" target="wiki-view"><code>ExecInitLockRows</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeLockRows_c__ExecEndLockRows.html" target="wiki-view"><code>ExecEndLockRows</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeLockRows_c__ExecReScanLockRows.html" target="wiki-view"><code>ExecReScanLockRows</code></a></li>
+</ul></body></html>

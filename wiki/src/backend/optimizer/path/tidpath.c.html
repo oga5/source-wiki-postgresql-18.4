@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/tidpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/tidpath.c</h1>
+<h2>概要</h2>
+<p><code>tidpath.c</code> は、PostgreSQLのクエリ最適化プロセスにおいて、<code>CTID</code>（物理的なタプル識別子）を用いたテーブルスキャンパス（<code>TidPath</code> および <code>TidRangePath</code>）を生成するためのロジックを担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> モジュールの一部として、インデックスを使用しない直接的なタプルアクセス手法を評価します。他のパス生成ルーチン（<code>indxpath.c</code> など）と並び、特定の条件下で非常に高速なアクセスパスを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**TID条件の抽出**: <code>WHERE ctid = ...</code> や <code>WHERE ctid IN (...)</code>、<code>WHERE CURRENT OF</code> などの条件を <code>RestrictInfo</code> から特定する。</li>
+<li>**パスの生成**: 特定された条件に基づき、<code>TidPath</code>（等価比較）または <code>TidRangePath</code>（範囲比較）を構築し、<code>add_path</code> を通じてプランナに登録する。</li>
+<li>**パラメータ化パスの構築**: 結合条件（<code>t1.ctid = t2.ctid</code>）から、他テーブルに依存するパラメータ化されたTIDスキャンパスを生成する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>create_tidscan_paths</code>: このファイルのメインエントリーポイント。リレーションに対するTIDスキャンパスの生成を統括する。</li>
+<li><code>IsCTIDVar</code>: 指定された <code>Var</code> が対象リレーションの <code>ctid</code> 列であるかを判定する。</li>
+<li><code>TidQualFromRestrictInfoList</code>: <code>baserestrictinfo</code> からTIDスキャンに使用可能な条件リストを抽出する。</li>
+<li><code>BuildParameterizedTidPaths</code>: 結合条件からパラメータ化されたTIDパスを生成する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>IsBinaryTidClause</code></li>
+<li><code>IsCurrentOfClause</code></li>
+<li><code>IsTidEqualAnyClause</code></li>
+<li><code>IsTidEqualClause</code></li>
+<li><code>IsTidRangeClause</code></li>
+<li><code>RestrictInfoIsTidQual</code></li>
+<li><code>TidRangeQualFromRestrictInfoList</code></li>
+<li><code>ec_member_matches_ctid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **条件抽出**: <code>create_tidscan_paths</code> が <code>TidQualFromRestrictInfoList</code> を呼び出し、<code>baserestrictinfo</code> をスキャンして <code>CTID</code> 関連の条件を収集します。 2. **パス登録**: 抽出された条件が有効であれば、<code>create_tidscan_path</code> を呼び出し、生成されたパスを <code>add_path</code> でリレーションのパスリストに追加します。 3. **範囲スキャン**: <code>TidRangeQualFromRestrictInfoList</code> を使用して範囲条件（<code>&gt;</code> や <code>&lt;</code>）を検索し、対応するパスを生成します。 4. **結合条件の処理**: <code>EquivalenceClass</code> や <code>joininfo</code> を経由して、他テーブルの列と <code>ctid</code> を比較する結合条件を探索し、パラメータ化されたパスを生成します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>: <code>TidPath</code> などのパスノード生成関数を提供。</li>
+<li><code>optimizer/restrictinfo.h</code>: <code>RestrictInfo</code> 構造体の操作と判定。</li>
+<li><code>access/sysattr.h</code>: <code>SelfItemPointerAttributeNumber</code>（<code>ctid</code> の属性番号）の定義。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式ツリーの走査や判定。</li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeTidscan.c</code>: ここで生成されたパスを実際に実行するエグゼキュータ側の実装。</li>
+<li><code>src/backend/optimizer/path/indxpath.c</code>: インデックススキャンパスの生成ロジック。TIDスキャンと並ぶ主要なアクセスパス生成元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**CURRENT OF**: <code>WHERE CURRENT OF</code> 句は特殊であり、この関数で検出された場合は他のパス生成をスキップし、このパスを優先的に採用するロジックが含まれています。</li>
+<li>**パラメータ化**: <code>ctid</code> は物理的な位置情報であるため、結合条件として使用する場合、他テーブルの <code>ctid</code> と比較するケースが主となります。</li>
+<li>**制約**: <code>TidRangePath</code> はテーブルアクセスメソッド（AM）が <code>AMFLAG_HAS_TID_RANGE</code> をサポートしている場合にのみ生成されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsCTIDVar.html" target="wiki-view"><code>IsCTIDVar</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsBinaryTidClause.html" target="wiki-view"><code>IsBinaryTidClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsTidEqualClause.html" target="wiki-view"><code>IsTidEqualClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsTidRangeClause.html" target="wiki-view"><code>IsTidRangeClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsTidEqualAnyClause.html" target="wiki-view"><code>IsTidEqualAnyClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__IsCurrentOfClause.html" target="wiki-view"><code>IsCurrentOfClause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__RestrictInfoIsTidQual.html" target="wiki-view"><code>RestrictInfoIsTidQual</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__TidQualFromRestrictInfoList.html" target="wiki-view"><code>TidQualFromRestrictInfoList</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__TidRangeQualFromRestrictInfoList.html" target="wiki-view"><code>TidRangeQualFromRestrictInfoList</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__BuildParameterizedTidPaths.html" target="wiki-view"><code>BuildParameterizedTidPaths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__ec_member_matches_ctid.html" target="wiki-view"><code>ec_member_matches_ctid</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__tidpath_c__create_tidscan_paths.html" target="wiki-view"><code>create_tidscan_paths</code></a></li>
+</ul></body></html>

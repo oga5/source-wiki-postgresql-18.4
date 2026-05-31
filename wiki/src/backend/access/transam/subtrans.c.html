@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/subtrans.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/subtrans.c</h1>
+<h2>概要</h2>
+<p><code>subtrans.c</code> は、PostgreSQL のサブトランザクション（入れ子になったトランザクション）の親子関係を管理する「サブトランザクションログ（SUBTRANS）」の実装です。各トランザクション ID (XID) に対して、その親トランザクション ID を記録・追跡する機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールの一部として、トランザクション管理の階層構造を維持します。<code>pg_xact</code> (CLOG) がトランザクションのコミット状態を保持するのに対し、本モジュールはトランザクションの「親子関係」という動的な情報を保持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**親子関係の記録**: <code>SubTransSetParent</code> を通じて、サブトランザクションと親の紐付けを行う。</li>
+<li>**階層の追跡**: <code>SubTransGetParent</code> や <code>SubTransGetTopmostTransaction</code> を通じて、特定の XID から親や最上位のトランザクションを特定する。</li>
+<li>**SLRU 管理**: SLRU (Simple Least Recently Used) キャッシュ機構を利用し、メモリ上のページ管理、ディスクへのフラッシュ、不要領域の切り捨てを行う。</li>
+<li>**起動時初期化**: クラッシュリカバリを必要としないため、起動時にアクティブなページをゼロクリアする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SubTransCtl</code>: SLRU 管理のための共有メモリ制御構造体。</li>
+<li><code>SubTransSetParent()</code>: 子 XID と親 XID を関連付ける主要関数。</li>
+<li><code>SubTransGetTopmostTransaction()</code>: 指定した XID の最上位親を再帰的に探索する関数。</li>
+<li><code>ExtendSUBTRANS()</code>: 新しい XID が新しいページを必要とする際に、ページをゼロクリアして拡張する。</li>
+<li><code>TruncateSUBTRANS()</code>: 不要になった古いサブトランザクション情報をディスクから削除する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BootStrapSUBTRANS</code></li>
+<li><code>CheckPointSUBTRANS</code></li>
+<li><code>ExtendSUBTRANS</code></li>
+<li><code>SUBTRANSShmemBuffers</code></li>
+<li><code>SUBTRANSShmemInit</code></li>
+<li><code>SUBTRANSShmemSize</code></li>
+<li><code>StartupSUBTRANS</code></li>
+<li><code>SubTransGetParent</code></li>
+<li><code>SubTransGetTopmostTransaction</code></li>
+<li><code>SubTransSetParent</code></li>
+<li><code>TransactionIdToPage</code></li>
+<li><code>ZeroSUBTRANSPage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み**: <code>SubTransSetParent</code> が呼ばれると、<code>TransactionIdToPage</code> で対象ページを特定し、SLRU キャッシュからスロットを取得。排他ロック下で親 XID を書き込み、ダーティフラグを立てる。 2. **読み取り**: <code>SubTransGetParent</code> は <code>SimpleLruReadPage_ReadOnly</code> を使用してページを読み込み、該当エントリを返す。 3. **探索**: <code>SubTransGetTopmostTransaction</code> は、<code>TransactionXmin</code> を境界として、親を辿るループを実行する。 4. **保守**: <code>TruncateSUBTRANS</code> はチェックポイント時に呼ばれ、<code>TransactionXmin</code> より古いページを <code>SimpleLruTruncate</code> で解放する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/slru.h</code>: SLRU キャッシュ管理の基盤。</li>
+<li><code>access/transam.h</code>: トランザクション ID の定義と操作。</li>
+<li><code>storage/lwlock.h</code> (間接的): <code>SimpleLru</code> 経由でのロック制御。</li>
+<li><code>access/subtrans.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/subtrans.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/slru.c</code>: 本モジュールが利用する汎用 SLRU 実装。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションの開始・終了処理において、本モジュールの関数を呼び出す主要な利用者。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**永続性の欠如**: <code>pg_subtrans</code> はクラッシュリカバリを目的としていません。再起動時にはデータがゼロクリアされるため、実行中のトランザクション情報のみを保持する一時的な構造であることを理解してください。</li>
+<li>**循環参照の防止**: <code>SubTransGetTopmostTransaction</code> 内で親を辿る際、不正なデータ構造による無限ループを防ぐためのチェックが含まれています。</li>
+<li>**SLRU の特性**: ページサイズは <code>BLCKSZ</code> に依存し、XID は 32bit であるため、ページ番号のラップアラウンドを考慮した設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__TransactionIdToPage.html" target="wiki-view"><code>TransactionIdToPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SubTransSetParent.html" target="wiki-view"><code>SubTransSetParent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SubTransGetParent.html" target="wiki-view"><code>SubTransGetParent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SubTransGetTopmostTransaction.html" target="wiki-view"><code>SubTransGetTopmostTransaction</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SUBTRANSShmemBuffers.html" target="wiki-view"><code>SUBTRANSShmemBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SUBTRANSShmemSize.html" target="wiki-view"><code>SUBTRANSShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__SUBTRANSShmemInit.html" target="wiki-view"><code>SUBTRANSShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__BootStrapSUBTRANS.html" target="wiki-view"><code>BootStrapSUBTRANS</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__ZeroSUBTRANSPage.html" target="wiki-view"><code>ZeroSUBTRANSPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__StartupSUBTRANS.html" target="wiki-view"><code>StartupSUBTRANS</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__CheckPointSUBTRANS.html" target="wiki-view"><code>CheckPointSUBTRANS</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__subtrans_c__ExtendSUBTRANS.html" target="wiki-view"><code>ExtendSUBTRANS</code></a></li>
+</ul></body></html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/regexp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/regexp.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの正規表現エンジン（Spencer&#x27;s regexパッケージ）へのインターフェースを提供するモジュールです。SQLレベルの正規表現関数（<code>~</code>, <code>regexp_match</code>, <code>regexp_replace</code> 等）のバックエンド実装を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、文字列操作およびパターンマッチング機能の中核を成します。外部の <code>regex/</code> ライブラリをラップし、PostgreSQLのメモリ管理やエンコーディング変換と統合する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**正規表現のコンパイルとキャッシュ**: <code>RE_compile_and_cache</code> を通じて、コンパイル済み正規表現をLRUに近い「自己組織化リスト」でキャッシュし、オーバーヘッドを削減する。</li>
+<li>**SQL関数への変換**: SQLの正規表現関数を、POSIX準拠の正規表現エンジンが理解できる形式（<code>pg_wchar</code>）へ変換して実行する。</li>
+<li>**SIMILAR TOの変換**: SQL標準の <code>SIMILAR TO</code> 構文をPOSIX正規表現へ変換する。</li>
+<li>**マッチング結果の管理**: <code>regexp_matches_ctx</code> を用いて、マッチング位置やサブパターン情報を保持し、テーブル関数（SRF）や配列結果の構築を支援する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RE_compile_and_cache</code>: 正規表現のコンパイルとキャッシュ管理を行う中心関数。</li>
+<li><code>regexp_matches_ctx</code>: マッチング結果（位置情報やワークスペース）を保持するコンテキスト構造体。</li>
+<li><code>cached_re_str</code>: キャッシュされた正規表現オブジェクトとメタデータを保持する構造体。</li>
+<li><code>parse_re_flags</code>: SQLのフラグ文字列（&#x27;g&#x27;, &#x27;i&#x27; 等）をPOSIXの <code>cflags</code> に変換する。</li>
+<li><code>RegexpCacheMemoryContext</code>: キャッシュされた正規表現を保持するための専用メモリコンテキスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RE_compile_and_execute</code></li>
+<li><code>RE_execute</code></li>
+<li><code>RE_wchar_execute</code></li>
+<li><code>pg_re_flags</code></li>
+<li><code>textregexreplace_extended</code></li>
+<li><code>textregexreplace_extended_no_flags</code></li>
+<li><code>textregexreplace_extended_no_n</code></li>
+<li><code>textregexreplace_noopt</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コンパイル**: SQL関数が呼び出されると、<code>RE_compile_and_cache</code> が呼ばれ、キャッシュを検索。なければ <code>pg_regcomp</code> でコンパイルし、<code>RegexpCacheMemoryContext</code> に格納する。 2. **実行**: <code>RE_execute</code> または <code>RE_wchar_execute</code> が、入力文字列を <code>pg_wchar</code> に変換し、<code>pg_regexec</code> を呼び出す。 3. **結果構築**: <code>regexp_matches_ctx</code> を使用してマッチング位置を記録し、<code>build_regexp_match_result</code> 等でSQLの <code>text</code> 型や <code>array</code> 型に変換して呼び出し元へ返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>regex/regex.h</code>: 実際の正規表現エンジン。</li>
+<li><code>utils/varlena.h</code>: PostgreSQLの可変長文字列（<code>text</code>型）操作。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>utils/array.h</code>: 結果を配列として返すためのユーティリティ。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/regex/</code>: 正規表現エンジンのソースコード本体。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>: 文字列操作の基盤。</li>
+<li><code>src/backend/utils/adt/like.c</code>: <code>LIKE</code> 演算子の実装（パターンマッチングの別手法）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュ戦略**: <code>MAX_CACHED_RES</code>（デフォルト32）個の正規表現をキャッシュします。頻繁に異なるパターンが使われる環境ではキャッシュミスが発生しやすいため注意が必要です。</li>
+<li>**メモリ管理**: 正規表現のコンパイルは <code>RegexpCacheMemoryContext</code> で行われ、バックエンドの生存期間中保持されます。</li>
+<li>**SIMILAR TO**: <code>similar_escape_internal</code> は複雑な変換ロジックを含みます。SQL標準の挙動を維持するため、変換後の正規表現は <code>^(?:...)$</code> のような構造でラップされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__pg_re_flags.html" target="wiki-view"><code>pg_re_flags</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__regexp_matches_ctx.html" target="wiki-view"><code>regexp_matches_ctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__cached_re_str.html" target="wiki-view"><code>cached_re_str</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__RE_compile_and_cache.html" target="wiki-view"><code>RE_compile_and_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__RE_wchar_execute.html" target="wiki-view"><code>RE_wchar_execute</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__RE_execute.html" target="wiki-view"><code>RE_execute</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__RE_compile_and_execute.html" target="wiki-view"><code>RE_compile_and_execute</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__parse_re_flags.html" target="wiki-view"><code>parse_re_flags</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__textregexreplace_noopt.html" target="wiki-view"><code>textregexreplace_noopt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__textregexreplace_extended.html" target="wiki-view"><code>textregexreplace_extended</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__textregexreplace_extended_no_n.html" target="wiki-view"><code>textregexreplace_extended_no_n</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regexp_c__textregexreplace_extended_no_flags.html" target="wiki-view"><code>textregexreplace_extended_no_flags</code></a></li>
+</ul></body></html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/fmgr.h.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/include/fmgr.h</h1>
+<h2>概要</h2>
+<p>PostgreSQL の関数マネージャ（fmgr）のインターフェースを定義する中心的なヘッダーファイルです。バックエンド内の C 関数呼び出し、動的ロードされた関数の実行、およびそれらに関連するメタデータ管理の規約を規定します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/fmgr/</code> サブシステムの公開 API として機能します。PostgreSQL の実行エンジン（Executor）と、ユーザー定義関数や組み込み関数を結びつけるための抽象化レイヤーを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**呼び出し規約の定義**: C 関数が PostgreSQL の実行エンジンから呼び出される際の引数受け渡し、戻り値、およびエラー処理の標準化。</li>
+<li>**メタデータ管理**: 関数の OID や属性（strict, set-returning 等）を保持する <code>FmgrInfo</code> 構造体の定義と管理。</li>
+<li>**データ変換と操作**: <code>Datum</code> 型の操作、TOAST データの展開（detoast）、および引数取得のためのマクロ群の提供。</li>
+<li>**ABI 互換性チェック**: 動的ロードされるモジュールが現在の PostgreSQL バージョンやビルド設定と整合しているかを検証する仕組み（<code>PG_MODULE_MAGIC</code>）。</li>
+<li>**フック機構**: セキュリティポリシーやデバッグ目的で関数呼び出しの開始・終了・異常終了を監視するためのフックインターフェースの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>関数呼び出し管理</h3>
+<ul>
+<li><code>FunctionCallInfo</code>: 実行時の引数やコンテキストを保持する構造体へのポインタ。</li>
+<li><code>FmgrInfo</code>: 関数呼び出しに必要な静的情報を保持する構造体。</li>
+<li><code>PG_FUNCTION_ARGS</code>: 関数定義時に使用する引数リストの型。</li>
+<li><code>LOCAL_FCINFO(name, nargs)</code>: スタック上に <code>FunctionCallInfo</code> を安全に確保するマクロ。</li>
+</ul>
+<h3>データ操作・変換</h3>
+<ul>
+<li><code>PG_GETARG_xxx(n)</code>: <code>n</code> 番目の引数を特定の型として取得するマクロ群。</li>
+<li><code>PG_RETURN_xxx(x)</code>: 結果を <code>Datum</code> として返すマクロ群。</li>
+<li><code>PG_DETOAST_DATUM(datum)</code>: TOAST されたデータを展開するマクロ。</li>
+<li><code>PG_FREE_IF_COPY(ptr, n)</code>: detoast されたコピーをメモリ解放するユーティリティ。</li>
+</ul>
+<h3>モジュール・ABI 管理</h3>
+<ul>
+<li><code>PG_FUNCTION_INFO_V1(funcname)</code>: C 関数をバージョン 1 呼び出し規約として登録するマクロ。</li>
+<li><code>PG_MODULE_MAGIC</code>: 動的ロードモジュールの ABI 整合性を検証するマジックブロックを生成するマクロ。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 関数呼び出し前に <code>fmgr_info()</code> を呼び出し、<code>FmgrInfo</code> を構築してキャッシュします。 2. **呼び出し**: <code>FunctionCallInvoke(fcinfo)</code> マクロ、または <code>OidFunctionCallNColl</code> 系の関数を介して実行されます。 3. **データフロー**:</p>
+<ul>
+<li><code>FunctionCallInfoBaseData</code> が引数配列（<code>args</code>）を保持します。</li>
+<li>呼び出された関数は <code>PG_GETARG_xxx</code> マクロで <code>args</code> から値を取り出し、<code>PG_RETURN_xxx</code> で <code>Datum</code> を返します。</li>
+<li><code>isnull</code> フラグにより NULL 値の伝播を制御します。</li>
+</ul>
+<h2>直接依存</h2>
+<p>本ファイルはスタンドアロンで動作するよう設計されており、直接的な <code>#include</code> は最小限に抑えられています。ただし、<code>Datum</code> 型や <code>Oid</code> 型などの基本型定義に依存しています。</p>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/fmgr/fmgr.c</code>: 関数マネージャの主要な実装。</li>
+<li><code>src/backend/utils/fmgr/dfmgr.c</code>: 動的ライブラリのロードと管理。</li>
+<li><code>src/backend/executor/nodeAgg.c</code>: 集約関数特有のコンテキスト管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>FmgrInfo</code> 内の <code>fn_extra</code> は、<code>fn_mcxt</code> で指定されたメモリコンテキストに割り当てられる必要があります。</li>
+<li>**アライメント**: <code>LOCAL_FCINFO</code> はスタック上のアライメントを保証するために共用体を使用しています。</li>
+<li>**制約**: <code>FunctionCallInfoBaseData</code> の <code>args</code> 配列は可変長です。直接構造体を確保せず、必ず <code>SizeForFunctionCallInfo</code> マクロを使用してサイズ計算を行ってください。</li>
+<li>**省略された詳細**: 本ファイルはインターフェース定義に特化しており、具体的な関数検索アルゴリズムやハッシュテーブルの実装（<code>fmgr.c</code> 側）は省略されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__include__fmgr_h__fmNodePtr.html" target="wiki-view"><code>fmNodePtr</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__fmAggrefPtr.html" target="wiki-view"><code>fmAggrefPtr</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__fmStringInfo.html" target="wiki-view"><code>fmStringInfo</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__FunctionCallInfo.html" target="wiki-view"><code>FunctionCallInfo</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__FmgrInfo.html" target="wiki-view"><code>FmgrInfo</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__FunctionCallInfoBaseData.html" target="wiki-view"><code>FunctionCallInfoBaseData</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__Pg_finfo_record.html" target="wiki-view"><code>Pg_finfo_record</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__PGFInfoFunction.html" target="wiki-view"><code>PGFInfoFunction</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__Pg_abi_values.html" target="wiki-view"><code>Pg_abi_values</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__Pg_magic_struct.html" target="wiki-view"><code>Pg_magic_struct</code></a></li>
+<li><a href="../../symbols/src__include__fmgr_h__PGModuleMagicFunction.html" target="wiki-view"><code>PGModuleMagicFunction</code></a></li>
+</ul></body></html>

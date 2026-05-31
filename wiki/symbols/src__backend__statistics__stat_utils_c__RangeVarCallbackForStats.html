@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__statistics__stat_utils_c__RangeVarCallbackForStats.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RangeVarCallbackForStats</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/statistics/stat_utils.c:130</code></li>
+</ul>
+<h2>目的</h2>
+<p>統計情報の更新操作において、対象リレーションの解決、権限チェック、およびデッドロックを回避するための適切なロック取得を行うコールバック関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void RangeVarCallbackForStats(const RangeVar *relation, Oid relId, Oid oldRelId, void *arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>relation</code>: 解決対象の <code>RangeVar</code> 構造体。</li>
+<li><code>relId</code>: 現在のルックアップで特定されたリレーションのOID。</li>
+<li><code>oldRelId</code>: 前回のルックアップで特定されたリレーションのOID。</li>
+<li><code>arg</code>: ロック済みリレーションのOIDを保持する <code>Oid *</code> 型のポインタ。</li>
+<li>出力: なし（副作用としてロックの取得/解放およびエラー報告を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>arg</code> は有効な <code>Oid</code> へのポインタであること。</li>
+<li>統計情報の更新対象は、<code>RELKIND_RELATION</code>, <code>RELKIND_MATVIEW</code>, <code>RELKIND_FOREIGN_TABLE</code>, <code>RELKIND_PARTITIONED_TABLE</code> のいずれかであること。</li>
+<li>共有リレーションの統計更新は許可されない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロックの解放**: <code>relId</code> が <code>oldRelId</code> と異なり、かつ <code>*locked_oid</code> が有効な場合、以前取得した <code>ShareUpdateExclusiveLock</code> を解放する。 2. **リレーション解決**: <code>relId</code> がインデックス（<code>RELKIND_INDEX</code> 等）である場合、<code>IndexGetRelation</code> を用いて親テーブルのOIDを取得する。 3. **並行操作の検出**: <code>relId == oldRelId</code> の場合、インデックスの削除や再作成といった並行操作が発生していないか検証し、矛盾があればエラーを投げる。 4. **権限チェック**: 対象リレーションの所有者であるか、または <code>MAINTAIN</code> 権限を有しているかを確認する。 5. **ロック取得**: インデックスの親テーブルに対して <code>ShareUpdateExclusiveLock</code> を取得し、<code>*locked_oid</code> を更新する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元:</li>
+<li><code>src/backend/statistics/attribute_stats.c</code></li>
+<li><code>src/backend/statistics/relation_stats.c</code></li>
+<li>呼び出し先:</li>
+<li><code>UnlockRelationOid</code>, <code>LockRelationOid</code></li>
+<li><code>IndexGetRelation</code></li>
+<li><code>SearchSysCache1</code>, <code>ReleaseSysCache</code></li>
+<li><code>object_ownercheck</code>, <code>pg_class_aclcheck</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RangeVar</code>: リレーション名とスキーマ情報を保持。</li>
+<li><code>Form_pg_class</code>: システムカタログ <code>pg_class</code> の行構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>対象リレーションが存在しない場合、処理を中断する。</li>
+<li>サポート外の <code>relkind</code>（インデックス単体など）や共有リレーションに対しては <code>ERROR</code> を発行する。</li>
+<li>権限不足時は <code>aclcheck_error</code> を発行する。</li>
+<li>並行操作によりインデックスが削除・再作成された場合、デッドロック回避のためエラーを投げる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>RangeVarGetRelidExtended</code> 等のコールバックとして使用されることを想定しています。</li>
+<li>デッドロックを避けるため、インデックスではなく必ず親テーブルに対してロックを取得する設計になっています。</li>
+<li><code>relId == oldRelId</code> 時のチェックは、カタログの不整合を検知するための安全装置です。</li>
+</ul></body></html>

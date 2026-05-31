@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__toasting_c__create_toast_table.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>create_toast_table</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/toasting.c:126</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたリレーションに対して、TOASTテーブルおよびそのインデックスを構築し、システムカタログへの登録と依存関係の設定を行う内部作業用関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
+                               Datum reloptions, LOCKMODE lockmode, bool check,
+                               Oid OIDOldToast)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 対象となるメインリレーション。</li>
+<li><code>toastOid</code>, <code>toastIndexOid</code>: 新規作成するテーブル/インデックスのOID（指定がない場合は <code>InvalidOid</code>）。</li>
+<li><code>reloptions</code>: TOASTテーブルに適用するオプション。</li>
+<li><code>lockmode</code>: ロックモード。</li>
+<li><code>check</code>: ロックモードの妥当性チェックを行うかどうかのフラグ。</li>
+<li><code>OIDOldToast</code>: バイナリアップグレード時に使用する既存のTOASTテーブルOID。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: TOASTテーブルが正常に作成された場合は <code>true</code>、既に存在する場合や作成不要と判断された場合は <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象リレーションが既にTOASTテーブルを持っている場合、処理は直ちに終了します。</li>
+<li><code>check</code> が <code>true</code> の場合、<code>lockmode</code> は <code>AccessExclusiveLock</code> である必要があります。</li>
+<li>TOASTテーブルの各カラム（<code>chunk_id</code>, <code>chunk_seq</code>, <code>chunk_data</code>）は、再帰的なTOAST発生を防ぐため、強制的に <code>TYPSTORAGE_PLAIN</code> に設定されます。</li>
+<li>TOASTテーブルの各カラムは圧縮が無効化されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **存在確認**: <code>rel-&gt;rd_rel-&gt;reltoastrelid</code> を確認し、既にTOASTテーブルがあれば終了。 2. **生成判定**: <code>needs_toast_table</code> を呼び出し、TOASTテーブルが必要か判定（<code>IsBinaryUpgrade</code> 時は例外処理あり）。 3. **スキーマ定義**: <code>chunk_id</code> (OID), <code>chunk_seq</code> (INT4), <code>chunk_data</code> (BYTEA) を持つタプル記述子を作成。 4. **名前解決**: <code>pg_toast_</code> プレフィックスを付与したテーブル名およびインデックス名を生成。 5. **テーブル作成**: <code>heap_create_with_catalog</code> を呼び出し、<code>RELKIND_TOASTVALUE</code> としてテーブルを作成。 6. **可視化**: <code>CommandCounterIncrement()</code> を実行し、作成したテーブルを後続処理から参照可能にする。 7. **インデックス構築**: <code>chunk_id</code> と <code>chunk_seq</code> をキーとするユニークインデックスを定義（スライスアクセス効率化のため）。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>NewRelationCreateToastTable</code></li>
+<li><code>AlterTableCreateToastTable</code></li>
+<li><code>CheckAndCreateToastTable</code></li>
+<li>**呼び出し先**:</li>
+<li><code>needs_toast_table</code></li>
+<li><code>heap_create_with_catalog</code></li>
+<li><code>table_open</code></li>
+<li><code>makeNode</code> (IndexInfoの作成)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: メインリレーションおよび作成されるTOASTリレーション。</li>
+<li><code>TupleDesc</code>: TOASTテーブルのスキーマ定義。</li>
+<li><code>IndexInfo</code>: TOASTテーブル用インデックスの定義情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>check</code> が <code>true</code> かつ <code>lockmode</code> が <code>AccessExclusiveLock</code> 以外の場合、<code>elog(ERROR)</code> が発生します。</li>
+<li>バイナリアップグレードモードにおいて、<code>binary_upgrade_next_toast_pg_class_oid</code> が無効な場合は作成をスキップします。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>TOASTテーブルのインデックスは、単一の <code>chunk_id</code> でも動作可能ですが、スライスアクセス（部分読み込み）の効率化と重複チェックのため、<code>chunk_id</code> と <code>chunk_seq</code> の複合インデックスが必須となっています。</li>
+<li><code>chunk_data</code> は <code>bytea</code> 型であり、それ自体がTOAST可能であるため、再帰的なTOASTを防ぐための <code>TYPSTORAGE_PLAIN</code> 設定は極めて重要です。</li>
+</ul></body></html>

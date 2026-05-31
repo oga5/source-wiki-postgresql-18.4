@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-atomic-compare-exchange-u64-impl.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_atomic_compare_exchange_u64_impl</h1>
+<h2>概念</h2>
+<p><code>pg_atomic_compare_exchange_u64_impl</code> は、PostgreSQLがサポートする様々なハードウェアアーキテクチャやコンパイラ環境において、64ビット整数のアトミックな比較交換（Compare-and-Swap: CAS）操作をプラットフォーム固有の方法で実行するための内部関数です。</p>
+<h2>なぜ重要か</h2>
+<p>アトミックな64ビットCAS操作は、マルチプロセス/マルチスレッド環境における並行制御や同期処理の基盤となります。プラットフォームごとに最適な命令（ネイティブアセンブラ、コンパイラ組み込み関数、システムAPI、またはスピンロックによるシミュレーション）を使い分けることで、移植性と高いパフォーマンスを両立させるために重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/port</code></li>
+<li><code>module:src/include/port/atomics</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/port/atomics.c#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>ハードウェアによるネイティブサポートがない環境（<code>PG_HAVE_ATOMIC_U64_SIMULATION</code> 定義時）で、スピンロックを用いてCASをシミュレートする実装。</p>
+<li><code>symbol:src/include/port/atomics/arch-ppc.h#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>PowerPC環境向けに <code>ldarx</code> / <code>stdcx.</code> 命令を用いたインラインアセンブラ実装。</p>
+<li><code>symbol:src/include/port/atomics/arch-x86.h#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>x86_64環境向けに <code>lock cmpxchgq</code> 命令を用いたインラインアセンブラ実装。</p>
+<li><code>symbol:src/include/port/atomics/generic-gcc.h#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>GCC環境向けの実装（詳細なコンテキストは未提供）。</p>
+<li><code>symbol:src/include/port/atomics/generic-msvc.h#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>MSVC環境向けに <code>_InterlockedCompareExchange64</code> を用いた実装。</p>
+<li><code>symbol:src/include/port/atomics/generic-sunpro.h#pg_atomic_compare_exchange_u64_impl</code></li>
+<p>Solaris環境向けに <code>atomic_cas_64</code> を用いた実装。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>汎用アトミックインターフェース（<code>src/include/port/atomics/generic.h</code> など）から呼び出され、ビルド環境やターゲットアーキテクチャに応じて適切な実装が選択されます。</p>
+<p>1. **呼び出し**: 呼び出し元が <code>pg_atomic_compare_exchange_u64_impl(ptr, expected, newval)</code> を実行します。 2. **プラットフォーム固有の処理**:</p>
+<ul>
+<li>**x86_64**: <code>lock cmpxchgq</code> 命令によりアトミックに比較と交換を行います。</li>
+<li>**PowerPC**: <code>ldarx</code> でロードリンクし、値が一致すれば <code>stdcx.</code> でストア条件を試みるループを実行します。</li>
+<li>**MSVC**: <code>_InterlockedCompareExchange64</code> 組み込み関数を呼び出します。</li>
+<li>**Solaris**: <code>atomic_cas_64</code> システム関数を呼び出します。</li>
+<li>**フォールバック（シミュレーション）**: ネイティブサポートがない場合、<code>ptr-&gt;sema</code> のスピンロックを取得し、値を比較・更新した後にスピンロックを解放します。</li>
+<p>3. **結果の返却**:</p>
+<li>比較が成功した場合、<code>ptr-&gt;value</code> が <code>newval</code> に更新され、<code>true</code> が返されます。</li>
+<li>比較が失敗した場合、<code>expected</code> が指すメモリ領域が現在の <code>ptr-&gt;value</code> で更新され、<code>false</code> が返されます。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**アライメント**: <code>expected</code> ポインタは8バイト境界に整列（アライメント）されている必要があります（<code>AssertPointerAlignment</code> による検証が行われます）。</li>
+<li>**スピンロックの初期化**: スピンロックシミュレーション（<code>atomics.c</code>）を使用する場合、対象の <code>pg_atomic_uint64</code> 構造体は事前に <code>pg_atomic_init_u64_impl</code> 等でスピンロックが初期化されていなければなりません。</li>
+<li>**強い（Strong）CAS**: 本関数は「強い」CASを提供します。そのため、値が一致しているにもかかわらず偽の失敗（spurious failure）が発生することはありません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**アライメント違反**: <code>expected</code> が8バイト境界に整列されていない場合、アサーションエラーや未定義動作（MSVCの仕様などによる）を引き起こす可能性があります。</li>
+<li>**デッドロック**: スピンロックシミュレーション環境において、スピンロックを保持したまま再帰的に本関数を呼び出すとデッドロックが発生します。</li>
+<li>**パフォーマンス低下**: ネイティブな64ビットアトミック操作がサポートされない環境では、スピンロックによる排他制御が行われるため、競合が激しい場合に著しいパフォーマンス低下を招きます。</li>
+<li>**32ビット環境の制限**: 例えば <code>arch-x86.h</code> の実装は <code>__x86_64__</code> 専用であり、32ビット環境では提供されません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/port/atomics/generic.h</code> : 本関数をラップして提供する汎用アトミックインターフェース。</li>
+<li><code>src/backend/port/atomics.c</code> : スピンロックを用いたシミュレーション実装。</li>
+<li><code>src/include/port/atomics/arch-x86.h</code> : x86_64向けインラインアセンブラ実装。</li>
+<li><code>src/include/port/atomics/arch-ppc.h</code> : PowerPC向けインラインアセンブラ実装。</li>
+<li><code>src/include/port/atomics/generic-msvc.h</code> : MSVC向け実装。</li>
+<li><code>src/include/port/atomics/generic-sunpro.h</code> : Solaris向け実装。</li>
+<li><code>src/include/port/atomics/generic-gcc.h</code> : GCC向け実装。</li>
+</ul></body></html>

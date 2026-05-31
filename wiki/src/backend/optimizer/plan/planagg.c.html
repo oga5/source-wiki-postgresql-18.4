@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/planagg.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/planagg.c</h1>
+<h2>概要</h2>
+<p><code>planagg.c</code> は、PostgreSQL のオプティマイザにおいて <code>MIN</code> および <code>MAX</code> 集約関数を最適化するためのモジュールです。インデックスを利用可能な場合に、全行スキャンを伴う集約処理を、<code>LIMIT 1</code> を伴うサブクエリ（インデックススキャン）へ置換することで、クエリ実行速度を劇的に向上させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムの一部として、<code>grouping_planner</code> が <code>query_planner</code> を呼び出す直前の前処理フェーズで機能します。標準的な集約パスと競合する <code>MinMaxAggPath</code> を生成し、プランナがより効率的な実行計画を選択できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**最適化可能性の判定**: クエリ内の集約関数が <code>MIN</code>/<code>MAX</code> のみで構成され、かつインデックススキャンへ置換可能か検証します。</li>
+<li>**サブクエリの構築**: インデックスを利用して最小値・最大値を効率的に取得するためのサブクエリ（<code>SELECT col FROM tab WHERE col IS NOT NULL ORDER BY col ASC/DESC LIMIT 1</code>）を生成します。</li>
+<li>**パスの生成**: 生成したサブクエリを <code>MinMaxAggPath</code> としてパッケージ化し、<code>UPPERREL_GROUP_AGG</code> に登録します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>preprocess_minmax_aggregates</code>: 本モジュールのエントリポイント。集約関数の最適化可否を判断し、パス生成を統括します。</li>
+<li><code>can_minmax_aggs</code>: クエリ内の集約関数を走査し、すべてが <code>MIN</code>/<code>MAX</code> であり、かつインデックス利用可能かを確認します。</li>
+<li><code>build_minmax_path</code>: 特定の集約関数に対して、インデックスを利用したサブクエリパスを構築します。</li>
+<li><code>MinMaxAggInfo</code>: 最適化対象の集約関数に関するメタデータ（対象式、ソート演算子、生成されたパス等）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>fetch_agg_sort_op</code></li>
+<li><code>minmax_qp_callback</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検証**: <code>preprocess_minmax_aggregates</code> がクエリ構造（単一テーブル、<code>GROUP BY</code> や <code>WINDOW</code> 関数の不在など）をチェックします。 2. **解析**: <code>can_minmax_aggs</code> が <code>root-&gt;agginfos</code> を辿り、最適化対象の集約関数を抽出します。 3. **パス構築**: <code>build_minmax_path</code> が現在の <code>PlannerInfo</code> をクローンし、サブクエリ用の <code>PlannerInfo</code> を作成します。ここで <code>query_planner</code> を再帰的に呼び出し、<code>LIMIT 1</code> を適用した最適なインデックススキャンパスを探索します。 4. **登録**: 成功した場合、<code>MinMaxAggPath</code> を作成し、<code>UPPERREL_GROUP_AGG</code> に追加します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_aggregate.h</code>: 集約関数のメタデータ（<code>aggsortop</code> 等）の取得に使用。</li>
+<li><code>optimizer/pathnode.h</code>: <code>MinMaxAggPath</code> の生成に使用。</li>
+<li><code>optimizer/paths.h</code>: <code>query_planner</code> 等のパス生成関数の利用。</li>
+<li><code>utils/lsyscache.h</code> / <code>utils/syscache.h</code>: システムカタログからの情報取得。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/plan/planner.c</code>: <code>grouping_planner</code> が本モジュールを呼び出す起点。</li>
+<li><code>src/backend/nodes/nodeFuncs.h</code>: 式の走査や <code>copyObject</code> 等のユーティリティ。</li>
+<li><code>src/backend/optimizer/path/costsize.c</code>: パスのコスト計算ロジック（比較対象）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**制約**: 本最適化は、クエリが単一のテーブルを参照している場合にのみ適用されます。結合や複雑な <code>GROUP BY</code> が含まれる場合はスキップされます。</li>
+<li>**副作用**: <code>build_minmax_path</code> 内で <code>PlannerInfo</code> をクローンしてサブクエリを構築するため、メモリ消費や複雑な状態管理が発生します。</li>
+<li>**デバッグ**: <code>MinMaxAggPath</code> が生成されない場合は、<code>can_minmax_aggs</code> 内の条件（<code>aggfilter</code> の有無や <code>mutable</code> 関数の存在など）が原因であることが多いです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planagg_c__preprocess_minmax_aggregates.html" target="wiki-view"><code>preprocess_minmax_aggregates</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planagg_c__can_minmax_aggs.html" target="wiki-view"><code>can_minmax_aggs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planagg_c__build_minmax_path.html" target="wiki-view"><code>build_minmax_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planagg_c__minmax_qp_callback.html" target="wiki-view"><code>minmax_qp_callback</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planagg_c__fetch_agg_sort_op.html" target="wiki-view"><code>fetch_agg_sort_op</code></a></li>
+</ul></body></html>

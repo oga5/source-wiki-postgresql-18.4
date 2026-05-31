@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/manifest-file.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>manifest_file</h1>
+<h2>概念</h2>
+<p><code>manifest_file</code> は、PostgreSQLのバックアップマニフェスト（<code>backup_manifest</code>）に含まれる個々のファイルに関するメタデータ（パス、サイズ、チェックサムなど）をメモリ上で保持・管理するための構造体です。</p>
+<p>この構造体は、バックアップの統合（<code>pg_combinebackup</code>）や検証（<code>pg_verifybackup</code>）を行うツールにおいて、マニフェスト内のファイル情報をハッシュテーブル（<code>simplehash</code>）で効率的に検索・照合するために定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>バックアップの検証や統合処理では、マニフェストに記載された大量のファイル情報を高速に検索し、実ファイルやストリームデータと照合する必要があります。<code>manifest_file</code> は、<code>simplehash</code> を用いたハッシュテーブルの要素として機能することで、ファイルパスをキーとした高速なルックアップを可能にし、バックアップデータの整合性検証や統合処理のパフォーマンスを支えています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_combinebackup</code></li>
+<li><code>module:src/bin/pg_verifybackup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_combinebackup/load_manifest.h#manifest_file</code>**: <code>pg_combinebackup</code> において、マニフェストから読み込んだファイルのメタデータ（パス、サイズ、チェックサム等）を保持する構造体。</li>
+<li>**<code>symbol:src/bin/pg_verifybackup/pg_verifybackup.h#manifest_file</code>**: <code>pg_verifybackup</code> において、ファイルメタデータに加えて検証状態（<code>matched</code>、<code>bad</code> フラグ）を保持する構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **マニフェストの解析とロード**:</p>
+<ul>
+<li><code>pg_combinebackup</code> では、<code>load_backup_manifest()</code> を通じてマニフェストファイルが読み込まれ、<code>manifest_file</code> 構造体が初期化されてハッシュテーブル（<code>manifest_data</code>）に格納されます。</li>
+<li><code>pg_verifybackup</code> でも同様に、<code>pg_verifybackup.c</code> がマニフェスト解析時に本構造体をインスタンス化し、ハッシュテーブルに格納します。</li>
+<p>2. **検証・処理の実行**:</p>
+<li><code>pg_verifybackup</code> では、<code>astreamer_verify.c</code> がアーカイブストリームの処理中に本構造体を参照し、実ファイルとの照合結果に応じて <code>matched</code>（一致）や <code>bad</code>（不整合）フラグを更新します。</li>
+<li><code>pg_combinebackup</code> では、ハッシュテーブルに格納された <code>manifest_file</code> を用いて、ファイルの検索や統合処理を容易にします。</li>
+</ul>
+<p>※なお、マニフェスト全体のロードから各ツールでの最終的な出力・判定に至る完全なエンドツーエンドの制御フローの詳細は、提供されたモジュール情報からはすべて明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ハッシュテーブルの要素としての制約**:</li>
+<li><code>simplehash</code>（<code>lib/simplehash.h</code>）の要素として利用されるため、構造体の先頭にはハッシュ状態を示す <code>status</code> フィールドが存在する必要があります。</li>
+<li>**データの整合性**:</li>
+<li><code>checksum_payload</code> は、<code>checksum_length</code> に応じた正しいメモリ領域を指している必要があります。</li>
+<li><code>pg_verifybackup</code> において、<code>pathname</code> はマニフェスト内で一意である必要があります。</li>
+<li><code>checksum_payload</code> が <code>NULL</code> の場合、チェックサム検証はスキップされます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の衝突**:</li>
+<li><code>src/bin/pg_basebackup/pg_basebackup.c</code> にも <code>manifest_file</code> という名前の変数が存在しますが、これは <code>FILE *</code> 型の変数であり、本構造体とは全く無関係です。</li>
+<li>**ライフサイクル管理**:</li>
+<li><code>pathname</code> は <code>const char *</code> 型であり、マニフェスト読み込み時に確保されたメモリ領域を指すため、構造体と参照先メモリのライフサイクル管理に注意が必要です。</li>
+<li>**ハッシュテーブル定義との同期**:</li>
+<li><code>simplehash</code> のマクロ展開と密接に関連しているため、<code>manifest_file</code> のフィールドを変更する場合は、ハッシュテーブルの定義側（<code>load_manifest.c</code> や <code>pg_verifybackup.c</code>）も併せて更新する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_combinebackup/load_manifest.h</code></li>
+<li><code>src/bin/pg_verifybackup/pg_verifybackup.h</code></li>
+<li><code>src/bin/pg_combinebackup/load_manifest.c</code> （ハッシュテーブル操作およびマニフェスト解析ロジックの実装）</li>
+<li><code>src/bin/pg_verifybackup/pg_verifybackup.c</code> （検証コンテキストおよびハッシュテーブルの管理）</li>
+</ul></body></html>

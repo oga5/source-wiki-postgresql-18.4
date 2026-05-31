@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tcop/pquery.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tcop/pquery.c</h1>
+<h2>概要</h2>
+<p><code>pquery.c</code> は、PostgreSQL における「ポータル（Portal）」の実行と管理を担う中心的なモジュールです。SQL 文の解析・計画後に生成された <code>PlannedStmt</code> を受け取り、実行エンジン（Executor）を呼び出して結果をクライアントや他の宛先に配送する一連のライフサイクルを制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tcop</code>（Traffic Cop）サブシステムの一部として、クライアントからのクエリ実行要求とバックエンドの実行エンジンを橋渡しします。<code>postgres.c</code> がクエリの解析・計画を統括するのに対し、本ファイルは計画済みのクエリを「いつ、どのように実行するか」という実行戦略の決定と実行状態の保持に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行戦略の決定**: クエリの内容に基づき、最適な実行モード（<code>PortalStrategy</code>）を選択する。</li>
+<li>**ポータルのライフサイクル管理**: <code>PortalStart</code> から <code>PortalRun</code>、終了処理までの一連の実行フローを管理する。</li>
+<li>**スナップショットの制御**: クエリ実行に必要なトランザクションスナップショットの生成、保持、および破棄を管理する。</li>
+<li>**結果の配送**: <code>DestReceiver</code> を介して、クエリ結果を適切な出力先（クライアント、メモリ上のストアなど）へルーティングする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ActivePortal</code>: 現在実行中のポータルを指すグローバル変数。</li>
+<li><code>PortalStart()</code>: ポータルの実行準備を行い、実行戦略を確定させる。</li>
+<li><code>PortalRun()</code>: ポータル内のクエリを実行し、結果を配送する。</li>
+<li><code>ChoosePortalStrategy()</code>: クエリリストから実行戦略（<code>PORTAL_ONE_SELECT</code> 等）を判定する。</li>
+<li><code>ProcessQuery()</code>: 単一の計画済みクエリを実行する低レベル関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ChoosePortalStrategy</code></li>
+<li><code>CreateQueryDesc</code></li>
+<li><code>FetchPortalTargetList</code></li>
+<li><code>FetchStatementTargetList</code></li>
+<li><code>FillPortalStore</code></li>
+<li><code>FreeQueryDesc</code></li>
+<li><code>PortalRun</code></li>
+<li><code>PortalRunSelect</code></li>
+<li><code>PortalRunUtility</code></li>
+<li><code>PortalSetResultFormat</code></li>
+<li><code>PortalStart</code></li>
+<li><code>ProcessQuery</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PortalStart</code> が呼ばれ、<code>ChoosePortalStrategy</code> で戦略を決定。必要に応じて <code>QueryDesc</code> を作成し、Executor を初期化する。 2. **実行**: <code>PortalRun</code> が呼び出されると、戦略に応じて <code>PortalRunSelect</code>（SELECT系）や <code>PortalRunMulti</code>（複数クエリ/ユーティリティ系）へ分岐する。 3. **データ処理**:</p>
+<ul>
+<li><code>PORTAL_ONE_SELECT</code> の場合、Executor が直接結果を <code>DestReceiver</code> に流す。</li>
+<li><code>PORTAL_ONE_RETURNING</code> 等の場合、<code>FillPortalStore</code> を介して結果を <code>Tuplestore</code> に蓄積し、その後 <code>RunFromStore</code> で読み出す。</li>
+<p>4. **終了**: 実行完了後、<code>ExecutorEnd</code> を呼び出し、リソースを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/executor.h</code>: クエリ実行エンジンの主要インターフェース。</li>
+<li><code>utils/snapmgr.h</code>: スナップショットの管理。</li>
+<li><code>tcop/pquery.h</code>: 公開プロトタイプ定義。</li>
+<li><code>access/xact.h</code>: トランザクション制御。</li>
+<li><code>commands/prepare.h</code></li>
+<li><code>executor/tstoreReceiver.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/portal.h</code>: ポータル構造体 <code>PortalData</code> の定義。</li>
+<li><code>src/backend/executor/execMain.c</code>: <code>ExecutorStart/Run/End</code> の実装。</li>
+<li><code>src/backend/tcop/postgres.c</code>: クエリ処理の最上位ループ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ポータルの状態**: <code>Portal</code> は単なるクエリの実行単位ではなく、カーソルや準備済みステートメントの実行状態を保持するコンテナです。</li>
+<li>**スナップショットの複雑性**: ユーティリティコマンド（<code>VACUUM</code> 等）が内部でトランザクションをコミット/ロールバックする場合があるため、スナップショットの管理には細心の注意が払われています。<code>EnsurePortalSnapshotExists</code> は、そのような破壊的処理の後にスナップショットを再構築するための重要な関数です。</li>
+<li>**メモリ管理**: <code>PortalContext</code> を使用して、ポータル実行中のメモリリークを防ぐ設計になっています。<code>PortalRun</code> 内の <code>PG_TRY/CATCH</code> ブロックは、エラー発生時にポータルを適切にクリーンアップするために不可欠です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__CreateQueryDesc.html" target="wiki-view"><code>CreateQueryDesc</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__FreeQueryDesc.html" target="wiki-view"><code>FreeQueryDesc</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__ProcessQuery.html" target="wiki-view"><code>ProcessQuery</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__ChoosePortalStrategy.html" target="wiki-view"><code>ChoosePortalStrategy</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__FetchPortalTargetList.html" target="wiki-view"><code>FetchPortalTargetList</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__FetchStatementTargetList.html" target="wiki-view"><code>FetchStatementTargetList</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__PortalStart.html" target="wiki-view"><code>PortalStart</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__PortalSetResultFormat.html" target="wiki-view"><code>PortalSetResultFormat</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__PortalRun.html" target="wiki-view"><code>PortalRun</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__PortalRunSelect.html" target="wiki-view"><code>PortalRunSelect</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__FillPortalStore.html" target="wiki-view"><code>FillPortalStore</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__pquery_c__PortalRunUtility.html" target="wiki-view"><code>PortalRunUtility</code></a></li>
+</ul></body></html>

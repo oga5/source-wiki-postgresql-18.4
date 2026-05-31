@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/storage/sinvaladt.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/storage/sinvaladt.h</h1>
+<h2>概要</h2>
+<p><code>sinvaladt.h</code> は、PostgreSQL の共有キャッシュ無効化（Shared Cache Invalidation）メカニズムのデータ構造とインターフェースを定義するヘッダーファイルです。全バックエンド間で共有される無効化メッセージのキュー管理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>storage</code> サブシステムの一部として、バックエンド間通信（IPC）のインフラを提供します。キャッシュ無効化メッセージを共有メモリ上の循環バッファに保持し、各バックエンドが自身の進捗に合わせてメッセージを読み取れるように調整する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージの配送管理**: 送信された無効化メッセージを全バックエンドが確実に受信できるよう、共有メモリ上のキューを管理する。</li>
+<li>**キューのオーバーフロー対策**: キューが一杯になった際、遅延しているバックエンドに対して「リセット」を強制し、システム全体の停止を防ぐ。</li>
+<li>**共有メモリの初期化**: 共有メモリ領域のサイズ計算および初期化処理の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SharedInvalShmemSize()</code> / <code>SharedInvalShmemInit()</code>: 共有メモリ上の無効化キューに必要な領域の確保と初期化を行う。</li>
+<li><code>SIInsertDataEntries()</code>: 新しい無効化メッセージをキューに追加する。</li>
+<li><code>SIGetDataEntries()</code>: 自バックエンドが未処理のメッセージをキューから読み取る。</li>
+<li><code>SICleanupQueue()</code>: キュー内の古いメッセージを整理し、遅延しているバックエンドへ警告（キャッチアップ信号）を送る。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **送信**: バックエンドが <code>SIInsertDataEntries</code> を呼び出し、共有メモリ上の循環バッファにメッセージを書き込む。 2. **受信**: 各バックエンドは定期的に <code>SIGetDataEntries</code> を呼び出し、自身の <code>nextMsgNum</code> から現在の <code>maxMsgNum</code> までのメッセージを読み取る。 3. **クリーンアップ**: <code>SICleanupQueue</code> が定期的に実行され、全バックエンドが読み終えた古いメッセージを解放し、キューの空き領域を確保する。 4. **リセット**: キューの追いつきが困難なバックエンドに対しては、リセットフラグが立てられ、当該バックエンドはキャッシュを全破棄して再同期を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/lock.h</code>: 共有メモリ上のキューアクセスを保護するためのロック定義。</li>
+<li><code>storage/sinval.h</code>: 共有無効化メッセージの構造体定義（<code>SharedInvalidationMessage</code>）。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/sinvaladt.c</code>: 本ヘッダーで宣言された関数の実装。循環バッファのロジックやロック制御の詳細が含まれる。</li>
+<li><code>src/include/storage/sinval.h</code>: 無効化メッセージの型定義など、上位のインターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本モジュールは、PostgreSQL のキャッシュ整合性を維持するための極めて重要な基盤です。</li>
+<li>循環バッファのインデックス管理には <code>MAXNUMMESSAGES</code>（2のべき乗）が使用されており、オーバーフローを避けるためのラップアラウンド処理が実装されています。</li>
+<li>読み取り側は <code>SInvalReadLock</code>、書き込み側は <code>SInvalWriteLock</code> を使用して競合を制御しています。デバッグやパフォーマンスチューニングの際は、このロックの競合状況に注意してください。</li>
+</ul></body></html>

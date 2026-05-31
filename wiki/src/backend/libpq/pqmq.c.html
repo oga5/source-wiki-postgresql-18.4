@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/pqmq.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/pqmq.c</h1>
+<h2>概要</h2>
+<p><code>pqmq.c</code> は、PostgreSQLのフロントエンド/バックエンド通信プロトコルを、共有メモリメッセージキュー（<code>shm_mq</code>）経由で実行するための抽象化レイヤーを提供します。主に並列クエリ実行時や論理レプリケーションワーカーにおいて、バックエンドプロセス間でのメッセージ受け渡しを可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> サブシステムの一部として、通常のネットワークソケット通信の代わりに共有メモリを介した通信経路を確立します。<code>PqCommMethods</code> を <code>mq_</code> プレフィックスを持つ関数群でオーバーライドすることで、上位層のコードを変更することなく通信先を切り替えます。</p>
+<h2>責務</h2>
+<ul>
+<li>**通信経路の切り替え**: <code>pq_redirect_to_shm_mq</code> を通じて、メッセージ送信先を共有メモリキューへリダイレクトする。</li>
+<li>**プロトコルメッセージの転送**: <code>mq_putmessage</code> を介し、libpqプロトコル形式のデータを <code>shm_mq</code> に書き込む。</li>
+<li>**並列処理の同期**: メッセージ送信時に <code>SendProcSignal</code> を呼び出し、並列リーダープロセスへ通知を送る。</li>
+<li>**エラー情報の復元**: <code>pq_parse_errornotice</code> を提供し、シリアライズされたエラーメッセージを <code>ErrorData</code> 構造体へ再構築する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pq_redirect_to_shm_mq</code>: 通信メソッドを共有メモリモードに切り替えるエントリポイント。</li>
+<li><code>PqCommMqMethods</code>: 共有メモリ通信用の関数ポインタテーブル。</li>
+<li><code>mq_putmessage</code>: メッセージをキューに書き込み、必要に応じてリーダーへシグナルを送る中核関数。</li>
+<li><code>pq_parse_errornotice</code>: 通信経由で受け取ったエラー/通知メッセージを解析するユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>mq_comm_reset</code></li>
+<li><code>mq_flush</code></li>
+<li><code>mq_flush_if_writable</code></li>
+<li><code>mq_is_send_pending</code></li>
+<li><code>mq_putmessage_noblock</code></li>
+<li><code>pq_cleanup_redirect_to_shm_mq</code></li>
+<li><code>pq_set_parallel_leader</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>pq_redirect_to_shm_mq</code> が呼ばれると、<code>PqCommMethods</code> が <code>PqCommMqMethods</code> に差し替えられ、<code>on_dsm_detach</code> でクリーンアップ処理が登録されます。 2.  **送信**: <code>mq_putmessage</code> が呼ばれると、メッセージタイプとデータ本体が <code>shm_mq_sendv</code> に渡されます。 3.  **同期**: 送信成功後、<code>pq_mq_parallel_leader_pid</code> が設定されていれば <code>SendProcSignal</code> を発行し、リーダーに処理を促します。 4.  **待機**: キューが満杯の場合、<code>WaitLatch</code> を使用して空きができるまで待機し、割り込みチェックを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shm_mq.h</code>: 共有メモリメッセージキューの基盤。</li>
+<li><code>libpq/pqformat.h</code>: プロトコルメッセージのパース・構築用。</li>
+<li><code>access/parallel.h</code>: 並列クエリ関連の定義。</li>
+<li><code>pgstat.h</code>, <code>tcop/tcopprot.h</code>: バックエンドの実行状態管理。</li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqmq.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/libpq/pqmq.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/storage/ipc/shm_mq.c</code>: 共有メモリキューの実装本体。</li>
+<li><code>src/backend/libpq/pqcomm.c</code>: 通常のソケット通信用メソッドの実装（比較対象）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再入可能性**: <code>pq_mq_busy</code> フラグにより、メッセージ送信中の再帰的な送信試行を検出し、デッドロックや無限ループを回避しています。</li>
+<li>**非同期性**: <code>mq_putmessage_noblock</code> は現在未実装であり、呼び出すとエラーになります。</li>
+<li>**エラー解析**: <code>pq_parse_errornotice</code> は、ワーカープロセスで発生したエラーをリーダープロセス側で再現するために使用されます。<code>PG_DIAG_*</code> フィールドのパースロジックは、プロトコル仕様に密接に依存しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__pq_redirect_to_shm_mq.html" target="wiki-view"><code>pq_redirect_to_shm_mq</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__pq_cleanup_redirect_to_shm_mq.html" target="wiki-view"><code>pq_cleanup_redirect_to_shm_mq</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__pq_set_parallel_leader.html" target="wiki-view"><code>pq_set_parallel_leader</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_comm_reset.html" target="wiki-view"><code>mq_comm_reset</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_flush.html" target="wiki-view"><code>mq_flush</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_flush_if_writable.html" target="wiki-view"><code>mq_flush_if_writable</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_is_send_pending.html" target="wiki-view"><code>mq_is_send_pending</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_putmessage.html" target="wiki-view"><code>mq_putmessage</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__mq_putmessage_noblock.html" target="wiki-view"><code>mq_putmessage_noblock</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqmq_c__pq_parse_errornotice.html" target="wiki-view"><code>pq_parse_errornotice</code></a></li>
+</ul></body></html>

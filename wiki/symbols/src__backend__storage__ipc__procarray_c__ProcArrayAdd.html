@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__procarray_c__ProcArrayAdd.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcArrayAdd</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/procarray.c:467</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上のプロセス配列（<code>ProcArray</code>）に新しい <code>PGPROC</code> を登録し、トランザクション管理のための状態を初期化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ProcArrayAdd(PGPROC *proc)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>proc</code> (登録対象の <code>PGPROC</code> 構造体へのポインタ)</li>
+<li>**出力**: なし（副作用として共有メモリ上のプロセス配列が更新される）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ProcArrayLock</code> および <code>XidGenLock</code> が排他モードで取得される必要がある。</li>
+<li>プロセス配列は <code>pgprocnos</code>（プロセス番号）の昇順でソート状態が維持される。</li>
+<li>各 <code>PGPROC</code> の <code>pgxactoff</code> は、配列内での現在のインデックスと一致しなければならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ProcArrayLock</code> と <code>XidGenLock</code> を排他モードで取得する。 2. 配列の空き容量を確認し、不足している場合は <code>FATAL</code> エラーを発生させる。 3. <code>pgprocnos</code> を走査し、新しい <code>proc</code> を挿入すべきインデックス位置を特定する。 4. 特定した位置以降の配列要素（<code>pgprocnos</code>, <code>xids</code>, <code>subxidStates</code>, <code>statusFlags</code>）を <code>memmove</code> で後方にずらす。 5. 空いた位置に新しい <code>proc</code> の情報を書き込み、<code>proc-&gt;pgxactoff</code> を更新する。 6. 配列内の全要素数（<code>numProcs</code>）をインクリメントする。 7. 挿入位置以降のすべての <code>PGPROC</code> について、<code>pgxactoff</code> を再計算して更新する。 8. <code>XidGenLock</code>、続いて <code>ProcArrayLock</code> の順でロックを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/twophase.c</code></li>
+<li><code>src/backend/storage/lmgr/proc.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>GetNumberFromPGProc</code> (マクロまたはインライン関数)</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>memmove</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ProcArrayStruct</code>: 共有メモリ上のプロセス管理用メイン構造体。</li>
+<li><code>PGPROC</code>: 個々のバックエンドプロセスの状態を保持する構造体。</li>
+<li><code>ProcGlobal</code>: プロセス配列に関連するグローバルなトランザクション情報を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**接続数超過**: <code>arrayP-&gt;numProcs &gt;= arrayP-&gt;maxProcs</code> の場合、<code>ERRCODE_TOO_MANY_CONNECTIONS</code> で <code>FATAL</code> エラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ProcArrayLock</code> を保持した状態で <code>XidGenLock</code> を取得する。デッドロックを避けるため、解放順序は取得と逆順（<code>XidGenLock</code> -&gt; <code>ProcArrayLock</code>）である必要がある。</li>
+<li>配列のソート順序維持は、参照の局所性を高めるための設計である。挿入・削除頻度は低いため、<code>memmove</code> によるオーバーヘッドは許容されている。</li>
+</ul></body></html>

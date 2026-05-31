@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiverfuncs_c__RequestXLogStreaming.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RequestXLogStreaming</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiverfuncs.c:245</code></li>
+</ul>
+<h2>目的</h2>
+<p>スタートアッププロセスからWALレシーバーに対し、指定されたタイムラインと位置からのWALストリーミング開始または再開を指示します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo, const char *slotname, bool create_temp_slot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>tli</code>: 受信を開始するタイムラインID。</li>
+<li><code>recptr</code>: 受信を開始するWAL位置（セグメント境界に切り捨てられます）。</li>
+<li><code>conninfo</code>: プライマリへの接続文字列。</li>
+<li><code>slotname</code>: 使用するレプリケーションスロット名。</li>
+<li><code>create_temp_slot</code>: スロット名が指定されない場合に一時スロットを作成するかどうかのフラグ。</li>
+<li>**出力**: なし（共有メモリの状態更新およびシグナル送信による副作用）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ上の <code>WalRcv</code> 構造体へのアクセスは <code>mutex</code> で保護されます。</li>
+<li>呼び出し時点で <code>walRcvState</code> は <code>WALRCV_STOPPED</code> または <code>WALRCV_WAITING</code> である必要があります。</li>
+<li>WAL位置 <code>recptr</code> は、常にセグメントの先頭位置に調整されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>recptr</code> をセグメント境界に切り捨てます。 2. <code>WalRcv-&gt;mutex</code> を取得し、接続情報やスロット設定を共有メモリに書き込みます。 3. 現在の状態に応じて <code>walRcvState</code> を <code>WALRCV_STARTING</code>（停止時）または <code>WALRCV_RESTARTING</code>（待機時）に更新します。 4. 初回起動時またはタイムライン変更時は、受信開始位置等のメタデータを初期化します。 5. <code>mutex</code> を解放します。 6. <code>WALRCV_STOPPED</code> からの遷移であれば <code>PMSIGNAL_START_WALRECEIVER</code> をPostmasterへ送信し、それ以外であればWALレシーバープロセスのラッチをセットして処理を促します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xlogrecovery.c</code>（スタートアッププロセス）。</li>
+<li>**呼び出し先**: <code>SendPostmasterSignal</code>（Postmasterへの通知）、<code>SetLatch</code>（WALレシーバーの起動・再開通知）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalRcvData</code>: 共有メモリ上のWALレシーバー制御構造体。</li>
+<li><code>XLogRecPtr</code>: WAL上の位置を示すデータ型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>conninfo</code> がNULLの場合、接続情報は空文字列として扱われます。</li>
+<li><code>slotname</code> が指定されている場合、<code>create_temp_slot</code> の値は無視され、永続スロットとして扱われます。</li>
+<li>状態遷移の不整合が発生した場合、<code>Assert</code> により異常終了します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はスタートアッププロセスからのみ呼び出される設計です。</li>
+<li>共有メモリの更新とシグナル送信の順序は、競合を防ぐためにスピンロックの解放前後で厳密に制御されています。</li>
+</ul></body></html>

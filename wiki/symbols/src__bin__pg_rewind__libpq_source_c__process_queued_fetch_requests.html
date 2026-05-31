@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_rewind__libpq_source_c__process_queued_fetch_requests.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>process_queued_fetch_requests</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_rewind/libpq_source.c:425</code></li>
+</ul>
+<h2>目的</h2>
+<p>蓄積されたファイル取得リクエストをバッチ処理し、リモートサーバーからデータチャンクを取得してローカルのターゲットファイルへ書き込む。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void process_queued_fetch_requests(libpq_source *src)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>libpq_source *src</code>（リクエストキュー <code>request_queue</code> および接続情報を含む構造体）</li>
+<li>**出力**: なし（副作用としてターゲットファイルシステムを更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>src-&gt;num_requests</code> が 0 より大きいこと。</li>
+<li>リモートサーバー側で <code>fetch_chunks_stmt</code> プリペアドステートメントが準備されていること。</li>
+<li>リクエストされたファイルパス、オフセット、長さが <code>src</code> 内の <code>StringInfo</code> バッファに正しくエンコードされていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>src-&gt;request_queue</code> 内の全リクエストを配列形式の文字列に変換し、<code>fetch_chunks_stmt</code> のパラメータとして設定する。 2. <code>PQsendQueryPrepared</code> を用いてクエリを送信し、<code>PQsetSingleRowMode</code> でストリーミング受信を有効化する。 3. <code>PQgetResult</code> をループし、各タプル（パス、オフセット、チャンクデータ）を処理する。 4. チャンクデータが NULL の場合、リモートで削除されたファイルとみなし、<code>remove_target_file</code> を呼び出す。 5. データが存在する場合、リクエスト内容と整合性を検証し、<code>open_target_file</code> および <code>write_target_range</code> を通じてローカルへ書き込む。 6. 全リクエストの処理完了後、<code>PQclear</code> で結果を解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>libpq_queue_fetch_range</code> (バッチ実行トリガーとして)</li>
+<li><code>libpq_finish_fetch</code> (終了処理として)</li>
+<li>**呼び出し先**: </li>
+<li><code>PQsendQueryPrepared</code>, <code>PQsetSingleRowMode</code>, <code>PQgetResult</code>, <code>PQresultStatus</code>, <code>PQnfields</code>, <code>PQntuples</code>, <code>PQftype</code>, <code>PQfformat</code>, <code>PQgetisnull</code>, <code>PQgetlength</code>, <code>PQgetvalue</code>, <code>PQclear</code> (libpq API)</li>
+<li><code>remove_target_file</code>, <code>open_target_file</code>, <code>write_target_range</code> (ファイル操作)</li>
+<li><code>pg_fatal</code>, <code>pg_log_debug</code>, <code>pg_malloc</code>, <code>pg_free</code> (ユーティリティ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>libpq_source</code>: リクエストキューと接続状態を保持するメイン構造体。</li>
+<li><code>fetch_range_request</code>: 個別のファイル取得リクエスト（パス、オフセット、長さ）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**通信エラー**: <code>PQsendQueryPrepared</code> 失敗時に <code>pg_fatal</code> を発行。</li>
+<li>**データ不整合**: 受信したチャンクのパスやオフセットがリクエストと一致しない場合、または型情報が期待と異なる場合に <code>pg_fatal</code> を発行。</li>
+<li>**ファイル削除**: リモートでファイルが削除されている場合、<code>remove_target_file</code> によりローカル側でも削除を同期する。</li>
+<li>**切り詰め**: ソース側でファイルが切り詰められた場合、受信データがリクエストより少なくなる可能性があるが、これは許容される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>MAX_CHUNKS_PER_QUERY</code> の設定がスループットに直結する。</li>
+<li><code>PQgetResult</code> のループ内での <code>chunkno</code> 管理は、リクエスト順序とレスポンス順序が一致することを前提としている。</li>
+</ul></body></html>

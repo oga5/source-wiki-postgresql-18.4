@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gist.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gist.c</h1>
+<h2>概要</h2>
+<p><code>gist.c</code> は、PostgreSQLのGiST（Generalized Search Tree）インデックスアクセスメソッドのコアとなるインターフェースおよび挿入ロジックを実装するファイルです。ツリーの降下、タプルの挿入、ページ分割、および分割後の親ノード更新という、GiSTインデックスの構造維持における最も複雑な処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>GiSTサブシステムにおける「制御センター」です。<code>gistget.c</code>（検索）や <code>gistbuild.c</code>（構築）が特定の操作に特化しているのに対し、本ファイルはインデックスの整合性を保つためのツリー操作（挿入・分割・再帰的更新）を統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスハンドラ**: <code>gisthandler</code> を通じて、PostgreSQLのインデックスAMルーチンを登録。</li>
+<li>**挿入ロジック**: 適切なリーフページを選択し、タプルを挿入。必要に応じてページ分割をトリガー。</li>
+<li>**ページ分割管理**: <code>gistSplit</code> を呼び出し、分割されたページ群の再配置、右リンク（rightlink）の更新、および親ノードへのダウンリンク挿入を管理。</li>
+<li>**整合性維持**: 並行処理下でのページ分割の不完全さを検知・修正（<code>gistfixsplit</code>）し、NSN（Node Sequence Number）を用いた並行制御をサポート。</li>
+<li>**メモリ管理**: ユーザー定義のサポート関数実行時のメモリリークを防ぐための専用コンテキスト管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インターフェース</h3>
+<ul>
+<li><code>gisthandler</code>: インデックスAMのコールバックテーブルを定義。</li>
+<li><code>gistinsert</code>: 挿入のパブリックAPI。<code>GISTSTATE</code> の初期化とメモリコンテキストの切り替えを行う。</li>
+</ul>
+<h3>挿入・分割制御</h3>
+<ul>
+<li><code>gistdoinsert</code>: 挿入のメインループ。ルートからリーフまで最適なパスを探索し、必要に応じて再帰的に親を更新。</li>
+<li><code>gistplacetopage</code>: ページへのタプル配置と、溢れた場合の分割処理を実行。</li>
+<li><code>gistSplit</code>: ページ分割アルゴリズムの呼び出しと、分割後のページレイアウト構築。</li>
+<li><code>gistfixsplit</code>: 過去の不完全な分割を完了させるリカバリ処理。</li>
+</ul>
+<h3>状態管理</h3>
+<ul>
+<li><code>GISTSTATE</code>: インデックス操作に必要なサポート関数（Consistent, Union, Penalty等）のキャッシュ。</li>
+<li><code>GISTInsertStack</code>: ツリー降下時のパスを保持するスタック構造。分割時の親ノード再帰更新に使用。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>createTempGistContext</code></li>
+<li><code>freeGISTstate</code></li>
+<li><code>gistFindCorrectParent</code></li>
+<li><code>gistFindPath</code></li>
+<li><code>gistbuildempty</code></li>
+<li><code>gistdoinsert</code></li>
+<li><code>gistfixsplit</code></li>
+<li><code>gistformdownlink</code></li>
+<li><code>gisthandler</code></li>
+<li><code>gistinsert</code></li>
+<li><code>gistinserttuple</code></li>
+<li><code>gistplacetopage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入開始**: <code>gistinsert</code> が <code>GISTSTATE</code> を準備し、<code>gistdoinsert</code> を呼び出す。 2. **ツリー降下**: <code>gistdoinsert</code> は <code>gistchoose</code> で最適な子ノードを選択し、<code>GISTInsertStack</code> を構築しながらリーフへ向かう。 3. **ページ配置**: <code>gistplacetopage</code> が空き容量を確認。溢れる場合は <code>gistSplit</code> でページを分割し、新しいページ群を生成。 4. **再帰的更新**: 分割が発生した場合、<code>gistfinishsplit</code> が親ノードのダウンリンクを更新。親ノードも溢れる場合は、この処理が再帰的にルートまで伝播する。 5. **並行制御**: <code>NSN</code> と <code>F_FOLLOW_RIGHT</code> フラグにより、分割中に発生する検索との競合を回避。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST内部構造体およびサポート関数の定義。</li>
+<li><code>access/gistscan.h</code>: スキャン関連の定義。</li>
+<li><code>access/xloginsert.h</code>: WALログ生成用。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理用。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/index_selfuncs.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gistutil.c</code>: <code>gistchoose</code>, <code>gistgetadjusted</code>, <code>gistSplitByKey</code> など、本ファイルから呼び出される補助関数群。</li>
+<li><code>gistsplit.c</code>: 分割アルゴリズムの実装。</li>
+<li><code>gistxlog.c</code>: 分割や挿入に伴うWALレコードの生成ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>GISTSTATE</code> は <code>initGISTstate</code> で作成され、<code>freeGISTstate</code> で解放されます。挿入処理中は <code>tempCxt</code> を使用してメモリリークを抑制しています。</li>
+<li>**不変条件**: GiSTのページ分割はアトミックではありません。<code>F_FOLLOW_RIGHT</code> フラグが立っているページは「分割中」であり、検索や挿入は右リンクを辿る必要があります。</li>
+<li>**エッジケース**: ルートページの分割は、ツリーの高さが増加する唯一のケースであり、<code>gistplacetopage</code> 内で特別に処理されます。</li>
+<li>**省略された詳細**: 本ファイルは挿入と分割の「制御」に焦点を当てており、具体的な分割アルゴリズム（<code>picksplit</code>）や、各データ型の比較ロジック（<code>consistent</code>）は <code>gistutil.c</code> や各opclassのサポート関数に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gisthandler.html" target="wiki-view"><code>gisthandler</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__createTempGistContext.html" target="wiki-view"><code>createTempGistContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistbuildempty.html" target="wiki-view"><code>gistbuildempty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistinsert.html" target="wiki-view"><code>gistinsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistplacetopage.html" target="wiki-view"><code>gistplacetopage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistdoinsert.html" target="wiki-view"><code>gistdoinsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistFindPath.html" target="wiki-view"><code>gistFindPath</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistFindCorrectParent.html" target="wiki-view"><code>gistFindCorrectParent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistformdownlink.html" target="wiki-view"><code>gistformdownlink</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistfixsplit.html" target="wiki-view"><code>gistfixsplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__gistinserttuple.html" target="wiki-view"><code>gistinserttuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gist_c__freeGISTstate.html" target="wiki-view"><code>freeGISTstate</code></a></li>
+</ul></body></html>

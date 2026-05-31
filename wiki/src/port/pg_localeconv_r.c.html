@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/port/pg_localeconv_r.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/port/pg_localeconv_r.c</h1>
+<h2>概要</h2>
+<p><code>pg_localeconv_r.c</code> は、標準 C ライブラリの <code>localeconv()</code> が持つスレッドセーフではないという欠点を補うための、PostgreSQL 独自のラッパー関数を提供します。異なるロケールカテゴリ（<code>LC_NUMERIC</code> と <code>LC_MONETARY</code>）を個別に指定し、スレッド間で競合することなく <code>struct lconv</code> を取得することを目的としています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/port</code> 内において、プラットフォーム依存のロケール処理を抽象化する役割を担います。OS ごとに異なるロケール管理手法（Windows のスレッドローカルモード、POSIX の <code>locale_t</code>、あるいはグローバルロック）を吸収し、一貫したインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スレッドセーフなロケール情報の取得**: 呼び出し元が指定したロケールに基づき、安全に <code>struct lconv</code> を構築する。</li>
+<li>**メモリ管理**: 取得した文字列メンバのコピーを管理し、<code>pg_localeconv_free()</code> を通じて呼び出し元が安全にメモリを解放できるようにする。</li>
+<li>**プラットフォーム差異の吸収**: Windows、Glibc、macOS/*BSD 間で異なるロケール API の差異を隠蔽する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_localeconv_r()</code>: メインの公開関数。指定されたロケール名から <code>struct lconv</code> を生成する。</li>
+<li><code>pg_localeconv_free()</code>: <code>pg_localeconv_r()</code> が確保した動的メモリを解放する。</li>
+<li><code>struct lconv_member_info</code>: <code>lconv</code> 構造体の各メンバをどのようにコピー・管理するかを定義するメタデータテーブル。</li>
+<li><code>TRANSLATE_FROM_LANGINFO</code>: Glibc 環境で利用可能な、より効率的なロケール情報取得パスを有効化するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lconv_char_member</code></li>
+<li><code>lconv_member_info</code></li>
+<li><code>lconv_string_member</code></li>
+<li><code>pg_localeconv_copy_members</code></li>
+<li><code>pg_localeconv_free</code></li>
+<li><code>pg_localeconv_from_langinfo</code></li>
+<li><code>pg_localeconv_r</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>table[]</code> に定義されたメンバ情報に基づき、対象の <code>lconv</code> 構造体を初期化します。 2. **ロケール適用**:</p>
+<ul>
+<li>**Windows**: <code>_configthreadlocale</code> を使用してスレッドローカルモードに切り替え、一時的にロケールを変更して <code>localeconv()</code> を呼び出します。</li>
+<li>**POSIX**: <code>newlocale()</code> で作成した <code>locale_t</code> を使用し、<code>localeconv_l()</code> または <code>uselocale()</code> を経由して情報を抽出します。</li>
+<p>3. **データコピー**: <code>pg_localeconv_copy_members()</code> が <code>table[]</code> を走査し、各メンバを <code>strdup()</code> でコピーします。 4. **終了処理**: 一時的に変更したロケールを復元し、使用したリソース（<code>locale_t</code> やロック）を解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>c.h</code>: PostgreSQL の基本定義。</li>
+<li><code>langinfo.h</code>: ロケール情報取得用（非 Windows）。</li>
+<li><code>pthread.h</code>: スレッド同期用（非 Windows）。</li>
+<li><code>limits.h</code>: システム制限定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/port/win32setlocale.c</code>: Windows 環境におけるロケール関連の補完コード。</li>
+<li><code>src/port/chklocale.c</code>: ロケール環境変数のチェックや検証を行う関連ユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>pg_localeconv_r()</code> が返す <code>struct lconv</code> 内の文字列メンバは動的に確保されます。呼び出し側は必ず <code>pg_localeconv_free()</code> を呼び出す必要があります。</li>
+<li>**POSIX の制約**: POSIX 標準では <code>LC_CTYPE</code> と他のカテゴリのエンコーディングが不一致な場合の挙動が未定義です。本ファイルでは、安全のために <code>LC_ALL</code> を指定してロケールを適用することで、この不整合を回避しています。</li>
+<li>**ロックの存在**: <code>localeconv_l()</code> が利用できない古い環境では、<code>pthread_mutex_t</code> によるグローバルロックが使用されます。これはパフォーマンス上のボトルネックになる可能性があるため、可能な限り <code>locale_t</code> をサポートする環境での利用が推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__lconv_member_info.html" target="wiki-view"><code>lconv_member_info</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__lconv_string_member.html" target="wiki-view"><code>lconv_string_member</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__lconv_char_member.html" target="wiki-view"><code>lconv_char_member</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__pg_localeconv_free.html" target="wiki-view"><code>pg_localeconv_free</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__pg_localeconv_from_langinfo.html" target="wiki-view"><code>pg_localeconv_from_langinfo</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__pg_localeconv_copy_members.html" target="wiki-view"><code>pg_localeconv_copy_members</code></a></li>
+<li><a href="../../symbols/src__port__pg_localeconv_r_c__pg_localeconv_r.html" target="wiki-view"><code>pg_localeconv_r</code></a></li>
+</ul></body></html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/hash/dynahash.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/hash/dynahash.c</h1>
+<h2>概要</h2>
+<p><code>dynahash.c</code> は、PostgreSQLにおける動的ハッシュテーブルのコア実装です。ローカルメモリおよび共有メモリの両方で動作し、キーの衝突時にバケットを分割して拡張する「動的ハッシュ」アルゴリズムを採用しています。共有メモリ利用時の並行制御として、パーティション分割されたロック機構を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/hash</code> モジュールの中核であり、ハッシュテーブルのライフサイクル管理、データ構造の操作、およびメモリ割り当てを抽象化します。<code>dynahash.h</code> で定義されたインターフェースを実装し、他のサブシステム（キャッシュ、ロック管理、統計情報など）に汎用的なハッシュテーブル機能を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**テーブル管理**: ハッシュテーブルの作成、破棄、および動的な拡張（バケット分割）。</li>
+<li>**データ操作**: キーの検索、挿入、削除、および更新。</li>
+<li>**並行制御**: パーティション単位のロック（スピンロック）による共有メモリ上の競合最小化。</li>
+<li>**スキャン管理**: シーケンシャルスキャン中のバケット分割を抑制するためのスキャン追跡。</li>
+<li>**メモリ管理**: 共有メモリまたは指定されたメモリコンテキスト内での要素割り当て。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>制御構造体</h3>
+<ul>
+<li><code>HTAB</code>: バックエンドごとのローカル制御構造体。共有メモリ上のヘッダーへのポインタと、ローカルな設定値を持つ。</li>
+<li><code>HASHHDR</code>: 共有メモリ上に配置されるハッシュテーブルのヘッダー。動的な状態（バケット数、マスク、空きリスト）を保持。</li>
+<li><code>FreeListData</code>: パーティションごとの空きリストとスピンロックを管理する構造体。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li>**ライフサイクル**: <code>hash_create</code>, <code>hash_destroy</code>, <code>hash_freeze</code></li>
+<li>**データ操作**: <code>hash_search</code>, <code>hash_search_with_hash_value</code>, <code>hash_update_hash_key</code></li>
+<li>**スキャン**: <code>hash_seq_init</code>, <code>hash_seq_search</code>, <code>hash_seq_term</code></li>
+<li>**内部ユーティリティ**: <code>expand_table</code> (バケット分割), <code>get_hash_entry</code> (要素割り当て), <code>element_alloc</code> (メモリ確保)</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_HashTables</code></li>
+<li><code>DynaHashAlloc</code></li>
+<li><code>FreeListData</code></li>
+<li><code>HASHBUCKET</code></li>
+<li><code>HASHHDR</code></li>
+<li><code>HASHSEGMENT</code></li>
+<li><code>HTAB</code></li>
+<li><code>hash_create</code></li>
+<li><code>hash_get_num_entries</code></li>
+<li><code>hash_get_shared_size</code></li>
+<li><code>hash_stats</code></li>
+<li><code>hash_update_hash_key</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>hash_create</code> が <code>HASHHDR</code> を初期化し、<code>init_htab</code> でディレクトリと初期セグメントを割り当てます。 2. **検索・挿入**: <code>hash_search</code> が <code>calc_bucket</code> でハッシュ値をバケットインデックスに変換します。挿入時、必要に応じて <code>expand_table</code> が呼び出され、ハッシュテーブルが拡張されます。 3. **並行制御**: パーティションモードでは、<code>FREELIST_IDX</code> で決定されたインデックスに基づき、<code>FreeListData</code> のスピンロックを取得して操作を行います。 4. **メモリ確保**: <code>get_hash_entry</code> は、空きリストが枯渇した場合に <code>element_alloc</code> を呼び出し、新しい要素ブロックを確保します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>, <code>storage/spin.h</code>: 共有メモリとロック管理。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>common/hashfn.h</code>: 標準的なハッシュ関数群。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作ユーティリティ。</li>
+<li><code>access/xact.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/dynahash.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/dynahash.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>src/backend/utils/hash/pg_crc.c</code>: CRC計算ユーティリティ（本モジュールのもう一つの柱）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>HTAB</code> はローカルメモリに存在しますが、<code>HASHHDR</code> は共有メモリ上に配置される場合があります。<code>hash_destroy</code> は <code>hcxt</code>（メモリコンテキスト）を削除することでメモリを解放するため、コンテキストのライフサイクル管理が重要です。</li>
+<li>**制約**: パーティション分割されたハッシュテーブルは、実行時のバケット分割（<code>expand_table</code>）をサポートしていません。初期サイズの見積もりが重要です。</li>
+<li>**スキャン時の注意**: <code>hash_seq_search</code> 中に他のプロセスが挿入を行うと、スキャン結果が不整合になる可能性があります。スキャン中は <code>hash_freeze</code> を使用するか、適切なロックを保持してください。</li>
+<li>**省略された詳細**: 本ファイル内の <code>HASH_STATISTICS</code> 関連コードはデバッグ用であり、本番環境のパフォーマンスには影響しません。また、<code>string_compare</code> などの比較関数は、キーの型に応じた最適化がなされています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__HASHBUCKET.html" target="wiki-view"><code>HASHBUCKET</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__HASHSEGMENT.html" target="wiki-view"><code>HASHSEGMENT</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__FreeListData.html" target="wiki-view"><code>FreeListData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__HASHHDR.html" target="wiki-view"><code>HASHHDR</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__HTAB.html" target="wiki-view"><code>HTAB</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__DynaHashAlloc.html" target="wiki-view"><code>DynaHashAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__hash_create.html" target="wiki-view"><code>hash_create</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__hash_get_shared_size.html" target="wiki-view"><code>hash_get_shared_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__hash_stats.html" target="wiki-view"><code>hash_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__hash_update_hash_key.html" target="wiki-view"><code>hash_update_hash_key</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__hash_get_num_entries.html" target="wiki-view"><code>hash_get_num_entries</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__hash__dynahash_c__AtEOXact_HashTables.html" target="wiki-view"><code>AtEOXact_HashTables</code></a></li>
+</ul></body></html>

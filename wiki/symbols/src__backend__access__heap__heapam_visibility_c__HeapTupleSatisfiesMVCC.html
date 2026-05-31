@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesMVCC.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HeapTupleSatisfiesMVCC</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_visibility.c:959</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのMVCC（多版同時実行制御）ルールに基づき、特定のタプルが指定されたスナップショットから可視であるかを判定します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>htup</code>: 判定対象のタプル構造体。</li>
+<li><code>snapshot</code>: 可視性判定の基準となるスナップショット。</li>
+<li><code>buffer</code>: タプルが格納されているバッファ（ヒントビット更新用）。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: タプルが可視であれば <code>true</code>、不可視であれば <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、<code>snapshot</code> が登録済み（<code>regd_count &gt; 0</code> または <code>active_count &gt; 0</code>）であることを保証する必要があります。</li>
+<li><code>htup-&gt;t_self</code> が有効であり、<code>htup-&gt;t_tableOid</code> が設定されている必要があります。</li>
+<li>対象バッファに対して少なくとも共有ロックを保持している必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **Xminの検証**: タプルの挿入トランザクション（Xmin）の状態を確認します。</p>
+<ul>
+<li>未コミットかつ無効な場合は <code>false</code> を返します。</li>
+<li><code>HEAP_MOVED_OFF</code> や <code>HEAP_MOVED_IN</code> フラグがある場合、バイナリアップグレード用の特殊処理を行います。</li>
+<li>自トランザクションによる挿入の場合、コマンドID（<code>curcid</code>）を比較して可視性を判定します。</li>
+<li>他トランザクションの場合、スナップショットとCLOGを参照し、必要に応じて <code>SetHintBits</code> でヒントビットを更新します。</li>
+<p>2. **Xmaxの検証**: タプルの削除/更新トランザクション（Xmax）の状態を確認します。</p>
+<li><code>HEAP_XMAX_INVALID</code> または <code>HEAP_XMAX_IS_LOCKED_ONLY</code> の場合は可視とみなします。</li>
+<li><code>HEAP_XMAX_IS_MULTI</code> の場合はマルチトランザクションIDを解析し、更新者の状態を判定します。</li>
+<li>削除トランザクションがコミット済みであれば <code>false</code>、未コミットまたはアボート済みであれば <code>true</code> を返します。</li>
+<p>3. **ヒントビット更新**: 判定過程でトランザクションの確定状態が判明した場合、<code>SetHintBits</code> を呼び出し、タプルヘッダーの <code>t_infomask</code> を更新してバッファをダーティにします。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam_visibility.c</code> 内の他の可視性判定関数（例: <code>HeapTupleSatisfiesUpdate</code> 等の内部から呼び出されるケースあり）。</li>
+<li><code>src/backend/replication/logical/snapbuild.c</code>。</li>
+<li>**呼び出し先**:</li>
+<li><code>TransactionIdIsCurrentTransactionId</code>, <code>XidInMVCCSnapshot</code>, <code>TransactionIdDidCommit</code>（トランザクション状態確認）。</li>
+<li><code>SetHintBits</code>（ヒントビット更新）。</li>
+<li><code>HeapTupleHeaderGetXvac</code>, <code>HeapTupleGetUpdateXid</code> 等のアクセサ関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HeapTuple</code>: タプル本体。</li>
+<li><code>Snapshot</code>: 可視性判定の基準。</li>
+<li><code>Buffer</code>: バッファ管理構造体。</li>
+<li><code>HeapTupleHeader</code>: タプルヘッダー（<code>t_infomask</code>, <code>Xmin</code>, <code>Xmax</code> を保持）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**無効なタプル**: <code>Xmin</code> が無効な場合、即座に <code>false</code> を返します。</li>
+<li>**レースコンディション**: コミット直後のトランザクション状態判定において、<code>TransactionIdIsInProgress</code> を <code>TransactionIdDidCommit</code> より先にチェックする順序を守ることで競合を回避しています。</li>
+<li>**バイナリアップグレード**: <code>HEAP_MOVED_OFF</code> / <code>HEAP_MOVED_IN</code> フラグを持つ古い形式のタプルに対する特殊なパスが存在します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、判定結果をキャッシュするためにヒントビットを更新します。この際、バッファがダーティになるため、呼び出し元は適切なロックを保持している必要があります。</li>
+<li><code>XidInMVCCSnapshot</code> のチェックは、<code>TransactionIdDidCommit</code> よりも前に行う必要があります。</li>
+</ul></body></html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pthread-mutex-t.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pthread_mutex_t</h1>
+<h2>概念</h2>
+<p><code>pthread_mutex_t</code> は、Windows環境においてPOSIXスレッド（pthread）のミューテックス機能をエミュレートするための互換レイヤー構造体です。Windowsネイティブの同期オブジェクトである <code>CRITICAL_SECTION</code> をラップし、クロスプラットフォームな同期制御を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのコードベース（特にECPGライブラリや移植性レイヤー）は、POSIXスレッドのAPIを前提として設計されています。Windows環境において、プラットフォーム固有のコードを大量に記述することなく、スレッドセーフな同期処理（ミューテックスのロック・アンロックなど）を透過的に実行できるようにするために、この互換構造体が極めて重要になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/interfaces/ecpg/include</code></li>
+<li><code>module:src/port</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/interfaces/ecpg/include/ecpg-pthread-win32.h#pthread_mutex_t</code>**</li>
+<p>ECPGライブラリがWindows環境でスレッドセーフな同期を行うためのラッパー構造体。</p>
+<li>**<code>symbol:src/port/pthread-win32.h#pthread_mutex_t</code>**</li>
+<p>Windows環境でPOSIX互換のミューテックス機能を提供するための移植性レイヤーの構造体。</p>
+</ul>
+<p>両定義は同一の構造を持ち、以下のメンバで構成されます。</p>
+<pre><code>typedef struct pthread_mutex_t
+{
+    LONG         initstate;
+    CRITICAL_SECTION csection;
+} pthread_mutex_t;</code></pre>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**:</p>
+<ul>
+<li><code>PTHREAD_MUTEX_INITIALIZER</code> を使用した静的初期化、または <code>pthread_mutex_init</code> による動的初期化が行われます。この段階で <code>initstate</code> は <code>0</code>（未初期化）になります。</li>
+<p>2. **遅延初期化とロック**:</p>
+<li><code>pthread_mutex_lock</code> などの関数が呼び出された際、<code>initstate</code> が <code>0</code> であれば、<code>InterlockedExchange</code> 等を用いて排他的に <code>InitializeCriticalSection</code> を実行し、<code>initstate</code> を <code>1</code>（初期化完了）に遷移させます（Double-Checked Lockingに類似した動作）。</li>
+<p>3. **排他制御**:</p>
+<li>実際のロック・アンロック操作は、Windows APIの <code>CRITICAL_SECTION</code> 関連関数に委譲されます。</li>
+</ul>
+<p>※なお、ECPGライブラリ（<code>connect.c</code> や <code>misc.c</code> など）における具体的な接続処理や、その他スレッドでの詳細なライフサイクルを含むエンドツーエンドの制御フローの全容は、提供されたコンテキストからは完全には判明していません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>initstate</code> の状態遷移**:</li>
+<p><code>initstate</code> は必ず以下のいずれかの状態を保持する必要があります。</p>
+<li><code>0</code>: 未初期化</li>
+<li><code>1</code>: 初期化完了</li>
+<li><code>2</code>: 初期化中</li>
+<li>**直接操作の禁止**:</li>
+<p>構造体のメンバ（<code>initstate</code> や <code>csection</code>）を手動で直接変更することは禁止されており、必ず提供されるAPI（<code>pthread_mutex_lock</code> 等）を介して操作されなければなりません。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**初期化競合**:</li>
+<p><code>initstate</code> の管理が不適切な場合、または初期化が完了していない状態で適切な同期を行わずにロック操作を行うと、初期化競合や未定義の動作を引き起こす可能性があります。</p>
+<li>**Windows専用**:</li>
+<p>本構造体はWindows環境専用の互換レイヤーであり、POSIX環境では使用されません。</p>
+<li>**自動クリーンアップの欠如**:</li>
+<p>Windows環境ではスレッド終了時の自動クリーンアップが行われないため、メモリ管理やリソースの解放漏れに注意する必要があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/ecpg/include/ecpg-pthread-win32.h</code></li>
+<li><code>src/port/pthread-win32.h</code></li>
+<li><code>src/port/pthread-win32.c</code> （<code>initstate</code> の管理や初期化ロジックの具体的な実装）</li>
+</ul></body></html>

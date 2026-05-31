@@ -1,0 +1,117 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_clause.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_clause.c</h1>
+<h2>概要</h2>
+<p>SQL クエリの <code>FROM</code> 句、<code>WHERE</code> 句、<code>LIMIT</code> 句、<code>GROUP BY</code> 句、<code>ORDER BY</code> 句、およびウィンドウ関数定義のセマンティック解析（意味解析）を担うモジュールです。構文解析器が生成した生の構文木を、プランナが処理可能な <code>Query</code> ツリーへ変換する過程で、リレーションの解決、名前空間の構築、型整合性の検証を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムにおいて、クエリの各句を個別に処理する役割を持ちます。特に <code>FROM</code> 句の解析は、<code>ParseState</code> 内の <code>p_namespace</code>（名前空間）や <code>p_rtable</code>（レンジテーブル）を構築する中核的な処理であり、<code>parse_relation.c</code> や <code>parse_expr.c</code> と密接に連携します。</p>
+<h2>責務</h2>
+<ul>
+<li>**FROM 句の変換**: <code>RangeVar</code> や <code>JoinExpr</code> を解析し、レンジテーブルエントリ（RTE）の生成と名前空間への登録を行う。</li>
+<li>**JOIN 処理**: <code>NATURAL JOIN</code> や <code>USING</code> 句の展開、<code>ON</code> 句の式変換、および結合による可視性の制御。</li>
+<li>**句の型解決**: <code>WHERE</code>, <code>LIMIT</code>, <code>GROUP BY</code>, <code>ORDER BY</code> 句の式を変換し、期待される型（<code>boolean</code>, <code>int8</code> 等）へのキャスト挿入や検証を行う。</li>
+<li>**ウィンドウ関数・集約解析**: <code>PARTITION BY</code> や <code>ORDER BY</code> の解析、およびウィンドウフレームオフセットの型解決。</li>
+<li>**制約・権限チェック**: <code>ON CONFLICT</code> 句のインデックス推論や、ターゲットテーブルに対する権限検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>FROM 句解析</h3>
+<ul>
+<li><code>transformFromClause</code>: <code>FROM</code> リストを走査し、各アイテムを変換して名前空間を構築するメインエントリ。</li>
+<li><code>transformFromClauseItem</code>: 再帰的に <code>RangeVar</code>, <code>JoinExpr</code>, <code>RangeSubselect</code> 等を処理するディスパッチャ。</li>
+<li><code>setTargetTable</code>: <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> のターゲットテーブルをレンジテーブルに追加し、ロックを取得する。</li>
+</ul>
+<h3>句の変換・検証</h3>
+<ul>
+<li><code>transformWhereClause</code>: <code>WHERE</code> 句の式を変換し、結果が <code>boolean</code> であることを保証する。</li>
+<li><code>transformLimitClause</code>: <code>LIMIT</code> 句を変換し、<code>int8</code> へのキャストと変数を含まないことの検証を行う。</li>
+<li><code>transformGroupClause</code> / <code>transformSortClause</code>: <code>GROUP BY</code> および <code>ORDER BY</code> 句を変換し、<code>SortGroupClause</code> リストを生成する。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>buildVarFromNSColumn</code>: 名前空間カラムから <code>Var</code> ノードを構築する。</li>
+<li><code>buildMergedJoinVar</code>: <code>JOIN</code> の結果としてマージされたカラムの式（<code>COALESCE</code> 等）を生成する。</li>
+<li><code>markRelsAsNulledBy</code>: 外部結合において、結合によって NULL 化されるリレーションをマークする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>checkExprIsVarFree</code></li>
+<li><code>extractRemainingColumns</code></li>
+<li><code>flatten_grouping_sets</code></li>
+<li><code>getNSItemForSpecialRelationTypes</code></li>
+<li><code>get_matching_location</code></li>
+<li><code>resolve_unique_index_expr</code></li>
+<li><code>setTargetTable</code></li>
+<li><code>transformJoinOnClause</code></li>
+<li><code>transformJoinUsingClause</code></li>
+<li><code>transformRangeFunction</code></li>
+<li><code>transformRangeSubselect</code></li>
+<li><code>transformTableEntry</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **FROM 句**: <code>transformFromClause</code> がリストを左から右へ走査。<code>transformFromClauseItem</code> が各要素を RTE に変換し、<code>p_namespace</code> に追加。<code>JOIN</code> の場合は再帰的に左右のサブツリーを処理し、<code>p_joinexprs</code> を更新する。 2. **JOIN 解決**: <code>transformJoinUsingClause</code> が <code>USING</code> 句を <code>ON</code> 句の等価条件に変換。<code>buildMergedJoinVar</code> が結合後のカラムの型を解決し、必要に応じて <code>COALESCE</code> やキャストを挿入する。 3. **式変換**: 各句の解析関数は <code>transformExpr</code> を呼び出し、式を <code>Query</code> ツリーの一部として変換。その後、<code>coerce_to_boolean</code> や <code>coerce_to_specific_type</code> で型を強制する。 4. **名前空間管理**: <code>setNamespaceLateralState</code> や <code>setNamespaceColumnVisibility</code> を用いて、<code>LATERAL</code> 参照や結合による可視性のスコープを動的に制御する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/</code>: <code>parse_expr.h</code>, <code>parse_relation.h</code>, <code>parse_coerce.h</code> 等の解析用ヘッダー。</li>
+<li><code>catalog/</code>: <code>pg_type.h</code>, <code>pg_constraint.h</code> 等のシステムカタログ定義。</li>
+<li><code>nodes/</code>: <code>makefuncs.h</code>, <code>nodeFuncs.h</code> 等のノード操作用ユーティリティ。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>, <code>catcache.h</code> 等のキャッシュアクセス。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tsmapi.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_amproc.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/parser.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/parse_relation.c</code>: <code>addRangeTableEntry</code> 等の RTE 生成の基礎。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 式の型解決と変換の基礎。</li>
+<li><code>src/backend/parser/parse_jsontable.c</code>: <code>JSON_TABLE</code> 句の解析（本ファイルから呼び出される）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ParseState</code> は解析セッションを通じて生存し、<code>palloc</code> によって割り当てられたメモリは解析終了時に <code>free_parsestate</code> で解放されます。</li>
+<li>**再帰的解析**: <code>transformFromClauseItem</code> は <code>JoinExpr</code> を再帰的に処理するため、非常に深い結合ツリーではスタックオーバーフローのリスクがあります（<code>check_stack_depth()</code> で保護）。</li>
+<li>**LATERAL 参照**: <code>LATERAL</code> の可視性は <code>p_namespace</code> の操作と <code>setNamespaceLateralState</code> によって厳密に制御されています。</li>
+<li>**未実装・浅い部分**: <code>RangeTableFunc</code> は現在 <code>XMLTABLE</code> に特化しており、<code>JSON_TABLE</code> は別ファイルに委譲されています。また、<code>CUBE</code> や <code>ROLLUP</code> の解析は <code>flatten_grouping_sets</code> を経由して複雑な正規化が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__setTargetTable.html" target="wiki-view"><code>setTargetTable</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__extractRemainingColumns.html" target="wiki-view"><code>extractRemainingColumns</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__transformJoinUsingClause.html" target="wiki-view"><code>transformJoinUsingClause</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__transformJoinOnClause.html" target="wiki-view"><code>transformJoinOnClause</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__transformTableEntry.html" target="wiki-view"><code>transformTableEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__transformRangeSubselect.html" target="wiki-view"><code>transformRangeSubselect</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__transformRangeFunction.html" target="wiki-view"><code>transformRangeFunction</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__getNSItemForSpecialRelationTypes.html" target="wiki-view"><code>getNSItemForSpecialRelationTypes</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__checkExprIsVarFree.html" target="wiki-view"><code>checkExprIsVarFree</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__flatten_grouping_sets.html" target="wiki-view"><code>flatten_grouping_sets</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__get_matching_location.html" target="wiki-view"><code>get_matching_location</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_clause_c__resolve_unique_index_expr.html" target="wiki-view"><code>resolve_unique_index_expr</code></a></li>
+</ul></body></html>

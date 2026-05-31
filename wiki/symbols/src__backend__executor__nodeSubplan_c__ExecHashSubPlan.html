@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeSubplan_c__ExecHashSubPlan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecHashSubPlan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeSubplan.c:100</code></li>
+</ul>
+<h2>目的</h2>
+<p>サブクエリの結果をメモリ上のハッシュテーブルに保持し、式評価の一部として高速なルックアップ（<code>IN</code>, <code>ANY</code> 等のサブリンク処理）を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static Datum ExecHashSubPlan(SubPlanState *node, ExprContext *econtext, bool *isNull)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>node</code>: <code>SubPlanState</code> 構造体（ハッシュテーブルや投影情報を含む）。</li>
+<li><code>econtext</code>: 式評価用のコンテキスト。</li>
+<li>**出力**:</li>
+<li>戻り値: <code>Datum</code> 型のブール値（<code>TRUE</code> または <code>FALSE</code>）。</li>
+<li><code>isNull</code>: <code>bool</code> へのポインタ。結果が <code>UNKNOWN</code>（NULL）となる場合に <code>true</code> が設定される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>サブクエリに直接的な相関（<code>parParam</code> や <code>args</code>）が含まれていないこと。</li>
+<li>結合演算子は、両方の入力が非NULLの場合にNULLを返さないと仮定される。</li>
+<li>呼び出しごとに <code>econtext</code> を使用して投影を行い、終了時に <code>ExecClearTuple</code> でスロットをクリアし、<code>hashtempcxt</code> をリセットする必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: ハッシュテーブルが未作成、またはプランの状態が変更されている場合、<code>buildSubPlanHash</code> を呼び出してハッシュテーブルを構築する。 2. **空判定**: サブクエリの結果が空の場合、即座に <code>FALSE</code> を返す。 3. **投影**: <code>node-&gt;projLeft</code> を使用して、左辺（LHS）の式を評価しタプルを形成する。 4. **ルックアップ**:</p>
+<ul>
+<li>**LHSが非NULL**: メインハッシュテーブルを検索し、一致すれば <code>TRUE</code>。一致せず、かつNULLを含む行が存在する場合は <code>findPartialMatch</code> で <code>UNKNOWN</code> を判定する。</li>
+<li>**LHSがNULL**: <code>TRUE</code> は返せない。<code>UNKNOWN</code> の判定が必要な場合、メインおよび部分NULLテーブルをスキャンし、一致すれば <code>UNKNOWN</code> を返す。</li>
+<p>5. **後処理**: <code>ExecClearTuple</code> でスロットを解放し、<code>MemoryContextReset</code> で一時メモリを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecSubPlan</code>（<code>src/backend/executor/nodeSubplan.c</code> 内のロジックより推測）。</li>
+<li>**呼び出し先**:</li>
+<li><code>buildSubPlanHash</code></li>
+<li><code>ExecProject</code></li>
+<li><code>slotNoNulls</code> / <code>slotAllNulls</code></li>
+<li><code>FindTupleHashEntry</code></li>
+<li><code>findPartialMatch</code></li>
+<li><code>ExecClearTuple</code></li>
+<li><code>MemoryContextReset</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SubPlanState</code>: サブプランの実行状態とハッシュテーブルを保持する主要構造体。</li>
+<li><code>SubPlan</code>: 実行対象のサブクエリ定義。</li>
+<li><code>TupleTableSlot</code>: 投影されたタプルを保持する。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: 直接的な相関（<code>parParam</code> または <code>args</code> が存在）がある場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>**境界条件**:</li>
+<li>サブクエリが空の場合、常に <code>FALSE</code> を返す。</li>
+<li>LHSがNULLの場合、三値論理に基づき <code>UNKNOWN</code> または <code>FALSE</code> を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>econtext</code> を一時的に書き換える「ハック」を行っているため、投影処理の前後関係には注意が必要。</li>
+<li><code>hashtempcxt</code> のリセットは、メモリリークを防ぐために必須である。</li>
+</ul></body></html>

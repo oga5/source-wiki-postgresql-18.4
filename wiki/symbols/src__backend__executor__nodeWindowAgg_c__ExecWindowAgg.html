@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeWindowAgg_c__ExecWindowAgg.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecWindowAgg</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeWindowAgg.c:2210</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQLのウィンドウ関数（<code>OVER</code> 句）を実行する実行ノードのメイン処理関数。パーティション内のタプルをバッファリングし、ウィンドウフレームに基づいた関数評価と結果の投影を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>static TupleTableSlot *ExecWindowAgg(PlanState *pstate)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code>（<code>WindowAggState</code> としてキャストされる実行ノードの状態）。</li>
+<li>**出力**: <code>TupleTableSlot *</code>（計算結果を含む投影されたタプル、または処理終了時の <code>NULL</code>）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>WindowAggState</code> 型であること。</li>
+<li>初回呼び出し時（またはリキャン時）に <code>calculate_frame_offsets</code> が実行され、フレームオフセットが確定していること。</li>
+<li><code>tuplestore</code> に現在のパーティションの行が保持されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **割り込みチェック**: <code>CHECK_FOR_INTERRUPTS()</code> を実行。 2. **状態確認**: <code>WINDOWAGG_DONE</code> なら直ちに終了。 3. **パーティション管理**:</p>
+<ul>
+<li><code>next_partition</code> が真であれば <code>begin_partition</code> を呼び出し初期化。</li>
+<li>それ以外の場合は <code>currentpos</code> を進め、フレーム境界フラグを無効化。</li>
+<li><code>spool_tuples</code> で必要な行を読み込み、パーティション末尾に達した場合は <code>release_partition</code> を実行。</li>
+<p>4. **タプル取得**: <code>tuplestore</code> から現在の行を <code>ScanTupleSlot</code> に読み込む。<code>GROUPS</code> モード等の場合はピアグループの判定を行う。 5. **関数評価**: <code>WINDOWAGG_RUN</code> 状態であれば、ウィンドウ関数および集約関数を順次評価。 6. **フレーム更新**: フレーム境界ポインタ（<code>framehead_ptr</code> 等）が有効な場合、各位置を更新。 7. **メモリ管理**: <code>tuplestore_trim</code> により不要になった行を削除。 8. **投影**: <code>ExecProject</code> を呼び出し、結果を格納したスロットを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeWindowAgg.c</code> 内の <code>ps.ExecProcNode</code> に登録されている（直接の呼び出し元関数名はソース抜粋からは特定不可）。</li>
+<li>**呼び出し先**: <code>begin_partition</code>, <code>spool_tuples</code>, <code>release_partition</code>, <code>tuplestore_select_read_pointer</code>, <code>tuplestore_gettupleslot</code>, <code>are_peers</code>, <code>eval_windowfunction</code>, <code>eval_windowaggregates</code>, <code>update_frameheadpos</code>, <code>update_frametailpos</code>, <code>update_grouptailpos</code>, <code>tuplestore_trim</code>, <code>ExecProject</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WindowAggState</code>: 実行時状態を保持。</li>
+<li><code>TupleTableSlot</code>: タプルデータの保持に使用。</li>
+<li><code>ExprContext</code>: 式評価のコンテキスト。</li>
+<li><code>tuplestore</code>: パーティションデータのバッファリングに使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>tuplestore</code> からの読み込み失敗時に <code>elog(ERROR)</code> を発生させる。</li>
+<li>パーティションが空の場合、適切に処理を終了する。</li>
+<li><code>work_mem</code> を超えるパーティションデータはディスクにスピルされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>ウィンドウ関数APIは <code>WindowObject</code> を介して行データにアクセスするため、<code>tuplestore</code> の読み取りポインタ管理が重要。</li>
+<li><code>GROUPS</code> モードや <code>EXCLUDE</code> 句を使用する場合、ピアグループの判定ロジックが <code>currentpos</code> の進行と連動している点に注意。</li>
+</ul></body></html>

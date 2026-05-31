@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonb.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonb.c</h1>
+<h2>概要</h2>
+<p><code>jsonb.c</code> は、PostgreSQL の <code>jsonb</code> 型に対する入出力（I/O）処理、型変換、および集約関数の実装を担う中心的なソースファイルです。JSON テキストからバイナリ形式へのパース、バイナリからテキストへのシリアライズ、および SQL レベルでのデータ型変換（<code>to_jsonb</code> やキャスト）を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、<code>jsonb</code> 型のライフサイクル管理と SQL インターフェースを提供します。<code>jsonb.h</code> で定義されたバイナリ構造を操作するための高レベルな API を提供し、<code>jsonfuncs.c</code> が提供する走査・検索機能と連携して JSONB の全機能を実現します。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 処理**: SQL 文字列と <code>jsonb</code> バイナリ間の相互変換（<code>in</code>, <code>out</code>, <code>recv</code>, <code>send</code>）。</li>
+<li>**構築・集約**: <code>jsonb_build_object</code>, <code>jsonb_agg</code> 等の SQL 関数を通じた動的な JSONB 構築。</li>
+<li>**型変換**: 任意の SQL 型から <code>jsonb</code> への変換、および <code>jsonb</code> からスカラ型（数値、bool 等）へのキャスト。</li>
+<li>**パース状態管理**: <code>JsonbInState</code> を用いたパース中のツリー構築とバリデーション。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>パース・構築状態管理</h3>
+<ul>
+<li><code>struct JsonbInState</code>: パース中の状態を保持する構造体。<code>JsonbParseState</code> をラップし、一意なキーの制約やエラーハンドリングを管理。</li>
+<li><code>struct JsonbAggState</code>: 集約関数（<code>jsonb_agg</code> 等）の実行中に累積状態を保持する構造体。</li>
+</ul>
+<h3>パース・変換関数</h3>
+<ul>
+<li><code>jsonb_from_cstring</code>: JSON 文字列を <code>jsonb</code> バイナリへ変換するメインエントリーポイント。</li>
+<li><code>datum_to_jsonb_internal</code>: 任意の <code>Datum</code> を <code>jsonb</code> 構造へ再帰的に変換するコアロジック。</li>
+<li><code>JsonbToCStringWorker</code>: <code>jsonb</code> バイナリを文字列へシリアライズする汎用ワーカー。</li>
+</ul>
+<h3>SQL インターフェース</h3>
+<ul>
+<li><code>jsonb_in</code>, <code>jsonb_out</code>: 標準的な型 I/O 関数。</li>
+<li><code>jsonb_typeof</code>: JSONB コンテナの型（object, array, number 等）を返す関数。</li>
+<li><code>jsonb_agg_transfn</code> / <code>jsonb_object_agg_transfn</code>: 集約関数の遷移関数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **パース**: <code>jsonb_in</code> が <code>jsonb_from_cstring</code> を呼び出し、<code>JsonLexContext</code> を用いてトークンを順次処理します。各トークンは <code>jsonb_in_object_start</code> 等のコールバックを通じて <code>pushJsonbValue</code> に渡され、バイナリツリーが構築されます。 2. **構築**: <code>datum_to_jsonb_internal</code> は再帰的に呼び出され、複合型や配列を走査して <code>JsonbInState</code> に要素を追加します。 3. **集約**: <code>jsonb_agg</code> 等の集約関数は、<code>JsonbAggState</code> を使用してメモリコンテキストを切り替えながら、各行の値を累積します。最終的に <code>finalfn</code> が <code>WJB_END_ARRAY</code> を付与して完成させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/jsonb.h</code>: <code>Jsonb</code> バイナリ構造とイテレータの定義。</li>
+<li><code>utils/json.h</code>: JSON パース用レキサーとセマンティックアクションの定義。</li>
+<li><code>utils/typcache.h</code>: 型情報の動的キャッシュ（<code>json_categorize_type</code> 等）。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/jsonb.h</code>: バイナリレイアウトの仕様と定数。</li>
+<li><code>src/backend/utils/adt/jsonfuncs.c</code>: JSONB の検索、抽出、パス操作関数。</li>
+<li><code>src/backend/utils/adt/jsonpath_exec.c</code>: JSONPath を用いた高度なクエリ実行。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>jsonb</code> の構築には <code>JsonbInState</code> を使用し、パース終了時に <code>JsonbValueToJsonb</code> で最終的なバイナリを生成します。集約関数では <code>MemoryContext</code> の切り替えが頻繁に行われるため、メモリリークやコンテキストの不整合に注意が必要です。</li>
+<li>**制約**: <code>checkStringLen</code> により、JSONB 内の文字列長には <code>JENTRY_OFFLENMASK</code> による制限があります。</li>
+<li>**省略された詳細**: 本ファイルは I/O と構築に特化しており、JSONB のインデックス（GIN）の内部実装や、JSONPath の実行ロジックは別ファイル（<code>jsonfuncs.c</code> 等）に委譲されています。</li>
+<li>**不変性**: <code>to_jsonb_is_immutable</code> は、特定の型が JSONB 変換後に不変であるかを判定しますが、現在は再帰的な走査が不完全である点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbInState.html" target="wiki-view"><code>JsonbInState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbAggState.html" target="wiki-view"><code>JsonbAggState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__jsonb_in.html" target="wiki-view"><code>jsonb_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__jsonb_recv.html" target="wiki-view"><code>jsonb_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbContainerTypeName.html" target="wiki-view"><code>JsonbContainerTypeName</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbTypeName.html" target="wiki-view"><code>JsonbTypeName</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbToCString.html" target="wiki-view"><code>JsonbToCString</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbToCStringIndent.html" target="wiki-view"><code>JsonbToCStringIndent</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbToCStringWorker.html" target="wiki-view"><code>JsonbToCStringWorker</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbExtractScalar.html" target="wiki-view"><code>JsonbExtractScalar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__jbvType.html" target="wiki-view"><code>jbvType</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_c__JsonbUnquote.html" target="wiki-view"><code>JsonbUnquote</code></a></li>
+</ul></body></html>

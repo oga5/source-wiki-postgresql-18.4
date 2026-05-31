@@ -1,0 +1,119 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/backup/basebackup.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/backup/basebackup.c</h1>
+<h2>概要</h2>
+<p><code>basebackup.c</code> は、PostgreSQLの物理ベースバックアップ（<code>BASE_BACKUP</code> コマンド）の実行エンジンです。データディレクトリの走査、チェックサム検証、および <code>bbsink</code> インターフェースを介したデータストリームのパイプライン処理をオーケストレーションします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/backup</code> サブシステムの中核であり、バックアップのライフサイクル（開始・データ転送・終了）を制御します。<code>bbsink</code>（転送パイプライン）や <code>backup_manifest</code>（整合性管理）、<code>basebackup_incremental</code>（増分バックアップ）といった各コンポーネントを統合する上位レイヤーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バックアップ実行のオーケストレーション**: <code>do_pg_backup_start</code> から <code>do_pg_backup_stop</code> までのバックアップセッション管理。</li>
+<li>**ファイルシステム走査**: データディレクトリおよびテーブルスペースの再帰的な走査と、バックアップ対象外ファイルのフィルタリング。</li>
+<li>**データ転送パイプラインの構築**: 圧縮、スロットリング、進捗報告などの <code>bbsink</code> チェーンの組み立て。</li>
+<li>**整合性検証**: ページ単位のチェックサム検証と、バックアップマニフェストへの記録。</li>
+<li>**WALアーカイブの統合**: バックアップ期間中に生成されたWALセグメントの特定とストリームへの追加。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>バックアップ制御</h3>
+<ul>
+<li><code>SendBaseBackup</code>: バックアップコマンドのメインエントリーポイント。</li>
+<li><code>perform_base_backup</code>: バックアップのメインループ。リソース所有権の管理とエラーハンドリングを包含。</li>
+<li><code>basebackup_options</code>: コマンド引数を保持する構造体。</li>
+</ul>
+<h3>データ転送・走査</h3>
+<ul>
+<li><code>sendDir</code>: ディレクトリを再帰的に走査し、ファイルを <code>bbsink</code> へ送る。</li>
+<li><code>sendFile</code>: 個別のファイルを読み込み、必要に応じてチェックサム検証を行い、<code>bbsink</code> へ転送。</li>
+<li><code>_tarWriteHeader</code>: tarヘッダーを生成し、シンクへ書き込む。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><code>verify_page_checksum</code>: ページ単位のチェックサム検証。</li>
+<li><code>read_file_data_into_buffer</code>: ファイル読み込みとチェックサム検証の統合ヘルパー。</li>
+<li><code>push_to_sink</code>: バッファリングを考慮したデータ転送ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SendBaseBackup</code></li>
+<li><code>basebackup_options</code></li>
+<li><code>basebackup_read_file</code></li>
+<li><code>compareWalFileNames</code></li>
+<li><code>convert_link_to_directory</code></li>
+<li><code>exclude_list_item</code></li>
+<li><code>parse_basebackup_options</code></li>
+<li><code>perform_base_backup</code></li>
+<li><code>push_to_sink</code></li>
+<li><code>read_file_data_into_buffer</code></li>
+<li><code>sendFileWithContent</code></li>
+<li><code>verify_page_checksum</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>SendBaseBackup</code> がオプションをパースし、<code>bbsink</code> チェーン（圧縮→スロットリング→送信）を構築。 2. **開始**: <code>perform_base_backup</code> が <code>do_pg_backup_start</code> を呼び出し、バックアップモードへ移行。 3. **転送**: <code>sendDir</code> がファイルシステムを走査。各ファイルは <code>sendFile</code> を経由し、<code>bbsink</code> パイプラインへ流し込まれる。 4. **WAL統合**: バックアップ終了後、<code>perform_base_backup</code> が <code>pg_wal</code> をスキャンし、必要なWALセグメントをストリームの末尾に追加。 5. **終了**: <code>SendBackupManifest</code> でマニフェストを送信し、<code>do_pg_backup_stop</code> でバックアップモードを解除。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>backup/basebackup_sink.h</code>: <code>bbsink</code> インターフェース定義。</li>
+<li><code>backup/backup_manifest.h</code>: マニフェスト生成ロジック。</li>
+<li><code>access/xlogbackup.h</code>: WALバックアップ関連の内部定義。</li>
+<li><code>storage/checksum.h</code>: ページチェックサム計算。</li>
+<li><code>replication/walsender.h</code>: WAL送信プロセスとの連携。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>backup/basebackup_incremental.h</code></li>
+<li><code>backup/basebackup_target.h</code></li>
+<li><code>catalog/pg_tablespace_d.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/compression.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>pgtar.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/syslogger.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>storage/bufpage.h</code></li>
+<li><code>storage/dsm_impl.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/reinit.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/relcache.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/backup/basebackup_sink.c</code>: <code>bbsink</code> の実装基盤。</li>
+<li><code>src/backend/backup/basebackup_incremental.c</code>: 増分バックアップのブロックフィルタリングロジック。</li>
+<li><code>src/backend/backup/backup_manifest.c</code>: マニフェストの構造と生成。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>perform_base_backup</code> 内で <code>AuxProcessResourceOwner</code> を使用してリソースを管理しています。エラー発生時は <code>PG_ENSURE_ERROR_CLEANUP</code> によりバックアップが確実に中断されるよう設計されています。</li>
+<li>**メモリレイアウト**: <code>SINK_BUFFER_LENGTH</code> は <code>BLCKSZ</code> の倍数であることが要求されます。</li>
+<li>**エッジケース**: </li>
+<li>バックアップ中にスタンバイが昇格した場合、<code>CHECK_FOR_INTERRUPTS</code> と <code>RecoveryInProgress()</code> のチェックによりバックアップを即座に中断します。</li>
+<li>読み込み中のファイルが並行して切り詰められた場合、<code>read_file_data_into_buffer</code> はEOFを検出し、ゼロパディングで補完します。</li>
+<li>**省略箇所**: <code>bbsink</code> の各実装（gzip, lz4, zstd等）の詳細は別ファイルに分離されており、本ファイルはそれらの抽象インターフェースのみを扱います。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__basebackup_options.html" target="wiki-view"><code>basebackup_options</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__exclude_list_item.html" target="wiki-view"><code>exclude_list_item</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__perform_base_backup.html" target="wiki-view"><code>perform_base_backup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__compareWalFileNames.html" target="wiki-view"><code>compareWalFileNames</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__parse_basebackup_options.html" target="wiki-view"><code>parse_basebackup_options</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__SendBaseBackup.html" target="wiki-view"><code>SendBaseBackup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__sendFileWithContent.html" target="wiki-view"><code>sendFileWithContent</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__read_file_data_into_buffer.html" target="wiki-view"><code>read_file_data_into_buffer</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__push_to_sink.html" target="wiki-view"><code>push_to_sink</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__verify_page_checksum.html" target="wiki-view"><code>verify_page_checksum</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__convert_link_to_directory.html" target="wiki-view"><code>convert_link_to_directory</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__basebackup_read_file.html" target="wiki-view"><code>basebackup_read_file</code></a></li>
+</ul></body></html>

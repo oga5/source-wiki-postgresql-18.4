@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/checkcondition-bit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>checkcondition_bit</h1>
+<h2>概念</h2>
+<p><code>checkcondition_bit</code> は、PostgreSQLの複数のインデックスや拡張モジュール（<code>intarray</code>、<code>ltree</code>、<code>tsgistidx</code>）において、ビットベクトル（シグネチャ）を用いた高速な条件判定を行うために定義されているコールバック関数群です。 これらは、クエリの検索条件（オペランドやクエリ項目）に対応するハッシュ値が、インデックスキーを構成するビットベクトル内に存在するかどうかを判定する共通の設計パターンを持っています。</p>
+<h2>なぜ重要か</h2>
+<p>インデックス（特にGiSTインデックス）の検索処理において、すべてのデータを走査することなく、ビットベクトル（シグネチャ）のビットのオン/オフを確認するだけで、条件に合致しないデータを高速に除外（フィルタリング）できるため重要です。これにより、インデックス検索のパフォーマンスが大幅に向上します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/intarray/_int_bool.c#checkcondition_bit</code>**</li>
+<li>ビットベクトル形式のデータ構造において、特定のクエリ項目（<code>ITEM</code>）が条件を満たしているかを判定するコールバック関数。</li>
+<li>**<code>symbol:contrib/ltree/_ltree_gist.c#checkcondition_bit</code>**</li>
+<li><code>ltree</code> のGiSTインデックス検索において、特定のビットがシグネチャ（<code>LtreeSignature</code>）内に存在するかを判定する関数。</li>
+<li>**<code>symbol:src/backend/utils/adt/tsgistidx.c#checkcondition_bit</code>**</li>
+<li><code>tsvector</code> のGiSTインデックスにおいて、<code>tsquery</code> のオペランドがインデックスキー（<code>SignTSVector</code>）に含まれているかを判定する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける具体的なエンドツーエンドの全体フロー（呼び出し元から呼び出し先、およびインデックススキャン全体の制御フロー）は、提供された情報からは完全には明らかになっていません。現時点で判明している部分的な流れは以下の通りです。</p>
+<ul>
+<li>**<code>intarray</code>**: 内部の判定処理（<code>_int_bool.c:302</code>）から参照され、<code>HASHVAL</code> マクロでハッシュ値を計算し、<code>GETBIT</code> マクロでビットベクトル <code>checkval</code> を確認します。</li>
+<li>**<code>ltree</code>**: GiSTインデックス検索時に呼び出され、<code>LtreeSignature</code> の <code>sign</code> に対して <code>AHASHVAL</code> と <code>GETBIT</code> を用いて判定を行います。</li>
+<li>**<code>tsgistidx</code>**: <code>gtsvector_consistent</code> 関数から <code>TS_execute</code> のコールバックとして呼び出され、<code>QueryOperand</code> のハッシュ値（<code>valcrc</code>）と <code>GETSIGLEN</code> を用いて <code>GETBIT</code> で判定します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<p>各モジュールで前提とされる不変条件は以下の通りです。</p>
+<ul>
+<li>**<code>intarray</code>**: </li>
+<li><code>checkval</code> は有効なビットベクトル領域を指している必要があります。</li>
+<li><code>siglen</code> はビットベクトルのサイズとして正しく解釈可能な値である必要があります。</li>
+<li><code>item-&gt;val</code> はハッシュ値として有効な整数である必要があります。</li>
+<li>**<code>ltree</code>**: </li>
+<li><code>cxt</code> は <code>LtreeSignature</code> 型としてキャスト可能である必要があります。</li>
+<li><code>val</code> は有効な <code>ITEM</code> 構造体を指している必要があります。</li>
+<li>**<code>tsgistidx</code>**: </li>
+<li><code>checkval</code> は <code>SignTSVector</code> 型としてキャスト可能である必要があります。</li>
+<li>インデックスキーがビットベクトル形式（<code>SIGNKEY</code>）であることを前提としています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**型キャストの不整合**: 各関数は <code>void *</code> 型の汎用ポインタを引数として受け取るシグネチャ（例: <code>void *checkval</code> や <code>void *cxt</code>）になっているため、内部でのキャスト時に整合性が崩れるとメモリ破壊やセグメンテーション違反を引き起こす可能性があります。</li>
+<li>**プレフィックス検索の限界**: <code>tsgistidx</code> において、<code>val-&gt;prefix</code> が真の場合はシグネチャによる絞り込みができず、常に <code>TS_MAYBE</code> を返すため、後続のヒープ再チェックが必須となります。</li>
+<li>**境界外アクセス**: <code>siglen</code>（シグネチャ長）の値が不適切な場合、ハッシュ値から算出されたビット位置がビットベクトルの範囲外となり、不正な判定やメモリ破壊の原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>contrib/intarray/_int_bool.c</code>**</li>
+<li><code>checkcondition_bit</code> の定義と <code>HASHVAL</code> / <code>GETBIT</code> マクロの使用箇所。</li>
+<li>**<code>contrib/ltree/_ltree_gist.c</code>**</li>
+<li><code>LtreeSignature</code> 構造体と <code>FLG_CANLOOKSIGN</code> マクロによる判定ロジック。</li>
+<li>**<code>src/backend/utils/adt/tsgistidx.c</code>**</li>
+<li><code>gtsvector_consistent</code> と <code>TS_execute</code> の連携、および <code>TS_MAYBE</code> / <code>TS_NO</code> の返却ロジック。</li>
+</ul></body></html>

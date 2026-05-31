@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/waiteventset.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/waiteventset.c</h1>
+<h2>概要</h2>
+<p><code>waiteventset.c</code> は、PostgreSQL における「複数のイベント（ソケット、ラッチ、プロセス終了など）を同時に待機する」ための抽象化レイヤーを提供します。OS 固有の多重化プリミティブ（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>WaitForMultipleObjects</code>）をラップし、プラットフォーム間で一貫したイベント待機インターフェースを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールにおいて、プロセス間同期（<code>latch.c</code>）と並び、バックエンドプロセスが効率的に待機状態に入るための基盤です。<code>WaitLatch</code> などの旧来の関数よりも、長寿命なイベントセットを保持することで、システムコール回数を削減し、スケーラビリティを向上させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**イベント多重化**: OS 固有の待機プリミティブを抽象化し、<code>WaitEventSet</code> を通じて統一的な待機処理を提供。</li>
+<li>**レースコンディションの回避**: <code>poll()</code> 等で発生する「シグナル受信と待機開始の間の競合」を、セルフパイプ（Self-pipe）や <code>signalfd</code> を用いて解決。</li>
+<li>**リソース管理**: <code>ResourceOwner</code> を介した <code>WaitEventSet</code> のライフサイクル管理（メモリ解放、FD クローズ）。</li>
+<li>**プラットフォーム抽象化**: Windows と Unix 系の差異を吸収し、特にシグナル処理やソケットイベントの通知方式を隠蔽。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクル管理</h3>
+<ul>
+<li><code>CreateWaitEventSet</code>: <code>WaitEventSet</code> 構造体のメモリ確保と初期化。</li>
+<li><code>FreeWaitEventSet</code>: リソースの解放と <code>ResourceOwner</code> からの登録解除。</li>
+<li><code>InitializeWaitEventSupport</code>: プロセス起動時に必要なセルフパイプや <code>signalfd</code> を準備。</li>
+</ul>
+<h3>イベント操作</h3>
+<ul>
+<li><code>AddWaitEventToSet</code>: イベント（ソケット、ラッチ等）をセットに追加。</li>
+<li><code>ModifyWaitEvent</code>: 既存イベントのマスクやラッチの関連付けを変更。</li>
+</ul>
+<h3>待機処理</h3>
+<ul>
+<li><code>WaitEventSetWait</code>: 指定されたイベントのいずれかが発生するまで待機。</li>
+<li><code>WaitEventSetWaitBlock</code>: 各 OS プリミティブ（<code>epoll_wait</code>, <code>kevent</code> 等）を呼び出す内部関数。</li>
+</ul>
+<h3>内部状態</h3>
+<ul>
+<li><code>WaitEventSet</code>: 待機対象イベントの配列、OS 固有の FD、リソース所有者情報を保持するメイン構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AddWaitEventToSet</code></li>
+<li><code>CreateWaitEventSet</code></li>
+<li><code>FreeWaitEventSet</code></li>
+<li><code>FreeWaitEventSetAfterFork</code></li>
+<li><code>InitializeWaitEventSupport</code></li>
+<li><code>ModifyWaitEvent</code></li>
+<li><code>ResourceOwnerForgetWaitEventSet</code></li>
+<li><code>ResourceOwnerRememberWaitEventSet</code></li>
+<li><code>WaitEventAdjustEpoll</code></li>
+<li><code>WaitEventAdjustKqueueAdd</code></li>
+<li><code>WaitEventAdjustPoll</code></li>
+<li><code>WaitEventSet</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitializeWaitEventSupport</code> がプロセスごとに一度呼ばれ、OS 固有の通知用 FD（セルフパイプ等）を確保します。 2. **登録**: <code>AddWaitEventToSet</code> でイベントを登録し、OS 固有の調整関数（<code>WaitEventAdjustEpoll</code> 等）を介してカーネルへイベントを登録します。 3. **待機**: <code>WaitEventSetWait</code> が呼ばれると、<code>WaitEventSetWaitBlock</code> が OS の待機プリミティブを呼び出します。 4. **起床**:</p>
+<ul>
+<li>ラッチがセットされると、<code>latch_sigurg_handler</code> がセルフパイプに書き込み、待機中のシステムコールを中断させます。</li>
+<li><code>drain()</code> 関数により、セルフパイプや <code>signalfd</code> からデータを読み出し、待機状態をクリアします。</li>
+<p>5. **結果返却**: 発生したイベントを <code>WaitEvent</code> 配列に格納して呼び出し元へ返します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**OS プリミティブ**: <code>sys/epoll.h</code>, <code>sys/event.h</code>, <code>poll.h</code>, <code>sys/signalfd.h</code></li>
+<li>**PostgreSQL 基盤**: <code>storage/latch.h</code> (同期), <code>storage/fd.h</code> (FD 管理), <code>utils/resowner.h</code> (リソース管理), <code>miscadmin.h</code> (プロセス情報)</li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/atomics.h</code></li>
+<li><code>portability/instr_time.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/waiteventset.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/waiteventset.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/storage/ipc/latch.c</code>: ラッチの具体的な実装と <code>SetLatch</code> の挙動。</li>
+<li><code>src/backend/storage/ipc/ipc.c</code>: プロセス終了時のリソースクリーンアップ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>WaitEventSet</code> は <code>TopMemoryContext</code> に割り当てられ、<code>ResourceOwner</code> に紐付けられます。プロセス終了時に自動的にクリーンアップされます。</li>
+<li>**セルフパイプの重要性**: Unix 系で <code>poll()</code> を使用する場合、シグナルハンドラから <code>write()</code> を行うことで <code>poll()</code> を確実に起床させる「セルフパイプ・トリック」が不可欠です。</li>
+<li>**Windows の挙動**: Windows では <code>WaitForMultipleObjects</code> を使用し、シグナルイベントを配列の先頭に置くことで、他のイベントよりも優先的にシグナルを処理する設計になっています。</li>
+<li>**省略された詳細**: 各 OS 固有の <code>WaitEventAdjust*</code> 関数群は、カーネルへのイベント登録ロジックの詳細であり、本質的なフローを理解する上では「OS への登録・更新を行う」という抽象的な理解で十分です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__WaitEventSet.html" target="wiki-view"><code>WaitEventSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__ResourceOwnerRememberWaitEventSet.html" target="wiki-view"><code>ResourceOwnerRememberWaitEventSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__ResourceOwnerForgetWaitEventSet.html" target="wiki-view"><code>ResourceOwnerForgetWaitEventSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__InitializeWaitEventSupport.html" target="wiki-view"><code>InitializeWaitEventSupport</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__CreateWaitEventSet.html" target="wiki-view"><code>CreateWaitEventSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__FreeWaitEventSet.html" target="wiki-view"><code>FreeWaitEventSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__FreeWaitEventSetAfterFork.html" target="wiki-view"><code>FreeWaitEventSetAfterFork</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__AddWaitEventToSet.html" target="wiki-view"><code>AddWaitEventToSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__ModifyWaitEvent.html" target="wiki-view"><code>ModifyWaitEvent</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__WaitEventAdjustEpoll.html" target="wiki-view"><code>WaitEventAdjustEpoll</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__WaitEventAdjustPoll.html" target="wiki-view"><code>WaitEventAdjustPoll</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__waiteventset_c__WaitEventAdjustKqueueAdd.html" target="wiki-view"><code>WaitEventAdjustKqueueAdd</code></a></li>
+</ul></body></html>

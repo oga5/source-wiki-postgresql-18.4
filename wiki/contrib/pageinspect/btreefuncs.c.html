@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pageinspect/btreefuncs.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pageinspect/btreefuncs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのB-treeインデックスの内部構造をSQLインターフェース経由で検査するための関数群を提供します。ページメタデータ、統計情報、および個々のタプルの詳細を読み取り、デバッグやインデックスの物理構造解析を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pageinspect</code> モジュールの一部として、B-tree特有のデータ構造（メタページ、リーフページ、内部ページ）を解釈する役割を担います。他のインデックス型（GIN, GiST等）の検査関数と並列して配置されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の収集**: 特定のブロックまたは範囲のブロックについて、ライブ/デッドタプル数や空き容量を算出する。</li>
+<li>**メタデータの抽出**: B-treeのメタページからバージョン情報やルートブロック番号などを取得する。</li>
+<li>**タプル内容のダンプ**: インデックスページ内の各タプルについて、TIDやデータ内容を可視化する。</li>
+<li>**安全なアクセス**: 読み取り専用のロック（<code>AccessShareLock</code>）を使用してインデックスを保護し、不正なブロック番号や非B-treeインデックスへのアクセスを検証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BTPageStat</code>: ページ単位の統計情報を保持する構造体。</li>
+<li><code>GetBTPageStatistics()</code>: ページ内のタプルを走査し、<code>BTPageStat</code> を埋める内部ヘルパー関数。</li>
+<li><code>bt_page_stats()</code> / <code>bt_multi_page_stats()</code>: ページ統計を返すSQL関数。</li>
+<li><code>bt_page_items()</code>: ページ内の各タプルをSRF（Set Returning Function）として返す関数。</li>
+<li><code>bt_metap()</code>: B-treeメタページの内容を返す関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetBTPageStatistics</code></li>
+<li><code>bt_index_block_validate</code></li>
+<li><code>bt_multi_page_stats</code></li>
+<li><code>bt_page_items_internal</code></li>
+<li><code>bt_page_print_tuples</code></li>
+<li><code>bt_page_stats</code></li>
+<li><code>bt_page_stats_1_9</code></li>
+<li><code>bt_page_stats_internal</code></li>
+<li><code>check_relation_block_range</code></li>
+<li><code>ua_page_items</code></li>
+<li><code>ua_page_stats</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検証**: <code>bt_index_block_validate()</code> が対象リレーションがB-treeであることを確認し、ブロック範囲をチェックします。 2. **バッファ取得**: <code>ReadBuffer()</code> でページをメモリに読み込み、<code>LockBuffer()</code> で共有ロックを取得します。 3. **解析**:</p>
+<ul>
+<li>統計関数の場合、<code>GetBTPageStatistics()</code> がページヘッダーと不透明領域（opaque）を解析します。</li>
+<li>タプル抽出関数の場合、<code>bt_page_print_tuples()</code> が各アイテムを <code>IndexTuple</code> として解釈し、属性値に変換します。</li>
+<p>4. **SRF処理**: <code>FuncCallContext</code> を使用して、複数行の結果を返すための状態（現在のオフセット等）を維持します。 5. **解放**: <code>UnlockReleaseBuffer()</code> と <code>relation_close()</code> でリソースを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-treeの内部構造（<code>BTPageOpaqueData</code>, <code>BTMetaPageData</code> 等）の定義。</li>
+<li><code>pageinspect.h</code>: モジュール共通のユーティリティ関数（<code>get_page_from_raw</code> 等）。</li>
+<li><code>funcapi.h</code>: SRF実装のためのAPI。</li>
+<li><code>utils/rel.h</code>: リレーションのオープンとロック管理。</li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/pageinspect/rawpage.c</code>: <code>get_raw_page()</code> 関数を提供し、<code>bt_page_items_bytea()</code> の入力となるバイト列を生成します。</li>
+<li><code>src/backend/access/nbtree/</code>: B-treeの本来のアクセス手法が実装されており、構造の理解に不可欠です。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スーパーユーザー権限**: 本ファイルの関数はすべてスーパーユーザーのみが実行可能です。これは、インデックスの内部構造を直接覗くことがセキュリティ上のリスクを伴うためです。</li>
+<li>**バージョン互換性**: <code>bt_page_stats_1_9</code> や <code>bt_page_items_1_9</code> といった関数は、拡張機能のバージョンアップに伴うAPI変更に対応するためのものです。</li>
+<li>**デバッグ用途**: 本モジュールは主にインデックスの破損調査や、B-treeの物理的なレイアウト（ピボットタプルやポストティングリストなど）を学習する際に非常に有用です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__BTPageStat.html" target="wiki-view"><code>BTPageStat</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__ua_page_stats.html" target="wiki-view"><code>ua_page_stats</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__ua_page_items.html" target="wiki-view"><code>ua_page_items</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__GetBTPageStatistics.html" target="wiki-view"><code>GetBTPageStatistics</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__check_relation_block_range.html" target="wiki-view"><code>check_relation_block_range</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_index_block_validate.html" target="wiki-view"><code>bt_index_block_validate</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_page_stats_internal.html" target="wiki-view"><code>bt_page_stats_internal</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_page_stats_1_9.html" target="wiki-view"><code>bt_page_stats_1_9</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_page_stats.html" target="wiki-view"><code>bt_page_stats</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_multi_page_stats.html" target="wiki-view"><code>bt_multi_page_stats</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_page_print_tuples.html" target="wiki-view"><code>bt_page_print_tuples</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__btreefuncs_c__bt_page_items_internal.html" target="wiki-view"><code>bt_page_items_internal</code></a></li>
+</ul></body></html>

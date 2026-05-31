@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dsm-impl-windows.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>dsm_impl_windows</h1>
+<h2>概念</h2>
+<p><code>dsm_impl_windows</code> は、Windows環境においてOSネイティブのAPI（<code>CreateFileMapping</code> や <code>MapViewOfFile</code> など）を使用し、動的共有メモリ（DSM）セグメントの作成、アタッチ、デタッチ、および破棄を行うためのプラットフォーム固有の実装です。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLはマルチプロセスアーキテクチャを採用しており、プロセス間でデータを共有するために共有メモリを必要とします。Windows環境においては、Unix系の共有メモリ（POSIXやSysVなど）とは異なるOS固有のAPIを用いて動的共有メモリを管理する必要があり、<code>dsm_impl_windows</code> がその具体的な低レベル操作を提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/ipc/dsm_impl.c#dsm_impl_windows</code> (関数)**: Windows APIを直接呼び出して、指定されたDSM操作（作成、アタッチ、デタッチ、破棄）を実行する中心的な関数です。</li>
+<li>**<code>symbol:src/include/storage/dsm_impl.h#DSM_IMPL_WINDOWS</code> (マクロ/定数)**: Windows用のDSM実装を識別・有効化するための定義です。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: <code>src/backend/storage/ipc/dsm_impl.c</code> 内の <code>dsm_impl_op</code> 関数から、操作（<code>dsm_op</code>）を指定して <code>dsm_impl_windows</code> が呼び出されます。 2. **名前解決**: 指定された <code>dsm_handle</code> からセグメント名を生成します。 3. **操作の分岐**:</p>
+<ul>
+<li>**<code>DSM_OP_DETACH</code> または <code>DSM_OP_DESTROY</code>**: <code>UnmapViewOfFile</code> でメモリマッピングを解除し、<code>CloseHandle</code> でハンドルを閉じます。</li>
+<li>**<code>DSM_OP_CREATE</code>**: <code>CreateFileMapping</code> を呼び出し、ページファイル上にセグメントを新規作成します。</li>
+<li>**<code>DSM_OP_ATTACH</code>**: <code>OpenFileMapping</code> を呼び出し、既存のセグメントを開きます。</li>
+<p>4. **マッピングとサイズ検証**: <code>CREATE</code> または <code>ATTACH</code> の成功後、<code>MapViewOfFile</code> を使用してプロセスのアドレス空間にセグメントをマッピングし、<code>VirtualQuery</code> を用いて実際のサイズ（<code>mapped_size</code>）を取得・検証します。 5. **状態保存**: <code>impl_private</code> に <code>hmap</code> ハンドルを格納して呼び出し元に返します。</p>
+</ul>
+<p>*注意: <code>dsm_impl_op</code> より上位の呼び出し元や、システム全体におけるDSMのライフサイクル全体にわたるエンドツーエンドの流れの詳細は、提供されたコンテキストからは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**名前付きセグメント**: セグメントは <code>SEGMENT_NAME_PREFIX</code> を用いた名前付き共有メモリセグメントとして管理されます。</li>
+<li>**自動破棄**: Windowsの仕様により、セグメントへのすべての参照（ハンドル）が閉じられるとオブジェクトは自動的に破棄されます。このため、<code>DSM_OP_DETACH</code> と <code>DSM_OP_DESTROY</code> は実質的に同等の処理として扱われます。</li>
+<li>**サイズ検証**: マッピングされた領域のサイズは、常に <code>VirtualQuery</code> を使用して検証され、<code>mapped_size</code> に反映されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**カーネルオブジェクトの生存期間**: Windowsのカーネルオブジェクトは参照カウントで管理されるため、<code>pin/unpin</code> 関数との連携において、ハンドルが意図せず早く閉じられたり、逆に解放されずに残ったりしないよう注意が必要です。</li>
+<li>**作成時の競合**: <code>CreateFileMapping</code> が <code>ERROR_ALREADY_EXISTS</code> や <code>ERROR_ACCESS_DENIED</code> を返した場合、作成処理は失敗します。</li>
+<li>**エラーハンドリングとロールバック**: Windows APIの失敗時は、<code>_dosmaperr</code> を介してシステムエラーを <code>errno</code> に変換し、<code>ereport</code> で通知する必要があります。また、失敗時には確保済みのリソース（ハンドルやマッピング）を適切に解放するロールバック処理が不可欠です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/dsm_impl.c</code> (特に <code>dsm_impl_windows</code> 関数および <code>dsm_impl_op</code> 関数の実装)</li>
+<li><code>src/include/storage/dsm_impl.h</code> (DSM実装に関連する定義や <code>DSM_IMPL_WINDOWS</code> の宣言)</li>
+</ul></body></html>

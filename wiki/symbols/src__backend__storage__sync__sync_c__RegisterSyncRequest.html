@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__sync__sync_c__RegisterSyncRequest.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RegisterSyncRequest</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/sync/sync.c:579</code></li>
+</ul>
+<h2>目的</h2>
+<p>ファイル同期（fsync）や削除（unlink）などの要求を管理システムに登録する。要求元がチェックポインタプロセスであるか、それ以外のバックエンドであるかに応じて、要求をローカルキューへ追加するか、チェックポインタへ転送する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool RegisterSyncRequest(const FileTag *ftag, SyncRequestType type, bool retryOnError)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ftag</code>: 対象ファイルを識別する <code>FileTag</code> 構造体へのポインタ。</li>
+<li><code>type</code>: 要求の種類（<code>SyncRequestType</code>）。</li>
+<li><code>retryOnError</code>: キューイング失敗時にリトライを行うかどうかのフラグ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 要求の登録（または転送）が成功した場合は <code>true</code>、失敗した場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pendingOps</code> が <code>NULL</code> の場合、スタンドアロンバックエンドまたはスタートアッププロセスとして動作しており、同期状態はローカルで管理される。</li>
+<li><code>retryOnError</code> が <code>true</code> の場合、チェックポインタへの転送が失敗すると、成功するまで <code>WaitLatch</code> を用いて待機とリトライを繰り返す。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pendingOps</code> が存在する場合、<code>RememberSyncRequest</code> を呼び出し、ローカルキューに要求を追加して終了する。 2. <code>pendingOps</code> が存在しない場合（チェックポインタ以外からの呼び出し）、<code>ForwardSyncRequest</code> を呼び出してチェックポインタへ要求を転送する。 3. 転送が失敗し、かつ <code>retryOnError</code> が <code>true</code> の場合、<code>WaitLatch</code> で 10ms 待機した後に再度転送を試みる。 4. 転送成功、またはリトライ不要と判断された時点で処理を終了し、結果を返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/slru.c</code></li>
+<li><code>src/backend/catalog/storage.c</code></li>
+<li><code>src/backend/storage/smgr/md.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>RememberSyncRequest</code> (ローカル管理時)</li>
+<li><code>ForwardSyncRequest</code> (転送時)</li>
+<li><code>WaitLatch</code> (リトライ待機時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>FileTag</code>: 同期対象ファイルを識別する構造体。</li>
+<li><code>SyncRequestType</code>: 要求の種類を定義する列挙型。</li>
+<li><code>pendingOps</code>: ローカルでの同期要求を管理するハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ForwardSyncRequest</code> が失敗した場合、<code>retryOnError</code> が <code>false</code> であれば即座に <code>false</code> を返して終了する。</li>
+<li><code>retryOnError</code> が <code>true</code> の場合、チェックポインタがキューを空にするまでループが継続する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ForwardSyncRequest</code> ループ内での <code>CHECK_FOR_INTERRUPTS</code> の必要性については検討の余地がある。特に <code>SYNC_UNLINK_REQUEST</code> の場合、エラーでループを抜けるとファイルがディスク上に残存するリスクがあるため、チェックポインタが確実にキューを処理することを前提としている。</li>
+</ul></body></html>

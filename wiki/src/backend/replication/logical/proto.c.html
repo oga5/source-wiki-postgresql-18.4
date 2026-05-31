@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/proto.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/proto.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける、パブリッシャーとサブスクライバー間でやり取りされるプロトコルメッセージのシリアライズ（書き込み）およびデシリアライズ（読み込み）を担当するモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p>論理レプリケーションの通信プロトコルを定義・実装する層です。<code>reorderbuffer.c</code> 等で生成されたトランザクションデータや変更内容を、ネットワーク転送可能なバイナリ形式に変換し、逆にサブスクライバー側で受信したデータを構造体へ復元します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージのエンコード/デコード**: <code>BEGIN</code>, <code>COMMIT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>TRUNCATE</code> などの各メッセージの送受信処理。</li>
+<li>**データ型の変換**: PostgreSQL の内部データ表現と、プロトコル上のテキスト/バイナリ形式との相互変換。</li>
+<li>**メタデータ管理**: テーブル定義（<code>RELATION</code>）や型情報（<code>TYPE</code>）の同期に必要な情報のシリアライズ。</li>
+<li>**ストリーミング制御**: 大規模トランザクションのストリーミング転送（<code>STREAM START/COMMIT/ABORT</code>）のプロトコル実装。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>logicalrep_write_*</code> / <code>logicalrep_read_*</code>: 各メッセージタイプに対応する一連の関数群。</li>
+<li><code>logicalrep_write_tuple</code> / <code>logicalrep_read_tuple</code>: 行データのシリアライズ/デシリアライズの核となる関数。</li>
+<li><code>logicalrep_should_publish_column</code>: 指定されたカラムをレプリケーション対象に含めるべきかを判定するロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>logicalrep_read_begin</code></li>
+<li><code>logicalrep_read_begin_prepare</code></li>
+<li><code>logicalrep_read_commit</code></li>
+<li><code>logicalrep_read_commit_prepared</code></li>
+<li><code>logicalrep_read_prepare</code></li>
+<li><code>logicalrep_read_prepare_common</code></li>
+<li><code>logicalrep_write_begin</code></li>
+<li><code>logicalrep_write_begin_prepare</code></li>
+<li><code>logicalrep_write_commit</code></li>
+<li><code>logicalrep_write_commit_prepared</code></li>
+<li><code>logicalrep_write_prepare</code></li>
+<li><code>logicalrep_write_prepare_common</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み**: 上位層（<code>reorderbuffer.c</code> 等）から <code>ReorderBufferTXN</code> や <code>TupleTableSlot</code> が渡されます。<code>StringInfo</code> バッファに対し、<code>pq_send*</code> 関数を用いてプロトコル定義に従ったバイナリデータを順次書き込みます。 2. **読み込み**: 受信した <code>StringInfo</code> から <code>pq_getmsg*</code> 関数を用いてデータを抽出し、<code>LogicalRep*</code> 構造体（<code>LogicalRepRelation</code>, <code>LogicalRepTupleData</code> 等）にマッピングします。 3. **共通処理**: <code>logicalrep_write_prepare_common</code> のように、類似するメッセージタイプに対しては共通のヘルパー関数を用いてコードの重複を排除しています。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq/pqformat.h</code>: <code>StringInfo</code> を用いたネットワーク通信用バッファ操作。</li>
+<li><code>replication/logicalproto.h</code>: プロトコルメッセージの型定義と定数。</li>
+<li><code>utils/syscache.h</code> / <code>utils/lsyscache.h</code>: 型情報や名前空間の解決に使用。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/reorderbuffer.c</code>: 変更セットを管理し、本モジュールの書き込み関数を呼び出す主要なクライアント。</li>
+<li><code>src/backend/replication/logical/worker.c</code>: 受信したメッセージを解釈し、ローカルデータベースへ適用するサブスクライバー側の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「プロトコル仕様の実装」に特化しており、ビジネスロジック（競合解決や適用順序の制御）は含みません。</li>
+<li><code>logicalrep_write_tuple</code> 内の <code>binary</code> フラグや <code>PublishGencolsType</code> の扱いは、レプリケーションの効率と互換性に直結するため、変更時はプロトコルバージョンとの整合性に注意してください。</li>
+<li><code>StringInfo</code> の操作は、読み込みと書き込みの順序が完全に一致している必要があります。プロトコルを変更する場合は、必ず <code>logicalproto.h</code> の定義と両方の関数を同期させてください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_begin.html" target="wiki-view"><code>logicalrep_write_begin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_begin.html" target="wiki-view"><code>logicalrep_read_begin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_commit.html" target="wiki-view"><code>logicalrep_write_commit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_commit.html" target="wiki-view"><code>logicalrep_read_commit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_begin_prepare.html" target="wiki-view"><code>logicalrep_write_begin_prepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_begin_prepare.html" target="wiki-view"><code>logicalrep_read_begin_prepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_prepare_common.html" target="wiki-view"><code>logicalrep_write_prepare_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_prepare.html" target="wiki-view"><code>logicalrep_write_prepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_prepare_common.html" target="wiki-view"><code>logicalrep_read_prepare_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_prepare.html" target="wiki-view"><code>logicalrep_read_prepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_write_commit_prepared.html" target="wiki-view"><code>logicalrep_write_commit_prepared</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__proto_c__logicalrep_read_commit_prepared.html" target="wiki-view"><code>logicalrep_read_commit_prepared</code></a></li>
+</ul></body></html>

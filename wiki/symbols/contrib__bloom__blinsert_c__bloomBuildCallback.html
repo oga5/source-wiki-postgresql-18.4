@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__bloom__blinsert_c__bloomBuildCallback.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>bloomBuildCallback</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/bloom/blinsert.c:74</code></li>
+</ul>
+<h2>目的</h2>
+<p>Bloom 索引構築時、ヒープスキャンから渡された各タプルを処理し、Bloom フィルタページへ追加するコールバック関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void bloomBuildCallback(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool tupleIsAlive, void *state);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>index</code>: 構築対象のインデックスリレーション。</li>
+<li><code>tid</code>: タプルの物理位置。</li>
+<li><code>values</code>, <code>isnull</code>: タプルの属性値と NULL 判定配列。</li>
+<li><code>tupleIsAlive</code>: タプルの生存状態。</li>
+<li><code>state</code>: <code>BloomBuildState</code> 構造体へのポインタ。</li>
+<li>**出力**: なし（副作用として <code>state</code> 内のキャッシュページおよびインデックス状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>state</code> は <code>BloomBuildState</code> 型としてキャスト可能であること。</li>
+<li><code>buildstate-&gt;tmpCtx</code> が初期化されていること。</li>
+<li>ページが満杯の場合、<code>flushCachedPage</code> を経て新しいページが初期化されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>buildstate-&gt;tmpCtx</code> にメモリコンテキストを切り替え、<code>BloomFormTuple</code> でタプルを生成します。 2. <code>BloomPageAddItem</code> を呼び出し、現在のキャッシュページへの追加を試みます。 3. 追加に成功した場合、<code>buildstate-&gt;count</code> をインクリメントします。 4. 追加に失敗した場合（ページ満杯）:</p>
+<ul>
+<li><code>flushCachedPage</code> で現在のページをディスクへ書き出します。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を実行し、割り込みを確認します。</li>
+<li><code>initCachedPage</code> で新しいページを初期化し、再度 <code>BloomPageAddItem</code> を実行します。</li>
+<p>5. 最後に <code>buildstate-&gt;indtuples</code> を更新し、メモリコンテキストを復元・リセットします。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>blbuild</code>（<code>contrib/bloom/blinsert.c</code> 内）から <code>table_index_build_scan</code> を介して呼び出されます。</li>
+<li>**呼び出し先**:</li>
+<li><code>BloomFormTuple</code></li>
+<li><code>BloomPageAddItem</code></li>
+<li><code>flushCachedPage</code></li>
+<li><code>initCachedPage</code></li>
+<li><code>MemoryContextSwitchTo</code> / <code>MemoryContextReset</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BloomBuildState</code>: 構築中のインデックス状態、メモリコンテキスト、キャッシュページを保持。</li>
+<li><code>BloomTuple</code>: インデックスに格納される形式のタプル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>空のページにタプルを追加できない場合、<code>elog(ERROR)</code> を発生させます。</li>
+<li>メモリ不足時は <code>MemoryContext</code> の管理下でエラーが発生する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>table_index_build_scan</code> からのコールバックとして動作するため、シグネチャの変更には注意が必要です。</li>
+<li><code>GenericXLog</code> を使用したページ書き出し処理が含まれるため、WAL 整合性に影響を与えるロジックです。</li>
+</ul></body></html>

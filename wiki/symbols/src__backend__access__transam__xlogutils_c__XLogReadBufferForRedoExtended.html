@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlogutils_c__XLogReadBufferForRedoExtended.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogReadBufferForRedoExtended</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xlogutils.c:339</code></li>
+</ul>
+<h2>目的</h2>
+<p>WALリプレイ処理において、指定されたブロックをバッファキャッシュへ読み込み、必要に応じてフルページイメージの復元やロックの取得、Redo適用の要否判定を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>XLogRedoAction XLogReadBufferForRedoExtended(
+    XLogReaderState *record,
+    uint8 block_id,
+    ReadBufferMode mode,
+    bool get_cleanup_lock,
+    Buffer *buf
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>record</code>: 解析済みのWALレコード状態。</li>
+<li><code>block_id</code>: 対象ブロックの識別子。</li>
+<li><code>mode</code>: バッファ読み込みモード（<code>ReadBufferMode</code>）。</li>
+<li><code>get_cleanup_lock</code>: クリーンアップロックを取得するか否かのフラグ。</li>
+<li><code>buf</code>: 読み込んだバッファを格納するポインタ。</li>
+<li>**出力**:</li>
+<li>戻り値: <code>XLogRedoAction</code>（<code>BLK_RESTORED</code>, <code>BLK_DONE</code>, <code>BLK_NEEDS_REDO</code>, <code>BLK_NOTFOUND</code> のいずれか）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本関数はリカバリプロセス中のみ呼び出されることを前提とする。</li>
+<li><code>WILL_INIT</code> フラグがWALレコードにある場合、<code>mode</code> は必ずゼロ初期化を伴うモード（<code>RBM_ZERO_...</code>）でなければならない。</li>
+<li><code>INIT_FORKNUM</code> の場合、共有バッファとディスク状態を同期させるため <code>FlushOneBuffer</code> が実行される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>XLogRecGetBlockTagExtended</code> を使用してブロックの物理位置（リレーション、フォーク、ブロック番号）を特定する。 2. フルページイメージが存在し、適用すべき場合は <code>XLogReadBufferExtended</code> でバッファを取得し、<code>RestoreBlockImage</code> でページを復元する。ページが新規でない場合はLSNを更新し、ダーティマークを付与する。 3. フルページイメージがない場合は <code>XLogReadBufferExtended</code> でバッファを取得する。 4. バッファが有効な場合、<code>mode</code> に応じて排他ロックまたはクリーンアップロックを取得する。 5. ページLSNとレコードのLSNを比較し、適用済みであれば <code>BLK_DONE</code>、未適用であれば <code>BLK_NEEDS_REDO</code> を返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/hash/hash_xlog.c</code> および <code>src/backend/access/heap/heapam_xlog.c</code> 等のリソースマネージャのRedoルーチン。</li>
+<li>**呼び出し先**: <code>XLogRecGetBlockTagExtended</code>, <code>XLogRecBlockImageApply</code>, <code>XLogReadBufferExtended</code>, <code>RestoreBlockImage</code>, <code>BufferGetPage</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>FlushOneBuffer</code>, <code>LockBuffer</code>, <code>LockBufferForCleanup</code>, <code>PageGetLSN</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogReaderState</code>: WALレコードの解析状態を保持。</li>
+<li><code>Buffer</code>: バッファキャッシュ内のページを指すハンドル。</li>
+<li><code>XLogRedoAction</code>: リプレイアクションの結果を示す列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>block_id</code> が無効な場合: <code>PANIC</code> で停止。</li>
+<li><code>WILL_INIT</code> フラグと <code>mode</code> の不整合: <code>PANIC</code> で停止。</li>
+<li>フルページイメージの復元失敗: <code>ERROR</code> を報告。</li>
+<li>ページが存在しない場合: <code>BLK_NOTFOUND</code> を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリ専用のユーティリティであり、通常のバックエンドプロセスからの呼び出しは想定されていない。</li>
+<li><code>INIT_FORKNUM</code> に対する <code>FlushOneBuffer</code> は、クラッシュリカバリ終了時の整合性維持のために必須である。</li>
+</ul></body></html>

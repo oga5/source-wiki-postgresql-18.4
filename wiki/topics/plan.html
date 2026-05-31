@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/plan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Plan</h1>
+<h2>概念</h2>
+<p><code>Plan</code> は、PostgreSQLにおけるクエリ実行計画ツリーを構成するすべてのノードの基底となる抽象構造体（およびその型定義）です。プランナによって生成され、エグゼキュータによって消費される実行手順の「設計図」として機能します。C言語における構造体の継承を模倣しており、すべてのプランノード構造体の先頭メンバとして配置されます。</p>
+<h2>なぜ重要か</h2>
+<p><code>Plan</code> は、クエリ最適化エンジン（プランナ）と実行エンジン（エグゼキュータ）を繋ぐ中核的なデータ構造です。また、外部データラッパー（FDW）などの拡張モジュールにおいても、外部テーブルスキャン用の計画ノード（<code>ForeignScan</code> など）の構成要素やサブプランのルートノードとして広く利用されます。共通の基底構造体としてコスト情報、推定サイズ、並列実行フラグ、ツリー構造（左右の子ノード）などを一元管理することで、一貫した計画ツリーの構築と実行を可能にしています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/nodes</code></li>
+<li><code>module:src/include/foreign</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/nodes/plannodes.h#Plan</code> : クエリ実行計画ツリーの基底となる抽象構造体 <code>struct Plan</code> の定義。</li>
+<li><code>symbol:src/include/foreign/fdwapi.h#Plan</code> : FDWインターフェース等で計画ノードの階層構造を保持するために使用される <code>typedef struct Plan Plan</code> の定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **計画作成（プランナ）**: プランナ（<code>src/backend/optimizer/</code>）がクエリを解析し、<code>Plan</code> 構造体（およびそれを継承した各種計画ノード）を構築して実行計画ツリーを生成します。 2. **FDWとの連携**: FDWの <code>GetForeignPlan</code> コールバック関数において、サブプラン（外部プラン）のルートノードが <code>Plan</code> ポインタ（<code>outer_plan</code> 引数）として渡されます。 3. **実行（エグゼキュータ）**: エグゼキュータ（<code>src/backend/executor/</code>）が <code>Plan</code> 構造体を参照し、ツリーを再帰的に辿りながら各ノードの実行関数を呼び出します。各ノードは子ノード（<code>lefttree</code>, <code>righttree</code>）から供給されるタプルに対し、<code>qual</code> によるフィルタリングと <code>targetlist</code> に基づく射影を適用してタプルを出力します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**直接インスタンス化の禁止**: 本構造体は抽象的な基底であり、直接インスタンス化してはなりません（<code>pg_node_attr(abstract, ...)</code> として定義されています）。</li>
+<li>**一意なノードID**: <code>plan_node_id</code> は、最終的なプランツリー全体で一意である必要があります。</li>
+<li>**ツリー構造の方向**: <code>lefttree</code> は「外部（outer）」プラン、<code>righttree</code> は「内部（inner）」プランを指します。</li>
+<li>**NULLポインタの扱い**: <code>lefttree</code> や <code>righttree</code> が <code>NULL</code> である場合、その方向からの入力が存在しないことを示します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**NULLポインタ参照**: <code>Plan</code> ポインタが <code>NULL</code> である場合、それを参照する関数やマクロ（例: <code>outerPlan()</code> など）を呼び出すとセグメンテーション違反が発生する可能性があります。</li>
+<li>**直接アクセスの回避**: 構造体メンバへ直接アクセスするのではなく、<code>outerPlan()</code> や <code>innerPlan()</code> などの推奨マクロを使用する必要があります。</li>
+<li>**パラメータ管理の不備**: <code>extParam</code> や <code>allParam</code> の設定が不適切な場合、パラメータ変更に伴う再スキャン（Rescan）が正しく機能しない可能性があります。</li>
+<li>**FDW拡張時の注意**: FDW固有の拡張を行う際は、<code>Plan</code> 自体を直接変更するのではなく、<code>ForeignScan</code> などの派生構造体を通じて情報を付加する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/nodes/plannodes.h</code> : <code>Plan</code> 構造体の詳細なメンバ定義や、それを継承する各種計画ノードの定義。</li>
+<li><code>src/include/foreign/fdwapi.h</code> : FDW APIにおける <code>Plan</code> の利用方法や関連するコールバック関数の定義。</li>
+</ul></body></html>

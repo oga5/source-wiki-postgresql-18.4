@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/relfilenumbermap.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/relfilenumbermap.c</h1>
+<h2>概要</h2>
+<p><code>relfilenumbermap.c</code> は、PostgreSQL において <code>(tablespace, relfilenumber)</code> のペアから、対応する <code>relid</code> (pg_class.oid) を高速に逆引きするためのキャッシュ機構を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールの一部として、システムカタログの検索コストを削減する役割を担います。特に、物理的なファイル名から論理的なリレーションを特定する必要がある場面で利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ管理**: <code>RelfilenumberMapHash</code> を用いたメモリ上のハッシュテーブル管理。</li>
+<li>**逆引き検索**: 指定されたテーブルスペースとファイル番号から <code>relid</code> を特定。</li>
+<li>**無効化処理**: <code>pg_class</code> の変更に伴うキャッシュの整合性維持（<code>CacheRegisterRelcacheCallback</code> を利用）。</li>
+<li>**フォールバック**: キャッシュミス時に <code>pg_class</code> のインデックススキャンや <code>relmapper</code> を用いた実検索を実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelidByRelfilenumber</code>: 外部公開関数。キャッシュを検索し、存在しない場合はカタログから解決してキャッシュに格納する。</li>
+<li><code>RelfilenumberMapHash</code>: キャッシュの実体であるハッシュテーブル。</li>
+<li><code>RelfilenumberMapInvalidateCallback</code>: キャッシュ無効化のためのコールバック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InitializeRelfilenumberMap</code></li>
+<li><code>RelfilenumberMapEntry</code></li>
+<li><code>RelfilenumberMapKey</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索要求**: <code>RelidByRelfilenumber</code> が呼び出される。 2. **キャッシュ確認**: <code>RelfilenumberMapHash</code> を検索。ヒットすれば即座に <code>relid</code> を返す。 3. **カタログ検索**: ミスした場合、以下の順序で解決を試みる。</p>
+<ul>
+<li><code>reltablespace</code> が共有テーブルの場合: <code>RelationMapFilenumberToOid</code> を使用。</li>
+<li>通常テーブルの場合: <code>pg_class</code> の <code>ClassTblspcRelfilenodeIndexId</code> インデックスを使用して検索。</li>
+<li>それでも見つからない場合: <code>RelationMapFilenumberToOid</code> (非共有) を試行。</li>
+<p>4. **キャッシュ更新**: 検索結果（<code>InvalidOid</code> を含む）をハッシュテーブルに格納する。 5. **無効化**: <code>relcache</code> の更新イベントが発生すると、コールバックがハッシュテーブルの該当エントリを削除する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/hsearch.h</code>: ハッシュテーブル操作。</li>
+<li><code>utils/relmapper.h</code>: 共有リレーションのマップ解決。</li>
+<li><code>catalog/pg_class.h</code>: システムカタログ定義。</li>
+<li><code>access/table.h</code> / <code>access/genam.h</code>: テーブルアクセスおよびインデックススキャン用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/relfilenumbermap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/relfilenumbermap.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/utils/cache/relmapper.c</code>: <code>relfilenumber</code> と <code>oid</code> のマッピング管理（特に共有テーブル用）。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: リレーションキャッシュの無効化イベントの発生源。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**負のキャッシュ**: このモジュールは、検索に失敗した場合も <code>InvalidOid</code> をキャッシュします。これにより、存在しないファイル番号に対する繰り返し検索のコストを抑えています。</li>
+<li>**一時テーブルの扱い**: 一時テーブルはバックエンド固有であるため、このキャッシュでは一意に識別できず、検索対象から除外されます。</li>
+<li>**初期化**: <code>RelfilenumberMapHash</code> は初回呼び出し時に遅延初期化されます。<code>CacheMemoryContext</code> が使用されるため、メモリ管理はキャッシュサブシステム全体と同期しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__relfilenumbermap_c__RelfilenumberMapKey.html" target="wiki-view"><code>RelfilenumberMapKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relfilenumbermap_c__RelfilenumberMapEntry.html" target="wiki-view"><code>RelfilenumberMapEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relfilenumbermap_c__RelfilenumberMapInvalidateCallback.html" target="wiki-view"><code>RelfilenumberMapInvalidateCallback</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relfilenumbermap_c__InitializeRelfilenumberMap.html" target="wiki-view"><code>InitializeRelfilenumberMap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relfilenumbermap_c__RelidByRelfilenumber.html" target="wiki-view"><code>RelidByRelfilenumber</code></a></li>
+</ul></body></html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/tablefunc/tablefunc.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/tablefunc/tablefunc.c</h1>
+<h2>概要</h2>
+<p><code>tablefunc.c</code> は、PostgreSQL の拡張機能として、SQL クエリの結果を変換・再構成してセット（集合）を返す関数群を提供します。主に「クロス集計（Crosstab）」と「階層データ探索（Connectby）」という、標準 SQL では記述が困難なデータ操作を C 言語で実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/tablefunc</code> モジュールの中心的な実装ファイルです。SPI (Server Programming Interface) を利用して内部的に SQL を実行し、その結果を <code>Tuplestore</code> に蓄積して呼び出し元へ返す、PostgreSQL の「セットを返す関数（SRF）」の典型的な実装パターンを示しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**クロス集計**: 縦持ちのデータを横持ちに変換する <code>crosstab</code> および <code>crosstab_hash</code> の提供。</li>
+<li>**階層探索**: 親子関係を持つテーブルから階層構造を再帰的に抽出する <code>connectby</code> の提供。</li>
+<li>**統計関数**: ガウス分布に従う乱数を生成する <code>normal_rand</code> の提供。</li>
+<li>**型整合性チェック**: SPI から取得したデータと、関数の戻り値型（TupleDesc）の互換性検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>normal_rand</code>: Box-Muller 法を用いた正規分布乱数生成関数。</li>
+<li><code>crosstab</code>: 順序付けられた入力から行列を作成する関数。</li>
+<li><code>crosstab_hash</code>: カテゴリをハッシュテーブルで管理し、欠損値を適切に扱うクロス集計関数。</li>
+<li><code>connectby</code>: 再帰的にツリー構造を探索する関数。</li>
+<li><code>crosstab_HashEnt</code>: カテゴリ名と属性インデックスをマッピングするハッシュテーブルエントリ構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>build_tuplestore_recursively</code></li>
+<li><code>connectby_text</code></li>
+<li><code>connectby_text_serial</code></li>
+<li><code>crosstab_cat_desc</code></li>
+<li><code>get_crosstab_tuplestore</code></li>
+<li><code>get_normal_pair</code></li>
+<li><code>load_categories_hash</code></li>
+<li><code>normal_rand_fctx</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>SRF_FIRSTCALL_INIT</code> または <code>SPI_connect</code> を用いて、関数呼び出しのコンテキストと SPI 接続を確立します。 2. **データ取得**: <code>SPI_execute</code> を呼び出し、ソースとなる SQL を実行します。 3. **変換処理**:</p>
+<ul>
+<li><code>crosstab</code>: SPI 結果をループし、<code>BuildTupleFromCStrings</code> を用いて行を再構築します。</li>
+<li><code>connectby</code>: <code>build_tuplestore_recursively</code> を呼び出し、深さ優先探索でツリーを辿りながら <code>Tuplestore</code> に格納します。</li>
+<p>4. **出力**: <code>tuplestore_puttuple</code> で構築したタプルを蓄積し、<code>ReturnSetInfo</code> を介して呼び出し元へ返却します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>fmgr.h</code>, <code>funcapi.h</code>: PostgreSQL の基本機能と関数インターフェース。</li>
+<li><code>executor/spi.h</code>: 内部 SQL 実行用インターフェース。</li>
+<li><code>access/htup_details.h</code>: タプル操作用。</li>
+<li><code>common/pg_prng.h</code>: 乱数生成用。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/tablefunc.h</code>: 本モジュールとは別に定義されている <code>TableFuncRoutine</code> インターフェース（XMLTABLE 等の実行ノード用）。</li>
+<li><code>src/backend/executor/spi.c</code>: SPI の詳細な挙動を理解するための参照先。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、PostgreSQL の拡張機能開発における「SPI を使った SRF 実装」の非常に良いサンプルです。</li>
+<li><code>crosstab</code> は入力データの順序に依存するため、使用時は <code>ORDER BY</code> が必須である点に注意してください。</li>
+<li><code>connectby</code> は再帰的なクエリ実行を行うため、深い階層や循環参照がある場合はパフォーマンスやスタックオーバーフローのリスクを考慮する必要があります。</li>
+<li><code>xpfree</code> や <code>xpstrdup</code> などの独自マクロは、メモリ管理を簡略化するためのユーティリティです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__normal_rand_fctx.html" target="wiki-view"><code>normal_rand_fctx</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__crosstab_cat_desc.html" target="wiki-view"><code>crosstab_cat_desc</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__crosstab_HashEnt.html" target="wiki-view"><code>crosstab_HashEnt</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__normal_rand.html" target="wiki-view"><code>normal_rand</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__get_normal_pair.html" target="wiki-view"><code>get_normal_pair</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__crosstab.html" target="wiki-view"><code>crosstab</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__crosstab_hash.html" target="wiki-view"><code>crosstab_hash</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__load_categories_hash.html" target="wiki-view"><code>load_categories_hash</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__get_crosstab_tuplestore.html" target="wiki-view"><code>get_crosstab_tuplestore</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__connectby_text.html" target="wiki-view"><code>connectby_text</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__connectby_text_serial.html" target="wiki-view"><code>connectby_text_serial</code></a></li>
+<li><a href="../../symbols/contrib__tablefunc__tablefunc_c__build_tuplestore_recursively.html" target="wiki-view"><code>build_tuplestore_recursively</code></a></li>
+</ul></body></html>

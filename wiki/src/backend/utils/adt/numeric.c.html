@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/numeric.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/numeric.c</h1>
+<h2>概要</h2>
+<p><code>numeric.c</code> は、PostgreSQL の <code>NUMERIC</code> 型（任意の精度を持つ数値型）の内部表現、算術演算、および SQL 関数を実装するコアファイルです。この型は、金融計算などで求められる正確な精度を維持するため、内部的に可変長の基数（NBASE=10000）浮動小数点形式で数値を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、数値計算の基盤を提供します。<code>numeric.h</code> で定義されたインターフェースを実装し、SQL レベルの算術演算子（<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code> 等）や集約関数（<code>SUM</code>, <code>AVG</code>, <code>STDDEV</code> 等）のバックエンド処理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ表現**: <code>NumericData</code>（ディスク上の格納形式）と <code>NumericVar</code>（計算用メモリ形式）の相互変換および管理。</li>
+<li>**算術演算**: 加減乗除、剰余、平方根、指数、対数、べき乗などの高精度演算の実装。</li>
+<li>**型変換**: 文字列（<code>numeric_in</code>/<code>out</code>）、整数、浮動小数点数との相互変換。</li>
+<li>**集約処理**: <code>SUM</code> や <code>AVG</code> などの集約関数における中間状態（<code>NumericSumAccum</code>）の管理と高速な加算処理。</li>
+<li>**プランナ連携**: <code>numeric_support</code> を通じたプランナへの最適化ヒントの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>NumericData</code>: ディスク上の可変長表現。<code>NumericShort</code>（短縮形式）または <code>NumericLong</code>（長形式）のいずれかを選択する。</li>
+<li><code>NumericVar</code>: 計算用のメモリ内表現。<code>NumericDigit</code> 配列を持ち、算術演算の対象となる。</li>
+<li><code>NumericSumAccum</code>: 集約関数用の高速加算器。32bit 整数を用いてキャリー伝播を遅延させる。</li>
+</ul>
+<h3>算術・変換関数</h3>
+<ul>
+<li><code>add_var</code>, <code>sub_var</code>, <code>mul_var</code>, <code>div_var</code>: <code>NumericVar</code> に対する基本算術演算。</li>
+<li><code>numeric_in</code>, <code>numeric_out</code>: SQL 文字列と内部表現の変換。</li>
+<li><code>numeric_recv</code>, <code>numeric_send</code>: バイナリプロトコル用の変換。</li>
+<li><code>numeric_round</code>, <code>numeric_trunc</code>: 数値の丸め・切り捨て。</li>
+</ul>
+<h3>内部ユーティリティ</h3>
+<ul>
+<li><code>make_result</code>: <code>NumericVar</code> から <code>NumericData</code> を生成する。</li>
+<li><code>strip_var</code>: <code>NumericVar</code> の先頭・末尾のゼロを除去して正規化する。</li>
+<li><code>apply_typmod</code>: <code>NUMERIC(p, s)</code> の制約を適用する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Int128AggState</code></li>
+<li><code>NumericAggState</code></li>
+<li><code>NumericData</code></li>
+<li><code>NumericDigit</code></li>
+<li><code>NumericLong</code></li>
+<li><code>NumericShort</code></li>
+<li><code>NumericSortSupport</code></li>
+<li><code>NumericSumAccum</code></li>
+<li><code>NumericVar</code></li>
+<li><code>PolyNumAggState</code></li>
+<li><code>generate_series_numeric_fctx</code></li>
+<li><code>numeric_trim_scale</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>numeric_in</code> が文字列を解析し、<code>set_var_from_str</code> を経て <code>NumericVar</code> を生成。 2. **計算**: 演算関数（<code>numeric_add</code> 等）が <code>NumericVar</code> を受け取り、<code>add_var</code> 等の低レベル関数を呼び出す。 3. **正規化**: 計算結果は <code>strip_var</code> で正規化され、<code>make_result</code> でディスク格納形式（<code>NumericData</code>）に変換される。 4. **集約**: <code>numeric_accum</code> 等が <code>NumericSumAccum</code> を更新。<code>accum_sum_carry</code> で必要に応じてキャリーを伝播させ、<code>accum_sum_final</code> で最終結果を <code>NumericVar</code> に変換する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型定義。</li>
+<li><code>utils/numeric.h</code>: 公開インターフェース定義。</li>
+<li><code>common/int.h</code>: オーバーフロー保護付き算術。</li>
+<li><code>lib/hyperloglog.h</code>: ソートサポート時のカーディナリティ推定。</li>
+<li><code>common/hashfn.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>float.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/numeric.h</code>: 公開ヘッダー。</li>
+<li><code>src/backend/utils/adt/float.c</code>: 浮動小数点数型との変換ロジック。</li>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 統計情報に基づく選択率推定。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>NumericVar</code> の digit 配列は <code>palloc</code> されるため、<code>free_var</code> による解放が必須です。</li>
+<li>**基数**: <code>NBASE=10000</code> を採用しており、1 つの <code>NumericDigit</code> に 4 桁の 10 進数を格納します。</li>
+<li>**最適化**: <code>mul_var</code> は <code>NBASE^2</code> を用いた基数変換により計算量を削減しています。</li>
+<li>**制約**: <code>NUMERIC_MAX_PRECISION</code> は 1000 です。これを超える精度はサポートされません。</li>
+<li>**未実装/浅い部分**: <code>dump_numeric</code> 等のデバッグ関数は <code>NUMERIC_DEBUG</code> マクロが有効な場合のみコンパイルされます。また、一部の数学関数は <code>double</code> への変換を介して近似計算を行っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericDigit.html" target="wiki-view"><code>NumericDigit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericShort.html" target="wiki-view"><code>NumericShort</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericLong.html" target="wiki-view"><code>NumericLong</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericData.html" target="wiki-view"><code>NumericData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericVar.html" target="wiki-view"><code>NumericVar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__generate_series_numeric_fctx.html" target="wiki-view"><code>generate_series_numeric_fctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericSortSupport.html" target="wiki-view"><code>NumericSortSupport</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericSumAccum.html" target="wiki-view"><code>NumericSumAccum</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__numeric_trim_scale.html" target="wiki-view"><code>numeric_trim_scale</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__NumericAggState.html" target="wiki-view"><code>NumericAggState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__Int128AggState.html" target="wiki-view"><code>Int128AggState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__numeric_c__PolyNumAggState.html" target="wiki-view"><code>PolyNumAggState</code></a></li>
+</ul></body></html>

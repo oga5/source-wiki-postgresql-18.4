@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__indexcmds_c__DefineIndex.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DefineIndex</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/indexcmds.c:541</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックス作成（<code>CREATE INDEX</code>）のメインエントリポイントとして、インデックス定義の検証、カタログ登録、および構築プロセスの制御を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ObjectAddress DefineIndex(Oid tableId, IndexStmt *stmt, Oid indexRelationId, Oid parentIndexId, Oid parentConstraintId, int total_parts, bool is_alter_table, bool check_rights, bool check_not_in_use, bool skip_build, bool quiet);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 対象テーブルの <code>tableId</code>、インデックス定義 <code>stmt</code>、および構築オプション（<code>concurrent</code> 等）。</li>
+<li>**出力**: 作成されたインデックスの <code>ObjectAddress</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、対象テーブルに対して適切なロックを保持している必要がある（デッドロック回避のため、ヒープをロックしてからインデックスをロックする順序が厳守される）。</li>
+<li>一時テーブルに対しては、<code>CONCURRENTLY</code> 指定があっても非並行構築が強制される。</li>
+<li>インデックス列数は <code>INDEX_MAX_KEYS</code> を超えてはならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>NewGUCNestLevel</code> で設定を保存し、<code>RestrictSearchPath</code> を実行。 2. **並行性の判定**: 一時テーブル以外で <code>stmt-&gt;concurrent</code> が指定されている場合に並行構築モードを有効化。 3. **進捗報告**: <code>pgstat_progress_start_command</code> を呼び出し、構築状況を追跡。 4. **検証**: インデックス対象の列数を確認し、サポートされていないリレーション種別（<code>RELKIND</code>）の場合はエラーを投げる。 5. **ロック取得**: 並行構築時は <code>ShareUpdateExclusiveLock</code>、通常時は <code>ShareLock</code> を取得。 6. **権限昇格**: テーブル所有者のユーザーIDとセキュリティコンテキストに切り替え、<code>SECURITY_RESTRICTED_OPERATION</code> を適用。 7. **構築フェーズ**: カタログ登録、アクセスメソッドの検証、および必要に応じて並行構築の各フェーズ（カタログ登録、構築、検証、スワップ）を実行。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/catalog/index.c</code>、<code>src/backend/commands/tablecmds.c</code> 等から呼び出される。</li>
+<li>**呼び出し先**: <code>index_create</code>（カタログ登録）、<code>table_open</code>（テーブルオープン）、<code>pgstat_progress_*</code>（進捗報告）、<code>SetUserIdAndSecContext</code>（権限管理）等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexStmt</code>: インデックス定義を保持するノード。</li>
+<li><code>Relation</code>: 対象テーブルのメタデータ。</li>
+<li><code>ObjectAddress</code>: 作成されたインデックスの識別子。</li>
+<li><code>IndexInfo</code>: インデックスの構築に必要な情報を格納する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>列数が 0 の場合、または <code>INDEX_MAX_KEYS</code> を超える場合は <code>ERROR</code> を発生させる。</li>
+<li>サポート外のリレーション種別に対しては <code>ERRCODE_WRONG_OBJECT_TYPE</code> でエラーを発生させる。</li>
+<li>権限不足やロック競合が発生した場合、トランザクションのロールバックを伴うエラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>REINDEX CONCURRENTLY</code> 等の並行処理では、複数のトランザクションをまたぐため <code>MemoryContext</code> の切り替えとトランザクション管理に注意が必要。</li>
+<li>パーティションテーブルに対する再帰的なインデックス作成処理が含まれる。</li>
+<li>既存の <code>CheckIndexCompatible</code> や <code>WaitForOlderSnapshots</code> との連携により、インデックスの整合性を維持している。</li>
+</ul></body></html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/xlogreaderstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogReaderState</h1>
+<h2>概念</h2>
+<p><code>XLogReaderState</code> は、PostgreSQL の WAL（Write-Ahead Log）を読み取り、解析するためのセッション状態を管理するメイン構造体です。WAL の物理的な読み込みから、バイナリデータから論理的なレコード構造（<code>DecodedXLogRecord</code>）へのデコードまでの一連の状態を保持します。</p>
+<h2>なぜ重要か</h2>
+<p>WAL の解析は、データベースのクラッシュリカバリやレプリケーションだけでなく、WAL の検査・解析ツール（<code>pg_walinspect</code> や <code>pg_waldump</code> など）においても極めて重要です。<code>XLogReaderState</code> は、バックエンド（サーバープロセス内）とフロントエンド（スタンドアロンツール）の両方で共通して利用できる一貫した WAL 読み取りインターフェースを提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/access</code> (WAL リーダーのコア定義)</li>
+<li><code>module:contrib/pg_walinspect</code> (WAL 解析ユーティリティ)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/xlogreader.h#XLogReaderState</code>**</li>
+<p>WAL 読み取りセッションの状態を保持する構造体。コールバック関数群（<code>XLogReaderRoutine</code>）やデコードされたレコードのキューなどを管理します。</p>
+<li>**<code>symbol:contrib/pg_walinspect/pg_walinspect.c#InitXLogReaderState</code>**</li>
+<p>指定された LSN（Log Sequence Number）を基準に <code>XLogReaderState</code> を初期化し、最初に有効な WAL レコードを検索して読み取り準備を整えるヘルパー関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化とメモリ確保** <code>InitXLogReaderState</code> などの呼び出し元が、<code>XLogReaderAllocate</code> を用いて <code>XLogReaderState</code> を割り当てます。この際、WAL ページを読み込むためのコールバック関数（例: <code>read_local_xlog_page_no_wait</code>）を登録します。 2. **レコードの検索** <code>XLogFindNextRecord</code> を使用して、指定された LSN 以降で最初に有効な WAL レコードの位置を特定します。 3. **ページの読み込みとデコード** <code>XLogReadRecord</code> などの関数が実行されると、登録されたコールバックを介して WAL ページが内部バッファにロードされます。ロードされたバイナリデータは <code>DecodedXLogRecord</code> へデコードされ、内部キューに格納されます。 4. **データの抽出** 呼び出し元（<code>pg_walinspect</code> の各解析関数など）は、提供されているマクロ（<code>XLogRecGet*</code> 等）を介して、デコードされたレコードから XID やブロック参照などの必要な情報を取得します。</p>
+<p>*注意: 先読み（read-ahead）や詳細なエラーハンドリングを伴う完全なライフサイクルおよび内部キューの挙動の全容は、提供されたコンテキストからは一部未検証です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**LSN の最小境界制限**</li>
+<p>読み取り開始基準となる LSN は <code>XLOG_BLCKSZ</code> 以上でなければなりません。ブートストラップ WAL ページは読み取り不可であるため、これ未満の LSN を指定することは禁止されています。</p>
+<li>**カプセル化の維持**</li>
+<p><code>XLogReaderState</code> の内部フィールドを直接操作することは避け、提供されている API や <code>XLogRecGet*</code> などのマクロを介して操作する必要があります。</p>
+<li>**環境に依存しない設計**</li>
+<p>本構造体はフロントエンドとバックエンドの双方で動作する設計であるため、コアの構造体や API 内部でバックエンド専用の <code>ereport</code> などを直接呼び出すことはできません。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効な LSN の指定**</li>
+<p><code>XLOG_BLCKSZ</code> 未満の LSN を指定して初期化を試みると、<code>ERRCODE_INVALID_PARAMETER_VALUE</code> エラーが発生します。</p>
+<li>**メモリ確保の失敗**</li>
+<p><code>XLogReaderAllocate</code> がメモリ不足により <code>NULL</code> を返した場合のハンドリングを怠ると、ヌルポインタ参照に繋がります。</p>
+<li>**先読みバッファの未確保**</li>
+<p>先読み（read-ahead）機能を有効にする場合、事前に <code>XLogReaderSetDecodeBuffer</code> を使用して循環バッファを適切に確保しておかないと、期待通りに動作しません。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/access/xlogreader.h</code>**</li>
+<p><code>XLogReaderState</code> 構造体の詳細な定義、関連するマクロ、および提供されている API 群。</p>
+<li>**<code>contrib/pg_walinspect/pg_walinspect.c</code>**</li>
+<p><code>InitXLogReaderState</code> をはじめとする、実際のツール内での <code>XLogReaderState</code> の具体的な初期化と利用手順。</p>
+</ul></body></html>

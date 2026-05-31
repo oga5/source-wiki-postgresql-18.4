@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginbtree.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginbtree.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスのB-tree構造を操作するための汎用的なユーティリティルーチン群を提供します。GINインデックスは、エントリツリーとデータツリーの両方でB-tree構造を利用しており、本ファイルはそのページレベルのナビゲーション、分割（Split）、および挿入処理を抽象化して管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおける「B-treeエンジン」として機能します。特定のインデックス型（エントリまたはデータ）に依存しない共通のツリー操作ロジックを実装しており、<code>gininsert.c</code> などの上位モジュールから呼び出されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**ツリートラバーサル**: ルートからリーフページまでのパスを検索し、スタックとして保持する。</li>
+<li>**ページ分割の管理**: ページ溢れ発生時の分割処理と、それに伴う親ページへのダウンリンク挿入（再帰的処理）。</li>
+<li>**不完全な分割の修復**: クラッシュリカバリや並行処理で残された「不完全な分割（Incomplete Split）」状態の検知と完了処理。</li>
+<li>**ロック管理**: ページ移動時のロックカップリング（Lock Coupling）による整合性の維持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ginFindLeafPage</code>: 指定されたキーを格納すべきリーフページまで降下し、パスをスタックとして返す。</li>
+<li><code>ginPlaceToPage</code>: ページへの挿入を試みる。溢れる場合は分割を行い、必要に応じて親の更新をトリガーする。</li>
+<li><code>ginFinishSplit</code>: ページ分割後の親更新を完了させるための再帰的ルーチン。</li>
+<li><code>GinBtreeStack</code>: ツリー降下時のパスを保持する構造体。親へのポインタとバッファ情報を含む。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>freeGinBtreeStack</code></li>
+<li><code>ginFindParents</code></li>
+<li><code>ginFinishOldSplit</code></li>
+<li><code>ginInsertValue</code></li>
+<li><code>ginStepRight</code></li>
+<li><code>ginTraverseLock</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>ginFindLeafPage</code> がルートから開始し、<code>btree-&gt;findChildPage</code> を用いて適切な子へ降下する。移動中は <code>ginStepRight</code> で右兄弟を辿る。 2. **挿入**: <code>ginPlaceToPage</code> が呼び出される。ページに空きがあれば即座に挿入し、なければ分割（<code>GPTP_SPLIT</code>）を実行する。 3. **分割完了**: 分割が発生した場合、<code>ginFinishSplit</code> が呼び出され、親ページに新しいダウンリンクを挿入する。親も溢れる場合は、この処理が再帰的に上位へ伝播する。 4. **整合性**: <code>ginFinishOldSplit</code> により、処理中に遭遇した不完全な分割状態を検知し、WAL記録前に整合性を確保する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GINの内部構造体定義。</li>
+<li><code>access/ginxlog.h</code>: GINのWALログ定義。</li>
+<li><code>storage/predicate.h</code>: 述語ロック（シリアライザブル分離レベル用）。</li>
+<li><code>utils/injection_point.h</code>: テスト用のインジェクションポイント。</li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gin/gininsert.c</code>: 本ファイルの主要なクライアント。</li>
+<li><code>src/backend/access/gin/gindatapage.c</code>: データツリー特有のページ操作ロジック。</li>
+<li><code>src/backend/access/gin/ginentrypage.c</code>: エントリツリー特有のページ操作ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの挙動**: <code>ginTraverseLock</code> はリーフ到達時に必要に応じて共有ロックから排他ロックへ昇格させます。この際、ルートが非リーフ化する可能性を考慮した再チェックが行われます。</li>
+<li>**不完全な分割**: GINでは分割処理がアトミックではないため、<code>GIN_INCOMPLETE_SPLIT</code> フラグが重要です。このフラグがあるページに遭遇した場合は、必ず <code>ginFinishOldSplit</code> で修復してから操作を継続してください。</li>
+<li>**メモリ管理**: <code>ginPlaceToPage</code> 内では一時的なメモリコンテキストが作成されます。これはWAL挿入までの複雑な計算結果を保持するためであり、関数終了時に確実に解放されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginTraverseLock.html" target="wiki-view"><code>ginTraverseLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginFindLeafPage.html" target="wiki-view"><code>ginFindLeafPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginStepRight.html" target="wiki-view"><code>ginStepRight</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__freeGinBtreeStack.html" target="wiki-view"><code>freeGinBtreeStack</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginFindParents.html" target="wiki-view"><code>ginFindParents</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginPlaceToPage.html" target="wiki-view"><code>ginPlaceToPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginFinishSplit.html" target="wiki-view"><code>ginFinishSplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginFinishOldSplit.html" target="wiki-view"><code>ginFinishOldSplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbtree_c__ginInsertValue.html" target="wiki-view"><code>ginInsertValue</code></a></li>
+</ul></body></html>

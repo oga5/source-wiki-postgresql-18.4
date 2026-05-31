@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/sharedtuplestore.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SharedTuplestore</h1>
+<h2>概念</h2>
+<p><code>SharedTuplestore</code> は、PostgreSQL の並列クエリ実行において、複数のバックエンド（プロセス）間でタプルを共有・交換するための共有メモリ上の制御構造体、およびそれを利用した軽量なストレージ機構です。 汎用的な <code>tuplestore</code> とは異なり、ランダムアクセスやシーク機能は提供されず、並列処理に特化した設計となっています。</p>
+<h2>なぜ重要か</h2>
+<p>並列ハッシュ結合などの並列クエリ実行時において、複数のプロセスが中間データを生成・消費する際の共有状態を管理するために重要です。 各プロセスが専用の一時ファイルに対して書き込みを行うことで書き込み時のロックを不要にしつつ、並列スキャン時には <code>LWLock</code> を用いて読み取り位置の同期制御を行うことで、効率的なデータ共有を実現します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/sort</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/sort/sharedtuplestore.c#SharedTuplestore</code> (struct)**: 共有メモリ上に配置される実体構造体。参加者数（<code>nparticipants</code>）、フラグ、メタデータサイズ、名称、および参加者ごとの共有状態（<code>SharedTuplestoreParticipant</code> 配列）を保持します。</li>
+<li>**<code>symbol:src/include/utils/sharedtuplestore.h#SharedTuplestore</code> (struct)**: ヘッダーファイル側で不透明な構造体として定義されている、外部モジュール向けのインターフェースです。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報から確認できる基本的な処理の流れは以下の通りです。</p>
+<p>1. **初期化**: <code>sts_estimate</code> で必要なサイズを計算し、<code>sts_initialize</code> により共有メモリ領域上に <code>SharedTuplestore</code> を初期化して <code>SharedFileSet</code> を関連付けます。 2. **アタッチ**: 各バックエンドは <code>sts_attach</code> を介して接続し、ローカルな制御構造体である <code>SharedTuplestoreAccessor</code> を取得します。 3. **書き込み**: 各バックエンドが <code>sts_puttuple</code> を使用し、独立してタプルをチャンク単位で <code>BufFile</code> に書き込みます（書き込み時のプロセス間ロックは不要です）。 4. **並列スキャン**: <code>sts_begin_parallel_scan</code> で準備後、<code>sts_parallel_scan_next</code> を用いて各バックエンドが <code>LWLock</code> による排他制御のもとで読み取り位置を更新し、タプルのサブセットを順次取得します。 5. **終了**: <code>sts_end_write</code> や <code>sts_end_parallel_scan</code> を呼び出してリソースを解放します。</p>
+<p>※なお、実行器（Executor）などの上位レイヤーにおける具体的な呼び出しライフサイクルや、エラー発生時のクリーンアップ処理の完全なエンドツーエンドフローは、提供された情報からは明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**配置場所**: <code>SharedTuplestore</code> 構造体は、必ず共有メモリ上に配置される必要があります。</li>
+<li>**メモリレイアウト**: 構造体の末尾にある <code>participants</code> 配列は可変長（<code>FLEXIBLE_ARRAY_MEMBER</code>）であるため、メモリレイアウトの計算には必ず <code>offsetof</code> を使用しなければなりません。</li>
+<li>**アクセス制限**: 各バックエンドは <code>SharedTuplestore</code> を直接操作するのではなく、必ずバックエンドローカルな構造体である <code>SharedTuplestoreAccessor</code> を介して操作する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**順序の不保証**: 並列スキャンは全参加者の全タプルを読み出しますが、特定の読み出し順序は保証されません。そのため、順序依存の処理には適していません。</li>
+<li>**名前の長さ制限**: ストアの名称（<code>name</code>）が <code>NAMEDATALEN</code> を超える場合、エラーが発生します。</li>
+<li>**構造体の混同**: 共有メモリ上の <code>SharedTuplestore</code> と、ローカルメモリ上の <code>SharedTuplestoreAccessor</code> を混同しないよう注意が必要です。</li>
+<li>**機能の制限**: 汎用的な <code>tuplestore</code> とは異なり、ランダムアクセスやシーク機能は提供されません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/sort/sharedtuplestore.c</code> (構造体の具体的な定義や、<code>LWLock</code> を用いた同期アルゴリズムの実装)</li>
+<li><code>src/include/utils/sharedtuplestore.h</code> (外部公開されている API 定義および <code>SharedTuplestoreAccessor</code> などの関連構造体の定義)</li>
+</ul></body></html>

@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssSharedState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgssSharedState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>contrib/pg_stat_statements/pg_stat_statements.c:246</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>pg_stat_statements</code> 拡張機能において、共有メモリ上でクエリ統計のハッシュテーブル、クエリテキストの外部ファイル管理、およびグローバルな統計情報を一元管理するための状態構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct pgssSharedState
+{
+	LWLock	   *lock;			/* ハッシュテーブルの検索/変更を保護 */
+	double		cur_median_usage;	/* ハッシュテーブル内の現在のメディアン使用量 */
+	Size		mean_query_len; /* 現在の平均クエリテキスト長 */
+	slock_t		mutex;			/* 以下のフィールドのみを保護 */
+	Size		extent;			/* クエリファイルの現在のエクステント */
+	int			n_writers;		/* クエリファイルへのアクティブな書き込み数 */
+	int			gc_count;		/* クエリファイルのガベージコレクション回数 */
+	pgssGlobalStats stats;		/* pgss のグローバル統計 */
+} pgssSharedState;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造であるため、入力と出力の概念は適用されません。共有メモリ領域として確保され、モジュール内の各フック関数から参照・更新されます。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>lock</code> (LWLock) はハッシュテーブルの構造変更（エントリの追加・削除）時に取得する必要があります。</li>
+<li><code>mutex</code> (SpinLock) は <code>extent</code>、<code>n_writers</code>、<code>gc_count</code>、<code>stats</code> の更新時に取得する必要があります。</li>
+<li>デッドロックを回避するため、<code>lock</code> を保持した状態で <code>mutex</code> を取得することは可能ですが、逆の順序での取得は禁止されています。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**ハッシュテーブル管理**: <code>lock</code> を用いて、クエリ統計を保持するハッシュテーブルへの安全なアクセスを提供します。</li>
+<li>**クエリテキスト管理**: クエリ文字列は共有メモリ節約のため外部ファイルに保存されます。<code>extent</code> や <code>n_writers</code> を通じてファイル領域の管理およびガベージコレクションの制御を行います。</li>
+<li>**統計集計**: <code>stats</code> フィールドを通じて、システム全体での統計情報の集計値を保持します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>pgss_shmem_startup</code> にて初期化され、<code>pgss_store</code> 等の統計更新処理から参照されます。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgssEntry</code>: ハッシュテーブルの各要素。</li>
+<li><code>pgssGlobalStats</code>: <code>pgssSharedState</code> 内に含まれるグローバル統計構造体。</li>
+<li><code>LWLock</code>, <code>slock_t</code>: 排他制御に使用されるプリミティブ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリ不足時、<code>pgss_shmem_request</code> による領域確保が失敗する可能性があります。</li>
+<li>クエリテキストの外部ファイル書き込み時にディスク容量や権限によるエラーが発生する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>クエリテキストは外部ファイルに保存されるため、ファイル操作とメモリ上のオフセット管理の同期が非常に複雑です。修正を加える際は、<code>gc_qtexts</code> 等のガベージコレクションロジックへの影響を十分に考慮してください。</li>
+<li><code>nesting_level</code> 等の変数と併用し、再帰的なクエリ呼び出しが統計を二重計上しないよう注意が必要です。</li>
+</ul></body></html>

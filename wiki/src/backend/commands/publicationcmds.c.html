@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/publicationcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/publicationcmds.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける「パブリケーション（Publication）」の作成、変更、削除を司るコマンド実行エンジンです。システムカタログ <code>pg_publication</code>、<code>pg_publication_rel</code>、<code>pg_publication_namespace</code> の操作を抽象化し、テーブルやスキーマの追加・除外、行フィルタ（WHERE句）、列リストの検証と適用を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、レプリケーション設定の永続化と整合性チェックを担当します。<code>subscriptioncmds.c</code> が購読側を管理するのに対し、本ファイルは公開側の定義を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 実行**: <code>CREATE/ALTER/DROP PUBLICATION</code> コマンドの構文解析結果に基づいたカタログ更新。</li>
+<li>**検証ロジック**: 行フィルタ（WHERE句）の構文が論理レプリケーションで安全に使用可能か（イミュータブル関数のみか等）のチェック。</li>
+<li>**整合性管理**: パブリケーションに追加されるテーブルやスキーマの権限チェック、および重複定義の排除。</li>
+<li>**キャッシュ無効化**: パブリケーション定義変更時に、関連するリレーションの同期キャッシュ（<code>RelationSyncCache</code>）を無効化し、レプリケーションワーカーへ変更を伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>パブリケーション操作</h3>
+<ul>
+<li><code>CreatePublication</code>: 新規パブリケーションの作成とカタログ挿入。</li>
+<li><code>AlterPublication</code>: パブリケーションのオプション変更やオブジェクト（テーブル/スキーマ）の追加・削除のディスパッチャ。</li>
+<li><code>RemovePublicationById</code>: パブリケーションの削除。</li>
+</ul>
+<h3>検証・変換ロジック</h3>
+<ul>
+<li><code>TransformPubWhereClauses</code>: WHERE句の構文解析と型チェック。</li>
+<li><code>check_simple_rowfilter_expr</code>: 行フィルタが論理レプリケーションで許可される「単純な式」であるか検証。</li>
+<li><code>pub_contains_invalid_column</code>: 列リストとレプリカアイデンティティの整合性チェック。</li>
+<li><code>ObjectsInPublicationToOids</code>: 構文木から対象オブジェクトの OID リストへの変換。</li>
+</ul>
+<h3>内部管理</h3>
+<ul>
+<li><code>rf_context</code>: 行フィルタ検証時に使用されるコンテキスト構造体。</li>
+<li><code>InvalidatePubRelSyncCache</code>: パブリケーション変更時に影響を受けるリレーションのキャッシュを無効化する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterPublicationOptions</code></li>
+<li><code>AlterPublicationOwner_internal</code></li>
+<li><code>AlterPublicationOwner_oid</code></li>
+<li><code>AlterPublicationSchemas</code></li>
+<li><code>AlterPublicationTables</code></li>
+<li><code>CheckPubRelationColumnList</code></li>
+<li><code>CreatePublication</code></li>
+<li><code>InvalidatePubRelSyncCache</code></li>
+<li><code>InvalidatePublicationRels</code></li>
+<li><code>ObjectsInPublicationToOids</code></li>
+<li><code>TransformPubWhereClauses</code></li>
+<li><code>rf_context</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コマンド実行**: <code>AlterPublication</code> が <code>AlterPublicationTables</code> や <code>AlterPublicationSchemas</code> を呼び出し、対象オブジェクトを特定。 2. **検証**: <code>TransformPubWhereClauses</code> が各テーブルに対して <code>ParseState</code> を生成し、WHERE句を検証。<code>check_simple_rowfilter_expr_walker</code> が再帰的に式を探索し、ユーザー定義関数や非イミュータブル関数が含まれていないか確認。 3. **カタログ更新**: <code>CatalogTupleInsert</code> / <code>CatalogTupleUpdate</code> を使用してシステムカタログを更新。 4. **キャッシュ無効化**: <code>InvalidatePublicationRels</code> を経由して <code>CacheInvalidateRelcacheByRelid</code> を呼び出し、全バックエンドに対して定義変更を通知。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_publication.h</code>: パブリケーション関連カタログの定義。</li>
+<li><code>parser/parse_relation.h</code>: 構文解析時のリレーション解決。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化メッセージの送信。</li>
+<li><code>access/xact.h</code>: トランザクション管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/objectaddress.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_publication_namespace.h</code></li>
+<li><code>catalog/pg_publication_rel.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_publication.h</code>: カタログ構造の定義。</li>
+<li><code>src/backend/replication/logical/relation.c</code>: <code>RelationSyncCache</code> の実装（本ファイルが無効化する対象）。</li>
+<li><code>src/backend/commands/subscriptioncmds.c</code>: 購読側の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>OpenTableList</code> で開いたリレーションは <code>CloseTableList</code> で確実に閉じる必要があります。<code>palloc</code> されたメモリは <code>ParseState</code> のライフサイクルに依存します。</li>
+<li>**制約**: 行フィルタには「単純な式」のみが許可されます。これは、論理デコーディングが過去のスナップショットで評価を行うため、ユーザー定義関数等の副作用を排除する必要があるためです。</li>
+<li>**キャッシュ**: <code>InvalidatePublicationRels</code> は、メッセージ数が多すぎる場合に <code>CacheInvalidateRelcacheAll</code> を使用して全体無効化を行う安全策が講じられています。</li>
+<li>**未実装/浅い部分**: <code>pub_contains_invalid_column</code> における仮想生成列のサポートは限定的であり、将来的な拡張が想定されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__rf_context.html" target="wiki-view"><code>rf_context</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__ObjectsInPublicationToOids.html" target="wiki-view"><code>ObjectsInPublicationToOids</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__InvalidatePubRelSyncCache.html" target="wiki-view"><code>InvalidatePubRelSyncCache</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__TransformPubWhereClauses.html" target="wiki-view"><code>TransformPubWhereClauses</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__CheckPubRelationColumnList.html" target="wiki-view"><code>CheckPubRelationColumnList</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__CreatePublication.html" target="wiki-view"><code>CreatePublication</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__AlterPublicationOptions.html" target="wiki-view"><code>AlterPublicationOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__InvalidatePublicationRels.html" target="wiki-view"><code>InvalidatePublicationRels</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__AlterPublicationTables.html" target="wiki-view"><code>AlterPublicationTables</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__AlterPublicationSchemas.html" target="wiki-view"><code>AlterPublicationSchemas</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__AlterPublicationOwner_internal.html" target="wiki-view"><code>AlterPublicationOwner_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__publicationcmds_c__AlterPublicationOwner_oid.html" target="wiki-view"><code>AlterPublicationOwner_oid</code></a></li>
+</ul></body></html>

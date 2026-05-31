@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/copyto.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/copyto.c</h1>
+<h2>概要</h2>
+<p><code>copyto.c</code> は、PostgreSQL の <code>COPY TO</code> コマンドの実行エンジンを実装するファイルです。テーブルまたはクエリの結果を、ファイル、外部プログラム、またはクライアント（フロントエンド）へ出力する処理を統括します。データ形式（Text, CSV, Binary）に応じた出力ロジックの抽象化と、ストリームへの書き込み制御を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、データ入出力の「出力側」を担当します。<code>copyfrom.c</code> が入力（<code>COPY FROM</code>）を扱うのに対し、本ファイルは実行計画（<code>QueryDesc</code>）やテーブルスキャンから得られたタプルを、指定されたフォーマットに変換して外部へ流し込む役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行コンテキストの管理**: <code>CopyToStateData</code> を用いた、COPY 操作中の状態（フォーマット、出力先、エンコーディング、メモリコンテキスト）の保持。</li>
+<li>**フォーマット抽象化**: <code>CopyToRoutine</code> インターフェースを通じた、Text/CSV/Binary 形式の出力処理の切り替え。</li>
+<li>**データ変換とエスケープ**: データベース内部表現から外部表現への変換（<code>OutputFunctionCall</code>）および、CSV/Text 形式特有のエスケープ処理。</li>
+<li>**出力先制御**: ファイル、パイプ（プログラム）、フロントエンド（ネットワーク）への書き込み抽象化。</li>
+<li>**進捗管理**: <code>pgstat</code> を介した、処理済みバイト数およびタプル数の統計更新。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>CopyToStateData</code>: COPY TO 操作の全状態を保持するメイン構造体。</li>
+<li><code>DR_copy</code>: <code>DestReceiver</code> を継承した構造体。エグゼキュータからタプルを受け取り、<code>CopyToState</code> へ転送するブリッジ。</li>
+</ul>
+<h3>フォーマットルーチン</h3>
+<ul>
+<li><code>CopyToRoutine</code>: 出力形式ごとのコールバック関数群（Start, OutFunc, OneRow, End）を定義する構造体。</li>
+<li><code>CopyToRoutineText</code>, <code>CopyToRoutineCSV</code>, <code>CopyToRoutineBinary</code>: 各形式の具体的な実装。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>BeginCopyTo</code>: <code>COPY TO</code> の初期化。メモリコンテキストの作成、オプション解析、出力先（ファイル/パイプ）のオープンを行う。</li>
+<li><code>DoCopyTo</code>: COPY 操作のメインループ。テーブルスキャンまたはクエリ実行を行い、タプルを順次出力する。</li>
+<li><code>EndCopyTo</code>: リソース解放、ファイル/パイプのクローズ、メモリコンテキストの破棄。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CopyDest</code></li>
+<li><code>CopyToBinaryStart</code></li>
+<li><code>CopyToCSVOneRow</code></li>
+<li><code>CopyToGetRoutine</code></li>
+<li><code>CopyToStateData</code></li>
+<li><code>CopyToTextLikeEnd</code></li>
+<li><code>CopyToTextLikeOneRow</code></li>
+<li><code>CopyToTextLikeOutFunc</code></li>
+<li><code>CopyToTextLikeStart</code></li>
+<li><code>CopyToTextOneRow</code></li>
+<li><code>CreateCopyDestReceiver</code></li>
+<li><code>DR_copy</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>BeginCopyTo</code> が呼び出され、<code>CopyToStateData</code> が構築される。出力先がファイル/プログラムの場合、<code>AllocateFile</code> や <code>OpenPipeStream</code> でストリームを確保する。 2. **実行**: <code>DoCopyTo</code> が開始される。</p>
+<ul>
+<li>テーブル直接指定の場合: <code>table_beginscan</code> でスキャンし、<code>CopyOneRowTo</code> を呼び出す。</li>
+<li>クエリ指定の場合: <code>ExecutorRun</code> を呼び出し、<code>DR_copy</code> (DestReceiver) 経由で <code>copy_dest_receive</code> がタプルを順次受け取る。</li>
+<p>3. **変換と出力**: <code>CopyOneRowTo</code> は、<code>CopyToRoutine</code> の <code>CopyToOneRow</code> を呼び出し、各属性を <code>OutputFunctionCall</code> で文字列化し、<code>CopySend...</code> 系関数でバッファ（<code>fe_msgbuf</code>）へ書き込む。 4. **フラッシュ**: <code>CopySendEndOfRow</code> が呼ばれると、バッファの内容が実際の出力先（<code>fwrite</code>, <code>pq_putmessage</code>, コールバック）へ書き出される。 5. **終了**: <code>EndCopyTo</code> でスキャンを終了し、リソースを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/</code>: クエリ実行およびタプル処理（<code>executor.h</code>, <code>tuptable.h</code>）。</li>
+<li><code>libpq/</code>: フロントエンド通信プロトコル（<code>pqformat.h</code>）。</li>
+<li><code>storage/fd.h</code>: ファイルおよびパイプ操作。</li>
+<li><code>utils/</code>: メモリ管理（<code>memutils.h</code>）、リレーションキャッシュ（<code>rel.h</code>）、スナップショット管理。</li>
+<li><code>access/tableam.h</code></li>
+<li><code>commands/copyapi.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/execdesc.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/tuptable.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>copyfrom.c</code>: <code>COPY FROM</code> の実装。<code>COPY</code> コマンドの対となる処理。</li>
+<li><code>copyapi.h</code>: <code>COPY</code> 関連の共通定義や <code>CopyToRoutine</code> の定義。</li>
+<li><code>src/backend/executor/execReplication.c</code>: <code>COPY</code> と類似したデータ転送ロジックを持つ場合がある。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>CopyToStateData</code> は専用の <code>copycontext</code> を持ち、行ごとの処理には <code>rowcontext</code> を使用してメモリリークを防止しています。</li>
+<li>**エスケープ処理**: <code>CopyAttributeOutText</code> および <code>CopyAttributeOutCSV</code> は、マルチバイト文字の扱い（<code>encoding_embeds_ascii</code>）に注意を払っており、パフォーマンス向上のためにバッファリングと <code>pg_encoding_mblen</code> を組み合わせた最適化が行われています。</li>
+<li>**未実装/浅い部分**: 本ファイルは <code>COPY TO</code> のロジックに特化しており、<code>COPY FROM</code> の構文解析や入力側の複雑なエラーリカバリロジックは含まれていません。</li>
+<li>**注意点**: <code>is_program</code> が真の場合、パイプのクローズ時に <code>pclose</code> の戻り値をチェックし、外部プログラムの終了ステータスをエラーとして報告する仕組みがあります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyDest.html" target="wiki-view"><code>CopyDest</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToStateData.html" target="wiki-view"><code>CopyToStateData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__DR_copy.html" target="wiki-view"><code>DR_copy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToGetRoutine.html" target="wiki-view"><code>CopyToGetRoutine</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToTextLikeStart.html" target="wiki-view"><code>CopyToTextLikeStart</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToTextLikeOutFunc.html" target="wiki-view"><code>CopyToTextLikeOutFunc</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToTextOneRow.html" target="wiki-view"><code>CopyToTextOneRow</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToCSVOneRow.html" target="wiki-view"><code>CopyToCSVOneRow</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToTextLikeOneRow.html" target="wiki-view"><code>CopyToTextLikeOneRow</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToTextLikeEnd.html" target="wiki-view"><code>CopyToTextLikeEnd</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CopyToBinaryStart.html" target="wiki-view"><code>CopyToBinaryStart</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyto_c__CreateCopyDestReceiver.html" target="wiki-view"><code>CreateCopyDestReceiver</code></a></li>
+</ul></body></html>

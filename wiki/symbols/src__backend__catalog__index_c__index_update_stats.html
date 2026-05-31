@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__index_c__index_update_stats.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>index_update_stats</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/catalog/index.c:2808</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>CREATE INDEX</code> または <code>REINDEX</code> 実行後、システムカタログ <code>pg_class</code> 内の対象リレーション（インデックスまたはテーブル）の統計情報およびフラグを更新します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void index_update_stats(Relation rel, bool hasindex, double reltuples)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 更新対象のリレーション（<code>Relation</code>）。</li>
+<li><code>hasindex</code>: <code>pg_class.relhasindex</code> に設定する真偽値。</li>
+<li><code>reltuples</code>: 更新後のタプル数（負の値は更新対象外）。</li>
+<li>**出力**: なし（副作用として <code>pg_class</code> を直接更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_class</code> に対する <code>RowExclusiveLock</code> を保持していること。</li>
+<li><code>reltuples</code> が 0 でかつ既存の <code>reltuples</code> が負の場合、<code>reltuples</code> は -1 として扱われます。</li>
+<li>バイナリアップグレード中は統計情報の更新をスキップします。</li>
+<li>オートバキュームが無効な場合、統計情報の更新をスキップする場合があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **更新判定**: <code>reltuples</code> の値やオートバキューム設定に基づき、統計情報を更新するかを決定します。 2. **物理情報取得**: 更新が必要な場合、<code>RelationGetNumberOfBlocks</code> でページ数を取得し、インデックス以外であれば <code>visibilitymap_count</code> で可視・凍結ページ数を計算します。 3. **インプレース更新**: <code>systable_inplace_update_begin</code> を使用し、トランザクションを介さない非トランザクション的な更新を行います。 4. **値の適用**: <code>relhasindex</code>、<code>relpages</code>、<code>reltuples</code>、<code>relallvisible</code>、<code>relallfrozen</code> を比較し、変更がある場合のみ <code>systable_inplace_update_finish</code> で書き出します。 5. **キャッシュ無効化**: 変更の有無に関わらず、必要に応じて <code>CacheInvalidateRelcacheByTuple</code> を呼び出し、リレーションキャッシュの整合性を維持します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/catalog/index.c</code> 内の <code>index_create</code> や <code>index_build</code> 等のインデックス構築・再構築処理から呼び出されます。</li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>systable_inplace_update_begin</code>, <code>systable_inplace_update_finish</code>, <code>systable_inplace_update_cancel</code></li>
+<li><code>visibilitymap_count</code></li>
+<li><code>CacheInvalidateRelcacheByTuple</code></li>
+<li><code>heap_freetuple</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: 操作対象のリレーション情報。</li>
+<li><code>Form_pg_class</code>: <code>pg_class</code> システムカタログのタプル構造。</li>
+<li><code>ScanKeyData</code>: <code>pg_class</code> 検索用のキー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**タプル未検出**: 指定された <code>relid</code> に対応する <code>pg_class</code> タプルが見つからない場合、<code>elog(ERROR)</code> を発生させます。</li>
+<li>**パーティションインデックス**: <code>RELKIND_PARTITIONED_INDEX</code> に対してはアサーション失敗により停止します。</li>
+<li>**並行更新**: 他の <code>CREATE INDEX</code> と競合する場合でも、非トランザクション更新によりデッドロックや更新失敗を回避する設計となっています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_class</code> を直接書き換えるため、非常に慎重な設計が求められます。</li>
+<li><code>systable_inplace_update</code> を使用しているため、トランザクションのロールバック後も更新が反映されたままになる点に注意してください。</li>
+<li><code>relpages</code> や <code>relallvisible</code> の更新は、<code>reltuples</code> が提供されている場合に限定されます。</li>
+</ul></body></html>

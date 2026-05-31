@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_upgrade__task_c__process_slot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>process_slot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_upgrade/task.c:235</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>pg_upgrade</code> におけるデータベースタスクの並列実行において、各スロットの状態遷移を管理し、接続の確立からクエリの実行、結果の処理までを非同期に実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void process_slot(const ClusterInfo *cluster, UpgradeTaskSlot *slot, const UpgradeTask *task);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>cluster</code>: 対象クラスタ情報。</li>
+<li><code>slot</code>: 処理対象の <code>UpgradeTaskSlot</code> 構造体。</li>
+<li><code>task</code>: 実行すべきタスク定義。</li>
+<li>**出力**: なし（副作用として <code>slot</code> の状態および接続状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>slot-&gt;ready</code> が真であること。偽の場合は即座に復帰する。</li>
+<li><code>dbs_processing</code> および <code>dbs_complete</code> グローバル変数が、タスクの進捗管理のために適切に更新されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p><code>slot-&gt;state</code> に基づくステートマシンとして動作する。 1. **<code>FREE</code>**: 未処理のデータベースがあれば <code>dbs_processing</code> をインクリメントし、<code>CONNECTING</code> 状態へ移行して <code>start_conn()</code> を呼び出す。 2. **<code>CONNECTING</code>**: <code>PQconnectPoll()</code> を呼び出し、接続完了を待機する。完了時に <code>RUNNING_QUERIES</code> へ移行し、<code>PQsendQuery()</code> でクエリを開始する。 3. **<code>RUNNING_QUERIES</code>**: <code>PQconsumeInput()</code> で入力を消費し、<code>PQisBusy()</code> が偽になるまで <code>process_query_result()</code> を呼び出して各ステップを処理する。全ステップ完了後、接続を解放し、スロットを初期化して再帰的に <code>process_slot()</code> を呼び出し、次のタスクへ移行する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/bin/pg_upgrade/task.c</code> 内のメインループおよび <code>wait_on_slots()</code> から呼び出される。</li>
+<li><code>process_slot</code> 自身（再帰呼び出し）。</li>
+<li>**呼び出し先**:</li>
+<li><code>start_conn()</code></li>
+<li><code>process_query_result()</code></li>
+<li><code>libpq</code> 関数群 (<code>PQconnectPoll</code>, <code>PQsendQuery</code>, <code>PQconsumeInput</code>, <code>PQisBusy</code>, <code>PQfinish</code>, <code>PQerrorMessage</code>)</li>
+<li><code>pg_fatal()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>UpgradeTaskSlot</code>: スロットの状態（<code>FREE</code>, <code>CONNECTING</code>, <code>RUNNING_QUERIES</code>）および接続情報を保持。</li>
+<li><code>UpgradeTask</code>: 実行すべきクエリステップの集合。</li>
+<li><code>ClusterInfo</code>: データベース配列情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PQconnectPoll</code> が <code>PGRES_POLLING_FAILED</code> を返した場合、<code>pg_fatal</code> により異常終了する。</li>
+<li><code>PQsendQuery</code> が失敗した場合、<code>pg_fatal</code> により異常終了する。</li>
+<li><code>PQconsumeInput</code> が失敗した場合、<code>pg_fatal</code> により異常終了する。</li>
+<li>全データベースの処理が完了している場合、<code>FREE</code> 状態で即座に復帰する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は非ブロッキング I/O を前提としているため、<code>select_mode</code> の設定が <code>wait_on_slots</code> の動作に直結する点に注意すること。</li>
+<li>再帰呼び出しは、スロットの解放直後に次のデータベース処理を即座に開始するために使用されている。</li>
+</ul></body></html>

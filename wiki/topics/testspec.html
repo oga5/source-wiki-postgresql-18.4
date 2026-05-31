@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/testspec.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TestSpec</h1>
+<h2>概念</h2>
+<p>PostgreSQLのテストスイートにおいて、テストの実行仕様や検証パターンを定義するために用いられるデータ構造です。 この名前を持つ構造体は、用途の異なる2つのテストモジュール（分離レベルテストとIntegerSetのテスト）でそれぞれ独立して定義されています。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**分離レベルテスト（<code>isolationtester</code>）における重要性**:</li>
+<p><code>.spec</code> ファイルから解析されたテスト定義（セットアップSQL、セッション、実行順序であるパーミュテーションなど）を保持するルートデータ構造であり、並行処理やトランザクション分離レベルの検証を自動実行するために不可欠です。</p>
+<li>**IntegerSetテストにおける重要性**:</li>
+<p><code>IntegerSet</code>（整数集合データ構造）の挙動を検証するために、生成する整数のビットパターン、繰り返し間隔、総数などのテスト仕様を定義し、様々な境界条件（Simple-8bエンコーディングの制約など）を網羅したテストケースを容易に追加・管理できるようにします。</p>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/test/isolation</code></li>
+<li><code>module:src/test/modules/test_integerset</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/test/isolation/isolationtester.h#TestSpec</code> (構造体): 分離レベルテストの仕様全体を保持するルートデータ構造。</li>
+<li><code>symbol:src/test/modules/test_integerset/test_integerset.c#test_spec</code> (構造体): <code>IntegerSet</code> のテストにおいて、特定の整数パターンを生成・検証するための設定情報を保持する構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>2つのエンティティは独立しているため、それぞれの流れを以下に示します。</p>
+<h3>1. 分離レベルテスト (<code>isolationtester</code>)</h3>
+<p>1. **初期化**: <code>spec_yyparse()</code> により <code>.spec</code> ファイルが読み込まれ、<code>TestSpec</code> 構造体が構築されます。 2. **検証とリンク**: <code>isolationtester.c</code> 内の <code>check_testspec()</code> が、<code>Step</code> や <code>PermutationStep</code> 内のポインタを解決し、実行可能な状態にリンクを構築します。 3. **実行**: 実行エンジンが <code>TestSpec</code> を走査し、定義された <code>sessions</code> に対して <code>setupsqls</code> を実行後、<code>permutations</code> に基づいて SQL を発行します。最後に <code>teardownsql</code> が実行されます。</p>
+<h3>2. IntegerSetテスト (<code>test_integerset</code>)</h3>
+<p>1. **定義**: <code>src/test/modules/test_integerset/test_integerset.c</code> 内の <code>test_specs</code> 配列にて、<code>test_spec</code> 構造体のインスタンスが静的に初期化されます。 2. **実行**: <code>test_pattern</code> 関数が引数として <code>test_spec</code> を受け取り、その設定（パターン文字列、間隔、値の数など）を参照して <code>IntegerSet</code> への値の追加や検証ロジックを制御・実行します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**分離レベルテスト (<code>TestSpec</code>)**:</li>
+<li><code>check_testspec()</code> 関数が呼び出されるまで、構造体内のポインタ（特に <code>PermutationStep</code> 関連）は未解決の状態である可能性があります。</li>
+<li><code>nsetupsqls</code>、<code>nsessions</code>、<code>npermutations</code> は、それぞれ対応する配列（<code>setupsqls</code>、<code>sessions</code>、<code>permutations</code>）の要素数を正確に保持している必要があります。</li>
+<li>**IntegerSetテスト (<code>test_spec</code>)**:</li>
+<li><code>test_name</code> および <code>pattern_str</code> は有効な文字列ポインタである必要があります。</li>
+<li><code>spacing</code> および <code>num_values</code> は <code>uint64</code> 型の範囲内である必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**分離レベルテスト (<code>TestSpec</code>)**:</li>
+<li><code>check_testspec()</code> によるリンク解決に失敗した場合、実行エンジンはテストを正しく実行できません。</li>
+<li><code>nsessions</code> や <code>npermutations</code> が 0 の場合、テスト実行ロジックが空の処理を行う可能性があります。</li>
+<li>本構造体は <code>specparse.y</code> と密接に関連しているため、テスト定義の構文を変更する場合は、本構造体の定義とパーサーの両方を更新する必要があります。</li>
+<li>**IntegerSetテスト (<code>test_spec</code>)**:</li>
+<li><code>num_values</code> に極端に大きな値を指定した場合、テスト実行時のメモリ消費量や処理時間に影響を与える可能性があります。</li>
+<li><code>pattern_str</code> の内容が <code>IntegerSet</code> の許容するビットパターンと整合しない場合、検証ロジックでエラーが発生します。</li>
+<li><code>Simple-8b</code> エンコーディングの制約（2^60）をテストする際は、<code>spacing</code> の値が境界条件を満たしているか確認する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/test/isolation/isolationtester.h</code> : 分離レベルテストにおける <code>TestSpec</code> 構造体の定義と関連データ構造（<code>Session</code>, <code>Permutation</code>, <code>Step</code>）。</li>
+<li><code>src/test/modules/test_integerset/test_integerset.c</code> : <code>test_spec</code> 構造体の定義、<code>test_specs</code> 配列によるテストケースの定義、および <code>test_pattern</code> 関数による検証ロジック。</li>
+</ul></body></html>

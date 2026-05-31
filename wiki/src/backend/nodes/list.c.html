@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/nodes/list.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/nodes/list.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の汎用リストパッケージの実装です。以前の「コンスセル（cons cell）」ベースの連結リストから、動的配列ベースの構造へ移行しており、メモリ効率とキャッシュ局所性が向上しています。本ファイルは、リストの生成、操作、集合演算、およびメモリ管理の基盤を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/nodes</code> サブシステムにおけるコンテナ層です。他のノード型（<code>Value</code>, <code>Query</code> 等）を保持するための汎用的なリスト構造を提供し、パーサーやプランナーがクエリツリーを構築する際の標準的なデータ構造として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**リストのライフサイクル管理**: リストの生成、拡張、およびメモリ解放（浅い解放と深い解放）。</li>
+<li>**要素操作**: リストの先頭・末尾への追加、指定位置への挿入、削除、および連結。</li>
+<li>**集合演算**: リスト間の和集合、積集合、差集合の計算。</li>
+<li>**ユーティリティ**: リストのコピー（浅い/深い）、ソート、およびメンバー検索。</li>
+<li>**デバッグ支援**: <code>DEBUG_LIST_MEMORY_USAGE</code> を有効にした際のメモリ移動強制による、ポインタ保持の不整合検出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>リスト生成・管理</h3>
+<ul>
+<li><code>new_list()</code>: 指定された型のリストを初期化し、メモリを割り当てる。</li>
+<li><code>enlarge_list()</code>: リストの容量が不足した際に、配列を再割り当て（または移動）する。</li>
+<li><code>list_free()</code>, <code>list_free_deep()</code>: リストのメモリを解放する。<code>deep</code> は要素が指すメモリも解放する。</li>
+<li><code>list_copy()</code>, <code>list_copy_deep()</code>: リストの複製。<code>deep</code> は <code>copyObjectImpl</code> を用いてツリー構造を再帰的にコピーする。</li>
+</ul>
+<h3>要素操作</h3>
+<ul>
+<li><code>lappend()</code>, <code>lcons()</code>: リストの末尾への追加、先頭への挿入。各型（int, oid, xid）専用のバリエーションが存在。</li>
+<li><code>list_insert_nth()</code>: 指定位置への要素挿入。</li>
+<li><code>list_delete_nth_cell()</code>, <code>list_delete_first()</code>, <code>list_delete_last()</code>: 指定位置や端の要素を削除し、配列を詰め直す。</li>
+<li><code>list_concat()</code>: リストの連結。</li>
+</ul>
+<h3>集合演算・検索</h3>
+<ul>
+<li><code>list_member()</code>: 線形探索による要素の存在確認。</li>
+<li><code>list_union()</code>, <code>list_intersection()</code>, <code>list_difference()</code>: リスト間の集合演算。</li>
+<li><code>list_append_unique()</code>: 重複を避けた追加。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>list_delete</code></li>
+<li><code>list_delete_cell</code></li>
+<li><code>list_delete_int</code></li>
+<li><code>list_delete_nth_cell</code></li>
+<li><code>list_delete_ptr</code></li>
+<li><code>list_free</code></li>
+<li><code>list_free_deep</code></li>
+<li><code>list_free_private</code></li>
+<li><code>list_insert_nth</code></li>
+<li><code>list_insert_nth_int</code></li>
+<li><code>list_insert_nth_oid</code></li>
+<li><code>qsort_comparator</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**データ構造**: <code>List</code> 構造体は、ヘッダーと <code>ListCell</code> の配列（<code>elements</code>）で構成されます。初期状態では <code>initial_elements</code> 配列をインラインで持ちますが、拡張が必要になると <code>palloc</code> された別領域へ移行します。</li>
+<li>**メモリ移動**: <code>enlarge_list</code> や <code>list_delete_nth_cell</code> は、<code>memmove</code> を用いて配列内の要素をシフトします。<code>DEBUG_LIST_MEMORY_USAGE</code> が有効な場合、常に新しいメモリ領域を確保してデータをコピーし、古い領域を無効化することで、古いポインタへの依存を強制的に排除します。</li>
+<li>**不変条件**: <code>check_list_invariants()</code> が各操作の前後で呼び出され、<code>length</code> が <code>max_length</code> を超えていないか、型タグが正しいかを確認します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/pg_list.h</code>: リスト構造体定義とマクロ。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>utils/memdebug.h</code>: デバッグ用メモリ保護機能。</li>
+<li><code>common/int.h</code>, <code>port/pg_bitutils.h</code>: 数値演算およびビット操作ユーティリティ。</li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/nodes/pg_list.h</code>: リスト操作の公開インターフェースとマクロ（<code>foreach</code>, <code>lfirst</code> 等）。</li>
+<li><code>src/backend/nodes/copyfuncs.c</code>: <code>list_copy_deep</code> が依存するノードコピーのロジック。</li>
+<li><code>src/backend/nodes/equalfuncs.c</code>: <code>list_member</code> 等で利用されるノード比較ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ポインタの有効性**: 本実装では、リストの拡張や削除によって <code>ListCell</code> の配列が再配置される可能性があります。リストの要素を指すポインタを保持し続けることは危険です。</li>
+<li>**パフォーマンス**: リストの先頭への挿入（<code>lcons</code>）や中間への挿入は、配列のシフトが発生するため <code>O(N)</code> のコストがかかります。頻繁な挿入・削除が必要な場合は、他のデータ構造を検討してください。</li>
+<li>**メモリ管理**: <code>list_free_deep</code> は、リスト内の各要素が <code>palloc</code> されたメモリを指していることを前提としています。それ以外の場合に使用するとクラッシュします。</li>
+<li>**省略箇所**: <code>list_sort</code> の内部で呼び出される <code>qsort</code> の比較関数（<code>list_int_cmp</code> 等）は、標準的な比較ロジックを提供していますが、カスタムの比較関数を渡すことも可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_insert_nth.html" target="wiki-view"><code>list_insert_nth</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_insert_nth_int.html" target="wiki-view"><code>list_insert_nth_int</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_insert_nth_oid.html" target="wiki-view"><code>list_insert_nth_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_delete_nth_cell.html" target="wiki-view"><code>list_delete_nth_cell</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_delete_cell.html" target="wiki-view"><code>list_delete_cell</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_delete.html" target="wiki-view"><code>list_delete</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_delete_ptr.html" target="wiki-view"><code>list_delete_ptr</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_delete_int.html" target="wiki-view"><code>list_delete_int</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_free_private.html" target="wiki-view"><code>list_free_private</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_free.html" target="wiki-view"><code>list_free</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__list_free_deep.html" target="wiki-view"><code>list_free_deep</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__list_c__qsort_comparator.html" target="wiki-view"><code>qsort_comparator</code></a></li>
+</ul></body></html>

@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__backup__basebackup_throttle_c__throttle.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>throttle</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/backup/basebackup_throttle.c:133</code></li>
+</ul>
+<h2>目的</h2>
+<p>ベースバックアップのデータ転送レートを監視し、設定された最大レートを超過しないよう待機時間を挿入してスロットリングを行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void throttle(bbsink_throttle *sink, size_t increment)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>sink</code>: スロットリング状態を保持する <code>bbsink_throttle</code> 構造体へのポインタ。</li>
+<li><code>increment</code>: 今回転送されたデータ量（バイト単位）。</li>
+<li>戻り値: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sink-&gt;throttling_counter</code> は常に 0 以上であること。</li>
+<li>整数演算で処理されるため、<code>throttling_sample</code> 未満の端数は次回の呼び出しに持ち越される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>increment</code> を <code>throttling_counter</code> に加算する。 2. <code>throttling_counter</code> が <code>throttling_sample</code> に達していない場合は即座に終了する。 3. 達している場合、経過時間と転送量から必要な待機時間を算出する。 4. 転送が速すぎる場合、<code>WaitLatch</code> を用いてループ内で待機する。</p>
+<ul>
+<li>待機中、<code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、停止要求に対して応答可能にする。</li>
+<li><code>WL_LATCH_SET</code> が発生した場合は割り込みチェックを行う。</li>
+<p>5. 待機完了後、<code>throttling_counter</code> を <code>throttling_sample</code> で除算した余りに更新する。 6. <code>throttled_last</code> を現在のタイムスタンプで更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元:</li>
+<li><code>bbsink_throttle_archive_contents</code> (<code>src/backend/backup/basebackup_throttle.c:112</code>)</li>
+<li><code>bbsink_throttle_manifest_contents</code> (<code>src/backend/backup/basebackup_throttle.c:123</code>)</li>
+<li>呼び出し先:</li>
+<li><code>GetCurrentTimestamp()</code></li>
+<li><code>ResetLatch()</code></li>
+<li><code>CHECK_FOR_INTERRUPTS()</code></li>
+<li><code>WaitLatch()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>bbsink_throttle</code>: スロットリング状態（カウンタ、サンプル値、最終計測時刻など）を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>転送が設定レートより遅い場合、待機は発生しない。</li>
+<li><code>WaitLatch</code> のタイムアウトにより、待機ループから正常に抜ける。</li>
+<li>プロセス停止シグナル受信時は <code>CHECK_FOR_INTERRUPTS()</code> により処理が中断される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は「デコレータ」として機能し、データ転送のパイプラインに挿入される。</li>
+<li>整数演算による端数処理を行っているため、高頻度な呼び出しでも累積誤差を最小限に抑える設計となっている。</li>
+<li><code>WaitLatch</code> の引数 <code>sleep / 1000</code> はミリ秒単位への変換を意図している。</li>
+</ul></body></html>

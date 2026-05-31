@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgxlog_c__spgRedoVacuumLeaf.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgRedoVacuumLeaf</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgxlog.c:750</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスページに対するバキューム操作（不要タプルの削除、プレースホルダー化、タプルの移動、チェーンの更新）の WAL リプレイを実行します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgRedoVacuumLeaf(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（WAL レコードデータ）。レコード内には <code>spgxlogVacuumLeaf</code> 構造体および削除・移動・チェーン対象の <code>OffsetNumber</code> 配列が含まれます。</li>
+<li>**出力**: なし（副作用としてインデックスページを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>fillFakeState</code> により、リプレイに必要な最小限の <code>SpGistState</code> が構築されていること。</li>
+<li>WAL レコード内の各オフセット配列は、<code>spgxlogVacuumLeaf</code> ヘッダー直後に連続して配置されていること。</li>
+<li><code>chainSrc</code> で指定されたタプルは <code>SPGIST_LIVE</code> 状態であること（<code>Assert</code> で検証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>XLogRecGetData</code> を介して WAL レコードから制御情報と各オフセット配列を抽出します。 2. <code>XLogReadBufferForRedo</code> を呼び出し、対象ページをロック・取得します。 3. <code>spgPageIndexMultiDelete</code> を使用して、以下の順序でページを更新します。</p>
+<ul>
+<li><code>toDead</code> に指定されたタプルを <code>SPGIST_DEAD</code> に設定して削除。</li>
+<li><code>toPlaceholder</code> に指定されたタプルを <code>SPGIST_PLACEHOLDER</code> に設定。</li>
+<p>4. <code>moveSrc</code> と <code>moveDest</code> に基づき、ページ内のタプルを入れ替えます。 5. 入れ替え後の <code>moveSrc</code> 位置のタプルを <code>SPGIST_PLACEHOLDER</code> として削除します。 6. <code>chainSrc</code> に指定されたタプルの次オフセットを <code>chainDest</code> に更新します。 7. ページに LSN を書き込み、バッファをダーティとしてマークした後にロックを解放します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>spg_redo</code>（<code>src/backend/access/spgist/spgxlog.c:959</code>）</li>
+<li>**呼び出し先**: <code>fillFakeState</code>, <code>XLogReadBufferForRedo</code>, <code>spgPageIndexMultiDelete</code>, <code>PageGetItemId</code>, <code>PageGetItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgxlogVacuumLeaf</code>: WAL レコードのヘッダー構造体。</li>
+<li><code>SpGistState</code>: リプレイ時に使用するインデックスの状態管理構造体。</li>
+<li><code>OffsetNumber</code>: ページ内のタプル位置を示す識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、ページ更新はスキップされます。</li>
+<li><code>chainSrc</code> で指定されたタプルが <code>SPGIST_LIVE</code> でない場合、アサーションエラーが発生します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、インデックスの物理的な整合性を維持するため、削除や移動の順序が重要です。</li>
+<li><code>spgPageIndexMultiDelete</code> は、指定された状態（<code>SPGIST_DEAD</code> や <code>SPGIST_PLACEHOLDER</code>）への遷移を管理します。</li>
+<li>ページ内のタプル入れ替えは、<code>ItemIdData</code> を用いた直接的なメモリコピーで行われます。</li>
+</ul></body></html>

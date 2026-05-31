@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/analyzejoins.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/analyzejoins.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、クエリの初期解析（<code>initsplan.c</code>）後に実行される、不要な結合（Join）を排除・簡略化するための最適化ルーチンを保持します。主に「左結合の除去（Left Join Removal）」と「自己結合の排除（Self-Join Elimination）」を扱います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムの一部として、論理プランニングの最終段階でクエリツリーを軽量化します。結合の削除に伴い、<code>PlannerInfo</code> 内の複雑な依存関係（<code>RestrictInfo</code>, <code>EquivalenceClass</code>, <code>PlaceHolderVar</code> 等）を整合的に更新する責務を負います。</p>
+<h2>責務</h2>
+<ul>
+<li>**不要な結合の検出と削除**:</li>
+<li>結合結果が左側の入力と重複することが証明できる左結合（Left Join）の削除。</li>
+<li>結合条件が常に同一行を指すことが証明できる自己結合（Self-Join）の排除。</li>
+<li>**データ構造の整合性維持**:</li>
+<li>削除されたリレーション（<code>RelOptInfo</code>）への参照を、保持するリレーションへ書き換える。</li>
+<li><code>EquivalenceClass</code> や <code>RestrictInfo</code> 内の <code>relid</code> セットを再計算し、不要な制約を整理する。</li>
+<li>**一意性の証明**:</li>
+<li>インデックスやクエリの特性（<code>DISTINCT</code>, <code>GROUP BY</code> 等）に基づき、リレーションが結合条件に対して一意であることを判定する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>結合最適化エントリーポイント</h3>
+<ul>
+<li><code>remove_useless_joins</code>: <code>join_info_list</code> を走査し、不要な左結合を削除するメインループ。</li>
+<li><code>reduce_unique_semijoins</code>: セミ結合（<code>JOIN_SEMI</code>）を、内側リレーションが一意である場合に内部結合へ格下げする。</li>
+<li><code>remove_useless_self_joins</code>: 自己結合排除のメインエントリーポイント。</li>
+</ul>
+<h3>一意性判定・検証</h3>
+<ul>
+<li><code>rel_is_distinct_for</code>: 特定の結合条件に基づき、リレーションが重複行を生成しないことを検証する。</li>
+<li><code>query_is_distinct_for_with_collations</code>: サブクエリの <code>DISTINCT</code>/<code>GROUP BY</code> 句を利用して一意性を判定する。</li>
+<li><code>innerrel_is_unique_ext</code>: 結合条件に基づき、内側リレーションの一意性をキャッシュ付きで判定する。</li>
+</ul>
+<h3>構造体</h3>
+<ul>
+<li><code>DistinctColInfo</code>: 一意性判定時に使用する、列番号と等価演算子・照合順序のペア。</li>
+<li><code>SelfJoinCandidate</code>: 自己結合排除の候補となるリレーションのメタデータ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DistinctColInfo</code></li>
+<li><code>SelfJoinCandidate</code></li>
+<li><code>join_is_removable</code></li>
+<li><code>reduce_unique_semijoins</code></li>
+<li><code>rel_is_distinct_for</code></li>
+<li><code>rel_supports_distinctness</code></li>
+<li><code>remove_leftjoinrel_from_query</code></li>
+<li><code>remove_rel_from_eclass</code></li>
+<li><code>remove_rel_from_joinlist</code></li>
+<li><code>remove_rel_from_query</code></li>
+<li><code>remove_rel_from_restrictinfo</code></li>
+<li><code>remove_useless_joins</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>remove_useless_joins</code> 等が <code>PlannerInfo</code> を受け取り、<code>join_info_list</code> を走査。 2. **判定**: <code>join_is_removable</code> や <code>innerrel_is_unique</code> を呼び出し、結合の削除可否を判断。 3. **削除と置換**:</p>
+<ul>
+<li><code>remove_rel_from_query</code> が中心となり、<code>all_baserels</code> や <code>join_info_list</code> から対象リレーションを削除。</li>
+<li><code>ChangeVarNodesExtended</code> を用いて、クエリツリー全体および <code>RestrictInfo</code> 内の <code>varno</code> を置換。</li>
+<p>4. **再構築**: <code>rebuild_placeholder_attr_needed</code> 等を呼び出し、削除後の制約情報を再計算して整合性を確保。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/restrictinfo.h</code>: 結合制約の操作。</li>
+<li><code>nodes/nodeFuncs.h</code>: クエリツリーの走査と変数置換。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログ（インデックス情報等）の参照。</li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>optimizer/joininfo.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>prep/prepjointree.c</code>: 初期段階での結合簡略化。</li>
+<li><code>optimizer/plan/initsplan.c</code>: 結合ツリーの初期化と制約分配。</li>
+<li><code>optimizer/util/relnode.c</code>: <code>RelOptInfo</code> の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 削除処理は <code>PlannerInfo</code> の <code>planner_cxt</code> 上で行われます。<code>pfree</code> によるメモリ解放は慎重に行われていますが、複雑な依存関係のため、一部のデータ構造は再構築（<code>rebuild_...</code> 関数群）に依存しています。</li>
+<li>**制約**: 自己結合排除は <code>enable_self_join_elimination</code> フラグで制御されます。</li>
+<li>**未実装・浅い部分**: <code>remove_rel_from_restrictinfo</code> 等は、OR 句の再帰的なクリーンアップを行いますが、複雑なネスト構造に対する網羅性は限定的である可能性があります。また、<code>PlaceHolderVar</code> の削除は非常に慎重に行われており、一部のケースでは最適化を諦める設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__DistinctColInfo.html" target="wiki-view"><code>DistinctColInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__SelfJoinCandidate.html" target="wiki-view"><code>SelfJoinCandidate</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_useless_joins.html" target="wiki-view"><code>remove_useless_joins</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__join_is_removable.html" target="wiki-view"><code>join_is_removable</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_rel_from_query.html" target="wiki-view"><code>remove_rel_from_query</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_leftjoinrel_from_query.html" target="wiki-view"><code>remove_leftjoinrel_from_query</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_rel_from_restrictinfo.html" target="wiki-view"><code>remove_rel_from_restrictinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_rel_from_eclass.html" target="wiki-view"><code>remove_rel_from_eclass</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__remove_rel_from_joinlist.html" target="wiki-view"><code>remove_rel_from_joinlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__reduce_unique_semijoins.html" target="wiki-view"><code>reduce_unique_semijoins</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__rel_supports_distinctness.html" target="wiki-view"><code>rel_supports_distinctness</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__analyzejoins_c__rel_is_distinct_for.html" target="wiki-view"><code>rel_is_distinct_for</code></a></li>
+</ul></body></html>

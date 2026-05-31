@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlogprefetcher.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogprefetcher.c</h1>
+<h2>概要</h2>
+<p>リカバリ（WALリプレイ）処理中のI/O待ち時間を削減するための先読み（Prefetching）サポートモジュールです。WALを先行して読み込み、将来必要となるデータブロックをバッファプールへ事前にロードすることで、リプレイ時の物理I/Oを抑制します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>XLogReader</code> のラッパーとして機能します。リカバリプロセスが次に必要とするブロックを予測し、<code>PrefetchSharedBuffer</code> を介してカーネルにI/Oを発行します。また、リプレイ済みのWALと先読みの進捗を同期させる役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**先読み制御**: WALレコードを先行デコードし、メインフォークのブロック参照を抽出してI/Oを発行する。</li>
+<li>**フィルタリング**: 存在しないファイルや切り詰められた範囲への不要なI/Oを抑制する。</li>
+<li>**統計管理**: <code>pg_stat_recovery_prefetch</code> 用のメトリクス（ヒット率、スキップ回数、I/O深度など）を共有メモリ上で管理する。</li>
+<li>**リソース管理**: 先読み用キュー（<code>LsnReadQueue</code>）の動的割り当てと、GUC変更時の再構成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>XLogPrefetcher</code>: 先読み状態を保持するメイン構造体。</li>
+<li><code>XLogPrefetcherReadRecord</code>: <code>XLogReadRecord</code> の代替となるメインエントリポイント。</li>
+<li><code>LsnReadQueue</code>: 先読み中のI/Oリクエストを管理する循環キュー。</li>
+<li><code>XLogPrefetcherNextBlock</code>: 次のブロック参照を解析し、I/Oを発行するか判断するコールバック。</li>
+<li><code>recovery_prefetch</code>: 先読みの有効/無効を制御するGUC変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LsnReadQueueNextStatus</code></li>
+<li><code>XLogPrefetchResetStats</code></li>
+<li><code>XLogPrefetchShmemInit</code></li>
+<li><code>XLogPrefetchStats</code></li>
+<li><code>XLogPrefetcherAllocate</code></li>
+<li><code>XLogPrefetcherFilter</code></li>
+<li><code>XLogPrefetcherFree</code></li>
+<li><code>XLogRecPtr</code></li>
+<li><code>lrq_alloc</code></li>
+<li><code>lrq_free</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>XLogPrefetcherAllocate</code> でリーダーと紐付け、フィルタテーブルを初期化。 2. **先読み実行**: <code>XLogPrefetcherReadRecord</code> が呼ばれると、<code>XLogReadAhead</code> を用いてWALを先行デコード。 3. **I/O発行**: <code>XLogPrefetcherNextBlock</code> がブロックを特定し、<code>PrefetchSharedBuffer</code> でI/Oを発行。 4. **同期**: <code>lrq_complete_lsn</code> がリプレイ済みのLSNを追跡し、完了したI/Oをキューから解放。 5. **フィルタリング**: <code>XLogPrefetcherAddFilter</code> により、特定のLSNまでアクセスを禁止する範囲を管理。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlogreader.h</code>: WALデコードの基盤。</li>
+<li><code>storage/bufmgr.h</code>: <code>PrefetchSharedBuffer</code> によるI/O発行。</li>
+<li><code>storage/shmem.h</code>: 統計情報の共有メモリ管理。</li>
+<li><code>port/atomics.h</code>: 統計カウンタの競合制御。</li>
+<li><code>access/xlogprefetcher.h</code></li>
+<li><code>catalog/pg_control.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>commands/dbcommands_xlog.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/xlogprefetcher.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xlogreader.c</code>: WALレコードのデコードロジック。</li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: <code>PrefetchSharedBuffer</code> の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**制限事項**: 現在はメインフォークのブロックのみが先読み対象です。</li>
+<li>**フィルタリングの重要性**: <code>XLogPrefetcherFilter</code> は、リプレイが追いつく前に存在しないファイルへアクセスしてエラーになるのを防ぐ重要な機構です。</li>
+<li>**デバッグ**: <code>#define XLOGPREFETCHER_DEBUG_LEVEL LOG</code> を有効にすると、先読みの抑制理由がログに出力されます。</li>
+<li>**パフォーマンス**: <code>maintenance_io_concurrency</code> が0の場合、先読みは無効化されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__LsnReadQueueNextStatus.html" target="wiki-view"><code>LsnReadQueueNextStatus</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogRecPtr.html" target="wiki-view"><code>XLogRecPtr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__LsnReadQueue.html" target="wiki-view"><code>LsnReadQueue</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetcher.html" target="wiki-view"><code>XLogPrefetcher</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetcherFilter.html" target="wiki-view"><code>XLogPrefetcherFilter</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetchStats.html" target="wiki-view"><code>XLogPrefetchStats</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__lrq_alloc.html" target="wiki-view"><code>lrq_alloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__lrq_free.html" target="wiki-view"><code>lrq_free</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetchResetStats.html" target="wiki-view"><code>XLogPrefetchResetStats</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetchShmemInit.html" target="wiki-view"><code>XLogPrefetchShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetcherAllocate.html" target="wiki-view"><code>XLogPrefetcherAllocate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetcherFree.html" target="wiki-view"><code>XLogPrefetcherFree</code></a></li>
+</ul></body></html>

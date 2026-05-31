@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_shmem.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_shmem.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの統計情報（Cumulative Statistics）を共有メモリ上で管理するための基盤機能を提供します。動的共有メモリ（DSA）とハッシュテーブル（dshash）を組み合わせ、バックエンド間で統計情報を共有・同期するための仕組みを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgstat.c</code> が提供する統計システムの上位インターフェースに対し、低レイヤーのメモリ管理と同期制御を提供します。各バックエンドが共有メモリ上の統計情報へ効率的にアクセスするためのローカルキャッシュ（<code>pgStatEntryRefHash</code>）を管理し、共有メモリのライフサイクルを制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリの初期化**: <code>StatsShmemInit</code> により、Postmaster起動時に統計用共有メモリ領域（DSAおよびハッシュテーブル）を確保・初期化する。</li>
+<li>**参照管理**: 各バックエンドが保持する共有統計情報への参照（<code>PgStat_EntryRef</code>）を管理し、不要になった統計情報の解放を調整する。</li>
+<li>**GCメカニズム**: 統計情報が削除された際、他のバックエンドが保持する古い参照を無効化するためのガベージコレクション（GC）機能を提供。</li>
+<li>**ロック制御**: 統計情報へのアクセスを保護するための共有/排他ロックの抽象化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>StatsShmemInit</code>: 統計システム全体の共有メモリ領域を確保する。</li>
+<li><code>pgstat_get_entry_ref</code>: 統計エントリへの参照を取得する。存在しない場合は作成する。</li>
+<li><code>pgstat_lock_entry / pgstat_unlock_entry</code>: 統計エントリに対するLWLockの操作。</li>
+<li><code>pgStatLocal.shmem</code>: 現在のバックエンドが参照する共有統計制御構造体。</li>
+<li><code>pgStatEntryRefHash</code>: 各バックエンドが保持する、共有統計エントリへのローカルキャッシュ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Datum</code></li>
+<li><code>PgStat_EntryRefHashEntry</code></li>
+<li><code>pgstat_attach_shmem</code></li>
+<li><code>pgstat_detach_shmem</code></li>
+<li><code>pgstat_free_entry</code></li>
+<li><code>pgstat_get_entry_ref_cached</code></li>
+<li><code>pgstat_get_entry_ref_locked</code></li>
+<li><code>pgstat_reset_entries_of_kind</code></li>
+<li><code>pgstat_reset_entry</code></li>
+<li><code>pgstat_reset_matching_entries</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>StatsShmemInit</code> が共有メモリを確保し、<code>dshash</code> を構築する。 2. **アクセス**: <code>pgstat_get_entry_ref</code> が呼ばれると、まずローカルの <code>pgStatEntryRefHash</code> を確認。キャッシュミス時は共有メモリ上の <code>dshash</code> を検索し、必要に応じてエントリを生成（<code>pgstat_init_entry</code>）する。 3. **同期**: 統計情報の削除時、<code>dropped</code> フラグを立て、参照カウントが0になった時点で <code>dsa_free</code> を実行する。 4. **GC**: 他のバックエンドが古い参照を保持している場合、<code>pgstat_request_entry_refs_gc</code> を通じてGCを要求し、各バックエンドが <code>pgstat_gc_entry_refs</code> でローカルキャッシュをクリーンアップする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>pgstat.h</code>: 統計情報の基本構造体定義。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ管理機能。</li>
+<li><code>utils/pgstat_internal.h</code>: 内部的な統計情報管理構造体。</li>
+<li><code>lib/simplehash.h</code>: ローカルキャッシュ用ハッシュテーブルの実装。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計システムのメインロジック。</li>
+<li><code>src/include/storage/dsa.h</code>: 動的共有メモリの管理。</li>
+<li><code>src/include/storage/dshash.h</code>: 共有メモリ上のハッシュテーブル。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「共有メモリ上の統計情報のライフサイクル」を管理する複雑な箇所です。特に、<code>refcount</code> と <code>generation</code> を用いた楽観的なロック制御と、バックエンド間での削除同期（GC）の仕組みを理解することが重要です。</li>
+<li><code>pgstat_get_entry_ref</code> は頻繁に呼ばれるため、ローカルキャッシュによる最適化が効いている点に注目してください。</li>
+<li>統計情報の削除は即時ではなく、全バックエンドが参照を解放するまで遅延される設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__PgStat_EntryRefHashEntry.html" target="wiki-view"><code>PgStat_EntryRefHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__StatsShmemInit.html" target="wiki-view"><code>StatsShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_attach_shmem.html" target="wiki-view"><code>pgstat_attach_shmem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_detach_shmem.html" target="wiki-view"><code>pgstat_detach_shmem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_get_entry_ref_cached.html" target="wiki-view"><code>pgstat_get_entry_ref_cached</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_get_entry_ref.html" target="wiki-view"><code>pgstat_get_entry_ref</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_get_entry_ref_locked.html" target="wiki-view"><code>pgstat_get_entry_ref_locked</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_free_entry.html" target="wiki-view"><code>pgstat_free_entry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_reset_entry.html" target="wiki-view"><code>pgstat_reset_entry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_reset_matching_entries.html" target="wiki-view"><code>pgstat_reset_matching_entries</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_reset_entries_of_kind.html" target="wiki-view"><code>pgstat_reset_entries_of_kind</code></a></li>
+</ul></body></html>

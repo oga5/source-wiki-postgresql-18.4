@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/gininsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/gininsert.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスへのデータ挿入および構築を統括するモジュールです。単一タプルの挿入（<code>gininsert</code>）から、インデックス作成時のバルク構築（<code>ginbuild</code>）、および並列インデックス構築の調整ロジックまでを網羅します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおける「書き込み」の入り口です。<code>ginbtree.c</code>（B-tree操作）や <code>ginfast.c</code>（ペンディングリスト）といった下位層を呼び出し、インデックスの物理的な更新を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**挿入制御**: <code>FastUpdate</code>（ペンディングリスト）の有無に応じた挿入パスの振り分け。</li>
+<li>**インデックス構築**: <code>ginbuild</code> を通じた初期構築。メモリ上の <code>BuildAccumulator</code> を用いた効率的なキー集約と、必要に応じたインデックスへのフラッシュ。</li>
+<li>**並列構築**: <code>GinLeader</code> および <code>GinBuildShared</code> を用いた並列ワーカーの管理、結果のマージ、および共有メモリ上の <code>Tuplesort</code> を介した同期。</li>
+<li>**リーフタプル管理**: ポスティングリストの圧縮と、リストが溢れた際のポスティングツリーへの昇格ロジック。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インデックス構築・状態管理</h3>
+<ul>
+<li><code>GinBuildState</code>: 構築中の全状態（メモリコンテキスト、<code>BuildAccumulator</code>、並列リーダー情報）を保持するメイン構造体。</li>
+<li><code>GinBuildShared</code>: 並列構築時に共有メモリへ配置される、ワーカー間同期のための構造体。</li>
+<li><code>GinLeader</code>: 並列構築のリーダープロセスが保持する制御用構造体。</li>
+</ul>
+<h3>挿入・構築ロジック</h3>
+<ul>
+<li><code>gininsert</code>: インデックス挿入の公開API。</li>
+<li><code>ginbuild</code>: インデックス構築の公開API。</li>
+<li><code>ginEntryInsert</code>: 指定されたキーとTIDリストをインデックスへ挿入する中核関数。</li>
+<li><code>ginHeapTupleBulkInsert</code>: 構築時にキーを抽出し、<code>BuildAccumulator</code> へ追加する。</li>
+</ul>
+<h3>並列処理</h3>
+<ul>
+<li><code>_gin_begin_parallel</code> / <code>_gin_end_parallel</code>: 並列構築のライフサイクル管理。</li>
+<li><code>_gin_parallel_merge</code>: リーダープロセスがワーカーからの結果をマージする処理。</li>
+<li><code>_gin_parallel_scan_and_build</code>: ワーカープロセスが実行するスキャンとソートのメインループ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AssertCheckGinBuffer</code></li>
+<li><code>AssertCheckItemPointers</code></li>
+<li><code>GinBuffer</code></li>
+<li><code>GinBufferFree</code></li>
+<li><code>GinBufferInit</code></li>
+<li><code>GinBufferIsEmpty</code></li>
+<li><code>GinBufferKeyEquals</code></li>
+<li><code>GinBufferReset</code></li>
+<li><code>GinBuildShared</code></li>
+<li><code>GinBuildState</code></li>
+<li><code>GinLeader</code></li>
+<li><code>GinSegmentInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入フロー**: <code>gininsert</code> → <code>ginHeapTupleFastInsert</code>（高速挿入）または <code>ginHeapTupleInsert</code> → <code>ginEntryInsert</code> → <code>ginInsertValue</code>（B-tree挿入）。 2. **構築フロー**: <code>ginbuild</code> → <code>table_index_build_scan</code> → <code>ginBuildCallback</code> → <code>ginHeapTupleBulkInsert</code> → <code>ginEntryInsert</code>。 3. **並列構築フロー**:</p>
+<ul>
+<li>リーダーが <code>GinBuildShared</code> を初期化しワーカーを起動。</li>
+<li>各ワーカーが <code>ginBuildCallbackParallel</code> を経由して <code>Tuplesort</code> にデータを書き込む。</li>
+<li>ワーカーが <code>_gin_process_worker_data</code> でデータをマージし、共有 <code>Tuplesort</code> へ出力。</li>
+<li>リーダーが <code>_gin_parallel_merge</code> で全ワーカーの結果をマージし、最終的なインデックスを構築。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GIN内部構造体定義。</li>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッドの抽象化。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/parallel.h</code>: 並列処理基盤。</li>
+<li><code>access/gin_tuple.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ginbtree.c</code>: B-treeのページ操作と挿入の低レベル実装。</li>
+<li><code>ginfast.c</code>: ペンディングリスト（Fast Update）の管理。</li>
+<li><code>ginpostinglist.c</code>: TIDリストの圧縮・展開アルゴリズム。</li>
+<li><code>ginutil.c</code>: メタページ管理と初期化。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ginbuild</code> 中は <code>tmpCtx</code> と <code>funcCtx</code> を使い分け、メモリリークを防いでいます。<code>maintenance_work_mem</code> が構築パフォーマンスに直結します。</li>
+<li>**並列構築の制約**: 並列構築時は <code>allow_sync=true</code> でスキャンするため、TIDの順序が保証されません。そのため、ラップアラウンド検知とマージソートによる再構築が必須となっています。</li>
+<li>**ポスティングツリーへの昇格**: <code>addItemPointersToLeafTuple</code> は、リーフページに収まらないTIDリストを自動的にポスティングツリーへ変換します。この際、<code>createPostingTree</code> が呼び出されます。</li>
+<li>**省略箇所**: 本ファイルは並列構築の複雑な同期ロジックを含みますが、<code>Tuplesort</code> 自体の内部実装（<code>tuplesort.c</code>）については詳細を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBuildShared.html" target="wiki-view"><code>GinBuildShared</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinLeader.html" target="wiki-view"><code>GinLeader</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBuildState.html" target="wiki-view"><code>GinBuildState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBuffer.html" target="wiki-view"><code>GinBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__AssertCheckItemPointers.html" target="wiki-view"><code>AssertCheckItemPointers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__AssertCheckGinBuffer.html" target="wiki-view"><code>AssertCheckGinBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBufferInit.html" target="wiki-view"><code>GinBufferInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBufferIsEmpty.html" target="wiki-view"><code>GinBufferIsEmpty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBufferKeyEquals.html" target="wiki-view"><code>GinBufferKeyEquals</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBufferReset.html" target="wiki-view"><code>GinBufferReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinBufferFree.html" target="wiki-view"><code>GinBufferFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gininsert_c__GinSegmentInfo.html" target="wiki-view"><code>GinSegmentInfo</code></a></li>
+</ul></body></html>

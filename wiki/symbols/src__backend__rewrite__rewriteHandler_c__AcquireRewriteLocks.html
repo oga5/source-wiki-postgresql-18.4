@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__rewrite__rewriteHandler_c__AcquireRewriteLocks.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AcquireRewriteLocks</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/rewrite/rewriteHandler.c:146</code></li>
+</ul>
+<h2>目的</h2>
+<p>クエリ内の全リレーションに対して適切なロックを確保し、スキーマ変更からリライタ、プランナ、エグゼキュータを保護します。また、JOIN内の削除済みカラムを検出し、無効化する処理を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void AcquireRewriteLocks(Query *parsetree, bool forExecute, bool forUpdatePushedDown)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>parsetree</code>: 対象となるクエリツリー。</li>
+<li><code>forExecute</code>: 実行目的か否か。<code>false</code> の場合は全リレーションに <code>AccessShareLock</code> を使用します。</li>
+<li><code>forUpdatePushedDown</code>: プッシュダウンされた更新ロックを反映するか否か。</li>
+<li>**出力**: なし（副作用としてリレーションのロック確保および <code>parsetree</code> 内の <code>RangeTblEntry</code> や <code>joinaliasvars</code> の更新を行います）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>parsetree</code> は有効なクエリツリーであること。</li>
+<li><code>RTE_JOIN</code> のエイリアスリスト要素は、同一クエリレベル内の先行する <code>RTE</code> を参照していること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **RTE処理**: クエリの <code>rtable</code> を走査し、種類に応じて処理します。</p>
+<ul>
+<li><code>RTE_RELATION</code>: <code>forExecute</code> に応じたロックモード（<code>AccessShareLock</code> または <code>rellockmode</code>）でリレーションをオープンし、<code>rte-&gt;relkind</code> を最新の状態に更新します。</li>
+<li><code>RTE_JOIN</code>: <code>joinaliasvars</code> を走査し、参照先カラムが削除されている場合は該当箇所を <code>NULL</code> に置換します。</li>
+<li><code>RTE_SUBQUERY</code>: 再帰的に <code>AcquireRewriteLocks</code> を呼び出します。</li>
+<p>2. **CTE処理**: <code>cteList</code> 内の各クエリに対して再帰的に呼び出します。 3. **SubLink処理**: <code>hasSubLinks</code> が真の場合、<code>query_tree_walker</code> を用いてクエリ内のサブリンクを走査・処理します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/catalog/pg_proc.c</code></li>
+<li><code>src/backend/commands/matview.c</code></li>
+<li><code>src/backend/executor/functions.c</code></li>
+<li><code>src/backend/optimizer/util/clauses.c</code></li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code> (自身を再帰呼び出し)</li>
+<li>**呼び出し先**: </li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>strip_implicit_coercions</code></li>
+<li><code>get_rte_attribute_is_dropped</code></li>
+<li><code>rt_fetch</code></li>
+<li><code>query_tree_walker</code> (内部関数 <code>acquireLocksOnSubLinks</code> を使用)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Query</code>: クエリツリー構造体。</li>
+<li><code>RangeTblEntry</code>: レンジテーブルエントリ。</li>
+<li><code>acquireLocksOnSubLinks_context</code>: サブリンク走査時のコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>varno</code> が <code>rt_index</code> 以上の場合、<code>JOIN RTE</code> 内で予期せぬエラーが発生します。</li>
+<li><code>RTE_SUBQUERY</code> の再帰呼び出しにおいて、循環参照が発生する可能性については本関数単体では制御していません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はトランザクション終了までロックを保持します。</li>
+<li><code>RTE_JOIN</code> の処理において、<code>USING</code> カラムなどのマージされたカラムは削除されない前提で処理されています。</li>
+<li><code>forExecute</code> が <code>false</code> の場合、<code>rellockmode</code> を無視して <code>AccessShareLock</code> を強制するため、読み取り専用の解析フェーズ等で利用されます。</li>
+</ul></body></html>

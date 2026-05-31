@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginvacuum.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginvacuum.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスのバキューム処理を担うソースファイルです。インデックス内の不要なタプル（TID）の削除、空になったページの再利用、および統計情報の更新を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおいて、メンテナンスフェーズの主役です。<code>ginbulkdelete</code>（<code>VACUUM</code>コマンド）と <code>ginvacuumcleanup</code>（<code>VACUUM ANALYZE</code>等）のエントリポイントを提供し、インデックスの物理的な整合性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**TIDの削除**: <code>ginVacuumItemPointers</code> を通じて、インデックスエントリ内の不要なTIDを特定・除去し、必要に応じてポストティングリストを再圧縮します。</li>
+<li>**ポストティングツリーの整理**: 空になったポストティングツリーのページを検出し、ツリー構造から切り離して再利用可能にします。</li>
+<li>**ページのリサイクル判定**: <code>GinPageIsRecyclable</code> により、削除済みページが他のトランザクションから参照されていないかを確認し、FSM（Free Space Map）への返却を制御します。</li>
+<li>**統計情報の更新**: インデックス全体のページ数やエントリ数を集計し、メタページを更新します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ginbulkdelete</code>: <code>VACUUM</code>実行時に呼ばれるメイン関数。エントリツリーを走査し、各ポストティングツリーを順次バキュームします。</li>
+<li><code>ginvacuumcleanup</code>: インデックス全体のクリーンアップと統計更新を行う関数。</li>
+<li><code>GinVacuumState</code>: バキューム処理中の状態（コールバック関数やメモリコンテキスト）を保持する構造体。</li>
+<li><code>ginDeletePage</code>: ポストティングツリーのページを物理的に削除し、親ノードのダウンリンクを更新する低レベル関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DataPageDeleteStack</code></li>
+<li><code>GinPageIsRecyclable</code></li>
+<li><code>ginScanToDelete</code></li>
+<li><code>ginVacuumEntryPage</code></li>
+<li><code>ginVacuumItemPointers</code></li>
+<li><code>ginVacuumPostingTree</code></li>
+<li><code>ginVacuumPostingTreeLeaves</code></li>
+<li><code>xlogVacuumPage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **エントリツリーの走査**: <code>ginbulkdelete</code> がインデックスのルートからリーフまで辿り、各ページに対して <code>ginVacuumEntryPage</code> を適用します。 2.  **ポストティングリストの更新**: <code>ginVacuumEntryPage</code> は各エントリを検査し、削除対象のTIDがあれば <code>ginVacuumItemPointers</code> で除去・再圧縮します。 3.  **ポストティングツリーのバキューム**: エントリが参照するポストティングツリーがある場合、<code>ginVacuumPostingTree</code> を呼び出し、リーフのバキュームと空ページの削除（<code>ginScanToDelete</code>）を再帰的に行います。 4.  **クリーンアップ**: <code>ginvacuumcleanup</code> が全ページをスキャンし、<code>GinPageIsRecyclable</code> で再利用可能なページを特定してFSMを更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GINの内部構造体定義。</li>
+<li><code>access/ginxlog.h</code>: バキューム処理のWALログ定義。</li>
+<li><code>storage/indexfsm.h</code>: 空き領域管理（FSM）へのアクセス。</li>
+<li><code>commands/vacuum.h</code>: バキューム関連の共通インターフェース。</li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ginfast.c</code>: <code>ginInsertCleanup</code> を提供。バキューム開始時に保留中の挿入を処理するために呼び出されます。</li>
+<li><code>ginpostinglist.c</code>: ポストティングリストの圧縮・展開ロジック。</li>
+<li><code>gindatapage.c</code>: ポストティングツリーのページ操作の基礎。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**デッドロック回避**: ポストティングツリーの削除時、親から子へのロック順序が厳密に管理されています。<code>ginScanToDelete</code> 内のロック処理は複雑なため、変更時は注意が必要です。</li>
+<li>**WAL**: <code>xlogVacuumPage</code> は、エントリツリーのリーフページに対してフルページイメージを記録します。これは変更が細かすぎるためです。</li>
+<li>**再利用判定**: <code>GinPageIsRecyclable</code> は、<code>GlobalVisCheckRemovableXid</code> を使用して、削除されたページがまだ他のスキャンから参照されていないかを慎重に判定しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__GinVacuumState.html" target="wiki-view"><code>GinVacuumState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginVacuumItemPointers.html" target="wiki-view"><code>ginVacuumItemPointers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__xlogVacuumPage.html" target="wiki-view"><code>xlogVacuumPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__DataPageDeleteStack.html" target="wiki-view"><code>DataPageDeleteStack</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginDeletePage.html" target="wiki-view"><code>ginDeletePage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginScanToDelete.html" target="wiki-view"><code>ginScanToDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginVacuumPostingTreeLeaves.html" target="wiki-view"><code>ginVacuumPostingTreeLeaves</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginVacuumPostingTree.html" target="wiki-view"><code>ginVacuumPostingTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginVacuumEntryPage.html" target="wiki-view"><code>ginVacuumEntryPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginbulkdelete.html" target="wiki-view"><code>ginbulkdelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__ginvacuumcleanup.html" target="wiki-view"><code>ginvacuumcleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginvacuum_c__GinPageIsRecyclable.html" target="wiki-view"><code>GinPageIsRecyclable</code></a></li>
+</ul></body></html>

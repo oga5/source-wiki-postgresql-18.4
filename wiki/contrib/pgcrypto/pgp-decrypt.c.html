@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgcrypto/pgp-decrypt.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgcrypto/pgp-decrypt.c</h1>
+<h2>概要</h2>
+<p>OpenPGP 形式の暗号化データの復号処理を担うモジュールです。RFC 4880 に準拠したパケット解析、セッション鍵の抽出、および復号ストリームの構築を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pgcrypto</code> における PGP 復号パイプラインの中核です。<code>mbuf.c</code> で提供されるメモリバッファと、<code>px.c</code> などの暗号プリミティブを組み合わせ、ストリーム指向のフィルタリング機構を通じてデータを復号します。</p>
+<h2>責務</h2>
+<ul>
+<li>**パケット解析**: PGP パケットヘッダーの読み取りと、長さ情報の解釈。</li>
+<li>**復号パイプラインの構築**: 復号、MDC（Modification Detection Code）検証、圧縮解除、プレフィックスチェックを順次適用するフィルタチェーンの生成。</li>
+<li>**セッション鍵の管理**: S2K（String-to-Key）アルゴリズムを用いた鍵生成と、セッション鍵の復号。</li>
+<li>**データ整合性**: 復号後のデータが正しい形式（リテラルデータや圧縮データ）であるかの検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgp_decrypt</code>: 復号処理のエントリポイント。</li>
+<li><code>pgp_parse_pkt_hdr</code>: PGP パケットヘッダーを解析し、パケットタイプと長さを特定する。</li>
+<li><code>pgp_create_pkt_reader</code>: パケットの読み取り用フィルタを作成する。</li>
+<li><code>PullFilter</code>: データを逐次処理するための抽象化された読み取りフィルタ構造体。</li>
+<li><code>PGP_Context</code>: 復号状態（鍵、アルゴリズム、MDC 状態など）を保持するコンテキスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>MDCBufData</code></li>
+<li><code>PktData</code></li>
+<li><code>decrypt_init</code></li>
+<li><code>decrypt_read</code></li>
+<li><code>mdc_init</code></li>
+<li><code>parse_new_len</code></li>
+<li><code>parse_old_len</code></li>
+<li><code>pktreader_free</code></li>
+<li><code>pktreader_pull</code></li>
+<li><code>prefix_init</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pgp_decrypt</code> が入力 <code>MBuf</code> から <code>PullFilter</code> を作成。 2. **パケット走査**: ループ内で <code>pgp_parse_pkt_hdr</code> を呼び出し、パケットタグに応じて処理を分岐。 3. **鍵抽出**: <code>parse_symenc_sesskey</code> により、パスワードからセッション鍵を導出または復号。 4. **復号フィルタ適用**: <code>parse_symenc_mdc_data</code> 等で、CFB 復号フィルタ、MDC 検証フィルタ、プレフィックスチェックフィルタを <code>PullFilter</code> チェーンとして連結。 5. **データ抽出**: <code>process_data_packets</code> がフィルタチェーンを通じてデータを読み出し、最終的な出力 <code>MBuf</code> に書き込む。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型およびメモリ管理機能。</li>
+<li><code>mbuf.h</code>: メモリバッファ操作用 API。</li>
+<li><code>pgp.h</code>: PGP 関連の定数、構造体定義。</li>
+<li><code>px.h</code>: 暗号化プリミティブおよびエラーコード定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgp.c</code>: PGP 関連の共通ユーティリティ。</li>
+<li><code>pgp-cfb.c</code>: CFB モードの復号実装。</li>
+<li><code>pgp-s2k.c</code>: パスワードから鍵を生成する S2K アルゴリズム。</li>
+<li><code>pgp-compress.c</code>: 圧縮データの展開処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**フィルタチェーン**: 本ファイルは <code>PullFilter</code> を多用しています。これはストリームの各段階（復号→MDC検証→圧縮解除）を独立したフィルタとして重ね合わせる設計です。</li>
+<li>**セキュリティ**: 復号エラーは、タイミング攻撃を防ぐため、可能な限り <code>PXE_PGP_CORRUPT_DATA</code> に統一して報告されます。デバッグ時は <code>px_debug</code> の出力を確認してください。</li>
+<li>**MDC**: <code>SYMENCRYPTED_DATA_MDC</code> パケットは、データ末尾に 22 バイトの MDC パケットを含むため、<code>mdcbuf_filter</code> を用いて先読みと検証を同時に行う特殊な処理が行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__parse_new_len.html" target="wiki-view"><code>parse_new_len</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__parse_old_len.html" target="wiki-view"><code>parse_old_len</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__pgp_parse_pkt_hdr.html" target="wiki-view"><code>pgp_parse_pkt_hdr</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__PktData.html" target="wiki-view"><code>PktData</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__pktreader_pull.html" target="wiki-view"><code>pktreader_pull</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__pktreader_free.html" target="wiki-view"><code>pktreader_free</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__pgp_create_pkt_reader.html" target="wiki-view"><code>pgp_create_pkt_reader</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__prefix_init.html" target="wiki-view"><code>prefix_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__decrypt_init.html" target="wiki-view"><code>decrypt_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__decrypt_read.html" target="wiki-view"><code>decrypt_read</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__mdc_init.html" target="wiki-view"><code>mdc_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-decrypt_c__MDCBufData.html" target="wiki-view"><code>MDCBufData</code></a></li>
+</ul></body></html>

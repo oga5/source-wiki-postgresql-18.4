@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/ecpg/ecpglib/descriptor.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/interfaces/ecpg/ecpglib/descriptor.c</h1>
+<h2>概要</h2>
+<p>ECPG（Embedded SQL for C）における SQL 記述子（Descriptor）の管理および操作を行うモジュールです。SQL 標準の <code>ALLOCATE DESCRIPTOR</code>、<code>GET DESCRIPTOR</code>、<code>SET DESCRIPTOR</code>、<code>DEALLOCATE DESCRIPTOR</code> などの機能を実装し、動的 SQL 実行時のメタデータや結果セットの受け渡しをサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>ecpglib</code> の一部として、アプリケーションと PostgreSQL サーバー間のデータ型変換や結果セットの保持を仲介します。特に、実行時に列数や型が確定する動的 SQL において、記述子を介した柔軟なデータバインディングを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**記述子のライフサイクル管理**: スレッドローカルストレージ（TLS）を利用した記述子の生成、保持、破棄。</li>
+<li>**属性の取得・設定**: <code>ECPGget_desc</code> および <code>ECPGset_desc</code> を通じた、記述子内のメタデータ（列名、型、精度など）やデータ値のアクセス。</li>
+<li>**DESCRIBE 文の処理**: <code>ECPGdescribe</code> によるプリペアドステートメントのメタデータ取得と、記述子または SQLDA への格納。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ECPGget_desc</code>: 記述子から指定した属性やデータをアプリケーション変数へコピーする。</li>
+<li><code>ECPGset_desc</code>: アプリケーションから記述子へ値を設定する。</li>
+<li><code>ECPGallocate_desc</code> / <code>ECPGdeallocate_desc</code>: 記述子のメモリ確保と解放。</li>
+<li><code>ecpg_find_desc</code>: 名前をキーにスレッドローカルな記述子リストから対象を検索する。</li>
+<li><code>descriptor_key</code>: スレッドごとの記述子リストを保持するための <code>pthread_key_t</code>。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ECPGdescribe</code></li>
+<li><code>ECPGget_desc_header</code></li>
+<li><code>ECPGset_desc_header</code></li>
+<li><code>descriptor_destructor</code></li>
+<li><code>descriptor_free</code></li>
+<li><code>descriptor_key_init</code></li>
+<li><code>get_descriptors</code></li>
+<li><code>set_descriptors</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: 初回アクセス時に <code>pthread_once</code> を経由して <code>descriptor_key</code> が初期化されます。 2.  **検索**: <code>ecpg_find_desc</code> が呼ばれると、<code>pthread_getspecific</code> で現在のスレッドに紐付いた記述子リストを取得し、名前でマッチングを行います。 3.  **データ操作**:</p>
+<ul>
+<li><code>ECPGget_desc</code> は可変長引数（<code>va_list</code>）を解析し、<code>PGresult</code> から該当する列の情報を抽出し、<code>get_int_item</code> や <code>get_char_item</code> を介して指定された C 変数に変換・格納します。</li>
+<li><code>ECPGset_desc</code> は逆に、C 変数から記述子内の <code>descriptor_item</code> 構造体へ値をコピーします。</li>
+<p>4.  **終了**: スレッド終了時に <code>descriptor_destructor</code> が呼び出され、メモリリークを防ぐために全記述子が解放されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>pthread</code> (Win32互換含む): スレッドセーフな記述子管理のため。</li>
+<li><code>libpq-fe.h</code> (postgres_fe.h経由): <code>PGresult</code> の操作。</li>
+<li><code>ecpglib_extern.h</code>: 内部共通関数および構造体定義。</li>
+<li><code>sqlca.h</code>, <code>sqlda.h</code>: SQL 標準準拠の通信用構造体。</li>
+<li><code>catalog/pg_type_d.h</code></li>
+<li><code>ecpg-pthread-win32.h</code></li>
+<li><code>ecpgerrno.h</code></li>
+<li><code>ecpglib.h</code></li>
+<li><code>ecpgtype.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sql3types.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/interfaces/ecpg/ecpglib/execute.c</code>: <code>ECPGget_desc</code> 内で呼び出される <code>ecpg_store_result</code> など、クエリ実行と結果格納のロジックが密接に関連しています。</li>
+<li><code>src/interfaces/ecpg/ecpglib/sqlda.c</code>: <code>ECPGdescribe</code> で使用される <code>sqlda</code> 構築ロジックが定義されています。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スレッド安全性**: 本モジュールはスレッドローカルストレージを使用して記述子を管理しているため、マルチスレッド環境下でも記述子の名前空間はスレッドごとに分離されます。</li>
+<li>**可変長引数**: <code>ECPGget_desc</code> や <code>ECPGset_desc</code> は <code>va_arg</code> を多用しています。引数の順序や型が ECPG プリプロセッサの生成コードと厳密に一致している必要があるため、デバッグ時は注意してください。</li>
+<li>**ロケール**: 数値変換時に <code>LC_NUMERIC</code> を一時的に &quot;C&quot; ロケールへ変更する処理が含まれており、データベースとの標準的な数値交換を保証しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__descriptor_destructor.html" target="wiki-view"><code>descriptor_destructor</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__descriptor_key_init.html" target="wiki-view"><code>descriptor_key_init</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__get_descriptors.html" target="wiki-view"><code>get_descriptors</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__set_descriptors.html" target="wiki-view"><code>set_descriptors</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGget_desc_header.html" target="wiki-view"><code>ECPGget_desc_header</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGget_desc.html" target="wiki-view"><code>ECPGget_desc</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGset_desc_header.html" target="wiki-view"><code>ECPGset_desc_header</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGset_desc.html" target="wiki-view"><code>ECPGset_desc</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__descriptor_free.html" target="wiki-view"><code>descriptor_free</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGdeallocate_desc.html" target="wiki-view"><code>ECPGdeallocate_desc</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGallocate_desc.html" target="wiki-view"><code>ECPGallocate_desc</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__descriptor_c__ECPGdescribe.html" target="wiki-view"><code>ECPGdescribe</code></a></li>
+</ul></body></html>

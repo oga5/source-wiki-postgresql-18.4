@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__walsummarizer_c__WaitForWalSummarization.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitForWalSummarization</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/postmaster/walsummarizer.c:663</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定された LSN（Log Sequence Number）まで WAL の要約が完了するのを待機する。主に増分バックアップ等の処理において、必要な要約データがディスク上に生成されるまでプロセスをブロックするために使用される。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>void WaitForWalSummarization(XLogRecPtr lsn)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>lsn</code> (待機対象となる WAL の終了位置)</li>
+<li>**出力**: なし（完了時に復帰、またはエラー発生時に例外をスロー）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>GUC パラメータ <code>summarize_wal</code> が有効であること（無効な場合は即座に復帰する）。</li>
+<li>共有メモリ上の <code>WalSummarizerCtl</code> が初期化されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>summarize_wal</code> が無効であれば即座に終了する。 2. <code>WALSummarizerLock</code> を取得し、現在の要約進捗（<code>summarized_lsn</code>）が目標の <code>lsn</code> に達しているか確認する。達していれば待機を終了する。 3. 達していない場合、<code>ConditionVariableTimedSleep</code> を用いて 10 秒間隔で待機を行う。 4. 待機サイクルごとに以下のチェックを行う：</p>
+<ul>
+<li><code>pending_lsn</code>（メモリ上の要約進捗）が前回のサイクルから進展しているか確認する。</li>
+<li>6 サイクル（計 1 分）経過しても進展がない場合、<code>ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE</code> でエラーを報告する。</li>
+<li>進展がない場合、または待機が継続している場合、警告ログを出力する。</li>
+<p>5. 待機中、<code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、割り込み要求を処理する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/xlog.c</code></li>
+<li><code>src/backend/backup/basebackup_incremental.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>GetCurrentTimestamp</code>, <code>TimestampDifferenceMilliseconds</code>, <code>TimestampTzPlusMilliseconds</code></li>
+<li><code>LWLockAcquire</code>, <code>LWLockRelease</code></li>
+<li><code>ConditionVariableTimedSleep</code>, <code>ConditionVariableCancelSleep</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code>, <code>ereport</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSummarizerCtl</code> (共有メモリ上の制御構造体)</li>
+<li><code>XLogRecPtr</code> (LSN 型)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**タイムアウト/ハング**: 1 分間要約が進展しない場合、プロセスが停止していると判断しエラーを発生させる。</li>
+<li>**設定変更**: 待機中に <code>summarize_wal</code> が無効化された場合、待機を中断して正常に復帰する。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、シグナル受信時に処理が中断される可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ConditionVariable</code> を使用して効率的な待機を実現している。</li>
+<li>警告メッセージは <code>ereport</code> の <code>WARNING</code> レベルを使用しており、待機が長引く場合にユーザーへ状況を通知する設計となっている。</li>
+</ul></body></html>

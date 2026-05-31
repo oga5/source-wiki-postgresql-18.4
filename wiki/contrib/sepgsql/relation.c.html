@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/relation.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/relation.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの「リレーション（テーブル、ビュー、シーケンス等）」および「カラム」に対するSELinuxセキュリティラベルの管理と、それらに関連する操作（作成、削除、属性変更、ラベル変更）の権限チェックを行うルーチン群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> モジュールの一部として、DDL操作に伴うセキュリティフックを実装しています。<code>hooks.c</code> から呼び出される各関数を通じて、PostgreSQLのカタログ操作とSELinuxのアクセス制御（AVC）を仲介します。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限チェック**: リレーションやカラムの作成・削除・変更時に、SELinuxの <code>db_table</code>, <code>db_column</code>, <code>db_schema</code> クラスに対する権限を検証する。</li>
+<li>**ラベルの自動割り当て**: 新規作成されたリレーションやカラムに対し、親オブジェクト（スキーマやテーブル）のコンテキストに基づいたデフォルトのセキュリティラベルを計算・適用する。</li>
+<li>**例外処理**: インデックスなど、個別のセキュリティラベルを持たないオブジェクトに対する操作を、親テーブルの属性変更として扱う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_relation_post_create</code>: リレーション作成後のフック。デフォルトラベルの計算と適用を行う。</li>
+<li><code>sepgsql_attribute_post_create</code>: カラム追加後のフック。カラムに対するデフォルトラベルの適用を行う。</li>
+<li><code>sepgsql_relation_drop</code> / <code>sepgsql_attribute_drop</code>: 削除時の権限チェック。</li>
+<li><code>sepgsql_relation_relabel</code> / <code>sepgsql_attribute_relabel</code>: <code>SECURITY LABEL</code> コマンド実行時の権限チェック。</li>
+<li><code>sepgsql_index_modify</code>: インデックス操作を親テーブルの <code>setattr</code> 権限チェックへ転送する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>sepgsql_attribute_setattr</code></li>
+<li><code>sepgsql_relation_setattr</code></li>
+<li><code>sepgsql_relation_setattr_extra</code></li>
+<li><code>sepgsql_relation_truncate</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **フック起動**: DDL実行時に <code>hooks.c</code> から本ファイルの関数が呼び出される。 2.  **カタログスキャン**: <code>systable_beginscan</code> を使用し、<code>SnapshotSelf</code> で現在処理中のカタログレコード（<code>pg_class</code> や <code>pg_attribute</code>）を取得する。 3.  **コンテキスト計算**: <code>sepgsql_compute_create</code> を呼び出し、SELinuxポリシーに基づいて新しいオブジェクトのセキュリティラベルを生成する。 4.  **権限検証**: <code>sepgsql_avc_check_perms</code> または <code>sepgsql_avc_check_perms_label</code> を通じて、現在のクライアントラベルと対象オブジェクトのラベル間で権限を検証する。 5.  **ラベル適用**: <code>SetSecurityLabel</code> を呼び出し、<code>pg_seclabel</code> カタログにラベルを永続化する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>sepgsql.h</code>: 基本定義とSELinux関連の共通インターフェース。</li>
+<li><code>catalog/pg_class.h</code>, <code>catalog/pg_attribute.h</code>: システムカタログの構造体定義。</li>
+<li><code>utils/syscache.h</code>, <code>utils/lsyscache.h</code>: カタログキャッシュへのアクセス。</li>
+<li><code>access/table.h</code>, <code>access/genam.h</code>: テーブルスキャンおよびインデックススキャンの制御。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/sepgsql/hooks.c</code>: 本ファイルの関数を呼び出すトリガーとなるフックの実装。</li>
+<li><code>contrib/sepgsql/uavc.c</code>: AVC（Access Vector Cache）による権限チェックの低レイヤー実装。</li>
+<li><code>src/include/commands/seclabel.h</code>: <code>SetSecurityLabel</code> 等のラベル管理API。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**インデックスの扱い**: インデックスは独立したセキュリティオブジェクトではなく、親テーブルの属性の一部とみなされます。そのため、インデックス操作は常に親テーブルの <code>setattr</code> 権限チェックにリダイレクトされます。</li>
+<li>**SnapshotSelfの利用**: カタログ操作において <code>SnapshotSelf</code> を使用しているのは、DDL実行直後でまだトランザクションがコミットされておらず、通常のキャッシュではレコードが見えない可能性があるためです。</li>
+<li>**権限チェックのタイミング**: 多くの関数で <code>audit_name</code> を生成してログ出力を行っています。デバッグ時は <code>sepgsql_avc_check_perms</code> の引数を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_attribute_post_create.html" target="wiki-view"><code>sepgsql_attribute_post_create</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_attribute_drop.html" target="wiki-view"><code>sepgsql_attribute_drop</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_attribute_relabel.html" target="wiki-view"><code>sepgsql_attribute_relabel</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_attribute_setattr.html" target="wiki-view"><code>sepgsql_attribute_setattr</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_post_create.html" target="wiki-view"><code>sepgsql_relation_post_create</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_drop.html" target="wiki-view"><code>sepgsql_relation_drop</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_truncate.html" target="wiki-view"><code>sepgsql_relation_truncate</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_relabel.html" target="wiki-view"><code>sepgsql_relation_relabel</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_setattr.html" target="wiki-view"><code>sepgsql_relation_setattr</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_relation_setattr_extra.html" target="wiki-view"><code>sepgsql_relation_setattr_extra</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__relation_c__sepgsql_index_modify.html" target="wiki-view"><code>sepgsql_index_modify</code></a></li>
+</ul></body></html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_amcheck/pg_amcheck.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_amcheck/pg_amcheck.c</h1>
+<h2>概要</h2>
+<p><code>pg_amcheck</code> は、PostgreSQL データベース内のリレーション（ヒープテーブルおよび B-tree 索引）の破損を検出するためのコマンドラインツールです。<code>contrib/amcheck</code> 拡張機能が提供する検証関数を呼び出し、並列処理を用いて効率的に整合性チェックを行います。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>src/bin/pg_amcheck</code> モジュールの唯一のソースファイルであり、CLI の引数解析からデータベースへの接続、対象リレーションの特定、並列実行の制御、および結果の出力まで、プログラムの全ライフサイクルを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**対象の特定**: ユーザー指定のパターン（データベース、スキーマ、リレーション）に基づき、チェック対象のリストを SQL クエリで動的に生成する。</li>
+<li>**並列実行管理**: <code>fe_utils/parallel_slot.h</code> を利用し、複数のデータベース接続を並列に管理して検証コマンドを発行する。</li>
+<li>**検証の実行**: ヒープ用（<code>verify_heapam</code>）および B-tree 用（<code>bt_index_check</code> 等）の SQL を構築・実行する。</li>
+<li>**結果の集約と報告**: 検証結果を解析し、破損が検出された場合は詳細を標準出力に表示し、進捗状況を標準エラーに出力する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>AmcheckOptions</code>: ユーザーのコマンドライン引数（パターン、並列数、チェックオプション）を保持する構造体。</li>
+<li><code>RelationInfo</code>: チェック対象となる個々のリレーションのメタデータ（OID、型、所属 DB）を保持する。</li>
+<li><code>main</code>: プログラムのメインループ。接続の確立、対象リストのコンパイル、並列スロットの駆動を行う。</li>
+<li><code>verify_heap_slot_handler</code> / <code>verify_btree_slot_handler</code>: 並列スロットから返された SQL 結果を処理するコールバック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DatabaseInfo</code></li>
+<li><code>PatternInfo</code></li>
+<li><code>PatternInfoArray</code></li>
+<li><code>indent_lines</code></li>
+<li><code>prepare_btree_command</code></li>
+<li><code>prepare_heap_command</code></li>
+<li><code>run_command</code></li>
+<li><code>should_processing_continue</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 引数を解析し、<code>AmcheckOptions</code> を設定。 2. **対象リストの構築**: <code>compile_database_list</code> および <code>compile_relation_list_one_db</code> が SQL を発行し、チェック対象のデータベースとリレーションを特定する。 3. **並列実行**: <code>ParallelSlotsSetup</code> でスロットを準備し、<code>run_command</code> で各リレーションに対する検証 SQL を非同期に発行する。 4. **結果処理**: ハンドラ関数が各スロットの <code>PGresult</code> を受け取り、破損メッセージを解析・出力する。 5. **終了**: 全スロットの完了を待ち、終了コード（成功、破損あり、エラー）を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
+<li><code>fe_utils/</code>: <code>parallel_slot.h</code>（並列実行）、<code>query_utils.h</code>（SQL 実行）、<code>option_utils.h</code>（引数解析）など、PostgreSQL のフロントエンドユーティリティ群。</li>
+<li><code>catalog/</code>: <code>pg_am_d.h</code> 等のシステムカタログ定義。</li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>catalog/pg_namespace_d.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/username.h</code></li>
+<li><code>fe_utils/cancel.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/parallel_slot.h</code></li>
+<li><code>fe_utils/query_utils.h</code></li>
+<li><code>fe_utils/simple_list.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>pgtime.h</code></li>
+<li><code>storage/block.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/amcheck</code>: 本ツールがサーバー側で呼び出す検証関数の実装元。</li>
+<li><code>src/bin/pg_dump/</code>: <code>fe_utils</code> を共有しており、接続管理やパターンマッチングの設計思想が類似している。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ツールは <code>contrib/amcheck</code> 拡張がインストールされていることを前提としています。</li>
+<li>破損検出時の挙動は、<code>on_error_stop</code> オプションや、ヒープと B-tree での検証関数の戻り値の扱いの違い（ヒープは行を返し、B-tree はエラーを投げる）に注意して読んでください。</li>
+<li>大規模なデータベースを扱うため、リレーションのリストアップは SQL の CTE を駆使して効率化されています。複雑な SQL 構築ロジックを追う際は、<code>PQExpBuffer</code> の内容をデバッグ出力すると理解が早まります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__PatternInfo.html" target="wiki-view"><code>PatternInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__PatternInfoArray.html" target="wiki-view"><code>PatternInfoArray</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__AmcheckOptions.html" target="wiki-view"><code>AmcheckOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__DatabaseInfo.html" target="wiki-view"><code>DatabaseInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__RelationInfo.html" target="wiki-view"><code>RelationInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__prepare_heap_command.html" target="wiki-view"><code>prepare_heap_command</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__prepare_btree_command.html" target="wiki-view"><code>prepare_btree_command</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__run_command.html" target="wiki-view"><code>run_command</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__should_processing_continue.html" target="wiki-view"><code>should_processing_continue</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__indent_lines.html" target="wiki-view"><code>indent_lines</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__verify_heap_slot_handler.html" target="wiki-view"><code>verify_heap_slot_handler</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_amcheck__pg_amcheck_c__verify_btree_slot_handler.html" target="wiki-view"><code>verify_btree_slot_handler</code></a></li>
+</ul></body></html>

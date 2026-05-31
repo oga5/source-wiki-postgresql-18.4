@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeMaterial.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeMaterial.c</h1>
+<h2>概要</h2>
+<p><code>nodeMaterial.c</code> は、PostgreSQL の実行エンジンにおいて、子ノードから出力されるタプルをメモリまたはディスク上の <code>Tuplestore</code> に一時保存（マテリアライズ）し、再スキャンや逆方向スキャンを可能にするためのノードを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>executor</code> サブシステムの一部として、クエリ実行中に一度しか読み取れない（あるいは再実行コストが高い）子ノードの出力をバッファリングする役割を担います。これにより、<code>Material</code> ノードより上位のノードは、必要に応じてデータを何度でも読み直すことができます。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプルのバッファリング**: 子ノードから取得したタプルを <code>Tuplestore</code> に蓄積する。</li>
+<li>**スキャン制御**: <code>ExecReScan</code> や <code>Mark/Restore</code> 操作に応じ、蓄積したデータへのアクセスを制御する。</li>
+<li>**リソース管理**: <code>Tuplestore</code> の初期化、終了処理、およびメモリ使用量の管理。</li>
+<li>**透過的なデータ供給**: 上位ノードに対して、データが物理的にどこから来ているか（子ノードか <code>Tuplestore</code> か）を意識させないインターフェースを提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecMaterial</code>: ノードのメイン実行関数。子ノードからの取得と <code>Tuplestore</code> への書き込み/読み出しを仲介する。</li>
+<li><code>ExecInitMaterial</code>: <code>MaterialState</code> 構造体の初期化と、子ノードの実行準備を行う。</li>
+<li><code>ExecMaterialMarkPos</code> / <code>ExecMaterialRestrPos</code>: <code>Tuplestore</code> の読み取り位置を保存・復元する。</li>
+<li><code>MaterialState</code>: このノードの状態を保持する構造体。<code>tuplestorestate</code> を通じてバッファを管理する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndMaterial</code></li>
+<li><code>ExecReScanMaterial</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitMaterial</code> で <code>Tuplestore</code> の要否を判断し、子ノードを初期化する。 2. **実行**: <code>ExecMaterial</code> が呼ばれると、まず <code>Tuplestore</code> からの読み出しを試みる。</p>
+<ul>
+<li><code>Tuplestore</code> が空または EOF の場合、子ノードから <code>ExecProcNode</code> でタプルを取得する。</li>
+<li>取得したタプルは <code>tuplestore_puttupleslot</code> で保存され、同時に上位ノードへ返される。</li>
+<p>3. **再スキャン**: <code>ExecReScanMaterial</code> が呼ばれると、<code>chgParam</code> の有無に応じて <code>Tuplestore</code> をリセットするか、単に <code>tuplestore_rescan</code> を呼び出して読み取り位置を先頭に戻す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/executor.h</code>: 実行エンジンの共通インターフェース。</li>
+<li><code>executor/nodeMaterial.h</code>: このノードの公開ヘッダー。</li>
+<li><code>miscadmin.h</code>: <code>CHECK_FOR_INTERRUPTS</code> 等の管理用マクロ。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeMaterial.h</code>: ノードの構造体定義と関数宣言。</li>
+<li><code>src/backend/utils/sort/tuplestore.c</code>: <code>Tuplestore</code> の実装本体。このノードの動作の根幹を支える。</li>
+<li><code>src/backend/executor/execProcnode.c</code>: <code>ExecProcNode</code> を通じたノード間の呼び出し規約。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ消費**: <code>Tuplestore</code> は <code>work_mem</code> を使用します。データ量がこれを超えるとディスクに溢れる可能性があるため、パフォーマンスチューニングの対象となりやすい箇所です。</li>
+<li>**最適化**: <code>eflags</code> により、再スキャンや逆方向スキャンが不要な場合は <code>Tuplestore</code> を作成せず、子ノードの出力をそのまま透過的に渡す最適化が行われています。</li>
+<li>**EOF 処理**: <code>eof_underlying</code> フラグは、子ノードが既に終了したことを記録し、無駄な呼び出しを防ぐために重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecMaterial.html" target="wiki-view"><code>ExecMaterial</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecInitMaterial.html" target="wiki-view"><code>ExecInitMaterial</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecEndMaterial.html" target="wiki-view"><code>ExecEndMaterial</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecMaterialMarkPos.html" target="wiki-view"><code>ExecMaterialMarkPos</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecMaterialRestrPos.html" target="wiki-view"><code>ExecMaterialRestrPos</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMaterial_c__ExecReScanMaterial.html" target="wiki-view"><code>ExecReScanMaterial</code></a></li>
+</ul></body></html>

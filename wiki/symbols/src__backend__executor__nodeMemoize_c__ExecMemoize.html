@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeMemoize_c__ExecMemoize.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecMemoize</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeMemoize.c:696</code></li>
+</ul>
+<h2>目的</h2>
+<p>パラメータ化されたプランノードの実行結果をキャッシュし、同一パラメータでの再スキャン時にサブプランの再実行を回避して計算コストを削減する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>TupleTableSlot *ExecMemoize(PlanState *pstate)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code> (Memoizeノードの状態構造体)</li>
+<li>**出力**: <code>TupleTableSlot *</code> (キャッシュから取得、またはサブプランから取得したタプル。スキャン終了時は <code>NULL</code>)</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>MemoizeState</code> 型にキャスト可能であること。</li>
+<li><code>ResetExprContext</code> により、呼び出しごとに式評価用のメモリコンテキストがリセットされる。</li>
+<li>キャッシュミス時にメモリ不足等でエントリ作成に失敗した場合、キャッシュをバイパスするモードへ遷移する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>ステートマシンとして動作し、以下の状態遷移を行う： 1. **<code>MEMO_CACHE_LOOKUP</code>**: 現在のパラメータでキャッシュを検索。</p>
+<ul>
+<li>ヒット時: キャッシュされたタプルを順次返し、<code>MEMO_CACHE_FETCH_NEXT_TUPLE</code> へ遷移。</li>
+<li>ミス時: サブプランを実行し、結果をキャッシュに格納して <code>MEMO_FILLING_CACHE</code> へ遷移。キャッシュ不可時は <code>MEMO_CACHE_BYPASS_MODE</code> へ遷移。</li>
+<p>2. **<code>MEMO_CACHE_FETCH_NEXT_TUPLE</code>**: キャッシュされたタプルリストを走査し、次のタプルを返す。 3. **<code>MEMO_FILLING_CACHE</code>**: サブプランから取得したタプルをキャッシュエントリに順次追加する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecProcNode</code> (実行ノードのメインループから、<code>mstate-&gt;ss.ps.ExecProcNode</code> を介して呼び出される)。</li>
+<li>**呼び出し先**: <code>cache_lookup</code>, <code>cache_store_tuple</code>, <code>entry_purge_tuples</code>, <code>ExecProcNode</code> (サブプランの実行用)。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MemoizeState</code>: ノードの実行状態を保持。</li>
+<li><code>MemoizeEntry</code>: キャッシュのハッシュテーブルに格納されるデータ構造。</li>
+<li><code>TupleTableSlot</code>: タプルの受け渡しに使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キャッシュミス**: 初回実行時やパラメータ変更時に発生。</li>
+<li>**キャッシュオーバーフロー**: メモリ制限によりエントリ作成やタプル保存に失敗した場合、<code>MEMO_CACHE_BYPASS_MODE</code> へ遷移し、キャッシュを介さず直接サブプランを実行する。</li>
+<li>**空の結果**: サブプランがタプルを返さない場合、<code>MEMO_END_OF_SCAN</code> となり <code>NULL</code> を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>singlerow</code> フラグが有効な場合、最初のタプル取得後にキャッシュエントリを完了と見なす最適化が行われる。</li>
+<li>キャッシュエントリのパージは、不完全なスキャン結果が残っている場合に再スキャン時の整合性を保つために行われる。</li>
+</ul></body></html>

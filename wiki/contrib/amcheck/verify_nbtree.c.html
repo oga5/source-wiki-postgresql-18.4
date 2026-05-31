@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/amcheck/verify_nbtree.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/amcheck/verify_nbtree.c</h1>
+<h2>概要</h2>
+<p><code>verify_nbtree.c</code> は、PostgreSQL の B-tree インデックスの物理的・論理的な整合性を検証するコアモジュールです。インデックスページ内のキー順序、ページ間のリンク整合性、およびヒープとの整合性（<code>heapallindexed</code>）を不変条件に基づいてチェックします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/amcheck</code> サブシステムにおいて、B-tree インデックス特有の構造検証を担当します。<code>verify_common.c</code> が提供するロック管理や権限チェックの基盤を利用し、インデックスのメタページからリーフページまでを走査して破損を検出します。</p>
+<h2>責務</h2>
+<ul>
+<li>**構造検証**: B-tree のページレベルおよびツリーレベルでの不変条件（キー順序、兄弟リンク、親子関係）の検証。</li>
+<li>**ヒープ整合性検証**: Bloom フィルタを用いて、インデックスに存在する全タプルがヒープにも存在することを保証。</li>
+<li>**一意性制約検証**: インデックスの一意性制約が論理的に維持されているかの確認。</li>
+<li>**エラー報告**: 破損検出時に、該当するブロック番号、オフセット、LSN を含む詳細な診断情報を出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>検証状態管理</h3>
+<ul>
+<li><code>BtreeCheckState</code>: 検証プロセス全体の状態（リレーション、メモリコンテキスト、Bloom フィルタ、走査状態）を保持するメイン構造体。</li>
+<li><code>BtreeLevel</code>: 現在走査中のツリーレベルと、そのレベルの開始点（左端）を管理。</li>
+<li><code>BtreeLastVisibleEntry</code>: 一意性チェックにおいて、最後に確認された可視エントリの情報を保持。</li>
+</ul>
+<h3>公開インターフェース</h3>
+<ul>
+<li><code>bt_index_check</code>: <code>AccessShareLock</code> を使用した軽量な検証用 SQL 関数。</li>
+<li><code>bt_index_parent_check</code>: <code>ShareLock</code> を使用し、親子関係の検証を含む厳密な検証用 SQL 関数。</li>
+</ul>
+<h3>内部検証ロジック</h3>
+<ul>
+<li><code>bt_check_every_level</code>: ツリー全体を走査するメインループ。</li>
+<li><code>bt_target_page_check</code>: 個別ページ内のキー順序、タプルサイズ、高キー（High Key）不変条件を検証。</li>
+<li><code>bt_child_check</code> / <code>bt_child_highkey_check</code>: 親子間のリンクとキー範囲の整合性を検証。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BTCallbackState</code></li>
+<li><code>BTreeTupleGetHeapTIDCareful</code></li>
+<li><code>BTreeTupleGetPointsToTID</code></li>
+<li><code>BtreeCheckState</code></li>
+<li><code>BtreeLastVisibleEntry</code></li>
+<li><code>BtreeLevel</code></li>
+<li><code>PageGetItemIdCareful</code></li>
+<li><code>bt_check_every_level</code></li>
+<li><code>bt_check_level_from_leftmost</code></li>
+<li><code>bt_index_check</code></li>
+<li><code>bt_index_check_callback</code></li>
+<li><code>bt_index_parent_check</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>bt_index_check_callback</code> が呼び出され、メタページからインデックスのバージョンや属性情報を取得。 2. **走査**: <code>bt_check_every_level</code> がツリーをルートからリーフへ、各レベルを左から右へ走査。 3. **ページ検証**: <code>bt_check_level_from_leftmost</code> が各ページを <code>palloc_btree_page</code> でメモリに読み込み、<code>bt_target_page_check</code> を実行。 4. **データフロー**:</p>
+<ul>
+<li><code>BtreeCheckState</code> が走査中のコンテキストを保持。</li>
+<li><code>heapallindexed</code> が有効な場合、<code>bloom_add_element</code> でインデックスの全タプルを指紋化し、後続の <code>table_index_build_scan</code> でヒープ側から検証。</li>
+<p>5. **エラーパス**: 整合性違反（<code>invariant_l_offset</code> 等の失敗）が検出されると、<code>ereport(ERROR, ...)</code> によりトランザクションを中断し、破損箇所を報告。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree の内部構造（ページレイアウト、メタページ定義）へのアクセス。</li>
+<li><code>lib/bloomfilter.h</code>: ヒープ整合性チェック用の指紋生成。</li>
+<li><code>verify_common.h</code>: <code>amcheck</code> モジュール共通のロック・権限管理ユーティリティ。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_opfamily_d.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>verify_common.c</code>: 検証実行の定型処理（ロック、権限昇格）。</li>
+<li><code>nbtree/nbtree.c</code>: B-tree の標準的な操作（挿入、検索、削除）。</li>
+<li><code>nbtree/nbtsearch.c</code>: インデックス走査のロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>BtreeCheckState</code> 内の <code>targetcontext</code> はページごとにリセットされます。メモリリークを防ぐため、ページ処理の前後で適切に管理されています。</li>
+<li>**ロックの前提**: <code>readonly</code> モード（<code>bt_index_check</code>）では <code>AccessShareLock</code> のみを使用するため、検証中にインデックスが変更される可能性があります。より厳密な検証には <code>bt_index_parent_check</code> を使用してください。</li>
+<li>**未実装・浅い部分**: <code>!readonly</code> モードでの複雑なクロスレベル検証は、並行更新による誤検知を防ぐため意図的に制限されています。</li>
+<li>**不変条件**: <code>invariant_l_offset</code> 等の関数は、インデックスのキー順序が正しく保たれているかを検証する重要なガードレールです。これらは <code>_bt_compare</code> を利用して論理的な順序を判定します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html" target="wiki-view"><code>BtreeCheckState</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeLevel.html" target="wiki-view"><code>BtreeLevel</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeLastVisibleEntry.html" target="wiki-view"><code>BtreeLastVisibleEntry</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTCallbackState.html" target="wiki-view"><code>BTCallbackState</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_check.html" target="wiki-view"><code>bt_index_check</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_parent_check.html" target="wiki-view"><code>bt_index_parent_check</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_check_callback.html" target="wiki-view"><code>bt_index_check_callback</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_check_every_level.html" target="wiki-view"><code>bt_check_every_level</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_check_level_from_leftmost.html" target="wiki-view"><code>bt_check_level_from_leftmost</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__PageGetItemIdCareful.html" target="wiki-view"><code>PageGetItemIdCareful</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetHeapTIDCareful.html" target="wiki-view"><code>BTreeTupleGetHeapTIDCareful</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetPointsToTID.html" target="wiki-view"><code>BTreeTupleGetPointsToTID</code></a></li>
+</ul></body></html>

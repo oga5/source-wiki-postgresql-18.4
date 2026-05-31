@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/pg_backup_db.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/pg_backup_db.c</h1>
+<h2>概要</h2>
+<p><code>pg_backup_db.c</code> は、<code>pg_dump</code> および <code>pg_restore</code> におけるデータベース接続と SQL 実行の抽象化レイヤーです。アーカイブハンドル（<code>ArchiveHandle</code>）を介して、サーバーへの接続管理、トランザクション制御、および SQL クエリの実行を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_dump</code> モジュールにおいて、低レベルな <code>libpq</code> 操作をラップし、アーカイブ処理（<code>pg_backup_archiver.c</code>）がデータベースの状態を意識せずに SQL を発行できるようにする役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: データベースへの接続、再接続、および切断の管理。</li>
+<li>**SQL 実行**: クエリの実行、結果の取得、およびエラーハンドリング。</li>
+<li>**COPY モード制御**: <code>COPY</code> コマンドの開始・終了処理。</li>
+<li>**ラージオブジェクト操作**: ラージオブジェクトに対する ACL 設定や削除コマンドの生成。</li>
+<li>**互換性チェック**: 接続先サーバーのバージョン確認とリカバリモードの判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ConnectDatabaseAhx</code>: データベース接続を確立し、初期設定（検索パス等）を行う。</li>
+<li><code>ExecuteSqlCommandBuf</code>: <code>ahwrite</code> インターフェースとして機能し、データ種別に応じて SQL 実行や <code>COPY</code> データのストリーミングを行う。</li>
+<li><code>ExecuteSqlQueryForSingleRow</code>: 単一の結果行を期待するクエリを実行する。</li>
+<li><code>ReconnectToServer</code>: 既存の接続を閉じ、新しい接続を確立する。</li>
+<li><code>EndDBCopyMode</code>: <code>COPY</code> 操作を終了し、libpq をアイドル状態に戻す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DisconnectDatabase</code></li>
+<li><code>ExecuteSimpleCommands</code></li>
+<li><code>ExecuteSqlCommand</code></li>
+<li><code>ExecuteSqlQuery</code></li>
+<li><code>ExecuteSqlStatement</code></li>
+<li><code>GetConnection</code></li>
+<li><code>StartTransaction</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続**: <code>ConnectDatabaseAhx</code> が <code>libpq</code> を呼び出し、接続後に <code>_check_database_version</code> でサーバーバージョンを検証します。 2. **クエリ実行**: <code>ExecuteSqlStatement</code> や <code>ExecuteSqlQuery</code> が <code>PQexec</code> をラップし、失敗時に <code>die_on_query_failure</code> を通じて終了処理を行います。 3. **データ復元**: <code>ExecuteSqlCommandBuf</code> が呼び出されると、<code>ArchiveHandle</code> の状態（<code>OUTPUT_COPYDATA</code> か <code>OUTPUT_OTHERDATA</code> か）に基づき、<code>COPY</code> データとして流すか、<code>ExecuteSimpleCommands</code> で SQL コマンドとして解析・実行するかを振り分けます。 4. **解析**: <code>ExecuteSimpleCommands</code> は、バッファリングされた SQL を字句解析し、セミコロン単位でコマンドを切り出して実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>libpq</code> (間接的): <code>connectdb.h</code> や <code>pg_backup_archiver.h</code> を通じて利用。</li>
+<li><code>pg_backup_db.h</code>: 本ファイルの公開インターフェース定義。</li>
+<li><code>parallel.h</code>, <code>pg_backup_utils.h</code>: ユーティリティおよび並列処理サポート。</li>
+<li><code>common/connect.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>termios.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_dump/connectdb.c</code>: 接続パラメータの構築と実際の <code>libpq</code> 接続処理。</li>
+<li><code>src/bin/pg_dump/pg_backup_archiver.c</code>: アーカイブ全体の制御フロー。</li>
+<li><code>src/bin/pg_dump/pg_backup_archiver.h</code>: <code>ArchiveHandle</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>ArchiveHandle</code> 構造体を <code>Archive</code> 型からキャストして操作します。</li>
+<li><code>ExecuteSimpleCommands</code> は、SQL コマンドがバッファ境界で分割されることを想定した簡易的なステートマシン（<code>SQL_SCAN</code>, <code>SQL_IN_SINGLE_QUOTE</code> 等）を実装しています。複雑な SQL 解析は行わないため、特殊な構文には注意が必要です。</li>
+<li><code>pg_fatal</code> や <code>warn_or_exit_horribly</code> が多用されており、エラー発生時は即座にプロセスが終了する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ReconnectToServer.html" target="wiki-view"><code>ReconnectToServer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ConnectDatabaseAhx.html" target="wiki-view"><code>ConnectDatabaseAhx</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__DisconnectDatabase.html" target="wiki-view"><code>DisconnectDatabase</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__GetConnection.html" target="wiki-view"><code>GetConnection</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSqlStatement.html" target="wiki-view"><code>ExecuteSqlStatement</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSqlQuery.html" target="wiki-view"><code>ExecuteSqlQuery</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSqlQueryForSingleRow.html" target="wiki-view"><code>ExecuteSqlQueryForSingleRow</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSqlCommand.html" target="wiki-view"><code>ExecuteSqlCommand</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSimpleCommands.html" target="wiki-view"><code>ExecuteSimpleCommands</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__ExecuteSqlCommandBuf.html" target="wiki-view"><code>ExecuteSqlCommandBuf</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__EndDBCopyMode.html" target="wiki-view"><code>EndDBCopyMode</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_db_c__StartTransaction.html" target="wiki-view"><code>StartTransaction</code></a></li>
+</ul></body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/bloomfilter.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BloomFilter</h1>
+<h2>概念</h2>
+<p>PostgreSQLにおけるブルームフィルタ（Bloom Filter）は、集合への要素の包含判定を確率的に行うためのメモリ効率に優れたデータ構造です。偽陰性（実際には含まれているのに含まれていないと判定すること）は発生しませんが、偽陽性（含まれていないのに含まれていると判定すること）は発生する可能性があります。</p>
+<p>PostgreSQLの内部には、用途の異なる2つのブルームフィルタ実装が存在します。 1. **BRIN（Block Range Index）用のブルームフィルタ (<code>BloomFilter</code>)**: ページ範囲内の値を要約し、等価性検索（<code>=</code>）の効率的な絞り込みを行うための構造体です。 2. **汎用ライブラリとしてのブルームフィルタ (<code>bloom_filter</code>)**: メモリ効率を優先した確率的データ構造であり、高コストな検索処理を回避するための事前フィルタリングなどに使用されます。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**検索の高速化とI/O削減**: BRINインデックスにおいて、ページ範囲内に特定の値が存在するかどうかを高速に判定し、不要なページスキャンをスキップできます。</li>
+<li>**メモリ効率の高い事前フィルタリング**: <code>amcheck</code>（B-Tree検証）やACL（アクセス制御リスト）などの処理において、高コストな検索処理を回避するための事前フィルタリングとして機能し、システム全体のパフォーマンスを向上させます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/brin</code></li>
+<li><code>module:src/backend/lib</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/brin/brin_bloom.c#BloomFilter</code>**: BRINインデックス用の可変長（<code>varlena</code>）ブルームフィルタ構造体。</li>
+<li>**<code>symbol:src/backend/lib/bloomfilter.c#bloom_filter</code>**: 汎用ブルームフィルタの実装構造体。</li>
+<li>**<code>symbol:src/include/lib/bloomfilter.h#bloom_filter</code>**: 汎用ブルームフィルタの不透明な（Opaque）構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、システム全体を通じた詳細なエンドツーエンドの流れ（クエリ実行からインデックススキャン、あるいはamcheckでの具体的な呼び出しシーケンス全体など）は完全には明らかになっていません。ただし、各実装における基本的な操作の流れは以下の通りです。</p>
+<h3>BRINブルームフィルタ (<code>BloomFilter</code>) の流れ</h3>
+<p>1. **初期化と構築**: <code>brin_bloom_add_value</code> などのBRIN演算子クラス関数から呼び出され、ハッシュ値に基づいてビットマップの該当ビットを立てます（<code>bloom_add_value</code>）。 2. **判定**: <code>brin_bloom_consistent</code> などのインデックス検索時に、<code>bloom_contains_value</code> を通じて指定された値がフィルタ内に存在する可能性があるか（すべての該当ビットが立っているか）を判定します。 3. **結合**: <code>brin_bloom_union</code> により、複数のフィルタをマージします。</p>
+<h3>汎用ブルームフィルタ (<code>bloom_filter</code>) の流れ</h3>
+<p>1. **作成**: <code>bloom_create()</code> により、推定要素数とメモリ制限（KB）を受け取り、フィルタを初期化します。 2. **要素追加**: <code>bloom_add_element()</code> を通じて、要素をハッシュ化（拡張ダブルハッシュ法を使用）し、ビットセットの対応する位置を立てます。 3. **判定**: <code>bloom_lacks_element()</code> により、要素が集合に「確実に含まれていない」か「含まれている可能性がある」かを判定します。 4. **解放**: 使用後に <code>bloom_free()</code> でメモリを解放します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**偽陰性の不発生**: どちらの実装においても、要素が追加されていれば必ず「存在する（含まれている可能性がある）」と判定されます。</li>
+<li>**ビットセットサイズの制約**:</li>
+<li>汎用 <code>bloom_filter</code> では、ビットセットサイズ <code>m</code> は2のべき乗でなければならず、最大 2^32 ビット（512MB）に制限されます。</li>
+<li>BRINの <code>BloomFilter</code> では、フィルタサイズは1つのインデックスページ（8kB）に収まる必要があり、<code>BloomMaxFilterSize</code> を超えるサイズはエラーとなります。</li>
+<li>**メモリ確保の不変条件**:</li>
+<li>BRINの <code>BloomFilter</code> は <code>varlena</code> ヘッダーを含むため、メモリ確保時には <code>offsetof(BloomFilter, data) + nbytes</code> を使用して適切なサイズを計算する必要があります。</li>
+<li>汎用 <code>bloom_filter</code> も可変長配列 <code>bitset</code> を持つため、構造体のメモリ確保には <code>offsetof(bloom_filter, bitset)</code> を使用した動的なサイズ計算が必要です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**偽陽性率の悪化**: フィルタの容量（推定要素数）を超えて要素を追加すると、ビットセットが埋まりすぎて判定精度（偽陽性率）が著しく低下します。汎用フィルタでは、理想的なビットの埋まり具合（<code>bloom_prop_bits_set</code>）は 0.5 前後とされています。</li>
+<li>**メモリ制限による精度低下**: <code>bloom_create</code> で指定する <code>bloom_work_mem</code> が不足している場合、ビットセットサイズが小さくなり、偽陽性率が高まります。</li>
+<li>**直接アクセスの禁止（汎用ライブラリ）**: <code>src/include/lib/bloomfilter.h</code> における <code>bloom_filter</code> は不透明な構造体（opaque struct）として定義されているため、外部モジュールからメンバへ直接アクセスしてはならず、必ず提供されているインターフェース関数を経由する必要があります。</li>
+<li>**varlenaの直接操作**: BRINの <code>BloomFilter</code> は <code>varlena</code> 型であるため、直接的なメモリ操作を避け、<code>PG_DETOAST_DATUM</code> などの適切なマクロを使用する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/access/brin/brin_bloom.c</code>**: BRINインデックスにおけるブルームフィルタの具体的な実装と、<code>BloomFilter</code> 構造体の定義。</li>
+<li>**<code>src/backend/lib/bloomfilter.c</code>**: 汎用ブルームフィルタのアルゴリズム（拡張ダブルハッシュ法やビット操作）の実装。</li>
+<li>**<code>src/include/lib/bloomfilter.h</code>**: 汎用ブルームフィルタの外部公開インターフェース定義。</li>
+</ul></body></html>

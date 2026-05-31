@@ -1,0 +1,149 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/indexcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/indexcmds.c</h1>
+<h2>概要</h2>
+<p>インデックスの作成（<code>CREATE INDEX</code>）および再構築（<code>REINDEX</code>）を統括するコマンド実行エンジンです。システムカタログの更新、物理的なインデックス構築、および並行処理（<code>CONCURRENTLY</code>）における複雑な状態遷移と同期制御を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、インデックスという特定のデータベースオブジェクトのライフサイクルを管理します。<code>tablecmds.c</code> がテーブル全体の構造変更を扱うのに対し、本ファイルはインデックス固有の属性（演算子クラス、照合順序、述語）の検証と構築に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス定義の検証**: 属性、演算子クラス、述語（<code>WHERE</code> 句）、およびパーティション制約の整合性チェック。</li>
+<li>**インデックス構築のディスパッチ**: 通常の構築と、<code>CONCURRENTLY</code> モードによる段階的な構築（カタログ更新、スナップショット待機、検証）の制御。</li>
+<li>**再構築（REINDEX）の管理**: 単一インデックス、テーブル全体、スキーマ、データベース単位の再構築処理。</li>
+<li>**パーティション対応**: パーティションテーブルに対するインデックスの再帰的作成およびアタッチ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インデックス作成・構築</h3>
+<ul>
+<li><code>DefineIndex()</code>: <code>CREATE INDEX</code> コマンドのメインエントリ。カタログ登録から物理構築までを制御。</li>
+<li><code>index_concurrently_build()</code>: 並行構築の物理スキャンと挿入を実行。</li>
+<li><code>validate_index()</code>: 並行構築の最終フェーズで、インデックスの整合性を検証。</li>
+</ul>
+<h3>再構築（REINDEX）</h3>
+<ul>
+<li><code>ExecReindex()</code>: <code>REINDEX</code> コマンドのディスパッチャ。</li>
+<li><code>ReindexIndex()</code> / <code>ReindexTable()</code>: 対象に応じた再構築の実行。</li>
+<li><code>ReindexRelationConcurrently()</code>: <code>REINDEX CONCURRENTLY</code> の複雑な状態遷移を管理。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><code>CheckIndexCompatible()</code>: インデックスの再構築を回避できるか（互換性）を判定。</li>
+<li><code>ComputeIndexAttrs()</code>: インデックス属性、演算子クラス、オプションを計算・検証。</li>
+<li><code>WaitForOlderSnapshots()</code>: 並行構築時に、古いスナップショットを持つトランザクションの終了を待機。</li>
+<li><code>makeObjectName()</code> / <code>ChooseRelationName()</code>: インデックス名の自動生成と衝突回避。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckIndexCompatible</code></li>
+<li><code>CheckPredicate</code></li>
+<li><code>ChooseRelationName</code></li>
+<li><code>CompareOpclassOptions</code></li>
+<li><code>ComputeIndexAttrs</code></li>
+<li><code>DefineIndex</code></li>
+<li><code>GetDefaultOpClass</code></li>
+<li><code>ReindexErrorInfo</code></li>
+<li><code>ReindexIndexCallbackState</code></li>
+<li><code>ReindexIndexInfo</code></li>
+<li><code>ResolveOpClass</code></li>
+<li><code>WaitForOlderSnapshots</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>DefineIndex</code> がパーサーからの <code>IndexStmt</code> を受け取り、テーブルのロックと所有者権限の切り替えを行う。 2. **属性計算**: <code>ComputeIndexAttrs</code> が演算子クラスや照合順序を解決し、<code>IndexInfo</code> 構造体を構築する。 3. **構築フェーズ**:</p>
+<ul>
+<li>通常: <code>index_create</code> を呼び出し、カタログ更新と物理構築を同期的に行う。</li>
+<li>並行: 複数トランザクションに分割。</li>
+<li>フェーズ1: カタログにインデックスを登録（<code>indisready=false</code>）。</li>
+<li>フェーズ2: <code>WaitForLockers</code> で既存の書き込みトランザクションを待機し、物理構築を実行。</li>
+<li>フェーズ3: <code>validate_index</code> で不足エントリを補完。</li>
+<li>フェーズ4-6: インデックスの切り替え、古いインデックスの無効化と削除。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_index</code>, <code>pg_am</code>, <code>pg_opclass</code> 等のカタログ定義。</li>
+<li><code>access/</code>: <code>amapi.h</code> (AM API), <code>tableam.h</code> (テーブルアクセス), <code>xact.h</code> (トランザクション管理)。</li>
+<li><code>storage/</code>: <code>lmgr.h</code> (ロック管理), <code>proc.h</code> (プロセス状態)。</li>
+<li><code>utils/</code>: <code>syscache.h</code> (システムキャッシュ), <code>lsyscache.h</code> (カタログルックアップ)。</li>
+<li><code>access/amapi.h</code></li>
+<li><code>access/gist.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/catalog/index.c</code>: インデックスのカタログ操作の低レベル実装。</li>
+<li><code>src/backend/access/index/indexam.c</code>: インデックスアクセスメソッドの共通インターフェース。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: テーブルの DDL 操作全般。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ReindexMultipleTables</code> 等では、トランザクションを跨いで生存させる必要があるデータを <code>PortalContext</code> などの長寿命コンテキストに割り当てています。</li>
+<li>**並行構築の複雑性**: <code>REINDEX CONCURRENTLY</code> は、デッドロックを避けるためにセッションレベルのロック（<code>LockRelationIdForSession</code>）を使用し、複数のトランザクションに処理を分割しています。このフローを理解するには、<code>WaitForLockers</code> と <code>CommitTransactionCommand</code> の呼び出し順序が重要です。</li>
+<li>**省略された詳細**: インデックスの物理的なスキャンや挿入の詳細は <code>access/</code> 以下の各アクセスメソッド（B-tree, GiST 等）に委譲されており、本ファイルはあくまで「コマンドの実行制御」に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexIndexCallbackState.html" target="wiki-view"><code>ReindexIndexCallbackState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexErrorInfo.html" target="wiki-view"><code>ReindexErrorInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CheckIndexCompatible.html" target="wiki-view"><code>CheckIndexCompatible</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CompareOpclassOptions.html" target="wiki-view"><code>CompareOpclassOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__WaitForOlderSnapshots.html" target="wiki-view"><code>WaitForOlderSnapshots</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__DefineIndex.html" target="wiki-view"><code>DefineIndex</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CheckPredicate.html" target="wiki-view"><code>CheckPredicate</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ComputeIndexAttrs.html" target="wiki-view"><code>ComputeIndexAttrs</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ResolveOpClass.html" target="wiki-view"><code>ResolveOpClass</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__GetDefaultOpClass.html" target="wiki-view"><code>GetDefaultOpClass</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ChooseRelationName.html" target="wiki-view"><code>ChooseRelationName</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexIndexInfo.html" target="wiki-view"><code>ReindexIndexInfo</code></a></li>
+</ul></body></html>

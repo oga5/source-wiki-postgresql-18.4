@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/appendinfo.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/appendinfo.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのクエリ最適化プロセスにおいて、継承テーブルやパーティションテーブルの「親リレーション」と「子リレーション」間で式や属性の変換を行うためのルーチンを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、主にプランナが継承関係を解決する際に使用されます。特に、親テーブルに対して定義されたクエリ（式やターゲットリスト）を、個々の物理的な子テーブル（リーフリレーション）向けに書き換える役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**属性変換**: 親テーブルの <code>Var</code> ノードを、対応する子テーブルの <code>Var</code> ノードへ変換する。</li>
+<li>**メタデータ管理**: <code>AppendRelInfo</code> 構造体を生成し、親と子の列マッピング（逆変換用配列を含む）を保持する。</li>
+<li>**クエリツリーの調整**: <code>RestrictInfo</code> や <code>PlaceHolderVar</code> などのプランナノードに含まれるリレーションIDセットを、親から子へ適切に置換する。</li>
+<li>**行識別子管理**: <code>UPDATE</code>/<code>DELETE</code>/<code>MERGE</code> 実行時に必要な行識別子（<code>ctid</code> や <code>wholerow</code> 等）を各子リレーションに伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>AppendRelInfo</code>: 親子関係の変換情報を保持する主要な構造体。</li>
+<li><code>make_append_rel_info</code>: 親子関係のメタデータを作成するコンストラクタ。</li>
+<li><code>adjust_appendrel_attrs</code>: 式ツリー内の <code>Var</code> を親から子へ変換するメインのエントリポイント。</li>
+<li><code>adjust_appendrel_attrs_mutator</code>: <code>expression_tree_mutator</code> を用いて再帰的に式を変換する内部関数。</li>
+<li><code>add_row_identity_var</code>: 行更新に必要な識別子変数を登録する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>adjust_appendrel_attrs_context</code></li>
+<li><code>adjust_appendrel_attrs_multilevel</code></li>
+<li><code>adjust_child_relids</code></li>
+<li><code>adjust_child_relids_multilevel</code></li>
+<li><code>adjust_inherited_attnums</code></li>
+<li><code>adjust_inherited_attnums_multilevel</code></li>
+<li><code>find_appinfos_by_relids</code></li>
+<li><code>get_translated_update_targetlist</code></li>
+<li><code>make_inh_translation_list</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>make_append_rel_info</code> が親子の <code>Relation</code> を受け取り、列名や型を照合して <code>translated_vars</code> リストを構築する。 2. **変換実行**: <code>adjust_appendrel_attrs</code> が呼び出されると、<code>adjust_appendrel_attrs_context</code> を介して式ツリーを走査する。 3. **ノード置換**: <code>adjust_appendrel_attrs_mutator</code> が <code>Var</code> ノードを検出し、<code>AppendRelInfo</code> に基づいて子テーブルの属性番号へ書き換える。 4. **再帰処理**: <code>RestrictInfo</code> や <code>PlaceHolderVar</code> などの複雑なノードに対しては、関連する <code>Relids</code>（ビットマップセット）を <code>adjust_child_relids</code> で更新する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: 式ツリーの走査・コピー用。</li>
+<li><code>optimizer/appendinfo.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログからの属性情報取得。</li>
+<li><code>utils/rel.h</code>: リレーション情報の操作。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/optimizer/appendinfo.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/optimizer/prep/prepunion.c</code>: 継承展開（<code>expand_inherited_rtentry</code>）の呼び出し元。</li>
+<li><code>src/backend/optimizer/util/relnode.c</code>: <code>RelOptInfo</code> の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**変換のタイミング**: この変換は、サブリンクがサブプランに変換された後に行われるため、<code>Query</code> ノード自体を再帰的に処理する必要はありません。</li>
+<li>**ROWID_VAR**: <code>ROWID_VAR</code> は特殊なプレースホルダーです。<code>adjust_appendrel_attrs_mutator</code> 内で、対象がリーフリレーションである場合にのみ具体的な変数へ置換されます。</li>
+<li>**エラーハンドリング**: 属性の不一致（型や照合順序の不一致）は <code>elog</code> や <code>ereport</code> で厳格にチェックされます。これは継承テーブルの定義変更がプランナの想定と乖離していないことを保証するためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_appendrel_attrs_context.html" target="wiki-view"><code>adjust_appendrel_attrs_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__make_append_rel_info.html" target="wiki-view"><code>make_append_rel_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__make_inh_translation_list.html" target="wiki-view"><code>make_inh_translation_list</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_appendrel_attrs.html" target="wiki-view"><code>adjust_appendrel_attrs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_appendrel_attrs_mutator.html" target="wiki-view"><code>adjust_appendrel_attrs_mutator</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_appendrel_attrs_multilevel.html" target="wiki-view"><code>adjust_appendrel_attrs_multilevel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_child_relids.html" target="wiki-view"><code>adjust_child_relids</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_child_relids_multilevel.html" target="wiki-view"><code>adjust_child_relids_multilevel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_inherited_attnums.html" target="wiki-view"><code>adjust_inherited_attnums</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__adjust_inherited_attnums_multilevel.html" target="wiki-view"><code>adjust_inherited_attnums_multilevel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__get_translated_update_targetlist.html" target="wiki-view"><code>get_translated_update_targetlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__appendinfo_c__find_appinfos_by_relids.html" target="wiki-view"><code>find_appinfos_by_relids</code></a></li>
+</ul></body></html>

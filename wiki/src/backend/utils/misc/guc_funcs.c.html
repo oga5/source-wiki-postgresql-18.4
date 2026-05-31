@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/misc/guc_funcs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/misc/guc_funcs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのGUC（Grand Unified Configuration）パラメータをSQLインターフェース経由で操作・参照するための関数群を実装しています。<code>SET</code> コマンドの実行や <code>SHOW</code> コマンド、および <code>pg_settings</code> ビュー等の基盤となる関数を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/misc</code> モジュールにおいて、GUCの内部管理ロジック（<code>guc.c</code>）と、ユーザーがSQLを通じて対話するインターフェースの橋渡しを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**SETコマンドの実行**: <code>SET</code> 文の解析結果を受け取り、適切なGUC設定関数を呼び出す。</li>
+<li>**SHOWコマンドの処理**: 特定のパラメータまたは全パラメータの値をシステムカタログ形式で出力する。</li>
+<li>**SQL関数インターフェース**: <code>set_config_by_name</code> や <code>show_all_settings</code> など、SQLから直接呼び出し可能な関数の提供。</li>
+<li>**メタデータ抽出**: パラメータの属性（フラグ、定義値、ソース情報など）をSQL層へ公開する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecSetVariableStmt</code>: <code>SET</code> コマンドの実行エントリポイント。</li>
+<li><code>SetPGVariable</code>: CコードからGUCを設定するための汎用インターフェース。</li>
+<li><code>show_all_settings</code>: <code>pg_settings</code> ビューのバックエンドとなるテーブル関数。</li>
+<li><code>flatten_set_variable_args</code>: SQLの構文解析結果（リスト）をGUCが処理可能な文字列形式に変換する。</li>
+<li><code>ConfigOptionIsVisible</code>: 現在のユーザーが特定のGUC設定を参照可能か判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExtractSetVariableArgs</code></li>
+<li><code>GetConfigOptionValues</code></li>
+<li><code>GetPGVariable</code></li>
+<li><code>GetPGVariableResultDesc</code></li>
+<li><code>ShowAllGUCConfig</code></li>
+<li><code>ShowGUCConfigOption</code></li>
+<li><code>pg_settings_get_flags</code></li>
+<li><code>set_config_by_name</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **SET処理**: <code>ExecSetVariableStmt</code> がパーサーからの <code>VariableSetStmt</code> を受け取り、<code>flatten_set_variable_args</code> で値を正規化し、<code>set_config_option</code>（<code>guc.c</code>）を呼び出して値を更新します。 2.  **SHOW処理**: <code>GetPGVariable</code> が対象を判別し、<code>ShowGUCConfigOption</code> または <code>ShowAllGUCConfig</code> を経由して <code>DestReceiver</code> にタプルを送信します。 3.  **テーブル関数**: <code>show_all_settings</code> は <code>SRF</code>（Set Returning Function）として実装され、<code>get_guc_variables</code> で全設定を取得し、<code>GetConfigOptionValues</code> で各行の属性を構築して順次返却します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>guc_internal.h</code>: GUC内部構造体および内部関数へのアクセス。</li>
+<li><code>utils/guc_tables.h</code>: GUC設定テーブルの定義。</li>
+<li><code>funcapi.h</code>: SQL関数（SRF）の実装に必要なAPI。</li>
+<li><code>catalog/pg_parameter_acl.h</code>: パラメータに対するアクセス制御。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/misc/guc.c</code>: GUCのコアロジック（設定値の保持、検証、適用）。</li>
+<li><code>src/backend/utils/misc/guc_tables.c</code>: 全GUCパラメータの定義リスト。</li>
+<li><code>src/backend/access/transam/xact.c</code>: <code>SET LOCAL</code> 等のトランザクション制御に関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはSQLインターフェースに特化しており、GUCの「値の保持」や「検証ロジック」そのものは <code>guc.c</code> に依存しています。</li>
+<li><code>show_all_settings</code> は非常に多くの属性を扱うため、<code>NUM_PG_SETTINGS_ATTS</code> 定数と <code>GetConfigOptionValues</code> 内のスイッチ文が密結合しています。修正時は両方の整合性に注意してください。</li>
+<li>セキュリティ上の理由から、権限のないユーザーに対しては設定値のソース（ファイル名や行番号）を隠蔽するロジックが含まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__ExecSetVariableStmt.html" target="wiki-view"><code>ExecSetVariableStmt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__ExtractSetVariableArgs.html" target="wiki-view"><code>ExtractSetVariableArgs</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__flatten_set_variable_args.html" target="wiki-view"><code>flatten_set_variable_args</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__SetPGVariable.html" target="wiki-view"><code>SetPGVariable</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__set_config_by_name.html" target="wiki-view"><code>set_config_by_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__GetPGVariable.html" target="wiki-view"><code>GetPGVariable</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__GetPGVariableResultDesc.html" target="wiki-view"><code>GetPGVariableResultDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__ShowGUCConfigOption.html" target="wiki-view"><code>ShowGUCConfigOption</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__ShowAllGUCConfig.html" target="wiki-view"><code>ShowAllGUCConfig</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__pg_settings_get_flags.html" target="wiki-view"><code>pg_settings_get_flags</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__ConfigOptionIsVisible.html" target="wiki-view"><code>ConfigOptionIsVisible</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__guc_funcs_c__GetConfigOptionValues.html" target="wiki-view"><code>GetConfigOptionValues</code></a></li>
+</ul></body></html>

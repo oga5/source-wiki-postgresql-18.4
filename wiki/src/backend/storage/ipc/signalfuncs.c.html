@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/signalfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/signalfuncs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのバックエンドプロセスに対するシグナル送信機能を提供する関数群を実装しています。主にSQL関数として公開される管理用インターフェースのバックエンド側ロジックを担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールにおいて、プロセス間通信（IPC）の応用として「プロセス制御」を担当します。他のIPCファイルが共有メモリやラッチなどの低レイヤーな同期機構を提供するのに対し、本ファイルはそれらを利用してプロセスを停止・再起動・設定変更させるための高レベルな制御を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限チェック**: シグナル送信元と送信先（ターゲットプロセス）のロールに基づき、操作の可否を判定します。</li>
+<li>**シグナル送信**: <code>kill()</code> システムコールをラップし、適切なプロセスまたはプロセスグループへシグナルを配送します。</li>
+<li>**プロセス監視**: <code>pg_terminate_backend</code> における待機処理など、プロセス終了の確認機能を提供します。</li>
+<li>**管理用シグナル**: 設定リロード（SIGHUP）やログローテーションなど、Postmasterへの指示を仲介します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_signal_backend</code>: 内部的なシグナル送信の共通関数。権限チェックと <code>kill</code> を実行します。</li>
+<li><code>pg_cancel_backend</code>: クエリキャンセル（SIGINT）を送信するSQL関数。</li>
+<li><code>pg_terminate_backend</code>: プロセス終了（SIGTERM）を送信するSQL関数。待機オプション付き。</li>
+<li><code>pg_reload_conf</code>: Postmasterに設定再読み込みを指示するSQL関数。</li>
+<li><code>pg_rotate_logfile</code>: ログローテーションを指示するSQL関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pg_wait_until_termination</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **権限検証**: <code>pg_signal_backend</code> がターゲットの <code>PGPROC</code> を取得し、<code>superuser()</code> や <code>has_privs_of_role()</code> を用いて操作権限を検証します。 2. **シグナル配送**: <code>kill()</code> を呼び出します。<code>HAVE_SETSID</code> が定義されている環境では、プロセスグループ全体にシグナルを送るため <code>-pid</code> を指定します。 3. **待機処理**: <code>pg_terminate_backend</code> でタイムアウトが指定された場合、<code>pg_wait_until_termination</code> が <code>kill(pid, 0)</code> を定期的に呼び出し、プロセスが消滅するまで <code>WaitLatch</code> で待機します。 4. **結果返却**: 成功時は <code>true</code>、失敗時はエラーまたは警告を伴う <code>false</code> を返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: プロセス情報の取得と検証に使用。</li>
+<li><code>storage/pmsignal.h</code>: Postmasterへのシグナル送信に使用。</li>
+<li><code>utils/acl.h</code>: ロール権限のチェックに使用。</li>
+<li><code>miscadmin.h</code>: <code>PostmasterPid</code> や <code>superuser()</code> などのグローバルな管理情報。</li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/syslogger.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/postmaster/postmaster.c</code>: 本ファイルから送られたシグナルを受け取り、実際にプロセスを管理する中心地。</li>
+<li><code>src/backend/storage/ipc/pmsignal.c</code>: Postmasterへのシグナル配送の詳細実装。</li>
+<li><code>src/include/catalog/pg_proc.h</code>: これらの関数がSQLインターフェースとしてどのように定義されているかを確認できます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**競合状態**: <code>pg_signal_backend</code> は、PIDが再利用される可能性を考慮していますが、PostgreSQLのPID割り当てロジックにより実用上のリスクは極めて低いと判断されています。</li>
+<li>**エラーハンドリング**: 権限エラーは呼び出し元（SQL関数）で <code>ereport(ERROR, ...)</code> を発行し、トランザクションを中断させる設計になっています。</li>
+<li>**待機処理**: <code>pg_wait_until_termination</code> 内の <code>CHECK_FOR_INTERRUPTS()</code> は、待機中にユーザーがキャンセル操作を行った場合に適切に反応するために重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_signal_backend.html" target="wiki-view"><code>pg_signal_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_cancel_backend.html" target="wiki-view"><code>pg_cancel_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_wait_until_termination.html" target="wiki-view"><code>pg_wait_until_termination</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_terminate_backend.html" target="wiki-view"><code>pg_terminate_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_reload_conf.html" target="wiki-view"><code>pg_reload_conf</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__signalfuncs_c__pg_rotate_logfile.html" target="wiki-view"><code>pg_rotate_logfile</code></a></li>
+</ul></body></html>

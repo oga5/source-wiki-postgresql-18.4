@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__buffer__freelist_c__BufferStrategyControl.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BufferStrategyControl</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/buffer/freelist.c:30</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの共有バッファプールにおけるバッファ置換戦略（クロック掃引法）およびフリーリストの状態を管理するグローバルな制御構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct {
+    slock_t             buffer_strategy_lock;
+    pg_atomic_uint32    nextVictimBuffer;
+    int                 firstFreeBuffer;
+    int                 lastFreeBuffer;
+    uint32              completePasses;
+    pg_atomic_uint32    numBufferAllocs;
+    int                 bgwprocno;
+} BufferStrategyControl;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造であるため、直接的な入力・出力はありません。各メンバはバッファマネージャの各関数（<code>StrategyGetBuffer</code> 等）によって読み書きされます。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>buffer_strategy_lock</code>: 構造体内の各メンバ（特にフリーリスト関連）へのアクセスを保護するスピンロックです。</li>
+<li><code>nextVictimBuffer</code>: クロック掃引のハンド位置を保持します。値は単調増加し、実際のバッファインデックスを得るには <code>NBuffers</code> での剰余演算が必要です。</li>
+<li><code>lastFreeBuffer</code>: <code>firstFreeBuffer</code> が <code>-1</code>（リストが空）の場合、本メンバの値は未定義となります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**クロック掃引管理**: <code>nextVictimBuffer</code> を用いてバッファプールを巡回し、再利用候補を特定します。</li>
+<li>**フリーリスト管理**: <code>firstFreeBuffer</code> と <code>lastFreeBuffer</code> を用いて、未使用バッファのリストを高速に管理します。</li>
+<li>**統計収集**: <code>completePasses</code> および <code>numBufferAllocs</code> により、バッファ割り当て状況を追跡します。</li>
+<li>**通知**: <code>bgwprocno</code> を介して、バックグラウンドライター（bgwriter）への通知制御を行います。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/buffer/freelist.c</code> 内の <code>StrategyInitialize</code>（初期化時）およびバッファ割り当て・解放に関連する各関数。</li>
+<li>**呼び出し先**: 構造体自体はデータ保持用であり、関数を直接呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BufferDesc</code>: バッファ記述子（<code>storage/buf_internals.h</code> で定義）。</li>
+<li><code>BufferAccessStrategyData</code>: プロセス固有のリングバッファ戦略を管理する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>フリーリストが空（<code>firstFreeBuffer == -1</code>）の場合、<code>lastFreeBuffer</code> は参照してはなりません。</li>
+<li>統計カウンタは、単一のbgwriterサイクル内でオーバーフローしない十分なビット幅を持つ必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されます。</li>
+<li><code>buffer_strategy_lock</code> はフリーリスト操作の保護を主目的としており、クロック掃引のメインループではロック競合を避ける設計が求められます。</li>
+<li><code>nextVictimBuffer</code> の更新にはアトミック操作が使用されています。</li>
+</ul></body></html>

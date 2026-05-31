@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/relation.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/relation.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける、パブリッシャー側のリレーション（テーブル）とサブスクライバー側のローカルリレーション間のマッピングを管理するキャッシュ層です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> モジュールにおいて、リモートから受信したデータ変更をローカルのどのテーブル・どの列に適用すべきかを解決する「翻訳機」の役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**リレーションマッピングの保持**: リモートの <code>remoteid</code> とローカルの <code>Oid</code> を結びつけるハッシュテーブル（<code>LogicalRepRelMap</code>）の管理。</li>
+<li>**属性マッピングの構築**: ローカルテーブルの列順序とリモートの列順序を対応付ける <code>AttrMap</code> の生成。</li>
+<li>**レプリカアイデンティティの検証**: 更新・削除操作に必要なインデックス（PKまたはREPLICA IDENTITY）の特定と検証。</li>
+<li>**パーティション対応**: パーティションテーブルの各リーフパーティションに対する個別のマッピング管理。</li>
+<li>**キャッシュ無効化**: ローカルの DDL 変更（<code>relcache</code> 無効化）を検知し、マッピングを再構築する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LogicalRepRelMap</code>: リモートリレーション情報を保持するメインのハッシュテーブル。</li>
+<li><code>LogicalRepRelMapEntry</code>: マッピング情報（属性マップ、ローカルリレーションのポインタ、更新可否フラグなど）を格納する構造体。</li>
+<li><code>logicalrep_rel_open()</code>: 指定されたリモートIDに対応するローカルリレーションをオープンし、必要に応じてマッピングを再構築する主要なエントリポイント。</li>
+<li><code>logicalrep_partition_open()</code>: パーティションテーブル用のマッピングを生成・管理する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FindLogicalRepLocalIndex</code></li>
+<li><code>FindUsableIndexForReplicaIdentityFull</code></li>
+<li><code>GetRelationIdentityOrPK</code></li>
+<li><code>IsIndexUsableForReplicaIdentityFull</code></li>
+<li><code>LogicalRepPartMapEntry</code></li>
+<li><code>logicalrep_get_attrs_str</code></li>
+<li><code>logicalrep_rel_att_by_name</code></li>
+<li><code>logicalrep_relmap_free_entry</code></li>
+<li><code>logicalrep_relmap_init</code></li>
+<li><code>logicalrep_relmap_invalidate_cb</code></li>
+<li><code>logicalrep_relmap_update</code></li>
+<li><code>logicalrep_report_missing_or_gen_attrs</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 初回アクセス時に <code>logicalrep_relmap_init()</code> が呼ばれ、<code>CacheMemoryContext</code> 上にハッシュテーブルが作成されます。 2. **解決**: <code>logicalrep_rel_open()</code> が呼ばれると、キャッシュを検索します。キャッシュミスまたは無効化されている場合、<code>RangeVarGetRelid</code> でローカルテーブルを特定し、<code>AttrMap</code> を構築します。 3. **検証**: <code>logicalrep_rel_mark_updatable()</code> が呼び出され、ローカルテーブルのインデックス構成がリモートの更新要件を満たしているか判定します。 4. **無効化**: <code>logicalrep_relmap_invalidate_cb()</code> が <code>relcache</code> の変更通知を受け取ると、該当エントリを無効化し、次回の <code>logicalrep_rel_open()</code> で再構築を強制します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/table.h</code>, <code>catalog/pg_subscription_rel.h</code>: テーブルアクセスおよびサブスクリプション情報の取得。</li>
+<li><code>replication/logicalrelation.h</code>: 論理レプリケーション用データ構造の定義。</li>
+<li><code>utils/syscache.h</code>, <code>utils/inval.h</code>: システムカタログキャッシュおよび無効化通知の処理。</li>
+<li><code>access/amapi.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/worker_internal.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/replication/logicalrelation.h</code>: 本ファイルで扱うデータ構造の定義元。</li>
+<li><code>src/backend/replication/logical/worker.c</code>: 本ファイルで管理されるマッピングを利用して、実際にデータを適用するワーカープロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「リモートの列名」と「ローカルの列番号」を紐付けることに注力しています。</li>
+<li><code>localrelvalid</code> フラグは、DDL によるテーブル構造変更後にキャッシュを安全に再構築するための重要な制御フラグです。</li>
+<li>パーティションテーブルの場合、親テーブルのマップをそのまま使わず、各リーフパーティションごとに <code>LogicalRepPartMap</code> を介して個別のマップを生成する点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__LogicalRepPartMapEntry.html" target="wiki-view"><code>LogicalRepPartMapEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_relmap_invalidate_cb.html" target="wiki-view"><code>logicalrep_relmap_invalidate_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_relmap_init.html" target="wiki-view"><code>logicalrep_relmap_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_relmap_free_entry.html" target="wiki-view"><code>logicalrep_relmap_free_entry</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_relmap_update.html" target="wiki-view"><code>logicalrep_relmap_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_rel_att_by_name.html" target="wiki-view"><code>logicalrep_rel_att_by_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_get_attrs_str.html" target="wiki-view"><code>logicalrep_get_attrs_str</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__logicalrep_report_missing_or_gen_attrs.html" target="wiki-view"><code>logicalrep_report_missing_or_gen_attrs</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__FindUsableIndexForReplicaIdentityFull.html" target="wiki-view"><code>FindUsableIndexForReplicaIdentityFull</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__IsIndexUsableForReplicaIdentityFull.html" target="wiki-view"><code>IsIndexUsableForReplicaIdentityFull</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__GetRelationIdentityOrPK.html" target="wiki-view"><code>GetRelationIdentityOrPK</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__relation_c__FindLogicalRepLocalIndex.html" target="wiki-view"><code>FindLogicalRepLocalIndex</code></a></li>
+</ul></body></html>

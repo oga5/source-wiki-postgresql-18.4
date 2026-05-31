@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__alter_c__AlterObjectOwner_internal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AlterObjectOwner_internal</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/alter.c:925</code></li>
+</ul>
+<h2>目的</h2>
+<p>データベースオブジェクトの所有者を変更し、関連するカタログ情報の更新および依存関係の再構築を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>classId</code>: 対象オブジェクトのカタログOID。</li>
+<li><code>objectId</code>: 対象オブジェクトのOID。</li>
+<li><code>new_ownerId</code>: 新しい所有者のロールOID。</li>
+<li>**出力**: なし（副作用としてカタログを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象オブジェクトが存在すること。</li>
+<li>呼び出し元が適切なロックを取得していること（本関数内で <code>RowExclusiveLock</code> を使用）。</li>
+<li>所有者変更が不要（<code>old_ownerId == new_ownerId</code>）な場合、カタログ更新はスキップされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **カタログ特定**: <code>classId</code> に基づき対象のシステムカタログを特定する。 2. **タプル取得**: <code>get_catalog_object_by_oid_extended</code> を使用して対象オブジェクトのタプルを取得・ロックする。 3. **権限検証**: スーパーユーザーでない場合、以下のチェックを行う。</p>
+<ul>
+<li>現在のユーザーがオブジェクトの所有者であること。</li>
+<li>現在のユーザーが <code>new_ownerId</code> にロール変更可能であること。</li>
+<li>オブジェクトがスキーマに属する場合、<code>new_ownerId</code> がそのスキーマに対する <code>CREATE</code> 権限を持つこと。</li>
+<p>4. **カタログ更新**:</p>
+<li><code>heap_modify_tuple</code> を用いて所有者属性を更新する。</li>
+<li>ACL属性が存在する場合、<code>aclnewowner</code> を用いてACLを再計算し更新する。</li>
+<li><code>CatalogTupleUpdate</code> でカタログを永続化する。</li>
+<p>5. **依存関係更新**: <code>changeDependencyOnOwner</code> を呼び出し、所有者依存関係を更新する。 6. **後処理**: <code>InvokeObjectPostAlterHook</code> を呼び出し、フック処理（イベントトリガー等）を実行してロックを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/alter.c</code> (エントリポイント経由)</li>
+<li><code>src/backend/catalog/pg_shdepend.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>get_catalog_object_by_oid_extended</code></li>
+<li><code>superuser</code>, <code>has_privs_of_role</code>, <code>check_can_set_role</code>, <code>object_aclcheck</code></li>
+<li><code>heap_modify_tuple</code>, <code>CatalogTupleUpdate</code></li>
+<li><code>aclnewowner</code></li>
+<li><code>changeDependencyOnOwner</code></li>
+<li><code>InvokeObjectPostAlterHook</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: システムカタログのテーブル構造。</li>
+<li><code>HeapTuple</code>: カタログ内のオブジェクト行データ。</li>
+<li><code>Acl</code>: アクセス制御リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キャッシュルックアップ失敗**: 対象オブジェクトがカタログに見つからない場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>**権限エラー**: 所有権がない、またはスキーマ作成権限がない場合、<code>aclcheck_error</code> を発生させる。</li>
+<li>**Large Object**: <code>classId</code> が <code>LargeObjectRelationId</code> の場合、自動的に <code>LargeObjectMetadataRelationId</code> を対象として処理する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はカタログの属性番号を動的に取得するため、新しいオブジェクト型を追加する際は <code>get_object_attnum_...</code> 系関数が正しく実装されている必要がある。</li>
+<li><code>InvokeObjectPostAlterHook</code> に渡されるのは <code>classId</code> であり、内部で使用する <code>catalogId</code> とは異なる場合がある点に注意すること。</li>
+</ul></body></html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/psql/command.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/psql/command.c</h1>
+<h2>概要</h2>
+<p><code>command.c</code> は、<code>psql</code> のメタコマンド（バックスラッシュコマンド、例: <code>\d</code>, <code>\c</code>, <code>\pset</code>）の解析と実行を統括する中心的なファイルです。ユーザーが入力したコマンドを解析し、適切なサブルーチンへディスパッチする役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>psql</code> のメインループ (<code>mainloop.c</code>) から呼び出される <code>HandleSlashCmds</code> を起点とし、各メタコマンドのロジックを分離・管理します。<code>command.h</code> で定義された <code>backslashResult</code> を用いて、コマンド実行後の制御フロー（クエリ送信、終了、エラーなど）をメインループに伝達します。</p>
+<h2>責務</h2>
+<ul>
+<li>**コマンドディスパッチ**: 入力されたバックスラッシュコマンドを解析し、対応する <code>exec_command_*</code> 関数へ振り分ける。</li>
+<li>**条件付き実行の管理**: <code>\if</code>, <code>\elif</code>, <code>\else</code>, <code>\endif</code> による条件分岐のスタック状態を管理し、非アクティブなブロック内のコマンドを適切にスキップする。</li>
+<li>**状態管理**: <code>pset</code> (PsqlSettings) を介した出力設定、接続情報、変数、およびパイプラインモードの状態更新。</li>
+<li>**外部リソース操作**: ファイルの読み込み (<code>\i</code>)、エディタの起動 (<code>\e</code>)、シェルコマンドの実行 (<code>\!</code>)。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ディスパッチ・制御</h3>
+<ul>
+<li><code>HandleSlashCmds</code>: メタコマンド処理のメインエントリーポイント。</li>
+<li><code>exec_command</code>: コマンド名に基づき各サブルーチンを呼び出すディスパッチャ。</li>
+<li><code>backslashResult</code>: コマンド実行後の動作（<code>PSQL_CMD_SEND</code>, <code>PSQL_CMD_TERMINATE</code> 等）を規定する列挙型。</li>
+</ul>
+<h3>コマンド実行サブルーチン</h3>
+<ul>
+<li><code>exec_command_d</code>: <code>\d</code> 系コマンド（オブジェクト表示）の解析とディスパッチ。</li>
+<li><code>exec_command_connect</code>: <code>\c</code> によるデータベース接続管理。</li>
+<li><code>exec_command_pset</code>: <code>\pset</code> による出力フォーマット設定。</li>
+<li><code>exec_command_edit</code>: <code>\e</code> によるクエリバッファの編集。</li>
+<li><code>exec_command_if</code> / <code>elif</code> / <code>else</code> / <code>endif</code>: 条件付き実行スタックの操作。</li>
+</ul>
+<h3>状態管理・ユーティリティ</h3>
+<ul>
+<li><code>do_pset</code>: <code>pset</code> 構造体の設定値を更新し、変更を反映する。</li>
+<li><code>do_connect</code>: データベース接続の確立と、接続失敗時のリトライロジック。</li>
+<li><code>SyncVariables</code> / <code>UnsyncVariables</code>: 接続状態に応じた内部変数の同期。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>EditableObjectType</code></li>
+<li><code>HandleSlashCmds</code></li>
+<li><code>SyncVariables</code></li>
+<li><code>UnsyncVariables</code></li>
+<li><code>exec_command</code></li>
+<li><code>exec_command_C</code></li>
+<li><code>exec_command_a</code></li>
+<li><code>exec_command_bind</code></li>
+<li><code>exec_command_bind_named</code></li>
+<li><code>exec_command_cd</code></li>
+<li><code>exec_command_connect</code></li>
+<li><code>fmt</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: <code>HandleSlashCmds</code> が <code>psql_scan_slash_command</code> でコマンド名を特定。 2. **条件判定**: <code>conditional_active(cstack)</code> で現在のブロックが実行対象か確認。非アクティブな場合は <code>ignore_slash_*</code> 系関数で引数を読み飛ばす。 3. **実行**: <code>exec_command</code> が対応する関数を呼び出し、<code>pset</code> や <code>query_buf</code> を操作。 4. **結果返却**: <code>backslashResult</code> を通じて、メインループがクエリをサーバーへ送るべきか、あるいは入力を継続すべきかを判断。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>command.h</code>: メタコマンドのインターフェース定義。</li>
+<li><code>settings.h</code>: グローバル状態 <code>pset</code> へのアクセス。</li>
+<li><code>psqlscanslash.h</code>: バックスラッシュコマンドの字句解析。</li>
+<li><code>libpq-fe.h</code>: データベース接続および通信。</li>
+<li><code>fe_utils/</code>: 出力整形、条件分岐スタック、文字列操作ユーティリティ。</li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>common.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>copy.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>describe.h</code></li>
+<li><code>direct.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/cancel.h</code></li>
+<li><code>fe_utils/print.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>help.h</code></li>
+<li><code>input.h</code></li>
+<li><code>io.h</code></li>
+<li><code>large_obj.h</code></li>
+<li><code>libpq/pqcomm.h</code></li>
+<li><code>mainloop.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>pqexpbuffer.h</code></li>
+<li><code>pwd.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utime.h</code></li>
+<li><code>variables.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>mainloop.c</code>: <code>HandleSlashCmds</code> の呼び出し元。</li>
+<li><code>describe.c</code>: <code>\d</code> 系コマンドの具体的な表示ロジック。</li>
+<li><code>copy.c</code>: <code>\copy</code> コマンドの実行ロジック。</li>
+<li><code>variables.c</code>: <code>\set</code> 等で操作される変数管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>psql_scan_slash_option</code> で取得した文字列は呼び出し側で <code>free()</code> する必要があります。</li>
+<li>**制限モード**: <code>restricted</code> 変数が <code>true</code> の場合、<code>\unrestrict</code> 以外のコマンドは拒否されます。</li>
+<li>**条件分岐**: <code>\if</code> ブロック内のコマンドは、非アクティブ時でも字句解析器を正しく進めるために <code>ignore_slash_*</code> 関数を通す必要があります。これを怠ると、次のコマンドの解析が正しく行われません。</li>
+<li>**パイプラインモード**: <code>PQpipelineStatus</code> をチェックし、パイプラインモードで許可されていないコマンド（<code>\gexec</code> 等）を適切にエラーにする必要があります。</li>
+<li>**省略箇所**: 本ファイルは非常に長いため、各 <code>exec_command_*</code> 関数の詳細な実装ロジックは省略していますが、命名規則により機能は明確です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__psql__command_c__EditableObjectType.html" target="wiki-view"><code>EditableObjectType</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__HandleSlashCmds.html" target="wiki-view"><code>HandleSlashCmds</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command.html" target="wiki-view"><code>exec_command</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_a.html" target="wiki-view"><code>exec_command_a</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_bind.html" target="wiki-view"><code>exec_command_bind</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_bind_named.html" target="wiki-view"><code>exec_command_bind_named</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_C.html" target="wiki-view"><code>exec_command_C</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_connect.html" target="wiki-view"><code>exec_command_connect</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__exec_command_cd.html" target="wiki-view"><code>exec_command_cd</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__SyncVariables.html" target="wiki-view"><code>SyncVariables</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__UnsyncVariables.html" target="wiki-view"><code>UnsyncVariables</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__command_c__fmt.html" target="wiki-view"><code>fmt</code></a></li>
+</ul></body></html>

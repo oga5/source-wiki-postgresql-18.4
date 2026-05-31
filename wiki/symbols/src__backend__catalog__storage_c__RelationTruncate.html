@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__storage_c__RelationTruncate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelationTruncate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/storage.c:288</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーション（テーブルやインデックス）の物理ファイルを指定されたブロック数まで切り詰め、関連するフリースペースマップ（FSM）および可視性マップ（VM）を更新し、整合性を維持するためのWALログを記録する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void RelationTruncate(Relation rel, BlockNumber nblocks)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 切り詰め対象のリレーション記述子。</li>
+<li><code>nblocks</code>: 切り詰め後の目標ブロック数。</li>
+<li>**出力**: なし（副作用として物理ストレージの変更とWAL記録を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し時に <code>MyProc-&gt;delayChkptFlags</code> に <code>DELAY_CHKPT_START</code> および <code>DELAY_CHKPT_COMPLETE</code> が設定されていないこと。</li>
+<li>処理中、チェックポイントの進行を一時的にブロックするフラグ（<code>DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE</code>）が <code>MyProc</code> に設定される。</li>
+<li>物理的な切り詰めは <code>START_CRIT_SECTION()</code> 内で実行され、中断不可のクリティカルセクションとして扱われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: リレーションのキャッシュされたブロック数情報をリセットする。 2. **準備**: メインフォーク、FSM、VMの各フォークについて、現在のブロック数と切り詰め後のブロック数を算出する。 3. **前処理**: <code>RelationPreTruncate(rel)</code> を呼び出す。 4. **チェックポイント保護**: <code>delayChkptFlags</code> を設定し、切り詰め中のチェックポイントによる不整合を防ぐ。 5. **WAL記録**: リレーションがWALを必要とする場合、<code>XLogInsert</code> で切り詰め情報を記録し、<code>XLogFlush</code> でディスクへフラッシュする。 6. **物理切り詰め**: <code>smgrtruncate</code> を呼び出し、バッファプールから不要なページを削除し、ディスク上のファイルを物理的に切り詰める。 7. **事後処理**: クリティカルセクションを終了し、チェックポイント保護フラグを解除する。必要に応じて <code>FreeSpaceMapVacuumRange</code> でFSMを更新する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam_handler.c</code></li>
+<li><code>src/backend/access/heap/vacuumlazy.c</code></li>
+<li><code>src/backend/access/spgist/spgvacuum.c</code></li>
+<li><code>src/backend/catalog/heap.c</code></li>
+<li><code>contrib/pg_visibility/pg_visibility.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>RelationGetSmgr</code>, <code>smgrnblocks</code>, <code>smgrexists</code>, <code>smgrtruncate</code></li>
+<li><code>FreeSpaceMapPrepareTruncateRel</code>, <code>visibilitymap_prepare_truncate</code></li>
+<li><code>RelationPreTruncate</code>, <code>RelationNeedsWAL</code></li>
+<li><code>XLogBeginInsert</code>, <code>XLogRegisterData</code>, <code>XLogInsert</code>, <code>XLogFlush</code></li>
+<li><code>START_CRIT_SECTION</code>, <code>END_CRIT_SECTION</code></li>
+<li><code>FreeSpaceMapVacuumRange</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: リレーションのメタデータ構造。</li>
+<li><code>SMgrRelation</code>: ストレージマネージャレベルのリレーション情報。</li>
+<li><code>xl_smgr_truncate</code>: WAL記録用の切り詰め情報構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>smgrtruncate</code> 実行中にエラーが発生した場合、クリティカルセクションによりシステムはパニックし、クラッシュリカバリへ移行する。</li>
+<li>FSMやVMが存在しない場合は、それらの切り詰め処理はスキップされる。</li>
+<li>WAL記録がフラッシュされる前にシステムがクラッシュした場合、リカバリ時に整合性が再構築される必要がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はチェックポイントとの競合を避けるため、<code>DELAY_CHKPT</code> フラグを厳密に制御している。この順序を変更するとデータ破損を招く可能性がある。</li>
+<li>FSMの更新はWALログに含まれないため、クラッシュ後の不整合を許容する設計となっている。</li>
+<li><code>RelationPreTruncate</code> の呼び出し位置や、<code>smgrtruncate</code> への引数順序は、ストレージマネージャの期待する仕様と密接に関連している。</li>
+</ul></body></html>

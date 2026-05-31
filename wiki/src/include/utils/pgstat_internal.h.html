@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/utils/pgstat_internal.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/utils/pgstat_internal.h</h1>
+<h2>概要</h2>
+<p>PostgreSQLの累積統計システム（Cumulative Statistics System）の内部実装を定義するヘッダーファイルです。統計情報の収集・報告を行う一般のバックエンドではなく、統計システムそのものを構築・管理するモジュール向けに、共有メモリ上のデータ構造や管理用インターフェースを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/utils/pgstat.h</code> が統計システムを利用する全バックエンド向けの公開APIであるのに対し、本ファイルは統計情報の共有メモリレイアウト、ハッシュテーブル管理、および統計種別ごとのメタデータ定義を保持する「内部実装の基盤」です。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリ統計の定義**: 統計情報を格納する共有ハッシュテーブル（<code>dshash</code>）の構造と、各統計種別の共有メモリレイアウトの定義。</li>
+<li>**統計ライフサイクル管理**: 参照カウント（<code>refcount</code>）による共有メモリ上の統計エントリの生存期間管理。</li>
+<li>**バックエンドローカルキャッシュ**: 共有メモリへのアクセス頻度を減らすためのローカル参照構造（<code>PgStat_EntryRef</code>）の提供。</li>
+<li>**統計種別メタデータ**: 各統計種別（テーブル、関数、IO等）の振る舞いを制御する <code>PgStat_KindInfo</code> の定義。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgStatShared_HashEntry</code>: 共有統計ハッシュテーブルの各エントリ。統計データ本体へのポインタと生存期間管理用カウンタを持つ。</li>
+<li><code>PgStat_EntryRef</code>: バックエンドが共有統計エントリを保持するためのローカル構造体。未フラッシュの統計更新（<code>pending</code>）を一時保持する。</li>
+<li><code>PgStat_KindInfo</code>: 統計種別ごとの初期化、フラッシュ、スナップショット取得などのコールバック関数を保持するメタデータ構造体。</li>
+<li><code>PgStat_ShmemControl</code>: 統計システム全体の共有メモリ上のルート構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PgStatShared_Archiver</code></li>
+<li><code>PgStatShared_BgWriter</code></li>
+<li><code>PgStatShared_Common</code></li>
+<li><code>PgStat_HashKey</code></li>
+<li><code>PgStat_SubXactStatus</code></li>
+<li><code>pgstat_get_custom_shmem_data</code></li>
+<li><code>pgstat_get_custom_snapshot_data</code></li>
+<li><code>pgstat_get_entry_data</code></li>
+<li><code>pgstat_get_entry_len</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **アクセス**: バックエンドは <code>PgStat_EntryRef</code> を通じて統計エントリにアクセスし、共有メモリの競合を避けるためローカルの <code>pending</code> 領域に更新を蓄積します。 2. **フラッシュ**: <code>pgstat_report_stat()</code> 等のタイミングで、<code>PgStat_KindInfo</code> に定義された <code>flush_pending_cb</code> が呼び出され、ローカルの <code>pending</code> データが共有メモリへマージされます。 3. **同期**: 固定個数の統計（<code>fixed_amount</code>）については、<code>changecount</code> プロトコルを用いて、ロックを最小限に抑えつつ一貫性のある読み取りを実現します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>common/hashfn_unstable.h</code>: ハッシュ計算用。</li>
+<li><code>lib/dshash.h</code>, <code>lib/ilist.h</code>: 共有ハッシュテーブルおよびリスト管理。</li>
+<li><code>storage/lwlock.h</code>: 共有メモリ上の統計データ保護用ロック。</li>
+<li><code>utils/dsa.h</code>: 動的共有メモリ領域の管理。</li>
+<li><code>pgstat.h</code>: 統計システムの基本定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計システムのメインロジック。</li>
+<li><code>src/backend/utils/activity/pgstat_shmem.c</code>: 共有メモリの初期化とアタッチ処理。</li>
+<li><code>src/backend/utils/activity/pgstat_*.c</code>: 各統計種別（<code>io</code>, <code>wal</code>, <code>relation</code> 等）ごとの具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルで定義される構造体は、共有メモリ上に配置されるため、ポインタではなく <code>dsa_pointer</code> やオフセットを使用してデータにアクセスする設計になっています。</li>
+<li><code>changecount</code> プロトコルは、読み取り側が書き込みの競合を検知して再試行するための仕組みです。この実装を理解するには <code>pgstat_copy_changecounted_stats</code> のロジックが参考になります。</li>
+<li>統計エントリの削除は、参照カウントがゼロになるまで遅延されるため、<code>gc_request_count</code> を介したガベージコレクションの仕組みが重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStat_HashKey.html" target="wiki-view"><code>PgStat_HashKey</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStatShared_HashEntry.html" target="wiki-view"><code>PgStatShared_HashEntry</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStatShared_Common.html" target="wiki-view"><code>PgStatShared_Common</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStat_EntryRef.html" target="wiki-view"><code>PgStat_EntryRef</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStat_SubXactStatus.html" target="wiki-view"><code>PgStat_SubXactStatus</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStat_KindInfo.html" target="wiki-view"><code>PgStat_KindInfo</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStatShared_Archiver.html" target="wiki-view"><code>PgStatShared_Archiver</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__PgStatShared_BgWriter.html" target="wiki-view"><code>PgStatShared_BgWriter</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__pgstat_get_entry_len.html" target="wiki-view"><code>pgstat_get_entry_len</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__pgstat_get_entry_data.html" target="wiki-view"><code>pgstat_get_entry_data</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__pgstat_get_custom_shmem_data.html" target="wiki-view"><code>pgstat_get_custom_shmem_data</code></a></li>
+<li><a href="../../../symbols/src__include__utils__pgstat_internal_h__pgstat_get_custom_snapshot_data.html" target="wiki-view"><code>pgstat_get_custom_snapshot_data</code></a></li>
+</ul></body></html>

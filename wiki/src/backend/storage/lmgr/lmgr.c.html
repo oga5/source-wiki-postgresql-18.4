@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/lmgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/lmgr.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのロックマネージャ（Lock Manager）に対する、高レベルなインターフェースを提供するソースファイルです。リレーション、ページ、タプル、トランザクションID（XID）など、特定のオブジェクトに対するロック操作を簡略化し、一貫したセマンティクスで実行するためのラッパー関数群を定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/lmgr</code> モジュールにおいて、<code>lock.c</code> が提供する低レベルな共有メモリ上のロック管理機能を、上位レイヤー（アクセス手法やコマンド処理）から利用しやすい形に抽象化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロック操作の抽象化**: <code>LOCKTAG</code> の構築と <code>LockAcquire</code>/<code>LockRelease</code> の呼び出しを隠蔽し、呼び出し側のコードを簡潔に保つ。</li>
+<li>**インバリデーション処理**: リレーションロック取得時に、必要に応じて <code>AcceptInvalidationMessages()</code> を呼び出し、リレーションキャッシュ（relcache）の整合性を保証する。</li>
+<li>**トランザクション待機**: 他のトランザクションの終了を待機するロジック（<code>XactLockTableWait</code>）や、推論的挿入（Speculative Insertion）のロック管理を行う。</li>
+<li>**デバッグ・診断**: ロックタグの人間が読める形式への変換（<code>DescribeLockTag</code>）や、エラーコンテキストの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LockRelationOid</code> / <code>LockRelation</code>: リレーションに対するロック取得と、それに伴うインバリデーション処理を行う主要関数。</li>
+<li><code>XactLockTableWait</code>: 指定したトランザクションの終了を待機する。サブトランザクションの階層を考慮した待機ロジックを含む。</li>
+<li><code>SpeculativeInsertionLockAcquire</code>: 推論的挿入（UPSERT等で使用）のためのロックを取得する。</li>
+<li><code>WaitForLockersMultiple</code>: 指定したロックタグ群に対して競合する全トランザクションの終了を待機する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ConditionalLockRelation</code></li>
+<li><code>ConditionalLockRelationOid</code></li>
+<li><code>LockRelationId</code></li>
+<li><code>RelationInitLockInfo</code></li>
+<li><code>SetLocktagRelationOid</code></li>
+<li><code>UnlockRelation</code></li>
+<li><code>UnlockRelationId</code></li>
+<li><code>UnlockRelationOid</code></li>
+<li><code>XactLockTableDelete</code></li>
+<li><code>XactLockTableWaitInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **タグ構築**: 各関数は、引数（OIDやブロック番号など）から <code>LOCKTAG</code> 構造体を構築します。 2. **ロック取得**: <code>LockAcquireExtended</code> を呼び出し、共有メモリ上のロックテーブルを操作します。 3. **整合性維持**: ロック取得成功後、<code>LOCKACQUIRE_ALREADY_CLEAR</code> でない場合は <code>AcceptInvalidationMessages()</code> を呼び出し、キャッシュの stale を解消します。 4. **待機**: <code>XactLockTableWait</code> 等の待機関数は、ループ内で <code>LockAcquire</code> と <code>LockRelease</code> を繰り返し、対象のトランザクションが終了するまで待機します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/lock.h</code>: ロック管理の基盤となるデータ構造と関数。</li>
+<li><code>access/xact.h</code>, <code>access/subtrans.h</code>: トランザクション状態の確認とサブトランザクション階層の解決。</li>
+<li><code>utils/inval.h</code>: キャッシュインバリデーションメッセージの処理。</li>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: プロセスおよびトランザクションの管理。</li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/lmgr/lock.c</code>: ロックテーブルの物理的な管理を行う下位層。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: <code>RelationInitLockInfo</code> が初期化するリレーションキャッシュの本体。</li>
+<li><code>src/include/storage/lmgr.h</code>: 本ファイルの公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**インバリデーションの重要性**: <code>LockRelationOid</code> 等が <code>AcceptInvalidationMessages</code> を呼ぶのは、ロック取得中に他セッションがスキーマ変更を行った場合に備えるためです。この呼び出しを省略すると、古い relcache エントリを使用して予期せぬエラーが発生する可能性があります。</li>
+<li>**セッションロック**: <code>LockRelationIdForSession</code> 等の「Session」が付く関数は、トランザクション終了後もロックを保持します。これらは主に論理レプリケーションや長期的なセッション管理で使用されます。</li>
+<li>**デッドロック**: 本ファイル内の待機関数はデッドロック検出器と連携していますが、待機ロジックを実装する際は、常にデッドロックの可能性を考慮する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__XactLockTableWaitInfo.html" target="wiki-view"><code>XactLockTableWaitInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__RelationInitLockInfo.html" target="wiki-view"><code>RelationInitLockInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__SetLocktagRelationOid.html" target="wiki-view"><code>SetLocktagRelationOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__LockRelationOid.html" target="wiki-view"><code>LockRelationOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__ConditionalLockRelationOid.html" target="wiki-view"><code>ConditionalLockRelationOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__LockRelationId.html" target="wiki-view"><code>LockRelationId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__UnlockRelationId.html" target="wiki-view"><code>UnlockRelationId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__UnlockRelationOid.html" target="wiki-view"><code>UnlockRelationOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__LockRelation.html" target="wiki-view"><code>LockRelation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__ConditionalLockRelation.html" target="wiki-view"><code>ConditionalLockRelation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__UnlockRelation.html" target="wiki-view"><code>UnlockRelation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lmgr_c__XactLockTableDelete.html" target="wiki-view"><code>XactLockTableDelete</code></a></li>
+</ul></body></html>

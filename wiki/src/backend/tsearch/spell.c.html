@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tsearch/spell.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tsearch/spell.c</h1>
+<h2>概要</h2>
+<p><code>spell.c</code> は、PostgreSQL の全文検索における Ispell/Hunspell 形式の辞書エンジンを実装するファイルです。辞書ファイル（<code>.dict</code>）と接辞ファイル（<code>.affix</code>）を読み込み、形態素解析および単語の正規化を行うためのコンパイル済みデータ構造を構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tsearch</code> サブシステムにおいて、Ispell 辞書の実装（<code>dict_ispell.c</code>）が利用するバックエンドエンジンです。辞書のロード、Trie（プレフィックス木）の構築、および接辞ルールを用いた単語の変形・照合ロジックを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**辞書コンパイル**: 外部ファイルから辞書データを読み込み、メモリ効率の良い Trie 構造へ変換する。</li>
+<li>**形態素解析**: 接辞（接頭辞・接尾辞）ルールを適用し、単語の基本形を導出する。</li>
+<li>**複合語処理**: Hunspell 形式の複合語ルールに基づき、単語の分割と再構成を行う。</li>
+<li>**メモリ管理**: 辞書構築時のみ必要な一時メモリ（<code>buildCxt</code>）の管理と、構築後のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>辞書構築・管理</h3>
+<ul>
+<li><code>NIStartBuild</code>, <code>NIFinishBuild</code>: 辞書構築のライフサイクル管理。</li>
+<li><code>NIImportDictionary</code>, <code>NIImportAffixes</code>: 辞書および接辞ファイルのパースとロード。</li>
+<li><code>NISortDictionary</code>, <code>NISortAffixes</code>: ロードしたデータを Trie 構造へ変換し、最適化する。</li>
+</ul>
+<h3>形態素解析・正規化</h3>
+<ul>
+<li><code>NINormalizeWord</code>: 外部から呼び出される単語正規化のメインエントリポイント。</li>
+<li><code>NormalizeSubWord</code>: 単語に対して接辞ルールを適用し、基本形を検索する。</li>
+<li><code>FindWord</code>: Trie を探索し、単語の存在と接辞フラグの整合性を検証する。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>IspellDict</code>: 辞書全体のコンテキストを保持する構造体。</li>
+<li><code>SPNode</code>, <code>AffixNode</code>: 辞書および接辞を格納する Trie ノード。</li>
+<li><code>SPELL</code>, <code>AFFIX</code>: 個別の単語エントリーおよび接辞ルール。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FindWord</code></li>
+<li><code>IsAffixFlagInUse</code></li>
+<li><code>NIAddAffix</code></li>
+<li><code>NIAddSpell</code></li>
+<li><code>NIFinishBuild</code></li>
+<li><code>NIImportAffixes</code></li>
+<li><code>NIImportDictionary</code></li>
+<li><code>NIImportOOAffixes</code></li>
+<li><code>NIStartBuild</code></li>
+<li><code>SplitVar</code></li>
+<li><code>getAffixFlagSet</code></li>
+<li><code>getCompoundAffixFlagValue</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>NIStartBuild</code> で一時メモリコンテキストを作成。 2. **ロード**: <code>NIImportDictionary</code> と <code>NIImportAffixes</code> がファイルを読み込み、<code>SPELL</code> 配列と <code>AFFIX</code> 配列を構築。 3. **コンパイル**: <code>NISortDictionary</code> が <code>SPELL</code> 配列をソートし、<code>mkSPNode</code> で Trie を構築。<code>NISortAffixes</code> が <code>AFFIX</code> 配列から接辞 Trie を構築。 4. **正規化**: <code>NINormalizeWord</code> が入力単語を受け取り、<code>NormalizeSubWord</code> で接辞を剥がしながら <code>FindWord</code> で辞書内の基本形を照合。 5. **複合語**: <code>SplitToVariants</code> が再帰的に単語を分割し、複合語としての妥当性を検証。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>tsearch/dicts/spell.h</code>: 辞書関連のデータ構造定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>utils/formatting.h</code>: 文字列変換（<code>str_tolower</code> 等）。</li>
+<li><code>tsearch/ts_locale.h</code>: ロケール依存の文字処理。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>dict_ispell.c</code>: 本ファイルを呼び出し、PostgreSQL の辞書インターフェースとして機能する。</li>
+<li><code>regis.c</code>: Ispell 形式の正規表現エンジン。</li>
+<li><code>ts_parse.c</code>: 全文検索の解析パイプライン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 辞書構築時は <code>tmpalloc</code>（<code>buildCxt</code>）を使用し、構築完了後に <code>NIFinishBuild</code> で一括解放します。このため、構築中のデータは <code>palloc</code> ではなく専用コンテキストで管理されます。</li>
+<li>**Trie 構造**: <code>SPNode</code> および <code>AffixNode</code> は、メモリ節約のために <code>FLEXIBLE_ARRAY_MEMBER</code> を使用したコンパクトなレイアウトになっています。</li>
+<li>**再帰**: <code>SplitToVariants</code> は再帰的に呼び出されるため、スタックオーバーフローを防ぐために <code>check_stack_depth()</code> が挿入されています。</li>
+<li>**未実装・浅い部分**: 複合語処理のロジックは複雑であり、辞書ファイルの記述形式（Hunspell vs Ispell）によってパースの挙動が大きく異なります。特に <code>NIImportOOAffixes</code> は Hunspell 形式の複雑なオプションを扱うため、パースロジックが非常に長くなっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIStartBuild.html" target="wiki-view"><code>NIStartBuild</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIFinishBuild.html" target="wiki-view"><code>NIFinishBuild</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__IsAffixFlagInUse.html" target="wiki-view"><code>IsAffixFlagInUse</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIAddSpell.html" target="wiki-view"><code>NIAddSpell</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIImportDictionary.html" target="wiki-view"><code>NIImportDictionary</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__FindWord.html" target="wiki-view"><code>FindWord</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIAddAffix.html" target="wiki-view"><code>NIAddAffix</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__getCompoundAffixFlagValue.html" target="wiki-view"><code>getCompoundAffixFlagValue</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__getAffixFlagSet.html" target="wiki-view"><code>getAffixFlagSet</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIImportOOAffixes.html" target="wiki-view"><code>NIImportOOAffixes</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__NIImportAffixes.html" target="wiki-view"><code>NIImportAffixes</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__spell_c__SplitVar.html" target="wiki-view"><code>SplitVar</code></a></li>
+</ul></body></html>

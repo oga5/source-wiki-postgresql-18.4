@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/uuid-internal-cmp.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>uuid_internal_cmp</h1>
+<h2>概念</h2>
+<p><code>uuid_internal_cmp</code> は、PostgreSQLにおいて2つのUUID（<code>pg_uuid_t</code> 構造体）のバイナリデータをバイト単位で比較し、その大小関係（順序）を判定するための内部関数です。</p>
+<h2>なぜ重要か</h2>
+<p>UUIDの比較は、データベース内でのソート処理や、B-treeおよびGiSTインデックス（特に <code>btree_gist</code> 拡張）の構築・検索において基礎となる操作です。この関数は、UUIDを16バイトの固定長データとして高速かつ一貫した順序（ネットワークバイトオーダーに基づく辞書順）で比較することを保証するために重要です。</p>
+<p>また、コアのユーティリティ（<code>src/backend/utils/adt</code>）と拡張モジュール（<code>contrib/btree_gist</code>）の双方で同様の比較ロジックが独立して定義されているため、実装の一貫性を維持する上でも重要な管理対象となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:contrib/btree_gist</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/utils/adt/uuid.c#uuid_internal_cmp</code>: PostgreSQLコアにおけるUUIDデータ型の比較演算（<code>uuid_lt</code> などの内部実装）の基礎となる内部比較関数。</li>
+<li><code>symbol:contrib/btree_gist/btree_uuid.c#uuid_internal_cmp</code>: <code>btree_gist</code> 拡張におけるUUIDの範囲比較やインデックス操作用の内部比較関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>UUIDの比較が必要なSQLクエリやインデックス操作が発生した際、以下の流れで比較が行われます。</p>
+<p>1. 各モジュールの比較演算子関数（例：コアの <code>uuid_lt</code> や、<code>btree_gist</code> の <code>gbt_uuidgt</code>、<code>gbt_uuidkey_cmp</code> など）が呼び出されます。 2. これらの関数から、それぞれのソースファイル内に定義された <code>static</code> 関数である <code>uuid_internal_cmp</code> が呼び出されます。 3. <code>uuid_internal_cmp</code> は、入力された2つの <code>pg_uuid_t</code> 構造体の <code>data</code> メンバ（16バイト）を標準Cライブラリの <code>memcmp</code> を用いてバイト単位で直接比較します。 4. <code>memcmp</code> の結果（等しい場合は <code>0</code>、<code>arg1</code> が小さい場合は負の値、大きい場合は正の値）がそのまま呼び出し元に返され、最終的な大小判定やインデックスの分岐決定に利用されます。</p>
+<p>なお、これら以外の詳細なエンドツーエンドの実行パスや、上位のクエリ実行エンジンとの完全な連携フローは、提供された情報からは未確定です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**固定長比較**: UUIDは常に <code>UUID_LEN</code>（16バイト）の固定長データとして扱われ、<code>memcmp</code> による比較範囲もこのサイズに固定されます。</li>
+<li>**プラットフォーム非依存の順序**: PostgreSQLのUUIDはネットワークバイトオーダー（ビッグエンディアン）で格納されるため、プラットフォームのエンディアンに関わらず、バイト列としての辞書順比較により一貫した順序が保証されます。</li>
+<li>**非NULLポインタ**: 入力となる <code>arg1</code> および <code>arg2</code> は、有効な <code>pg_uuid_t</code> 構造体を指す非NULLポインタでなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**重複定義と一貫性の維持**: <code>uuid_internal_cmp</code> は <code>src/backend/utils/adt/uuid.c</code> と <code>contrib/btree_gist/btree_uuid.c</code> の両方に <code>static</code> 関数として個別に定義されています。そのため、一方の比較ロジックや動作を変更する際は、もう一方の実装も同様に変更して一貫性を保つ必要があります。一貫性が崩れた場合、インデックスの破損や予期しない検索結果を招く恐れがあります。</li>
+<li>**論理的意味の不考慮**: 比較は純粋なバイナリレベルの辞書順で行われます。UUIDのバージョンやタイムスタンプといった論理的な構造や意味を考慮した順序付けは行われません。</li>
+<li>**NULLポインタのハンドリング**: 関数内部では入力ポインタのNULLチェックを行わないため、NULLポインタを渡すと未定義動作（セグメンテーションフォールトなど）を引き起こします。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/adt/uuid.c</code>: コアにおけるUUIDの比較処理の実装詳細。</li>
+<li><code>contrib/btree_gist/btree_uuid.c</code>: GiSTインデックスにおけるUUIDのインデックス操作および範囲比較の実装詳細。</li>
+</ul></body></html>

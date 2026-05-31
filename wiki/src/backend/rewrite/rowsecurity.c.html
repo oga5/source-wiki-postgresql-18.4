@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/rewrite/rowsecurity.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/rewrite/rowsecurity.c</h1>
+<h2>概要</h2>
+<p>行レベルセキュリティ（RLS: Row-Level Security）を実装するための中心的なロジックを提供します。クエリのリライトフェーズにおいて、テーブルに定義されたセキュリティポリシーに基づき、アクセス制御用のフィルタ（<code>securityQuals</code>）や、データ挿入・更新時の制約（<code>WithCheckOptions</code>）をクエリツリーに注入します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/rewrite</code> サブシステムの一部として、クエリの書き換えプロセス中に呼び出されます。<code>rewriteHandler.c</code> がクエリを処理する際、各リレーションに対して本ファイルの関数を呼び出し、RLS ポリシーを適用すべきかどうか、またどのような制約を付与すべきかを決定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ポリシーの収集**: 指定されたコマンド（SELECT, INSERT, UPDATE, DELETE, MERGE）と現在のロールに基づき、適用すべきポリシー（Permissive/Restrictive）を抽出する。</li>
+<li>**クエリへの制約注入**: 抽出したポリシーを <code>securityQuals</code>（読み取り制限）または <code>WithCheckOptions</code>（書き込み制限）としてクエリツリーに統合する。</li>
+<li>**デフォルト拒否（Default-Deny）の適用**: 明示的なポリシーが存在しない場合、あるいは許可条件を満たさない場合に、アクセスを完全に遮断する制約を生成する。</li>
+<li>**拡張性**: 外部拡張モジュールが独自のセキュリティポリシーを注入できるよう、フック（<code>row_security_policy_hook</code>）を提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>get_row_security_policies</code>: 本ファイルのメインエントリポイント。クエリ内の各リレーションに対するRLS制約を生成する。</li>
+<li><code>row_security_policy_hook_permissive</code> / <code>restrictive</code>: 拡張モジュールがポリシーを追加するためのフック変数。</li>
+<li><code>add_security_quals</code>: <code>USING</code> 句を <code>securityQuals</code> に変換して追加する。</li>
+<li><code>add_with_check_options</code>: <code>WITH CHECK</code> 句を <code>WithCheckOptions</code> に変換して追加する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_role_for_policy</code></li>
+<li><code>get_policies_for_relation</code></li>
+<li><code>row_security_policy_cmp</code></li>
+<li><code>sort_policies_by_name</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. <code>get_row_security_policies</code> が呼び出されると、<code>check_enable_rls</code> で対象テーブルのRLS有効状態を確認する。 2. <code>get_policies_for_relation</code> を呼び出し、システムカタログおよびフックから該当するポリシーリストを取得する。 3. コマンドの種類（SELECT, UPDATE等）に応じて、適切なポリシーを <code>add_security_quals</code>（読み取り用）または <code>add_with_check_options</code>（書き込み用）に渡す。 4. 複数の Permissive ポリシーは <code>OR</code> で結合され、Restrictive ポリシーは <code>AND</code> で結合される。 5. 生成された制約は <code>Query</code> 構造体の該当フィールドに格納され、以降のプランナへ引き継がれる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/makefuncs.h</code>, <code>nodes/pg_list.h</code>: クエリツリー操作用。</li>
+<li><code>rewrite/rewriteManip.h</code>: <code>ChangeVarNodes</code> 等のツリー操作ユーティリティ。</li>
+<li><code>utils/rls.h</code>: RLSの有効性判定（<code>check_enable_rls</code>）。</li>
+<li><code>utils/rel.h</code>: リレーションキャッシュの操作。</li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteDefine.h</code></li>
+<li><code>rewrite/rowsecurity.h</code></li>
+<li><code>utils/acl.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/rewrite/rowsecurity.h</code>: データ構造（<code>RowSecurityPolicy</code>, <code>RowSecurityDesc</code>）の定義。</li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: 本ファイルの関数を呼び出すリライトのメイン処理。</li>
+<li><code>src/backend/catalog/pg_policy.c</code>: RLSポリシーのカタログ定義と管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Permissive vs Restrictive**: Permissive ポリシーは「どれか一つでも満たせば許可（OR）」、Restrictive ポリシーは「すべて満たさなければならない（AND）」という論理で結合されます。</li>
+<li>**MERGEコマンド**: MERGEは複雑なコマンドであり、UPDATE/DELETE/INSERTの各ポリシーを状況に応じて使い分けるため、本ファイル内でも個別のロジックが記述されています。</li>
+<li>**デバッグ**: RLSが適用されたクエリの挙動を確認するには、<code>EXPLAIN</code> を使用して、注入された <code>Filter</code> や <code>WithCheckOption</code> を確認するのが最も効率的です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__get_row_security_policies.html" target="wiki-view"><code>get_row_security_policies</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__get_policies_for_relation.html" target="wiki-view"><code>get_policies_for_relation</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__sort_policies_by_name.html" target="wiki-view"><code>sort_policies_by_name</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__row_security_policy_cmp.html" target="wiki-view"><code>row_security_policy_cmp</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__add_security_quals.html" target="wiki-view"><code>add_security_quals</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__add_with_check_options.html" target="wiki-view"><code>add_with_check_options</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rowsecurity_c__check_role_for_policy.html" target="wiki-view"><code>check_role_for_policy</code></a></li>
+</ul></body></html>

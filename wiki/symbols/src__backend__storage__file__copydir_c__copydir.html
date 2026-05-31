@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__file__copydir_c__copydir.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>copydir</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/file/copydir.c:47</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたソースディレクトリの内容をターゲットディレクトリへ再帰的に複製し、ファイルシステムレベルでのデータ永続化を保証する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void copydir(const char *fromdir, const char *todir, bool recurse)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>fromdir</code> (const char*): コピー元のディレクトリパス。</li>
+<li><code>todir</code> (const char*): コピー先のディレクトリパス。</li>
+<li><code>recurse</code> (bool): <code>true</code> の場合、サブディレクトリも再帰的にコピーする。</li>
+<li>戻り値: なし。失敗時は <code>ereport(ERROR, ...)</code> により処理を中断する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>todir</code> は存在しないか、空である必要がある（<code>MakePGDirectory</code> が失敗するため）。</li>
+<li><code>enableFsync</code> が有効な場合、コピー完了後にすべてのファイルとディレクトリに対して <code>fsync</code> が実行される。</li>
+<li>処理中にシグナルを受信した場合、<code>CHECK_FOR_INTERRUPTS()</code> により中断される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ディレクトリ作成**: <code>MakePGDirectory</code> を使用して <code>todir</code> を作成する。 2. **走査とコピー**: <code>AllocateDir</code>/<code>ReadDir</code> で <code>fromdir</code> を走査する。</p>
+<ul>
+<li><code>.</code> および <code>..</code> はスキップする。</li>
+<li>サブディレクトリの場合、<code>recurse</code> が <code>true</code> なら再帰的に <code>copydir</code> を呼び出す。</li>
+<li>通常ファイルの場合、<code>file_copy_method</code> に応じて <code>clone_file</code> または <code>copy_file</code> を呼び出す。</li>
+<p>3. **永続化**: <code>enableFsync</code> が有効な場合、<code>todir</code> 内の全ファイルを再度走査し、<code>fsync_fname</code> で同期する。 4. **ディレクトリ同期**: 最後に <code>todir</code> 自体に対して <code>fsync_fname(..., true)</code> を実行し、メタデータを確定させる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/dbcommands.c</code> 内のデータベースコピー処理などで呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>MakePGDirectory</code>, <code>AllocateDir</code>, <code>ReadDir</code>, <code>FreeDir</code> (ディレクトリ操作)</li>
+<li><code>get_dirent_type</code> (ファイル種別判定)</li>
+<li><code>clone_file</code> / <code>copy_file</code> (ファイルコピー)</li>
+<li><code>fsync_fname</code> (永続化)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DIR</code> (ディレクトリストリーム)</li>
+<li><code>struct dirent</code> (ディレクトリ内のエントリ情報)</li>
+<li><code>PGFileType</code> (ファイル種別定数)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>MakePGDirectory</code> 失敗時: ディレクトリ作成権限不足やパスの競合によりエラー終了。</li>
+<li><code>ReadDir</code> 失敗時: 読み取り権限不足等によりエラー終了。</li>
+<li><code>fsync</code> 無効時: <code>enableFsync</code> が <code>false</code> の場合、コピー後の同期処理をスキップして終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>fsync</code> の実行は、クラッシュリカバリの整合性を維持するために不可欠である。</li>
+<li><code>clone_file</code> は OS の機能（Reflink 等）に依存するため、プラットフォームごとの挙動に注意すること。</li>
+<li>長時間の処理となる可能性があるため、<code>CHECK_FOR_INTERRUPTS()</code> の位置は適切に維持する必要がある。</li>
+</ul></body></html>

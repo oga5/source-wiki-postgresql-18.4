@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__subtrans_c__StartupSUBTRANS.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>StartupSUBTRANS</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/subtrans.c:308</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL 起動時に、サブトランザクションログ（<code>pg_subtrans</code>）の現在アクティブなページをゼロクリアします。本モジュールはクラッシュリカバリを目的としないため、再起動時には既存のディスク上のデータを破棄し、初期化を行う必要があります。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void StartupSUBTRANS(TransactionId oldestActiveXID)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>oldestActiveXID</code> (現在アクティブな最古のトランザクションID)</li>
+<li>**出力**: なし（副作用として共有メモリ上の SLRU ページおよびディスク上の対応ページがゼロクリアされる）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_subtrans</code> はクラッシュリカバリをサポートしないため、起動時に内容をリセットすることが前提です。</li>
+<li><code>TransamVariables-&gt;nextXid</code> が有効な値として参照可能である必要があります。</li>
+<li>ページ番号の計算において、<code>TransactionId</code> のラップアラウンドが考慮されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>oldestActiveXID</code> から開始ページ (<code>startPage</code>) を算出します。 2. <code>TransamVariables-&gt;nextXid</code> から終了ページ (<code>endPage</code>) を算出します。 3. <code>startPage</code> から <code>endPage</code> までループし、以下の処理を実行します。</p>
+<ul>
+<li><code>SimpleLruGetBankLock</code> を使用して、対象ページに対応する SLRU バンクロックを取得します。</li>
+<li><code>ZeroSUBTRANSPage</code> を呼び出し、対象ページをゼロクリアします。</li>
+<li>ページ番号が <code>MaxTransactionId</code> を超える場合は 0 にラップアラウンドします。</li>
+<p>4. 最後に取得したロックを解放します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/xlog.c</code>: リカバリ処理の過程で呼び出されます。</li>
+<li>**呼び出し先**:</li>
+<li><code>TransactionIdToPage</code>: ページ番号の算出。</li>
+<li><code>SimpleLruGetBankLock</code>: SLRU バンクロックの取得。</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code>: ロックの排他制御。</li>
+<li><code>ZeroSUBTRANSPage</code>: ページの初期化。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SubTransCtl</code>: SLRU 管理のための共有メモリ制御構造体。</li>
+<li><code>TransamVariables</code>: トランザクション管理のグローバル変数群。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ラップアラウンド**: <code>startPage</code> が <code>MaxTransactionId</code> を超える場合、正しく 0 にリセットされる設計になっています。</li>
+<li>**ロック競合**: 複数のページを処理する際、バンクロックが切り替わるタイミングで適切にロックの解放と再取得が行われます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_subtrans</code> の初期化のみを担います。新しいページが必要になった際の拡張は <code>ExtendSUBTRANS</code> が担当します。</li>
+<li>起動時のゼロクリアは、ディスク上の古いデータが誤って参照されることを防ぐための重要な安全策です。</li>
+</ul></body></html>

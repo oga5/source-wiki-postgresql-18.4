@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiverfuncs_c__ShutdownWalRcv.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ShutdownWalRcv</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiverfuncs.c:178</code></li>
+</ul>
+<h2>目的</h2>
+<p>WALレシーバープロセスを安全に停止させ、その終了を待機する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ShutdownWalRcv(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし</li>
+<li>出力: なし（副作用としてWALレシーバーの停止と共有メモリ状態の更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ上の <code>WalRcv</code> 構造体へのアクセスは、内部で <code>mutex</code> スピンロックにより保護される。</li>
+<li>停止処理中、WALレシーバーの状態が <code>WALRCV_STOPPED</code> に遷移するまで、呼び出し元は条件変数 <code>walRcvStoppedCV</code> を用いて待機する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>WalRcv-&gt;mutex</code> を取得し、現在の <code>walRcvState</code> に応じて以下の処理を行う。</p>
+<ul>
+<li><code>WALRCV_STARTING</code> の場合: 状態を <code>WALRCV_STOPPED</code> に変更し、停止フラグを立てる。</li>
+<li><code>WALRCV_STREAMING</code>, <code>WAITING</code>, <code>RESTARTING</code> の場合: 状態を <code>WALRCV_STOPPING</code> に変更し、対象のプロセスID（<code>pid</code>）を保持する。</li>
+<p>2. 停止フラグが立っている場合、<code>walRcvStoppedCV</code> をブロードキャストする。 3. プロセスIDが有効な場合、<code>kill(pid, SIGTERM)</code> を発行してWALレシーバーに終了を促す。 4. <code>ConditionVariablePrepareToSleep</code> を呼び出し、<code>WalRcvRunning()</code> が偽（状態が <code>WALRCV_STOPPED</code>）になるまで <code>ConditionVariableSleep</code> で待機する。 5. 終了確認後、<code>ConditionVariableCancelSleep</code> を呼び出して待機を解除する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/access/transam/xlog.c</code>（<code>ShutdownWalRcv</code> のラッパー経由）</li>
+<li>呼び出し先: <code>kill</code>（システムコール）、<code>ConditionVariable</code> 関連関数、<code>WalRcvRunning</code>（状態確認）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalRcvData</code>: 共有メモリ上のWALレシーバー制御構造体。</li>
+<li><code>walRcvState</code>: レシーバーの現在の状態（<code>WALRCV_STOPPED</code>, <code>WALRCV_STOPPING</code> 等）。</li>
+<li><code>walRcvStoppedCV</code>: 停止完了を通知するための条件変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>WALレシーバーが既に停止している場合（<code>WALRCV_STOPPED</code>）、本関数は即座に復帰する。</li>
+<li><code>kill</code> 送信後にWALレシーバーが正常に終了しない場合、<code>ConditionVariableSleep</code> により待機状態が継続する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はスタートアッププロセスからの呼び出しを想定している。</li>
+<li>共有メモリの競合を防ぐため、状態遷移には必ず <code>mutex</code> を介すること。</li>
+<li><code>WalRcvRunning()</code> による待機ループは、WALレシーバーが確実に終了したことを保証するための重要な同期ポイントである。</li>
+</ul></body></html>

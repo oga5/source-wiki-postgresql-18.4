@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-protocol3.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-protocol3.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL クライアント/サーバープロトコル v3.0 のフロントエンド側実装を担うコアモジュールです。サーバーから送信されるメッセージストリームを解析し、<code>PGconn</code> 構造体の状態を更新し、必要に応じて <code>PGresult</code> を構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の通信層において、<code>fe-misc.c</code> が提供する低レベル I/O（ソケット読み書き）の上に位置し、プロトコル固有のメッセージフォーマットを解釈する役割を持ちます。<code>fe-exec.c</code> や <code>fe-connect.c</code> から呼び出され、非同期通信における状態遷移のトリガーとなります。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージ解析**: サーバーからのバイトストリームをメッセージタイプと長さに応じて切り出し、適切なハンドラへディスパッチする。</li>
+<li>**状態管理**: <code>PGconn</code> の <code>asyncStatus</code>（BUSY, READY, COPY 等）をメッセージに応じて遷移させる。</li>
+<li>**結果構築**: <code>DataRow</code> や <code>RowDescription</code> などのメッセージを解析し、<code>PGresult</code> オブジェクトへ変換する。</li>
+<li>**エラー・通知処理**: <code>ErrorResponse</code> および <code>NoticeResponse</code> の解析と、クライアントへの通知フック実行。</li>
+<li>**COPY プロトコル**: <code>COPY</code> モード中のデータ転送および終了処理の制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>メッセージ解析・ディスパッチ</h3>
+<ul>
+<li><code>pqParseInput3</code>: メッセージループのメインエントリ。入力バッファからメッセージを順次消費する。</li>
+<li><code>VALID_LONG_MESSAGE_TYPE</code>: 巨大なメッセージ（数KB以上）を許容するメッセージタイプを判定するマクロ。</li>
+</ul>
+<h3>メッセージハンドラ（内部）</h3>
+<ul>
+<li><code>getRowDescriptions</code>, <code>getParamDescriptions</code>: メタデータ（列定義、パラメータ定義）の解析。</li>
+<li><code>getAnotherTuple</code>: <code>DataRow</code> メッセージから行データを抽出し、<code>pqRowProcessor</code> へ渡す。</li>
+<li><code>pqGetErrorNotice3</code>: エラーまたは通知メッセージを解析し、<code>PGresult</code> または通知フックへ反映する。</li>
+<li><code>getCopyStart</code>, <code>getCopyDataMessage</code>: <code>COPY</code> モードの開始およびデータ転送の制御。</li>
+<li><code>getReadyForQuery</code>: <code>ReadyForQuery</code> メッセージを処理し、トランザクション状態を更新する。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>pqBuildStartupPacket3</code>: 接続開始時にサーバーへ送信するスタートアップパケットを構築する。</li>
+<li><code>reportErrorPosition</code>: エラー発生時のクエリ位置を視覚的に表示する文字列を生成する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>build_startup_packet</code></li>
+<li><code>getAnotherTuple</code></li>
+<li><code>getBackendKeyData</code></li>
+<li><code>getCopyDataMessage</code></li>
+<li><code>getCopyStart</code></li>
+<li><code>getNotify</code></li>
+<li><code>getParamDescriptions</code></li>
+<li><code>getParameterStatus</code></li>
+<li><code>getReadyForQuery</code></li>
+<li><code>getRowDescriptions</code></li>
+<li><code>handleFatalError</code></li>
+<li><code>pqParseInput3</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>pqParseInput3</code> が <code>conn-&gt;inBuffer</code> を走査し、<code>id</code>（タイプ）と <code>msgLength</code> を取得。 2. **検証**: メッセージ長が妥当か確認し、不足していれば <code>pqCheckInBufferSpace</code> でバッファを拡張するか、読み込みを待機する。 3. **ディスパッチ**: <code>switch(id)</code> 文により、各メッセージタイプに対応するハンドラを呼び出す。 4. **状態更新**: ハンドラ内で <code>conn-&gt;asyncStatus</code> を更新し、<code>PGresult</code> を生成して <code>conn-&gt;result</code> に格納する。 5. **消費**: <code>pqParseDone</code> を呼び出し、解析済みのデータをバッファから破棄する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-int.h</code>: <code>PGconn</code> および <code>PGresult</code> の内部構造定義。</li>
+<li><code>libpq-fe.h</code>: 公開 API 定義。</li>
+<li><code>common/int.h</code>: 整数オーバーフローチェック用ユーティリティ。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の処理用。</li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-misc.c</code>: <code>pqGetc</code>, <code>pqGetInt</code>, <code>pqReadData</code> 等の低レベル I/O 関数を提供。</li>
+<li><code>fe-exec.c</code>: <code>PQgetResult</code> 等の公開 API 実装。本ファイルの解析結果をアプリケーションへ提供する。</li>
+<li><code>fe-connect.c</code>: 接続確立時のプロトコルネゴシエーションに関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PGresult</code> や <code>PGnotify</code> の構築において、<code>pqResultAlloc</code> を使用して <code>PGresult</code> のライフサイクルに紐付けられたメモリ管理を行っています。エラー発生時は <code>pqClearAsyncResult</code> でメモリリークを防ぐ設計です。</li>
+<li>**エラー処理**: <code>handleFatalError</code> は回復不能なエラー（同期喪失など）を検知した際に接続を強制切断します。</li>
+<li>**制約**: <code>pqParseInput3</code> は非同期処理を前提としており、データが不完全な場合は即座にリターンします。そのため、呼び出し側は <code>pqReadData</code> を適切にループさせる必要があります。</li>
+<li>**省略された詳細**: パイプラインモードの詳細な状態遷移や、特定の認証プロトコル（SASL等）の詳細は <code>fe-auth.c</code> 等に委譲されており、本ファイルでは主にデータメッセージの解析に集中しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__pqParseInput3.html" target="wiki-view"><code>pqParseInput3</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__handleFatalError.html" target="wiki-view"><code>handleFatalError</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getRowDescriptions.html" target="wiki-view"><code>getRowDescriptions</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getParamDescriptions.html" target="wiki-view"><code>getParamDescriptions</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getAnotherTuple.html" target="wiki-view"><code>getAnotherTuple</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getParameterStatus.html" target="wiki-view"><code>getParameterStatus</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getBackendKeyData.html" target="wiki-view"><code>getBackendKeyData</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getNotify.html" target="wiki-view"><code>getNotify</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getCopyStart.html" target="wiki-view"><code>getCopyStart</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getReadyForQuery.html" target="wiki-view"><code>getReadyForQuery</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__getCopyDataMessage.html" target="wiki-view"><code>getCopyDataMessage</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-protocol3_c__build_startup_packet.html" target="wiki-view"><code>build_startup_packet</code></a></li>
+</ul></body></html>

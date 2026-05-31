@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__tcop__pquery_c__PortalRun.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PortalRun</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/tcop/pquery.c:684</code></li>
+</ul>
+<h2>目的</h2>
+<p>ポータル（<code>Portal</code>）に関連付けられたクエリを実行し、結果を <code>DestReceiver</code> を介して配送する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool PortalRun(Portal portal, long count, bool isTopLevel,
+               DestReceiver *dest, DestReceiver *altdest,
+               QueryCompletion *qc)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>portal</code>: 実行対象のポータル構造体。</li>
+<li><code>count</code>: フェッチする行数。</li>
+<li><code>isTopLevel</code>: 最上位レベルの呼び出しかどうかを示すフラグ。</li>
+<li><code>dest</code>: 主な結果出力先。</li>
+<li><code>altdest</code>: 補助的な出力先（<code>PORTAL_MULTI_QUERY</code> で使用）。</li>
+<li><code>qc</code>: 実行完了情報を格納する構造体（ポインタ）。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 実行が完了し、これ以上フェッチするデータがない場合に <code>true</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>PortalIsValid(portal)</code> が真であること。</li>
+<li>実行中、<code>ActivePortal</code>、<code>CurrentResourceOwner</code>、<code>PortalContext</code> などのグローバル変数が一時的にポータルの状態に切り替えられ、終了時に復元される。</li>
+<li><code>PG_TRY/CATCH</code> ブロックにより、エラー発生時にはポータル状態が <code>PORTAL_FAILED</code> に遷移し、リソースが適切に管理される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>TRACE_POSTGRESQL_QUERY_EXECUTE_START</code> を発行し、<code>qc</code> を初期化。 2. **状態設定**: <code>MarkPortalActive(portal)</code> を呼び出し、ポータル実行用のメモリコンテキストとリソースオーナーをセットアップする。 3. **戦略分岐**: <code>portal-&gt;strategy</code> に基づき実行を分岐する。</p>
+<ul>
+<li><code>PORTAL_ONE_SELECT</code> 等: 必要に応じて <code>FillPortalStore</code> で結果を蓄積し、<code>PortalRunSelect</code> で指定行数をフェッチする。</li>
+<li><code>PORTAL_MULTI_QUERY</code>: <code>PortalRunMulti</code> を呼び出し、完了後に <code>MarkPortalDone</code> を実行する。</li>
+<p>4. **終了処理**: <code>PG_CATCH</code> ブロックでエラーを捕捉し、ポータルを失敗状態にしてから再スローする。正常終了時はコンテキストを復元し、<code>TRACE_POSTGRESQL_QUERY_EXECUTE_DONE</code> を発行して結果を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/prepare.c</code></li>
+<li><code>src/backend/tcop/postgres.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>FillPortalStore</code></li>
+<li><code>PortalRunSelect</code></li>
+<li><code>PortalRunMulti</code></li>
+<li><code>MarkPortalActive</code> / <code>MarkPortalDone</code> / <code>MarkPortalFailed</code></li>
+<li><code>MemoryContextSwitchTo</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Portal</code>: 実行状態を保持するコンテナ。</li>
+<li><code>DestReceiver</code>: 結果の配送先インターフェース。</li>
+<li><code>QueryCompletion</code>: クエリ実行後のステータス情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>未知の <code>portal-&gt;strategy</code> が指定された場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>実行中にエラーが発生した場合、<code>PG_CATCH</code> によりポータルは <code>PORTAL_FAILED</code> 状態となり、呼び出し元へエラーが伝播する。</li>
+<li><code>PORTAL_MULTI_QUERY</code> 以外の戦略では、実行統計のログ出力（<code>log_executor_stats</code>）が行われる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>VACUUM</code> や <code>CLUSTER</code> のような内部でトランザクションを制御するコマンドを扱うため、<code>TopTransactionResourceOwner</code> 等のグローバル変数の退避・復元処理が複雑になっている。この箇所を変更する際は、メモリコンテキストの切り替え順序に注意すること。</li>
+</ul></body></html>

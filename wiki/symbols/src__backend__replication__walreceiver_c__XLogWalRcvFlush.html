@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiver_c__XLogWalRcvFlush.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogWalRcvFlush</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiver.c:984</code></li>
+</ul>
+<h2>目的</h2>
+<p>受信した WAL データをディスクへ物理的にフラッシュし、共有メモリ上の進捗情報を更新して、リカバリプロセスおよびプライマリサーバーへ通知を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void XLogWalRcvFlush(bool dying, TimeLineID tli)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>dying</code> (bool): プロセス終了処理中であるかを示すフラグ。</li>
+<li><code>tli</code> (TimeLineID): 現在のタイムラインID。</li>
+<li>**出力**: なし（副作用として共有メモリおよびディスク状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tli != 0</code> であること。</li>
+<li><code>LogstreamResult.Flush &lt; LogstreamResult.Write</code> の場合にのみ、ディスクへのフラッシュ処理が実行される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>issue_xlog_fsync</code> を呼び出し、書き込み済みの WAL データをディスクへ永続化する。 2. <code>LogstreamResult.Flush</code> を <code>LogstreamResult.Write</code> と同期させる。 3. <code>WalRcv</code> 共有メモリ構造体のミューテックスを確保し、<code>flushedUpto</code> および <code>receivedTLI</code> を更新する。 4. <code>WakeupRecovery()</code> を呼び出し、リカバリプロセスへ通知する。 5. カスケードレプリケーションが有効な場合、<code>WalSndWakeup</code> を呼び出し、ダウンストリームのスタンバイへ通知する。 6. プロセスタイトルを更新し、現在のストリーミング進捗を表示する。 7. <code>dying</code> が <code>false</code> の場合、<code>XLogWalRcvSendReply</code> および <code>XLogWalRcvSendHSFeedback</code> を呼び出し、プライマリへ受信状況とフィードバックを送信する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/walreceiver.c</code> 内のストリーミングループおよび終了処理（行 490, 616, 789, 1051）。</li>
+<li>**呼び出し先**:</li>
+<li><code>issue_xlog_fsync</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>WakeupRecovery</code></li>
+<li><code>AllowCascadeReplication</code></li>
+<li><code>WalSndWakeup</code></li>
+<li><code>set_ps_display</code></li>
+<li><code>XLogWalRcvSendReply</code></li>
+<li><code>XLogWalRcvSendHSFeedback</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogstreamResult</code>: 受信およびフラッシュ済みの WAL 位置を保持するグローバル変数。</li>
+<li><code>WalRcvData</code> (<code>WalRcv</code>): 共有メモリ上のレプリケーション状態管理構造体。</li>
+<li><code>recvFile</code>, <code>recvSegNo</code>: 現在書き込み中の WAL ファイル情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>issue_xlog_fsync</code> が失敗した場合、PostgreSQL の標準的なエラーハンドリングによりプロセスが終了する可能性がある。</li>
+<li><code>dying</code> が <code>true</code> の場合、プライマリへのフィードバック送信はスキップされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>walreceiver</code> プロセスのメインループから定期的に呼び出される。</li>
+<li>共有メモリへの書き込みはミューテックスで保護されているため、競合は適切に制御されている。</li>
+<li><code>update_process_title</code> が有効な場合、<code>set_ps_display</code> によるプロセスリストの更新が発生するため、頻繁な呼び出しには注意が必要。</li>
+</ul></body></html>

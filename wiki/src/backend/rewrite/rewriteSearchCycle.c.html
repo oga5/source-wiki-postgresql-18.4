@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/rewrite/rewriteSearchCycle.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/rewrite/rewriteSearchCycle.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、再帰的共通テーブル式（CTE）における <code>SEARCH</code> および <code>CYCLE</code> 句の書き換え処理を実装しています。これらの句は SQL 標準で定義された再帰クエリの探索順序制御や循環検出をサポートするためのもので、本モジュールはこれらを標準的な <code>UNION</code> クエリの構造へと変換します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/rewrite</code> サブシステムの一部として、パーサが生成した <code>CommonTableExpr</code> ノードを、実行可能なクエリツリーへと変換する前処理を担います。<code>rewriteHandler.c</code> 等が呼び出す書き換えパイプラインの補助的な役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li><code>SEARCH</code> 句（BREADTH FIRST / DEPTH FIRST）の変換：探索順序を維持するためのシーケンス列の追加と、再帰ステップごとの深さまたはパスの記録。</li>
+<li><code>CYCLE</code> 句の変換：循環検出のためのマーク列とパス列の追加、および循環発生時の停止条件（<code>WHERE</code> 句）の挿入。</li>
+<li><code>CommonTableExpr</code> のメタデータ（列名、型、型修飾子）の更新。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>rewriteSearchAndCycle(CommonTableExpr *cte)</code>: 本ファイルのメインエントリポイント。CTE を受け取り、書き換え済みの新しい <code>CommonTableExpr</code> を返します。</li>
+<li><code>make_path_rowexpr</code>: 指定された列から <code>RowExpr</code> を構築し、パス記録用の基盤を作成します。</li>
+<li><code>make_path_cat_expr</code>: 再帰ステップごとにパス配列を連結する <code>ARRAY_CAT</code> 関数呼び出しを生成します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>make_path_initial_array</code></li>
+<li><code>rewriteSearchAndCycle</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 入力された <code>CommonTableExpr</code> をコピーし、<code>UNION</code> 構造の左右のサブクエリを特定します。 2. **列の拡張**: <code>SEARCH</code> や <code>CYCLE</code> で指定された列を CTE の出力列リストに追加します。 3. **サブクエリの再構築**:</p>
+<ul>
+<li>左側（初期クエリ）: 探索用の初期値（深さ0や空の配列）をターゲットリストに追加します。</li>
+<li>右側（再帰クエリ）: 再帰参照箇所を特定し、パスの更新（<code>ARRAY_CAT</code>）や循環マークの計算（<code>CASE</code> 文）をターゲットリストに追加します。</li>
+<p>4. **メタデータ更新**: <code>SetOperationStmt</code> および <code>CommonTableExpr</code> 自体の列定義を更新し、後続の解析フェーズで整合性が取れるようにします。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/parsenodes.h</code>: <code>CommonTableExpr</code>, <code>Query</code>, <code>SetOperationStmt</code> 等のノード定義。</li>
+<li><code>rewrite/rewriteManip.h</code>: <code>IncrementVarSublevelsUp</code> 等のクエリ操作ユーティリティ。</li>
+<li><code>catalog/pg_operator_d.h</code>, <code>catalog/pg_type_d.h</code>: 内部的な型定義（<code>RECORDOID</code>, <code>RECORDARRAYOID</code>）および演算子。</li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>nodes/primnodes.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteSearchCycle.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/rewrite/rewriteSearchCycle.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/parser/parse_cte.c</code>: CTE の構文解析および <code>checkWellFormedRecursion</code> による再帰の妥当性チェック。</li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: クエリ書き換えの全体的な制御フロー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本実装は、SQL 標準が求める複雑な構造を PostgreSQL の内部表現（<code>RowExpr</code>, <code>ArrayExpr</code>）で擬似的に実現しています。</li>
+<li><code>sqc.depth</code> のような標準 SQL の記述は、内部的には <code>FieldSelect</code> や <code>FuncExpr</code> を用いて明示的な関数呼び出しに変換されています。</li>
+<li>再帰参照が <code>UNION</code> の右側サブクエリのトップレベルに存在しない場合、現在の実装ではエラーとなります。これは将来的な拡張ポイントです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteSearchCycle_c__make_path_rowexpr.html" target="wiki-view"><code>make_path_rowexpr</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteSearchCycle_c__make_path_initial_array.html" target="wiki-view"><code>make_path_initial_array</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteSearchCycle_c__make_path_cat_expr.html" target="wiki-view"><code>make_path_cat_expr</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteSearchCycle_c__rewriteSearchAndCycle.html" target="wiki-view"><code>rewriteSearchAndCycle</code></a></li>
+</ul></body></html>

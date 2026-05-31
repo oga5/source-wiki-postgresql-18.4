@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/extension.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/extension.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの拡張機能（Extension）のライフサイクル管理を担うモジュールです。<code>CREATE EXTENSION</code>、<code>ALTER EXTENSION</code>、<code>DROP EXTENSION</code> などのSQLコマンドを処理し、拡張機能の定義ファイル（<code>.control</code>）の読み込み、インストールスクリプト（<code>.sql</code>）の実行、および依存関係の管理を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> ディレクトリ内で、SQLオブジェクトの集合体としての「拡張機能」という概念を管理する中心的な役割を果たします。他のコマンド群が個別のオブジェクト（テーブル、関数等）を扱うのに対し、本ファイルはそれらを束ねるメタデータとインストール手順を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**制御ファイルの解析**: <code>.control</code> ファイルを読み込み、拡張機能のメタデータ（バージョン、依存関係、スキーマ要件など）を構造体に展開する。</li>
+<li>**インストールと更新**: 適切なインストールスクリプトや更新パス（Dijkstra法による最短パス探索）を特定し、順次実行する。</li>
+<li>**依存関係の追跡**: 拡張機能とそれに含まれるオブジェクト間の依存関係を <code>pg_depend</code> カタログに記録する。</li>
+<li>**実行環境の制御**: スクリプト実行時のセッション設定（<code>search_path</code>、<code>client_min_messages</code> 等）を一時的に変更し、安全なインストール環境を保証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>creating_extension</code>: 拡張機能のインストール/更新中であることを示すグローバルフラグ。</li>
+<li><code>ExtensionControlFile</code>: 制御ファイルの内容を保持する構造体。</li>
+<li><code>ExtensionVersionInfo</code>: バージョン間の更新パスを計算するためのグラフ構造体。</li>
+<li><code>CreateExtensionInternal</code>: 拡張機能作成のメインロジック。</li>
+<li><code>execute_sql_string</code>: 拡張機能スクリプト内のSQLを解析・実行するエンジン。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterExtensionNamespace</code></li>
+<li><code>ApplyExtensionUpdates</code></li>
+<li><code>CreateExtension</code></li>
+<li><code>ExecAlterExtensionContentsStmt</code></li>
+<li><code>ExecAlterExtensionStmt</code></li>
+<li><code>ExtensionSiblingCache</code></li>
+<li><code>InsertExtensionTuple</code></li>
+<li><code>RemoveExtensionById</code></li>
+<li><code>script_error_callback_arg</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コマンド受信**: <code>CreateExtension</code> 等がパーサーから呼び出される。 2. **メタデータ取得**: <code>read_extension_control_file</code> で制御ファイルを読み込み、インストール対象のバージョンを特定する。 3. **パス探索**: <code>get_ext_ver_list</code> で全スクリプトを走査し、<code>find_update_path</code> で必要な更新スクリプトの順序を決定する。 4. **スクリプト実行**: <code>execute_extension_script</code> がスクリプトを読み込み、<code>execute_sql_string</code> で各文を順次実行する。この際、<code>creating_extension</code> を <code>true</code> にすることで、作成されるオブジェクトが自動的に拡張機能に紐付けられる。 5. **カタログ更新**: <code>InsertExtensionTuple</code> により <code>pg_extension</code> に情報を登録し、依存関係を確定させる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_extension.h</code>: 拡張機能カタログの定義。</li>
+<li><code>catalog/dependency.h</code>: オブジェクト間の依存関係管理。</li>
+<li><code>storage/fd.h</code>: ファイルシステム操作（<code>AllocateFile</code>, <code>ReadDir</code> 等）。</li>
+<li><code>utils/guc.h</code> (間接的含む): スクリプト実行中の設定変更。</li>
+<li><code>tcop/utility.h</code>: <code>ProcessUtility</code> を介したSQL実行。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_depend.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/alter.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>commands/schemacmds.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>nodes/queryjumble.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/conffiles.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/extension.h</code>: 公開インターフェース。</li>
+<li><code>src/backend/catalog/dependency.c</code>: 依存関係の低レベルな記録処理。</li>
+<li><code>src/backend/utils/misc/guc.c</code>: 制御ファイルの構文解析（<code>ParseConfigFp</code>）に利用。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スクリプト実行の安全性**: 拡張機能スクリプトは <code>execute_sql_string</code> を通じて実行されます。これはSPIではなく、個別のパーサーとプランナーを呼び出すことで、スクリプト内で作成されたオブジェクトを即座に認識できるように工夫されています。</li>
+<li>**更新パス**: バージョン間の更新はグラフ理論（Dijkstra法）を用いて最短パスを計算しています。スクリプトファイル名（<code>extname--old--new.sql</code>）がこのグラフの辺を構成します。</li>
+<li>**セキュリティ**: <code>creating_extension</code> フラグは、拡張機能のインストール中に作成されたオブジェクトを自動的に拡張機能のメンバとして登録するための重要な不変条件です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ExtensionControlFile.html" target="wiki-view"><code>ExtensionControlFile</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ExtensionVersionInfo.html" target="wiki-view"><code>ExtensionVersionInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__script_error_callback_arg.html" target="wiki-view"><code>script_error_callback_arg</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ExtensionSiblingCache.html" target="wiki-view"><code>ExtensionSiblingCache</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__CreateExtensionInternal.html" target="wiki-view"><code>CreateExtensionInternal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__CreateExtension.html" target="wiki-view"><code>CreateExtension</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__InsertExtensionTuple.html" target="wiki-view"><code>InsertExtensionTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__RemoveExtensionById.html" target="wiki-view"><code>RemoveExtensionById</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__AlterExtensionNamespace.html" target="wiki-view"><code>AlterExtensionNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ExecAlterExtensionStmt.html" target="wiki-view"><code>ExecAlterExtensionStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ApplyExtensionUpdates.html" target="wiki-view"><code>ApplyExtensionUpdates</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__extension_c__ExecAlterExtensionContentsStmt.html" target="wiki-view"><code>ExecAlterExtensionContentsStmt</code></a></li>
+</ul></body></html>

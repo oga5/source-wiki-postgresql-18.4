@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/resultrelinfo.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ResultRelInfo</h1>
+<h2>概念</h2>
+<p><code>ResultRelInfo</code> は、PostgreSQLのクエリ実行（Executor）において、データの挿入（INSERT）、更新（UPDATE）、削除（DELETE）などの変更対象となるリレーション（テーブル、パーティション、外部テーブルなど）の実行時状態やメタデータを管理するための主要な構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ実行エンジンが対象リレーションに対して変更処理を行う際、トリガーの起動、外部データラッパー（FDW）を介した外部テーブルへのアクセス、パーティションルーティング、実行統計の計測など、多岐にわたる処理が必要になります。<code>ResultRelInfo</code> はこれらの処理に必要なリレーションのキャッシュ情報（<code>Relation</code>）、トリガー情報、FDWルーチン、パーティションのルート情報などを一元的に保持・伝達する役割を担うため、データ更新処理の基盤として極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づくと、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/foreign</code></li>
+<li><code>module:src/include/nodes</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/nodes/execnodes.h#ResultRelInfo</code>**:</li>
+<p>更新対象リレーションの実行時状態を保持する主要な構造体。詳細なメンバ定義を持ちます。</p>
+<li>**<code>symbol:src/include/foreign/fdwapi.h#ResultRelInfo</code>**:</li>
+<p>FDWのコールバック関数（例: <code>GetForeignModifyBatchSize_function</code> や <code>ExecForeignInsert</code> 等）の引数として参照される、構造体のエイリアスまたは前方宣言。</p>
+<li>**<code>symbol:src/backend/executor/execMain.c#InitResultRelInfo</code>**:</li>
+<p><code>ResultRelInfo</code> 構造体を初期化し、トリガー情報、FDWルーチン、パーティションルート情報などを設定する関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、クエリ実行全体における完全なエンドツーエンドの流れは完全には明らかになっていませんが、以下の部分的な流れが確認できます。</p>
+<p>1. **初期化**: <code>InitResultRelInfo</code> が呼び出され、呼び出し元で確保された <code>ResultRelInfo</code> 構造体がゼロクリアされ、対象リレーションのディスクリプタ（<code>Relation</code>）やインデックス、パーティションルート情報に基づいて初期化されます。 2. **トリガー・FDWの設定**: 初期化処理の中で、トリガー情報のコピーや、対象が外部テーブル（<code>RELKIND_FOREIGN_TABLE</code>）である場合のFDWルーチン（<code>FdwRoutine</code>）の取得が行われます。 3. **実行時処理とFDWへの伝達**: データの変更処理中、エンジンは <code>ResultRelInfo</code> を通じて対象リレーションのコンテキストを保持し、FDWの更新系API（<code>ExecForeignInsert</code> など）やバッチサイズ取得関数にこの構造体のポインタを渡して処理を委ねます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化時の前提条件**: <code>InitResultRelInfo</code> を呼び出す際、対象の <code>ResultRelInfo</code> 構造体は呼び出し元でメモリが確保されている必要があり、対象リレーションのディスクリプタ（<code>Relation</code>）はオープンされている必要があります。</li>
+<li>**メモリレイアウトの依存性**: FDWなどの外部モジュールで参照される <code>ResultRelInfo</code> の構造体レイアウトは、<code>src/include/nodes/execnodes.h</code> の定義に完全に依存します。</li>
+<li>**初期化の段階性**: <code>InitResultRelInfo</code> は構造体の基本的な初期化のみを行い、実行に必要な一部のフィールド（<code>ri_projectNew</code> など）は後続の処理で設定されるため、初期化直後はこれらが未設定（<code>NULL</code> 等）の状態であることが前提となります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**未初期化フィールドへのアクセス**: <code>InitResultRelInfo</code> の実行直後には、一部の実行時フィールド（<code>ri_projectNew</code> など）が未設定のままになっています。後続の処理で適切に設定される前にこれらのフィールドにアクセスすると、予期せぬ動作を引き起こす可能性があります。</li>
+<li>**無効なリレーションディスクリプタ**: <code>InitResultRelInfo</code> に無効な <code>Relation</code> ディクリプタが渡された場合、トリガーのコピー（<code>CopyTriggerDesc</code>）やFDWルーチンの取得（<code>GetFdwRoutineForRelation</code>）でエラーや予期せぬ動作が発生する原因となります。</li>
+<li>**FDWにおけるNULLポインタ**: FDWのコールバック関数に <code>NULL</code> ポインタが渡された場合の挙動は各FDWの実装に依存するため、適切なハンドリングが必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code> (<code>InitResultRelInfo</code> の実装と初期化ロジックの確認)</li>
+<li><code>src/include/nodes/execnodes.h</code> (<code>ResultRelInfo</code> 構造体の詳細なメンバ定義の確認)</li>
+<li><code>src/include/foreign/fdwapi.h</code> (FDWコールバック関数における <code>ResultRelInfo</code> の利用方法の確認)</li>
+</ul></body></html>

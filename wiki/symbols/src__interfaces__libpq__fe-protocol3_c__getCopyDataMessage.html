@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__interfaces__libpq__fe-protocol3_c__getCopyDataMessage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>getCopyDataMessage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/interfaces/libpq/fe-protocol3.c:1793</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>COPY OUT</code> モード中にサーバーから送信されるデータ行（<code>CopyData</code> メッセージ）を取得します。また、非同期メッセージ（通知やパラメータ変更など）を処理し、COPY モードの終了を検知します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int getCopyDataMessage(PGconn *conn);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PGconn *conn</code> （PostgreSQL 接続状態を保持する構造体）</li>
+<li>**出力**: </li>
+<li><code>&gt; 0</code>: 取得した <code>CopyData</code> メッセージの長さ。</li>
+<li><code>-1</code>: <code>COPY</code> モードの終了を検知。</li>
+<li><code>-2</code>: エラー発生（同期喪失またはバッファ拡張失敗）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conn-&gt;inBuffer</code> にメッセージの断片が含まれていることを前提とします。</li>
+<li>非同期呼び出しを簡略化するため、<code>CopyData</code> 以外のメッセージであっても、メッセージ全体がバッファに揃うまでは <code>0</code> を返し続けます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メッセージ読み込み**: <code>pqGetc</code> でメッセージタイプ、<code>pqGetInt</code> でメッセージ長を読み取ります。 2. **バッファ検証**: メッセージ長が不足している場合、<code>pqCheckInBufferSpace</code> でバッファを拡張し、必要に応じて <code>0</code> を返して待機します。 3. **メッセージディスパッチ**:</p>
+<ul>
+<li><code>PqMsg_CopyData</code>: メッセージ長を返し、呼び出し元にデータを渡します。</li>
+<li><code>PqMsg_NotificationResponse</code>, <code>NoticeResponse</code>, <code>ParameterStatus</code>: それぞれのハンドラを呼び出し、処理を継続します。</li>
+<li><code>PqMsg_CopyDone</code> またはその他: <code>COPY</code> モードを終了し、<code>conn-&gt;asyncStatus</code> を更新して <code>-1</code> を返します。</li>
+<p>4. **ループ**: <code>CopyData</code> 以外のメッセージを処理した後は、<code>pqParseDone</code> でバッファカーソルを進め、次のメッセージを読み込みます。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/interfaces/libpq/fe-protocol3.c</code> 内の <code>COPY</code> モード処理箇所（行 1910, 2024）。</li>
+<li>**呼び出し先**: <code>pqGetc</code>, <code>pqGetInt</code>, <code>handleSyncLoss</code>, <code>pqCheckInBufferSpace</code>, <code>handleFatalError</code>, <code>getNotify</code>, <code>pqGetErrorNotice3</code>, <code>getParameterStatus</code>, <code>pqParseDone</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: 接続状態および入力バッファ（<code>inBuffer</code>, <code>inCursor</code>, <code>inStart</code>, <code>inEnd</code>）を管理。</li>
+<li><code>PqMsg_...</code>: メッセージタイプを識別する定数群。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**同期喪失**: メッセージ長が 4 未満の場合、<code>handleSyncLoss</code> を呼び出し <code>-2</code> を返します。</li>
+<li>**メモリ不足**: <code>pqCheckInBufferSpace</code> が失敗した場合、<code>handleFatalError</code> を呼び出し接続を終了して <code>-2</code> を返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は非ブロッキング I/O を前提としています。データが足りない場合は即座にリターンするため、呼び出し側は戻り値が <code>0</code> の場合の再試行ロジックを適切に実装する必要があります。</li>
+<li><code>COPY_BOTH</code> モードと <code>COPY_IN</code> モードの遷移ロジックが含まれており、状態遷移の変更時には <code>conn-&gt;asyncStatus</code> の整合性に注意してください。</li>
+</ul></body></html>

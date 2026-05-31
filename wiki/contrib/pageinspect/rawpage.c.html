@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pageinspect/rawpage.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pageinspect/rawpage.c</h1>
+<h2>概要</h2>
+<p><code>rawpage.c</code> は、PostgreSQL の物理ストレージからデータベースページを直接読み出し、その内容を検査するための低レベル関数群を提供するソースファイルです。<code>pageinspect</code> 拡張機能の基盤として、ページイメージの抽出とヘッダー情報の解析を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pageinspect</code> モジュール内において、特定のアクセス手法（B-tree, Heap, GIN 等）に依存しない「共通のページ操作」を担当します。他のファイルが特定のインデックス構造を解釈するのに対し、本ファイルはページそのもののバイナリデータを取得・検証する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ページ抽出**: 指定されたリレーションとブロック番号から、共有バッファ経由でページイメージを <code>bytea</code> として取得する。</li>
+<li>**ヘッダー解析**: 取得したページイメージから <code>PageHeaderData</code> を抽出し、LSN、チェックサム、フラグ、ポインタ位置などのメタデータを SQL から参照可能な形式に変換する。</li>
+<li>**整合性チェック**: ページサイズやブロック番号の妥当性検証、およびスーパーユーザー権限の確認。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>get_raw_page_internal</code>: ページを読み出すための内部的な作業関数。</li>
+<li><code>get_page_from_raw</code>: <code>bytea</code> 形式のページデータを、メモリ上で適切にアライメントされた <code>Page</code> 構造体に変換する。</li>
+<li><code>page_header</code>: SQL から呼び出され、ページヘッダーの各フィールドをタプルとして返す関数。</li>
+<li><code>page_checksum_internal</code>: ページデータのチェックサムを計算する共通ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>get_raw_page</code></li>
+<li><code>get_raw_page_1_9</code></li>
+<li><code>get_raw_page_fork</code></li>
+<li><code>get_raw_page_fork_1_9</code></li>
+<li><code>page_checksum</code></li>
+<li><code>page_checksum_1_9</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **取得**: <code>get_raw_page</code> 関数群が <code>get_raw_page_internal</code> を呼び出し、<code>ReadBufferExtended</code> を用いて共有バッファからページをコピーします。 2. **変換**: 取得された <code>bytea</code> データは、<code>get_page_from_raw</code> を通じてメモリ上に再配置されます。これは、CPU のアライメント要件を満たし、構造体アクセスを安全にするために必須です。 3. **解析**: <code>page_header</code> 関数は、変換された <code>Page</code> 構造体を <code>PageHeader</code> 型にキャストし、各フィールドを <code>Datum</code> に変換して <code>heap_form_tuple</code> で結果セットを構築します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/bufmgr.h</code>: 共有バッファからのページ読み込み (<code>ReadBufferExtended</code>)。</li>
+<li><code>storage/checksum.h</code>: ページチェックサムの計算。</li>
+<li><code>funcapi.h</code>: SQL 関数としてのインターフェースおよびタプル構築。</li>
+<li><code>utils/rel.h</code>: リレーションのオープンと管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pageinspect.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/pageinspect/pageinspect.h</code>: 共有される定義や列挙型。</li>
+<li><code>contrib/pageinspect/heapfuncs.c</code>: 本ファイルで取得したページを、ヒープタプルの観点から解析するコード。</li>
+<li><code>src/include/storage/bufpage.h</code>: PostgreSQL のページレイアウト定義（<code>PageHeaderData</code> 等）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アライメントの重要性**: <code>get_page_from_raw</code> は単なるコピーではなく、アライメント調整を行っています。ページ内の構造体に直接アクセスする際は、必ずこの関数を通す必要があります。</li>
+<li>**権限管理**: これらの関数は物理データに直接アクセスするため、セキュリティ上の理由からスーパーユーザーのみに実行が許可されています。</li>
+<li>**バージョン互換性**: 拡張機能のバージョンアップに伴い、引数の型や戻り値の型が変更されるケース（例: <code>int2</code> から <code>int4</code> への変更）があるため、<code>TupleDesc</code> を用いた動的な型判定が行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_raw_page_1_9.html" target="wiki-view"><code>get_raw_page_1_9</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_raw_page.html" target="wiki-view"><code>get_raw_page</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_raw_page_fork_1_9.html" target="wiki-view"><code>get_raw_page_fork_1_9</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_raw_page_fork.html" target="wiki-view"><code>get_raw_page_fork</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_raw_page_internal.html" target="wiki-view"><code>get_raw_page_internal</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__get_page_from_raw.html" target="wiki-view"><code>get_page_from_raw</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__page_header.html" target="wiki-view"><code>page_header</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__page_checksum_internal.html" target="wiki-view"><code>page_checksum_internal</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__page_checksum_1_9.html" target="wiki-view"><code>page_checksum_1_9</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__rawpage_c__page_checksum.html" target="wiki-view"><code>page_checksum</code></a></li>
+</ul></body></html>

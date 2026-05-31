@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/smgr/smgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/smgr/smgr.c</h1>
+<h2>概要</h2>
+<p><code>smgr.c</code> は、PostgreSQL のストレージマネージャ（SMgr）サブシステムの公開インターフェースを提供します。物理的なリレーションファイルに対するすべての読み書き操作を、適切なストレージ実装（現在は磁気ディスク用の <code>md.c</code>）へディスパッチする役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>smgr</code> サブシステムの中心的なハブです。上位層（バッファマネージャやアクセスメソッド）と下位の物理ストレージ実装の間に位置し、<code>SMgrRelation</code> オブジェクトのライフサイクル管理と、ファイル記述子のキャッシュ制御を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SMgrRelation 管理**: リレーションの物理識別子（<code>RelFileLocator</code>）に基づき、ハッシュテーブルを用いて <code>SMgrRelation</code> オブジェクトをキャッシュ・管理する。</li>
+<li>**ディスパッチ**: <code>f_smgr</code> 構造体（関数ポインタのスイッチ）を介して、ストレージ操作を具体的な実装（<code>md.c</code> 等）へ委譲する。</li>
+<li>**リソース保護**: トランザクション境界での不要なオブジェクトの破棄（<code>AtEOXact_SMgr</code>）や、シグナルによるファイル記述子の解放（<code>ProcessBarrierSmgrRelease</code>）を制御する。</li>
+<li>**割り込み制御**: ほとんどの操作で <code>HOLD_INTERRUPTS()</code> を使用し、非再入可能なストレージ操作中の割り込みによる不整合を防ぐ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SMgrRelation</code>: 物理ファイルへのハンドルを保持する構造体。</li>
+<li><code>smgrsw</code>: ストレージマネージャの関数ポインタを格納するスイッチ配列。</li>
+<li><code>SMgrRelationHash</code>: 現在のバックエンドで開かれている全 <code>SMgrRelation</code> を保持するハッシュテーブル。</li>
+<li><code>smgropen()</code>: 指定されたリレーションの <code>SMgrRelation</code> を取得または作成する。</li>
+<li><code>smgrrelease()</code>: ファイル記述子を閉じ、リソースを解放する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_SMgr</code></li>
+<li><code>ProcessBarrierSmgrRelease</code></li>
+<li><code>f_smgr</code></li>
+<li><code>pgaio_io_set_target_smgr</code></li>
+<li><code>smgr_aio_describe_identity</code></li>
+<li><code>smgr_aio_reopen</code></li>
+<li><code>smgrinit</code></li>
+<li><code>smgrnblocks_cached</code></li>
+<li><code>smgropen</code></li>
+<li><code>smgrpin</code></li>
+<li><code>smgrshutdown</code></li>
+<li><code>smgrunpin</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **オープン**: <code>smgropen()</code> が呼ばれると、ハッシュテーブルを検索し、存在しなければ新規作成して <code>mdopen()</code> を呼び出します。 2. **操作**: <code>smgrreadv()</code> や <code>smgrwritev()</code> 等の関数が呼ばれると、<code>smgrsw</code> を介して <code>md.c</code> の関数が実行されます。 3. **同期・終了**: トランザクション終了時、<code>AtEOXact_SMgr()</code> が <code>smgrdestroyall()</code> を呼び出し、ピン留めされていない（<code>pincount == 0</code>）オブジェクトをクリーンアップします。 4. **割り込み**: 割り込みが発生すると、<code>smgrreleaseall()</code> が呼び出され、ファイル記述子が強制的に閉じられますが、オブジェクト自体は保持されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/smgr.h</code>: 公開インターフェース定義。</li>
+<li><code>storage/md.h</code>: 磁気ディスクストレージ実装の関数群。</li>
+<li><code>utils/hsearch.h</code>: <code>SMgrRelation</code> キャッシュ用ハッシュテーブル。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理との連携（<code>FlushRelationsAllBuffers</code> 等）。</li>
+<li><code>storage/aio.h</code>: 非同期 I/O ターゲットとしての統合。</li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>utils/inval.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/smgr/md.c</code>: 実際のファイルシステム操作を行う実装。</li>
+<li><code>src/backend/storage/smgr/bulk_write.c</code>: 大量書き込み時の最適化と同期管理。</li>
+<li><code>src/include/storage/smgr.h</code>: <code>SMgrRelationData</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**割り込みの重要性**: 本ファイル内の関数は、ほぼすべて <code>HOLD_INTERRUPTS()</code> で囲まれています。これは、ストレージ操作中にエラーが発生して割り込み処理が走ると、ファイル記述子のクローズ処理と競合し、デッドロックやメモリ破壊を引き起こす可能性があるためです。</li>
+<li>**キャッシュの性質**: <code>smgr_cached_nblocks</code> は、リカバリ中を除き信頼性が低いため、基本的にはカーネルのファイルサイズ情報を優先します。</li>
+<li>**ピン留め**: <code>smgrpin()</code> / <code>smgrunpin()</code> は、リレーションキャッシュが <code>SMgrRelation</code> を保持し続けるために使用されます。ピン留めされていないものはトランザクション終了時に自動的に破棄されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__f_smgr.html" target="wiki-view"><code>f_smgr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgrinit.html" target="wiki-view"><code>smgrinit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgrshutdown.html" target="wiki-view"><code>smgrshutdown</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgropen.html" target="wiki-view"><code>smgropen</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgrpin.html" target="wiki-view"><code>smgrpin</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgrunpin.html" target="wiki-view"><code>smgrunpin</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgrnblocks_cached.html" target="wiki-view"><code>smgrnblocks_cached</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__AtEOXact_SMgr.html" target="wiki-view"><code>AtEOXact_SMgr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__ProcessBarrierSmgrRelease.html" target="wiki-view"><code>ProcessBarrierSmgrRelease</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__pgaio_io_set_target_smgr.html" target="wiki-view"><code>pgaio_io_set_target_smgr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgr_aio_reopen.html" target="wiki-view"><code>smgr_aio_reopen</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__smgr_c__smgr_aio_describe_identity.html" target="wiki-view"><code>smgr_aio_describe_identity</code></a></li>
+</ul></body></html>

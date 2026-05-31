@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__pl__plpgsql__src__pl_exec_c__plpgsql_exec_function.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>plpgsql_exec_function</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/pl/plpgsql/src/pl_exec.c:492</code></li>
+</ul>
+<h2>目的</h2>
+<p>コンパイル済みの PL/pgSQL 関数を実行するためのメインエントリーポイント。実行状態の初期化、引数のローカル変数への割り当て、ステートメントの実行、および戻り値の処理を統括する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Datum plpgsql_exec_function(
+    PLpgSQL_function *func,
+    FunctionCallInfo fcinfo,
+    EState *simple_eval_estate,
+    ResourceOwner simple_eval_resowner,
+    ResourceOwner procedure_resowner,
+    bool atomic
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>func</code>: 実行対象のコンパイル済み関数構造体。</li>
+<li><code>fcinfo</code>: 関数呼び出し情報（引数や戻り値情報を含む）。</li>
+<li><code>simple_eval_estate</code> / <code>simple_eval_resowner</code>: 式評価用の共有実行状態とリソースオーナー。</li>
+<li><code>procedure_resowner</code>: プロシージャ実行用のリソースオーナー。</li>
+<li><code>atomic</code>: トランザクションの原子性フラグ。</li>
+<li>**出力**:</li>
+<li><code>Datum</code>: 関数の実行結果。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>plpgsql_estate_setup</code> により <code>PLpgSQL_execstate</code> が初期化されていること。</li>
+<li><code>error_context_stack</code> にエラーコールバックが登録され、実行中のエラー追跡が可能であること。</li>
+<li>関数終了時に <code>exec_toplevel_block</code> が <code>PLPGSQL_RC_RETURN</code> を返さない場合、制御が関数の末尾に到達したとみなされエラーが発生する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>plpgsql_estate_setup</code> で実行状態を構築し、エラーコールバックを設定する。 2. **データ準備**: <code>copy_plpgsql_datums</code> でローカル変数のコピーを作成する。 3. **引数割り当て**: <code>func-&gt;fn_nargs</code> 分の引数をループし、<code>PLPGSQL_DTYPE_VAR</code>（単純変数）または <code>PLPGSQL_DTYPE_REC</code>（レコード）としてローカル変数に格納する。この際、R/W 拡張オブジェクトの所有権取得や配列の展開を行う。 4. **実行**: <code>exec_set_found</code> で <code>FOUND</code> 変数を初期化し、プラグインが有効であれば <code>func_beg</code> を呼び出す。その後、<code>exec_toplevel_block</code> を実行する。 5. **戻り値処理**: 戻り値の型変換を行い、集合を返す関数（Set-returning function）の場合は <code>ReturnSetInfo</code> を検証して <code>SFRM_Materialize</code> モードで結果を処理する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/pl/plpgsql/src/pl_handler.c</code> (PL/pgSQL ハンドラ)</li>
+<li>**呼び出し先**:</li>
+<li><code>plpgsql_estate_setup</code>, <code>copy_plpgsql_datums</code>, <code>assign_simple_var</code>, <code>exec_move_row_from_datum</code>, <code>exec_move_row</code>, <code>exec_eval_cleanup</code>, <code>exec_set_found</code>, <code>exec_toplevel_block</code>, <code>TransferExpandedObject</code>, <code>expand_array</code> など。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PLpgSQL_execstate</code>: 実行中の関数の状態を保持する。</li>
+<li><code>PLpgSQL_function</code>: コンパイル済みの関数定義。</li>
+<li><code>FunctionCallInfo</code>: PostgreSQL の関数呼び出しインターフェース。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**戻り値なし**: <code>exec_toplevel_block</code> が <code>PLPGSQL_RC_RETURN</code> を返さずに終了した場合、<code>ERRCODE_S_R_E_FUNCTION_EXECUTED_NO_RETURN_STATEMENT</code> エラーを発生させる。</li>
+<li>**型不一致**: 引数や戻り値の型変換に失敗した場合、エラーが発生する。</li>
+<li>**集合返却の不整合**: 集合を返さないコンテキストで集合を返そうとした場合、<code>ERRCODE_FEATURE_NOT_SUPPORTED</code> エラーを発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>varlena</code> 型の変数に対しては、R/W 拡張オブジェクトの最適化（<code>TransferExpandedObject</code>）や配列の強制展開が行われる。このロジックはパフォーマンスに直結するため、変更時はメモリコンテキストの管理に注意すること。</li>
+<li><code>exec_eval_cleanup</code> は <code>exec_move_row</code> 等の後に呼び出され、一時的なメモリを解放する。呼び出し漏れはメモリリークの原因となる。</li>
+</ul></body></html>

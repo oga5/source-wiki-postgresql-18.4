@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__sort__sharedtuplestore_c__SharedTuplestoreAccessor.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SharedTuplestoreAccessor</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/backend/utils/sort/sharedtuplestore.c:71</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行時、各バックエンドプロセスが共有タプルストアに対して読み書きを行うためのローカルな操作用構造体です。共有メモリ上の <code>SharedTuplestore</code> 状態と、各プロセスが担当する一時ファイル（<code>SharedFileSet</code>）を紐付け、バッファリングやスキャン状態を管理します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct SharedTuplestoreAccessor {
+    int participant;
+    SharedTuplestore *sts;
+    SharedFileSet *fileset;
+    MemoryContext context;
+    /* 読み取り用状態 */
+    int read_participant;
+    BufFile *read_file;
+    int read_ntuples_available;
+    int read_ntuples;
+    size_t read_bytes;
+    char *read_buffer;
+    size_t read_buffer_size;
+    BlockNumber read_next_page;
+    /* 書き込み用状態 */
+    SharedTuplestoreChunk *write_chunk;
+    BufFile *write_file;
+    BlockNumber write_page;
+    char *write_pointer;
+    char *write_end;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 初期化時に <code>SharedTuplestore</code> へのポインタおよび <code>SharedFileSet</code> を保持します。</li>
+<li>**出力**: <code>BufFile</code> を介して一時ファイルへの読み書きを行い、並列スキャン時にはタプルを呼び出し元へ提供します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sts</code> フィールドは、共有メモリ上に確保された有効な <code>SharedTuplestore</code> を指している必要があります。</li>
+<li>書き込み操作は、各プロセスに割り当てられた専用の <code>write_file</code> に対して行われるため、プロセス間での排他制御は不要です。</li>
+<li>読み取り操作（並列スキャン）時は、<code>SharedTuplestore</code> が管理するロックを使用して読み取り位置を同期する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**書き込み**: <code>sts_puttuple</code> を通じて <code>write_chunk</code> にデータを蓄積し、チャンクが満杯になると <code>sts_flush_chunk</code> でファイルへ書き出します。</li>
+<li>**読み取り**: <code>sts_parallel_scan_next</code> を通じて、全参加者のファイルを順次スキャンします。<code>read_buffer</code> を使用してチャンク単位でロードし、タプルを逐次的に抽出します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHash.c</code> および <code>nodeHashjoin.c</code> で使用されています。また、<code>sts_filename</code>、<code>sts_flush_chunk</code>、<code>sts_end_write</code> などの <code>sharedtuplestore.c</code> 内の関数で引数として参照されます。</li>
+<li>**呼び出し先**: <code>BufFile</code> API（<code>storage/buffile.h</code>）を呼び出し、一時ファイルの物理的な読み書きを実行します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SharedTuplestore</code>: 共有メモリ上の制御構造体。</li>
+<li><code>SharedFileSet</code>: 一時ファイルを管理する共有ファイルセット。</li>
+<li><code>SharedTuplestoreChunk</code>: 書き込み時のバッファ単位。</li>
+<li><code>BufFile</code>: 一時ファイルの抽象化レイヤー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**巨大タプル**: チャンクサイズを超えるタプルは、オーバーフローチャンクとして分割されます。読み取り側は <code>read_buffer</code> を用いてこれらを適切に再構成する必要があります。</li>
+<li>**メモリ不足**: <code>MemoryContext</code> によるメモリ管理に依存しており、確保失敗時はエラーが発生します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は各バックエンドのローカルメモリ上に配置されます。共有メモリ上の <code>SharedTuplestore</code> との同期状態（特に <code>read_participant</code> や <code>read_next_page</code>）の整合性に注意してください。</li>
+<li>書き込み時の <code>write_pointer</code> と <code>write_end</code> の更新は、<code>sts_flush_chunk</code> のロジックと密接に関連しています。</li>
+</ul></body></html>

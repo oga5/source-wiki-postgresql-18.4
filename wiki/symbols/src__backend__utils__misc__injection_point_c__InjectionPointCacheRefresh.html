@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__misc__injection_point_c__InjectionPointCacheRefresh.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InjectionPointCacheRefresh</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/misc/injection_point.c:421</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上のインジェクションポイント情報を検索し、バックエンドローカルなキャッシュを最新の状態に更新または同期する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static InjectionPointCacheEntry *InjectionPointCacheRefresh(const char *name);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>name</code> (検索対象のインジェクションポイント名)</li>
+<li>**出力**: 成功時は <code>InjectionPointCacheEntry</code> へのポインタを返し、該当なしまたは削除時は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本機能は <code>--enable-injection-points</code> ビルド時のみ有効。</li>
+<li>共有メモリ上の <code>ActiveInjectionPoints</code> が初期化されていること。</li>
+<li>世代管理カウンタ (<code>generation</code>) を用いたロックフリーな読み取りを前提とする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **キャッシュ確認**: 指定された <code>name</code> がローカルキャッシュに存在する場合、共有メモリ上の対応するエントリの世代カウンタと比較する。一致すればキャッシュをそのまま返す。 2. **共有メモリ走査**: キャッシュミスまたは世代不一致の場合、共有メモリ上の全スロットを走査する。 3. **整合性検証**:</p>
+<ul>
+<li>世代カウンタが偶数のスロットは空とみなしてスキップする。</li>
+<li>読み取り前後に <code>pg_read_barrier()</code> を配置し、メモリの整合性を確保する。</li>
+<li>読み取り中に世代カウンタが変化した場合は、当該エントリを破棄して走査を継続する。</li>
+<p>4. **キャッシュ更新**: 一致したエントリをローカルメモリにコピーし、<code>injection_point_cache_load</code> を介してキャッシュに登録して返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>InjectionPointRun</code> (実行時)</li>
+<li><code>InjectionPointCached</code> (キャッシュ確認時)</li>
+<li><code>IsInjectionPointAttached</code> (存在確認時)</li>
+<li>**呼び出し先**: </li>
+<li><code>injection_point_cache_get</code></li>
+<li><code>injection_point_cache_remove</code></li>
+<li><code>injection_point_cache_load</code></li>
+<li><code>hash_destroy</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>InjectionPointEntry</code>: 共有メモリ上のエントリ定義。</li>
+<li><code>InjectionPointCacheEntry</code>: バックエンドローカルなキャッシュエントリ。</li>
+<li><code>ActiveInjectionPoints</code>: 共有メモリ上の管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**共有メモリ空**: <code>max_inuse</code> が 0 の場合、キャッシュを破棄して <code>NULL</code> を返す。</li>
+<li>**競合**: 走査中にインジェクションポイントが動的に追加・削除された場合、古い値や <code>NULL</code> を返す可能性があるが、これは設計上許容される。</li>
+<li>**不一致**: 世代カウンタの不一致が発生した場合は、そのエントリを無視して走査を継続する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はロックフリーな読み取りを行うため、<code>pg_read_barrier()</code> の配置と世代カウンタの比較ロジックには細心の注意を払うこと。</li>
+<li>共有メモリ上のエントリは動的に変更される可能性があるため、ローカルコピー (<code>local_copy</code>) を作成した後に再検証を行う手順は必須である。</li>
+</ul></body></html>

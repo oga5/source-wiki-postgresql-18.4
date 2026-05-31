@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/backend_status.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/backend_status.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの各バックエンドプロセスが自身の現在の活動状況（実行中のクエリ、状態、開始時刻など）を共有メモリ上に公開するためのインフラストラクチャを提供します。これは累積統計システム（<code>pgstat.c</code>）とは独立した仕組みであり、主にシステムビュー（<code>pg_stat_activity</code>）のデータソースとして機能します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> モジュールにおいて、各バックエンドの「現在」の状態を追跡する中心的な役割を担います。他の統計ファイルが累積的なカウンタを扱うのに対し、本ファイルはプロセスの生存期間中の動的な状態変化をリアルタイムに近い形で提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリ管理**: 全バックエンドのステータスを保持する共有メモリ領域の確保と初期化。</li>
+<li>**状態更新プロトコル**: ロックオーバーヘッドを避けるため、<code>st_changecount</code> を用いた非ブロッキングな読み書きプロトコルの実装。</li>
+<li>**ライフサイクル管理**: バックエンドの起動時（<code>pgstat_bestart_*</code>）および終了時（<code>pgstat_beshutdown_hook</code>）のステータスエントリの管理。</li>
+<li>**スナップショット提供**: SQL関数等から参照される際、共有メモリ上の状態をローカルメモリにコピーし、一貫性のあるスナップショットとして提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgBackendStatus</code>: 各バックエンドの状態を保持する共有メモリ上の構造体。</li>
+<li><code>MyBEEntry</code>: 現在のプロセスが使用する共有メモリ上の <code>PgBackendStatus</code> へのポインタ。</li>
+<li><code>BackendStatusArray</code>: 全バックエンドのステータスを格納する共有メモリ上の配列。</li>
+<li><code>pgstat_report_activity()</code>: バックエンドが自身の状態（クエリ文字列やステータス）を更新する際に呼び出す主要関数。</li>
+<li><code>pgstat_read_current_status()</code>: 共有メモリからローカルメモリへ状態をコピーし、スナップショットを作成する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BackendStatusShmemInit</code></li>
+<li><code>BackendStatusShmemSize</code></li>
+<li><code>pgstat_beinit</code></li>
+<li><code>pgstat_bestart_initial</code></li>
+<li><code>pgstat_get_backend_current_activity</code></li>
+<li><code>pgstat_get_backend_type_by_proc_number</code></li>
+<li><code>pgstat_get_beentry_by_proc_number</code></li>
+<li><code>pgstat_get_crashed_backend_activity</code></li>
+<li><code>pgstat_get_local_beentry_by_index</code></li>
+<li><code>pgstat_get_local_beentry_by_proc_number</code></li>
+<li><code>pgstat_get_my_plan_id</code></li>
+<li><code>pgstat_get_my_query_id</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **更新フロー**: バックエンドが <code>pgstat_report_activity</code> を呼ぶと、<code>PGSTAT_BEGIN_WRITE_ACTIVITY</code> マクロで <code>st_changecount</code> をインクリメントし、データを書き込んだ後、再度インクリメントして完了します。 2. **読み取りフロー**: 読み取り側（<code>pg_stat_activity</code> 等）は、<code>st_changecount</code> の値を読み取り、コピーを行い、再度 <code>st_changecount</code> を確認します。値が一致し、かつ偶数であればコピーは有効とみなされます。不一致の場合はリトライします。 3. **初期化フロー**: <code>Postmaster</code> 起動時に <code>BackendStatusShmemInit</code> が呼ばれ、共有メモリが確保されます。各バックエンドは <code>InitPostgres</code> 内で <code>pgstat_beinit</code> を呼び出し、自身のスロットを割り当てます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: プロセス管理および <code>MyProc</code> へのアクセス。</li>
+<li><code>libpq/libpq-be.h</code>: クライアント接続情報（SSL/GSSAPI）の取得。</li>
+<li><code>utils/guc.h</code>: <code>application_name</code> 等のパラメータ取得。</li>
+<li><code>pgstat.h</code>: 統計システム共通の定義。</li>
+<li><code>access/xact.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>utils/ascii.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/backend_status.h</code>: <code>PgBackendStatus</code> 構造体の定義。</li>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 累積統計システムとの連携点。</li>
+<li><code>src/backend/catalog/system_views.sql</code>: 本ファイルが提供する情報を参照する <code>pg_stat_activity</code> ビューの定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**非ロックプロトコル**: 本ファイルで最も重要なのは <code>st_changecount</code> を用いた楽観的並行制御です。読み取り側は常にリトライの可能性があることを前提に実装する必要があります。</li>
+<li>**マルチバイト文字**: <code>st_activity_raw</code> は固定長バッファですが、マルチバイト文字の途中で切り詰められる可能性があるため、読み取り側の <code>pgstat_clip_activity</code> で適切に処理されます。</li>
+<li>**デバッグ**: <code>pgstat_get_crashed_backend_activity</code> は、バックエンドがクラッシュした際にポストマスターが情報を抽出するために使用されます。この関数は通常のプロトコルを無視して直接メモリを読み取るため、注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__BackendStatusShmemSize.html" target="wiki-view"><code>BackendStatusShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__BackendStatusShmemInit.html" target="wiki-view"><code>BackendStatusShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_beinit.html" target="wiki-view"><code>pgstat_beinit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_bestart_initial.html" target="wiki-view"><code>pgstat_bestart_initial</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_backend_current_activity.html" target="wiki-view"><code>pgstat_get_backend_current_activity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_crashed_backend_activity.html" target="wiki-view"><code>pgstat_get_crashed_backend_activity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_my_query_id.html" target="wiki-view"><code>pgstat_get_my_query_id</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_my_plan_id.html" target="wiki-view"><code>pgstat_get_my_plan_id</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_backend_type_by_proc_number.html" target="wiki-view"><code>pgstat_get_backend_type_by_proc_number</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_beentry_by_proc_number.html" target="wiki-view"><code>pgstat_get_beentry_by_proc_number</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_local_beentry_by_proc_number.html" target="wiki-view"><code>pgstat_get_local_beentry_by_proc_number</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_status_c__pgstat_get_local_beentry_by_index.html" target="wiki-view"><code>pgstat_get_local_beentry_by_index</code></a></li>
+</ul></body></html>

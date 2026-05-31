@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__uavc_c__avc_cache.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>avc_cache</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>contrib/sepgsql/uavc.c:30</code></li>
+</ul>
+<h2>目的</h2>
+<p>SELinux のアクセス制御決定（権限判定結果）をユーザー空間で保持し、カーネルへのシステムコール呼び出し頻度を削減することで、SELinux 統合によるパフォーマンス低下を最小限に抑えるためのキャッシュエントリ構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct {
+    uint32      hash;               /* キャッシュエントリのハッシュ値 */
+    char       *scontext;           /* 主体（Subject）のセキュリティコンテキスト */
+    char       *tcontext;           /* 対象（Target）のセキュリティコンテキスト */
+    uint16      tclass;             /* 対象のオブジェクトクラス */
+    uint32      allowed;            /* 許可される権限ビットマスク */
+    uint32      auditallow;         /* 許可時に監査する権限ビットマスク */
+    uint32      auditdeny;          /* 拒否時に監査する権限ビットマスク */
+    bool        permissive;         /* permissive ルール適用時は true */
+    bool        hot_cache;          /* 最近参照された場合は true */
+    bool        tcontext_is_valid;  /* tcontext が有効な場合は true */
+    char       *ncontext;           /* 信頼されたプロシージャ実行時のテンポラリ scontext */
+} avc_cache;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体はデータ保持を目的としており、関数ではありません。キャッシュ生成時には <code>palloc0</code> を介してメモリが割り当てられ、検索や計算の結果が各フィールドに格納されます。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>キャッシュは <code>avc_mem_cxt</code> という専用のメモリコンテキストで管理されます。</li>
+<li><code>ncontext</code> フィールドは、<code>DB_PROCEDURE</code> クラスの権限判定において、実行時に切り替えるべきセキュリティラベルを保持するために使用されます。それ以外の場合は <code>NULL</code> です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**LRU 管理**: <code>hot_cache</code> フラグにより、参照頻度に基づいたメモリ管理（再利用）をサポートします。</li>
+<li>**キャッシュ検索**: <code>sepgsql_avc_lookup</code> を通じてハッシュテーブルから検索されます。</li>
+<li>**ポリシー更新**: SELinux ポリシーのリロードが検知されると、キャッシュの妥当性が検証され、必要に応じてフラッシュされます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/sepgsql/uavc.c</code> 内の検索関数（<code>sepgsql_avc_lookup</code> 等）や、キャッシュオブジェクトを生成する関数から参照されます。</li>
+<li>**呼び出し先**: 本構造体はデータ構造であるため、直接的な呼び出し先はありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>sepgsql.h</code>: <code>SEPG_CLASS_*</code> などのオブジェクトクラス定義。</li>
+<li><code>avc_mem_cxt</code>: キャッシュエントリを保持するメモリコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>キャッシュエントリが閾値を超えた場合、<code>sepgsql_avc_reclaim</code> により参照頻度の低いエントリが解放されます。</li>
+<li>権限判定中にポリシーが更新された場合、<code>sepgsql_avc_check_valid</code> を用いた再試行ループが必要です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>権限チェックはシステムコールを跨ぐ可能性があるため、本構造体を利用する際は <code>sepgsql_avc_check_valid</code> をループ内で使用するイディオムを厳守してください。</li>
+<li><code>DB_PROCEDURE</code> クラスのキャッシュ時には、<code>ncontext</code> の取り扱いに注意してください。</li>
+</ul></body></html>

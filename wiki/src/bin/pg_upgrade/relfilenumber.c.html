@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/relfilenumber.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/relfilenumber.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、<code>pg_upgrade</code> におけるデータベースファイル（リレーションファイル）の移行処理を担います。旧クラスタから新クラスタへデータを物理的に移動・リンク・コピー、あるいはディレクトリ構造を入れ替える（<code>--swap</code>）ための主要なロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> のデータ移行フェーズにおける中核モジュールです。<code>info.c</code> で生成された <code>FileNameMap</code>（旧ファイルと新ファイルの対応表）を受け取り、ファイルシステムレベルでの操作を実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ファイル転送の実行**: <code>link</code>, <code>copy</code>, <code>clone</code> 等のモードに応じたファイル操作の実行。</li>
+<li>**ディレクトリ入れ替え (<code>--swap</code>)**: 旧クラスタのディレクトリを新クラスタへ移動し、カタログファイルを差し替える特殊な移行処理。</li>
+<li>**同期管理**: <code>swap</code> モード時にカタログファイルの永続化を効率的に行うための同期キュー管理。</li>
+<li>**可視性マップの更新**: バージョンアップに伴う可視性マップ（VM）のフォーマット変換が必要な場合の処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>transfer_all_new_tablespaces</code>: 移行処理の起点。並列実行の制御を行います。</li>
+<li><code>transfer_all_new_dbs</code>: 各データベースを走査し、<code>FileNameMap</code> を生成して転送を呼び出します。</li>
+<li><code>do_swap</code>: <code>--swap</code> モード時のメインエントリ。ディレクトリの入れ替えとカタログファイルの差し替えを統括します。</li>
+<li><code>sync_queue_*</code>: <code>swap</code> モードで大量のファイル同期を効率化するためのバッファリング機構。</li>
+<li><code>transfer_relfile</code>: 個別のリレーションファイル（および FSM/VM フォーク）を転送する低レベル関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FileNameMapCmp</code></li>
+<li><code>parse_relfilenumber</code></li>
+<li><code>prepare_for_swap</code></li>
+<li><code>swap_catalog_files</code></li>
+<li><code>sync_queue_destroy</code></li>
+<li><code>sync_queue_init</code></li>
+<li><code>sync_queue_push</code></li>
+<li><code>sync_queue_sync_all</code></li>
+<li><code>transfer_single_new_db</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>transfer_all_new_tablespaces</code> が並列度に応じて <code>parallel_transfer_all_new_dbs</code> を呼び出します。 2. **マッピング**: <code>transfer_all_new_dbs</code> が <code>gen_db_file_maps</code> を呼び出し、移行対象のファイルリストを取得します。 3. **転送実行**:</p>
+<ul>
+<li>通常モード: <code>transfer_relfile</code> が各ファイルを順次処理します。</li>
+<li><code>swap</code> モード: <code>do_swap</code> が <code>prepare_for_swap</code> でディレクトリを移動し、<code>swap_catalog_files</code> でカタログファイルを差し替えます。</li>
+<p>4. **同期**: <code>sync_queue_sync_all</code> により、保留されていたファイル同期（fsync）をまとめて実行します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>common/file_utils.h</code>: <code>fsync_fname</code> 等のファイル操作ユーティリティ。</li>
+<li><code>pg_upgrade.h</code>: <code>FileNameMap</code> やクラスタ情報構造体などの共有定義。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>sys/stat.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/info.c</code>: <code>FileNameMap</code> の生成元。</li>
+<li><code>src/bin/pg_upgrade/parallel.c</code>: 並列実行の制御ロジック。</li>
+<li><code>src/bin/pg_upgrade/file.c</code>: <code>copyFile</code>, <code>linkFile</code> 等の具体的なファイル操作実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**swap モードの注意点**: このモードは非常に特殊で、ディレクトリ構造を直接操作します。<code>prepare_for_swap</code> でディレクトリを移動し、<code>swap_catalog_files</code> でカタログを差し替えるという手順は、他の転送モードとは独立したコードパスを通ります。</li>
+<li>**並列処理**: <code>user_opts.jobs &gt; 1</code> の場合、<code>parallel_transfer_all_new_dbs</code> を介してプロセスが分岐します。デバッグ時は並列実行によるログの混在に注意してください。</li>
+<li>**fsync**: <code>swap</code> モードでは <code>fsync</code> が明示的に制御されています。<code>sync_queue</code> はパフォーマンス向上のためのバッファリング機構であり、<code>sync_queue_push</code> が呼ばれた後に必ず <code>sync_queue_sync_all</code> が呼ばれる設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__sync_queue_init.html" target="wiki-view"><code>sync_queue_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__sync_queue_sync_all.html" target="wiki-view"><code>sync_queue_sync_all</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__sync_queue_push.html" target="wiki-view"><code>sync_queue_push</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__sync_queue_destroy.html" target="wiki-view"><code>sync_queue_destroy</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__transfer_all_new_tablespaces.html" target="wiki-view"><code>transfer_all_new_tablespaces</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__transfer_all_new_dbs.html" target="wiki-view"><code>transfer_all_new_dbs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__prepare_for_swap.html" target="wiki-view"><code>prepare_for_swap</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__FileNameMapCmp.html" target="wiki-view"><code>FileNameMapCmp</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__parse_relfilenumber.html" target="wiki-view"><code>parse_relfilenumber</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__swap_catalog_files.html" target="wiki-view"><code>swap_catalog_files</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__do_swap.html" target="wiki-view"><code>do_swap</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__relfilenumber_c__transfer_single_new_db.html" target="wiki-view"><code>transfer_single_new_db</code></a></li>
+</ul></body></html>

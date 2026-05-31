@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__optimizer__util__relnode_c__build_join_rel.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>build_join_rel</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/optimizer/util/relnode.c:664</code></li>
+</ul>
+<h2>目的</h2>
+<p>2つのリレーション（<code>outer_rel</code> と <code>inner_rel</code>）を結合する新しい結合リレーションノード（<code>RelOptInfo</code>）を構築、または既存のノードを検索して返します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>RelOptInfo *build_join_rel(PlannerInfo *root,
+                           Relids joinrelids,
+                           RelOptInfo *outer_rel,
+                           RelOptInfo *inner_rel,
+                           SpecialJoinInfo *sjinfo,
+                           List *pushed_down_joins,
+                           List **restrictlist_ptr)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>root</code>: プランナのグローバル情報。</li>
+<li><code>joinrelids</code>: 結合対象となるリレーションの集合（Bitmapset）。</li>
+<li><code>outer_rel</code>, <code>inner_rel</code>: 結合する2つのリレーションノード。</li>
+<li><code>sjinfo</code>: 結合の種類や制約を含む情報。</li>
+<li><code>pushed_down_joins</code>: プッシュダウンされた結合のリスト。</li>
+<li><code>restrictlist_ptr</code>: 結合条件リストを格納するためのポインタ（任意）。</li>
+<li>**出力**: 構築または検索された <code>RelOptInfo</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>outer_rel</code> および <code>inner_rel</code> は、<code>IS_OTHER_REL</code> マクロが真となるような「他のリレーション（子リレーション等）」であってはならない。</li>
+<li>結合リレーションのターゲットリスト（<code>tlist</code>）の内容は、構築順序に関わらず一貫性が保たれる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検索**: <code>find_join_rel</code> を使用し、指定された <code>joinrelids</code> に対応する結合リレーションが既に存在するか確認する。存在する場合はそのノードを返し、必要に応じて <code>restrictlist</code> を計算して出力する。 2. **新規作成**: 存在しない場合、<code>makeNode(RelOptInfo)</code> で新規作成し、<code>RELOPT_JOINREL</code> として初期化する。 3. **プロパティ設定**:</p>
+<ul>
+<li><code>lateral_relids</code> を <code>min_join_parameterization</code> を用いて計算。</li>
+<li><code>set_foreign_rel_properties</code> を呼び出し、外部リレーション関連のプロパティを設定。</li>
+<li><code>build_joinrel_tlist</code> および <code>add_placeholders_to_joinrel</code> を用いて、ターゲットリストとプレースホルダー変数を構築。</li>
+<p>4. **制約と見積もり**:</p>
+<li><code>build_joinrel_restrictlist</code> および <code>build_joinrel_joinlist</code> で結合条件を構築。</li>
+<li><code>has_relevant_eclass_joinclause</code> で等価クラス結合の有無を確認。</li>
+<li><code>build_joinrel_partition_info</code> でパーティション情報を設定。</li>
+<li><code>set_joinrel_size_estimates</code> で行数やコストの見積もりを実行。</li>
+<p>5. **並列実行フラグ**: <code>is_parallel_safe</code> を用いて、結合リレーションが並列ワーカー内でスキャン可能かを判定する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/optimizer/path/joinrels.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>find_join_rel</code>, <code>makeNode</code>, <code>build_joinrel_restrictlist</code>, <code>build_joinrel_tlist</code>, <code>add_placeholders_to_joinrel</code>, <code>set_foreign_rel_properties</code>, <code>build_joinrel_joinlist</code>, <code>has_relevant_eclass_joinclause</code>, <code>build_joinrel_partition_info</code>, <code>set_joinrel_size_estimates</code>, <code>is_parallel_safe</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RelOptInfo</code>: 結合リレーションの基本構造体。</li>
+<li><code>PlannerInfo</code>: プランナの全体状態。</li>
+<li><code>SpecialJoinInfo</code>: 結合の特性（JOIN_FULL等）を保持。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>既に存在する結合リレーションに対しては、再構築を行わず既存のノードを再利用する。</li>
+<li><code>restrictlist_ptr</code> が NULL の場合、結合条件リストの出力はスキップされる。</li>
+<li>並列実行の安全性判定において、<code>inner_rel</code> または <code>outer_rel</code> のいずれかが並列非対応であれば、結合リレーションも並列非対応となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>RelOptInfo</code> の多くのフィールドを初期化するため、構造体の定義変更時には注意が必要。</li>
+<li>パーティションワイズ結合（Partitionwise Join）のロジックが組み込まれており、<code>consider_partitionwise_join</code> フラグの扱いに注意すること。</li>
+<li>ターゲットリストの構築順序は呼び出し元に依存する可能性があるが、内容は一貫性を保つ設計となっている。</li>
+</ul></body></html>

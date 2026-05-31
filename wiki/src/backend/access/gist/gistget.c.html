@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistget.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistget.c</h1>
+<h2>概要</h2>
+<p>GiST（Generalized Search Tree）インデックスにおけるスキャン実行時のタプル取得ロジックを実装するファイルです。インデックスページを辿り、検索条件に合致するタプルを抽出して上位層へ返却する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>gistscan.c</code> で初期化されたスキャン状態（<code>GISTScanOpaque</code>）を利用し、実際のインデックス走査を行います。<code>gistproc.c</code> が提供する演算子クラスのメソッド（Consistent/Distance）を呼び出し、検索の成否や順序を決定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプル検索**: インデックスページを走査し、検索条件（<code>ScanKey</code>）に合致するタプルを特定する。</li>
+<li>**順序付きスキャン**: <code>ORDER BY</code> 句がある場合、<code>pairingheap</code> を用いて距離順にタプルを抽出する。</li>
+<li>**ビットマップスキャン**: <code>gistgetbitmap</code> を通じて、条件に合致する全タプルの TID をビットマップへ効率的に格納する。</li>
+<li>**デッドタプル処理**: <code>gistkillitems</code> を通じ、不要になったインデックスエントリのマーク付けを管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gistgettuple</code>: スキャンのメインエントリポイント。次の一致タプルを返却する。</li>
+<li><code>gistgetbitmap</code>: ビットマップスキャン用のエントリポイント。</li>
+<li><code>gistScanPage</code>: 指定されたインデックスページを読み込み、一致するタプルをキューに追加または返却する。</li>
+<li><code>gistindex_keytest</code>: 個々のインデックスタプルが検索条件を満たすか、および距離を計算する。</li>
+<li><code>GISTScanOpaque</code>: スキャン中の状態（キュー、メモリコンテキスト、現在のページ情報など）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>getNextGISTSearchItem</code></li>
+<li><code>getNextNearest</code></li>
+<li><code>gistcanreturn</code></li>
+<li><code>gistkillitems</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>gistgettuple</code> が初回呼び出し時にルートページを <code>gistScanPage</code> に渡す。 2. **ページ走査**: <code>gistScanPage</code> がページを読み込み、<code>gistindex_keytest</code> で各タプルを評価する。 3. **キューイング**:</p>
+<ul>
+<li>非リーフページの場合、子ページを <code>pairingheap</code> に追加する。</li>
+<li>リーフページの場合、一致した TID を <code>pageData</code> 配列またはビットマップに格納する。</li>
+<p>4. **順序付き検索**: <code>getNextNearest</code> がキューから最小距離のアイテムを順次取り出し、ヒープタプルに到達するまで再帰的にページを掘り下げる。 5. **後処理**: <code>gistkillitems</code> が、スキャン中に不要と判断されたタプルに対して <code>LP_DEAD</code> フラグを立てる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST 内部構造体および定数定義。</li>
+<li><code>lib/pairingheap.h</code>: 順序付きスキャン用の優先度付きキュー実装。</li>
+<li><code>access/genam.h</code>, <code>access/relscan.h</code>: インデックススキャンの共通インターフェース。</li>
+<li><code>storage/predicate.h</code>: 述語ロック管理。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gistscan.c</code>: スキャン状態の初期化とメモリ管理。</li>
+<li><code>gistproc.c</code>: 演算子クラスごとの <code>Consistent</code>（一致判定）および <code>Distance</code>（距離計算）メソッドの実装。</li>
+<li><code>gistutil.c</code>: ページ操作やタプルデコードのユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>gistindex_keytest</code> などは短命なメモリコンテキストで実行されます。メモリリークを防ぐため、<code>giststate-&gt;tempCxt</code> 等の適切なコンテキスト切り替えが行われている点に注目してください。</li>
+<li>**並行性**: GiST はインデックスの分割（Split）が並行して発生し得るため、<code>gistScanPage</code> 内で <code>NSN</code>（Node Sequence Number）や <code>rightlink</code> を確認し、必要に応じて右兄弟ページをキューに追加するロジックが重要です。</li>
+<li>**LSN チェック**: <code>gistkillitems</code> は、ページが読み込み後に更新されていないことを LSN で確認してから <code>LP_DEAD</code> を設定します。これは MVCC 下での安全な削除を保証するための重要なガードです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistkillitems.html" target="wiki-view"><code>gistkillitems</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistindex_keytest.html" target="wiki-view"><code>gistindex_keytest</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistScanPage.html" target="wiki-view"><code>gistScanPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__getNextGISTSearchItem.html" target="wiki-view"><code>getNextGISTSearchItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__getNextNearest.html" target="wiki-view"><code>getNextNearest</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistgettuple.html" target="wiki-view"><code>gistgettuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistgetbitmap.html" target="wiki-view"><code>gistgetbitmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistcanreturn.html" target="wiki-view"><code>gistcanreturn</code></a></li>
+</ul></body></html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/misc/rls.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/misc/rls.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの行レベルセキュリティ（RLS: Row Level Security）が特定のクエリやテーブルに対して有効であるかを判定するためのユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/misc</code> ディレクトリ内に位置し、RLSの適用可否を判断する中心的なロジックを担います。プランナや実行エンジンが、クエリ実行時にRLSポリシーを適用すべきか、あるいは環境の変化によってプランの再評価が必要かを判断する際の判断基準を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>テーブルのメタデータ（<code>pg_class</code>）に基づき、RLSが有効化されているかを判定する。</li>
+<li>ユーザーの権限（<code>BYPASSRLS</code>属性や所有者権限）を考慮し、RLSを適用すべきか、あるいはバイパスすべきかを決定する。</li>
+<li>RLS設定が環境（ユーザーIDやGUC設定）に依存する場合、プランキャッシュの無効化が必要であることを示すステータスを返す。</li>
+<li>SQLから直接RLS状態を確認するための関数（<code>row_security_active</code>等）を提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>check_enable_rls</code>: RLSの適用状態を判定する中核関数。<code>RLS_NONE</code>, <code>RLS_NONE_ENV</code>, <code>RLS_ENABLED</code> のいずれかを返す。</li>
+<li><code>CheckEnableRlsResult</code>: 判定結果を保持する列挙型。プランキャッシュの無効化戦略を決定するために使用される。</li>
+<li><code>row_security_active</code>: SQLからテーブルのOIDを指定してRLS有効性を確認する関数。</li>
+<li><code>row_security_active_name</code>: SQLからテーブル名を指定してRLS有効性を確認する関数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: テーブルのOID、チェック対象のユーザーID、エラー抑制フラグを受け取る。 2. **メタデータ取得**: <code>syscache</code>（<code>RELOID</code>）を使用して <code>pg_class</code> から <code>relrowsecurity</code> および <code>relforcerowsecurity</code> フラグを取得する。 3. **判定ロジック**:</p>
+<ul>
+<li><code>BYPASSRLS</code> 権限を持つユーザーは常にバイパス（<code>RLS_NONE_ENV</code>）。</li>
+<li>テーブル所有者は、<code>FORCE ROW SECURITY</code> が設定されていない限りバイパス（<code>RLS_NONE_ENV</code>）。</li>
+<li>上記以外でRLSが有効な場合、GUC変数 <code>row_security</code> の状態を確認し、必要に応じてエラーをスローするか <code>RLS_ENABLED</code> を返す。</li>
+<p>4. **出力**: 判定結果に基づき、プランナがクエリプランを最適化・キャッシュするためのステータスを返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_class.h</code>: テーブルの属性定義（<code>relrowsecurity</code>等）を参照。</li>
+<li><code>utils/syscache.h</code>: システムカタログの高速検索に使用。</li>
+<li><code>utils/rls.h</code>: 判定結果の列挙型定義および関数プロトタイプを提供。</li>
+<li><code>utils/acl.h</code>: 権限チェック（<code>has_bypassrls_privilege</code>等）に使用。</li>
+<li><code>access/htup.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/rls.h</code>: 本ファイルのヘッダー。判定結果の定義が重要。</li>
+<li><code>src/backend/catalog/pg_policy.c</code>: RLSポリシー自体の管理を行うモジュール。</li>
+<li><code>src/backend/optimizer/plan/planner.c</code>: <code>check_enable_rls</code> の結果を利用してクエリプランにRLSを組み込む箇所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>RLS_NONE_ENV</code> は「現在はRLSが適用されないが、ユーザーや環境が変われば適用される可能性がある」ことを意味し、プランキャッシュの無効化トリガーとして機能します。</li>
+<li><code>InNoForceRLSOperation()</code> は、参照整合性チェックなどの特殊な操作中にRLSを強制適用しないための仕組みです。</li>
+<li>本ファイルはRLSの「適用判定」のみを扱い、実際のポリシー評価やフィルタリング処理は実行エンジン側の別の箇所で行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__misc__rls_c__check_enable_rls.html" target="wiki-view"><code>check_enable_rls</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__rls_c__row_security_active.html" target="wiki-view"><code>row_security_active</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__rls_c__row_security_active_name.html" target="wiki-view"><code>row_security_active_name</code></a></li>
+</ul></body></html>

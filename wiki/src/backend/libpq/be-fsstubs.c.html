@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/be-fsstubs.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/be-fsstubs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのラージオブジェクト（Large Object: LO）に対するファイルシステム風の操作（open, close, read, write, seek等）をバックエンド側で提供するモジュールです。SQLインターフェースから呼び出される関数群と、Cコードから直接利用可能な低レベル関数群を実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> サブシステムの一部として、クライアントがラージオブジェクトをストリームのように扱うためのブリッジを提供します。<code>src/include/libpq/be-fsstubs.h</code> で宣言されたインターフェースを実装し、トランザクション境界でのリソース管理を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**LOディスクリプタ管理**: <code>cookies</code> 配列を用いて、開いているLOの記述子（<code>LargeObjectDesc</code>）を追跡・管理する。</li>
+<li>**トランザクション統合**: トランザクション終了時（コミット/アボート）に、開いたままのLOをクローズし、メモリコンテキストを解放する。</li>
+<li>**ファイルI/Oの抽象化**: サーバー上のファイルとLO間のインポート/エクスポート機能を提供し、適切な権限チェックとファイルパーミッション制御を行う。</li>
+<li>**SQL関数へのマッピング**: <code>PG_FUNCTION_ARGS</code> を介して、SQLから呼び出し可能なラージオブジェクト操作関数を公開する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>cookies</code>: 現在開いているLOディスクリプタを保持する動的配列。</li>
+<li><code>fscxt</code>: LO操作専用のメモリコンテキスト。トランザクション終了時に一括解放される。</li>
+<li><code>be_lo_open</code> / <code>be_lo_close</code>: SQLから呼び出されるLOのオープン・クローズ関数。</li>
+<li><code>lo_read</code> / <code>lo_write</code>: Cコードから直接利用可能な、LOに対する読み書き関数。</li>
+<li><code>AtEOXact_LargeObject</code>: トランザクション終了時に呼び出され、LOリソースをクリーンアップする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOSubXact_LargeObject</code></li>
+<li><code>be_lo_creat</code></li>
+<li><code>be_lo_create</code></li>
+<li><code>be_lo_lseek</code></li>
+<li><code>be_lo_lseek64</code></li>
+<li><code>be_lo_tell</code></li>
+<li><code>be_lo_tell64</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **オープン**: <code>be_lo_open</code> が呼ばれると、<code>newLOfd()</code> が <code>fscxt</code> を初期化し、<code>cookies</code> 配列に空きスロットを確保して <code>LargeObjectDesc</code> を格納します。 2.  **操作**: <code>lo_read</code> や <code>lo_write</code> は、渡されたFDをインデックスとして <code>cookies</code> 配列からディスクリプタを取得し、<code>inv_read</code>/<code>inv_write</code>（<code>inv_api.c</code>）を呼び出します。 3.  **クリーンアップ**: トランザクション終了時、<code>AtEOXact_LargeObject</code> が <code>cookies</code> を走査し、残存するすべてのLOをクローズした後、<code>fscxt</code> を削除してメモリを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/large_object.h</code>: ラージオブジェクトの基盤API（<code>inv_open</code>, <code>inv_read</code> 等）。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/xact.h</code>: トランザクション状態の管理。</li>
+<li><code>storage/fd.h</code>: サーバー上のファイル操作用。</li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/be-fsstubs.h</code></li>
+<li><code>libpq/libpq-fs.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/large_object/inv_api.c</code>: LOの物理的な読み書きやメタデータ管理を行う実体。</li>
+<li><code>src/include/libpq/libpq-fs.h</code>: クライアント/サーバー間で共有されるLO定数定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクション境界**: LOのディスクリプタは現在のトランザクション内でのみ有効です。トランザクションを跨いだ保持は設計上可能ですが、現状のPostgreSQLでは互換性のためにトランザクション終了時にクローズされる仕様になっています。</li>
+<li>**メモリ管理**: LO操作で確保されるメモリは <code>fscxt</code> に集約されています。個別の <code>pfree</code> を意識するよりも、トランザクション終了時のコンテキスト削除による一括解放に依存しています。</li>
+<li>**デバッグ**: <code>FSDB</code> マクロを有効にすると、LO操作の詳細が <code>DEBUG4</code> ログとして出力されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_open.html" target="wiki-view"><code>be_lo_open</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_close.html" target="wiki-view"><code>be_lo_close</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__lo_read.html" target="wiki-view"><code>lo_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__lo_write.html" target="wiki-view"><code>lo_write</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_lseek.html" target="wiki-view"><code>be_lo_lseek</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_lseek64.html" target="wiki-view"><code>be_lo_lseek64</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_creat.html" target="wiki-view"><code>be_lo_creat</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_create.html" target="wiki-view"><code>be_lo_create</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_tell.html" target="wiki-view"><code>be_lo_tell</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__be_lo_tell64.html" target="wiki-view"><code>be_lo_tell64</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__AtEOXact_LargeObject.html" target="wiki-view"><code>AtEOXact_LargeObject</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-fsstubs_c__AtEOSubXact_LargeObject.html" target="wiki-view"><code>AtEOSubXact_LargeObject</code></a></li>
+</ul></body></html>

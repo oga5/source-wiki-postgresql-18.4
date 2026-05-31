@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xloginsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xloginsert.c</h1>
+<h2>概要</h2>
+<p>WAL（Write-Ahead Logging）レコードを構築するための低レベル API を提供するモジュールです。PostgreSQL の各リソースマネージャ（rmgr）が変更を記録する際、このファイルで定義された関数群を使用して、変更内容をメモリ上の作業領域に登録し、最終的に単一の WAL レコードとして組み立てます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> サブシステムの一部として、WAL 書き込みの「構築フェーズ」を担います。<code>xlog.c</code> が WAL の物理的な書き込みや永続化を管理するのに対し、本ファイルは「何を記録するか」という論理的なレコード構成を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**WAL レコードの構築**: <code>XLogBeginInsert</code> から始まる一連の登録処理の管理。</li>
+<li>**バッファとデータの登録**: 変更対象のページ（<code>XLogRegisterBuffer</code>）や、任意のデータ（<code>XLogRegisterData</code>）を一時的な作業領域に蓄積。</li>
+<li>**レコードの組み立て**: 登録された情報を <code>XLogRecordAssemble</code> でヘッダー、ブロック情報、データチャンクに整理し、CRC を計算して <code>XLogInsertRecord</code> へ渡す。</li>
+<li>**圧縮処理**: <code>wal_compression</code> 設定に基づき、フルページイメージ（FPI）の圧縮を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>XLogBeginInsert()</code>: レコード構築の開始を宣言。</li>
+<li><code>XLogRegisterBuffer()</code>: 変更対象のバッファを登録。</li>
+<li><code>XLogRegisterData()</code>: レコード本体のデータを登録。</li>
+<li><code>XLogInsert()</code>: 構築したレコードを WAL に書き込む。</li>
+<li><code>registered_buffer</code>: 登録された各ブロックのメタデータと状態を保持する構造体。</li>
+<li><code>hdr_scratch</code>: レコードヘッダー構築用のメモリ領域。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InitXLogInsert</code></li>
+<li><code>XLogBeginInsert</code></li>
+<li><code>XLogCheckBufferNeedsBackup</code></li>
+<li><code>XLogEnsureRecordSpace</code></li>
+<li><code>XLogInsert</code></li>
+<li><code>XLogRecordAssemble</code></li>
+<li><code>XLogRegisterBufData</code></li>
+<li><code>XLogRegisterBuffer</code></li>
+<li><code>XLogRegisterData</code></li>
+<li><code>XLogResetInsertion</code></li>
+<li><code>XLogSetRecordFlags</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **開始**: <code>XLogBeginInsert()</code> で作業領域を初期化。 2.  **登録**: <code>XLogRegister*</code> 関数群を呼び出し、<code>registered_buffers</code> 配列や <code>rdatas</code> チェーンに情報を蓄積。 3.  **組み立て**: <code>XLogInsert()</code> が <code>XLogRecordAssemble()</code> を呼び出す。</p>
+<ul>
+<li>各ブロックの変更内容を走査し、フルページイメージが必要か判断。</li>
+<li>必要に応じて圧縮を行い、ヘッダーとデータを <code>XLogRecData</code> チェーンに連結。</li>
+<p>4.  **書き込み**: 組み立てられた <code>XLogRecData</code> を <code>xlog.c</code> の <code>XLogInsertRecord()</code> へ渡し、WAL ログとして出力。 5.  **リセット**: <code>XLogResetInsertion()</code> で作業領域をクリアし、次のレコード構築に備える。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xlog_internal.h</code>: WAL の基本構造と内部定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とページアクセス。</li>
+<li><code>utils/memutils.h</code>: 作業領域のメモリ管理。</li>
+<li><code>lz4.h</code>, <code>zstd.h</code>: 圧縮アルゴリズム（ビルドオプションによる）。</li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/pg_control.h</code></li>
+<li><code>common/pg_lzcompress.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>storage/proc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/xloginsert.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: 構築されたレコードの物理的な書き込みと LSN 管理。</li>
+<li><code>src/backend/access/transam/README</code>: WAL レコードのフォーマットと構築ルールの詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**クリティカルセクション**: <code>XLogInsert</code> は通常、<code>START_CRIT_SECTION()</code> 内で呼び出されます。メモリ割り当てやエラー発生時の挙動に注意してください。</li>
+<li>**バッファの登録**: <code>XLogRegisterBuffer</code> を呼ぶ前に、対象のバッファが排他ロックされていることが前提です。</li>
+<li>**メモリ管理**: <code>InitXLogInsert</code> で確保される <code>xloginsert_cxt</code> は、バックエンドの生存期間中維持されます。大規模なレコードを構築する場合は <code>XLogEnsureRecordSpace</code> で事前に領域を確保してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__registered_buffer.html" target="wiki-view"><code>registered_buffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogBeginInsert.html" target="wiki-view"><code>XLogBeginInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogEnsureRecordSpace.html" target="wiki-view"><code>XLogEnsureRecordSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogResetInsertion.html" target="wiki-view"><code>XLogResetInsertion</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogRegisterBuffer.html" target="wiki-view"><code>XLogRegisterBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogRegisterData.html" target="wiki-view"><code>XLogRegisterData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogRegisterBufData.html" target="wiki-view"><code>XLogRegisterBufData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogSetRecordFlags.html" target="wiki-view"><code>XLogSetRecordFlags</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogInsert.html" target="wiki-view"><code>XLogInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogRecordAssemble.html" target="wiki-view"><code>XLogRecordAssemble</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__XLogCheckBufferNeedsBackup.html" target="wiki-view"><code>XLogCheckBufferNeedsBackup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xloginsert_c__InitXLogInsert.html" target="wiki-view"><code>InitXLogInsert</code></a></li>
+</ul></body></html>

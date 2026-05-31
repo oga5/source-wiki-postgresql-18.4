@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-auth.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-auth.c</h1>
+<h2>概要</h2>
+<p><code>fe-auth.c</code> は、PostgreSQL クライアント（<code>libpq</code>）における認証ネゴシエーションのメインディスパッチャです。サーバーからの認証要求（<code>AuthRequest</code>）を解析し、適切な認証メカニズム（GSSAPI, SSPI, SASL, MD5, Password）へ処理を委譲します。また、パスワードの暗号化やユーザー名の取得といった認証関連のユーティリティ関数も提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の接続確立プロセス（<code>fe-connect.c</code> の <code>PQconnectPoll</code>）において、認証フェーズを担う中核モジュールです。認証プロトコルの詳細実装（SCRAM, OAuth 等）を各 <code>fe-auth-*.c</code> に分離し、本ファイルはそれらを統合するインターフェース層として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**認証ディスパッチ**: サーバーからの <code>AuthRequest</code> に基づき、適切な認証ハンドラを呼び出す。</li>
+<li>**認証状態管理**: GSSAPI/SSPI/SASL のコンテキスト保持および継続処理の制御。</li>
+<li>**セキュリティ検証**: <code>channel_binding</code> や <code>require_auth</code> 設定に基づき、認証要求がポリシーに適合しているか検証する。</li>
+<li>**パスワード管理**: クライアントサイドでのパスワード暗号化（MD5, SCRAM）およびパスワード変更用 SQL の生成。</li>
+<li>**プラットフォーム抽象化**: Windows (SSPI) と Unix (GSSAPI) の認証差異の吸収。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>認証ディスパッチ</h3>
+<ul>
+<li><code>pg_fe_sendauth</code>: 認証要求を処理するメインのエントリポイント。</li>
+<li><code>check_expected_areq</code>: 認証要求が接続設定（<code>require_auth</code> 等）と矛盾しないか検証する。</li>
+</ul>
+<h3>認証メカニズム（内部ハンドラ）</h3>
+<ul>
+<li><code>pg_GSS_startup</code> / <code>pg_GSS_continue</code>: GSSAPI 認証の開始と継続。</li>
+<li><code>pg_SSPI_startup</code> / <code>pg_SSPI_continue</code>: Windows SSPI 認証の開始と継続。</li>
+<li><code>pg_SASL_init</code> / <code>pg_SASL_continue</code>: SASL（SCRAM, OAuth）認証の初期化と継続。</li>
+<li><code>pg_password_sendauth</code>: レガシーな MD5/平文パスワード認証の処理。</li>
+</ul>
+<h3>ユーティリティ・公開 API</h3>
+<ul>
+<li><code>PQencryptPasswordConn</code>: 指定されたアルゴリズムでパスワードを暗号化する。</li>
+<li><code>PQchangePassword</code>: <code>ALTER USER</code> 文を発行してパスワードを変更する。</li>
+<li><code>pg_fe_getauthname</code>: 現在の認証ユーザー名を取得する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQchangePassword</code></li>
+<li><code>PQdefaultAuthDataHook</code></li>
+<li><code>PQencryptPassword</code></li>
+<li><code>PQencryptPasswordConn</code></li>
+<li><code>PQgetAuthDataHook</code></li>
+<li><code>PQsetAuthDataHook</code></li>
+<li><code>pg_GSS_continue</code></li>
+<li><code>pg_GSS_startup</code></li>
+<li><code>pg_SASL_init</code></li>
+<li><code>pg_SSPI_continue</code></li>
+<li><code>pg_SSPI_error</code></li>
+<li><code>pg_SSPI_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **要求受信**: <code>pg_fe_sendauth</code> がサーバーからの <code>AuthRequest</code> を受け取る。 2. **検証**: <code>check_expected_areq</code> が現在の接続状態（SSL使用有無、<code>require_auth</code> 設定）と要求を照合する。 3. **ディスパッチ**: <code>switch</code> 文で認証タイプを判定。</p>
+<ul>
+<li>**SASL**: <code>pg_SASL_init</code> でメカニズムを選択し、<code>conn-&gt;sasl-&gt;exchange</code> を通じて SASL ステートマシンを駆動する。</li>
+<li>**GSS/SSPI**: <code>pg_GSS_startup</code> 等を呼び出し、<code>conn-&gt;gctx</code> や <code>conn-&gt;sspictx</code> にコンテキストを保持して継続する。</li>
+<p>4. **応答送信**: 各ハンドラは <code>pqPacketSend</code> を使用して、サーバーへ認証応答メッセージを送信する。 5. **非同期対応**: <code>async</code> フラグが設定された場合、呼び出し元は <code>conn-&gt;async_auth</code> を通じて認証を継続する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>fe-auth.h</code>, <code>fe-auth-sasl.h</code>, <code>fe-auth-oauth.h</code>: 認証メカニズムの定義。</li>
+<li><code>common/scram-common.h</code>, <code>common/md5.h</code>: 暗号化アルゴリズム。</li>
+<li><code>libpq-int.h</code>: <code>PGconn</code> 構造体（認証状態の保持先）。</li>
+<li><code>win32.h</code>: Windows 環境での SSPI/認証 API 抽象化。</li>
+<li><code>common/oauth-common.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe-gssapi-common.h</code></li>
+<li><code>libpq-fe.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>pwd.h</code></li>
+<li><code>sys/param.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/ucred.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-auth-scram.c</code>: SCRAM 認証の詳細実装。</li>
+<li><code>fe-auth-oauth.c</code>: OAuth 認証の詳細実装。</li>
+<li><code>fe-connect.c</code>: 認証フェーズを含む接続状態マシン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 認証コンテキスト（<code>gctx</code>, <code>sspictx</code>）やバッファは <code>PGconn</code> 構造体に紐付いており、<code>PQfinish</code> で解放されます。ハンドラ内で <code>malloc</code> された一時バッファは、各関数内で適切に <code>free</code> される必要があります。</li>
+<li>**スレッド安全性**: <code>pglock_thread()</code> / <code>pgunlock_thread()</code> が GSSAPI/SSPI 処理の前後で使用されており、ライブラリの並行実行時の競合を防いでいます。</li>
+<li>**省略された詳細**: 本ファイルは認証の「ディスパッチャ」であるため、各認証アルゴリズム（SCRAM のハッシュ計算など）の数学的詳細は各 <code>fe-auth-*.c</code> に委譲されており、本ファイルには含まれていません。</li>
+<li>**注意点**: <code>channel_binding=require</code> が設定されている場合、SASL 以外の認証要求は即座にエラーとなります。これはセキュリティ上の重要な不変条件です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_GSS_continue.html" target="wiki-view"><code>pg_GSS_continue</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_GSS_startup.html" target="wiki-view"><code>pg_GSS_startup</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_SSPI_error.html" target="wiki-view"><code>pg_SSPI_error</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_SSPI_continue.html" target="wiki-view"><code>pg_SSPI_continue</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_SSPI_startup.html" target="wiki-view"><code>pg_SSPI_startup</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__pg_SASL_init.html" target="wiki-view"><code>pg_SASL_init</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQencryptPassword.html" target="wiki-view"><code>PQencryptPassword</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQencryptPasswordConn.html" target="wiki-view"><code>PQencryptPasswordConn</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQchangePassword.html" target="wiki-view"><code>PQchangePassword</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQgetAuthDataHook.html" target="wiki-view"><code>PQgetAuthDataHook</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQsetAuthDataHook.html" target="wiki-view"><code>PQsetAuthDataHook</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-auth_c__PQdefaultAuthDataHook.html" target="wiki-view"><code>PQdefaultAuthDataHook</code></a></li>
+</ul></body></html>

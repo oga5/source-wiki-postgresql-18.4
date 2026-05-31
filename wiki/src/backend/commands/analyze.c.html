@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/analyze.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/analyze.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の統計情報生成エンジン。<code>ANALYZE</code> コマンドの実行主体であり、テーブルやインデックスからデータをサンプリングし、プランナが使用する統計情報（MCVリスト、ヒストグラム、相関係数など）を計算して <code>pg_statistic</code> カタログを更新する。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、メンテナンス系コマンドの統計収集フェーズを担う。<code>vacuum.c</code> と密接に連携し、テーブルの物理的な状態（ページ数、タプル数）と論理的なデータ分布の両面から最適化に必要な情報を抽出する。</p>
+<h2>責務</h2>
+<ul>
+<li>**サンプリング戦略の実行**: テーブル全体をスキャンせず、統計的に有意なサンプルを効率的に取得する（Vitterのアルゴリズム等）。</li>
+<li>**統計情報の計算**: 属性ごとのデータ分布を分析し、<code>pg_statistic</code> を更新する。</li>
+<li>**インデックス統計の生成**: インデックス式や部分インデックスの統計を計算する。</li>
+<li>**拡張統計のサポート**: <code>ComputeExtStatisticsRows</code> を介した多列統計の生成。</li>
+<li>**進捗報告**: <code>pgstat</code> サブシステムへの進捗状況の通知。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>メインエントリーポイント</h3>
+<ul>
+<li><code>analyze_rel()</code>: 指定されたリレーションに対する <code>ANALYZE</code> のトップレベル関数。権限チェック、ロック取得、再帰的処理の判断を行う。</li>
+<li><code>do_analyze_rel()</code>: 統計収集のメインループ。メモリコンテキストの管理、サンプリング、統計計算、カタログ更新を統括する。</li>
+</ul>
+<h3>サンプリング・データ取得</h3>
+<ul>
+<li><code>acquire_sample_rows()</code>: テーブルからランダムなサンプル行を取得する。</li>
+<li><code>acquire_inherited_sample_rows()</code>: 継承ツリー全体からサンプル行を収集する。</li>
+<li><code>block_sampling_read_stream_next()</code>: ブロックサンプリング用のストリームコールバック。</li>
+</ul>
+<h3>統計計算・更新</h3>
+<ul>
+<li><code>examine_attribute()</code>: 属性ごとの分析準備（<code>VacAttrStats</code> の初期化）。</li>
+<li><code>compute_index_stats()</code>: インデックスの統計情報を計算する。</li>
+<li><code>update_attstats()</code>: 計算された統計情報を <code>pg_statistic</code> カタログに書き込む。</li>
+<li><code>std_typanalyze()</code>: デフォルトの型別分析アルゴリズム。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>AnlIndexData</code>: インデックス分析用の中間データ保持構造体。</li>
+<li><code>VacAttrStats</code>: 属性分析用の統計情報コンテキスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AnlIndexData</code></li>
+<li><code>CompareScalarsContext</code></li>
+<li><code>ScalarMCVItem</code></li>
+<li><code>TrackItem</code></li>
+<li><code>acquire_inherited_sample_rows</code></li>
+<li><code>acquire_sample_rows</code></li>
+<li><code>analyze_rel</code></li>
+<li><code>block_sampling_read_stream_next</code></li>
+<li><code>compare_rows</code></li>
+<li><code>compute_index_stats</code></li>
+<li><code>do_analyze_rel</code></li>
+<li><code>examine_attribute</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>analyze_rel</code> が対象リレーションをロックし、<code>do_analyze_rel</code> を呼び出す。 2. **サンプリング**: <code>acquire_sample_rows</code> が <code>table_scan_analyze_next_block</code> を使用して物理ページをサンプリングし、Vitterのアルゴリズムで <code>rows[]</code> にタプルを格納する。 3. **統計計算**: <code>do_analyze_rel</code> が <code>compute_stats</code> 関数ポインタ（<code>std_typanalyze</code> 等）を呼び出し、各属性の MCV やヒストグラムを計算する。 4. **カタログ更新**: <code>update_attstats</code> が <code>pg_statistic</code> を更新し、<code>vac_update_relstats</code> が <code>pg_class</code> の統計を更新する。 5. **後処理**: <code>pgstat_report_analyze</code> で統計システムに報告し、メモリコンテキストを解放する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: テーブルアクセス、可視性マップ、タプル変換など。</li>
+<li><code>catalog/</code>: <code>pg_statistic</code>, <code>pg_class</code> 等のカタログ定義。</li>
+<li><code>statistics/</code>: 拡張統計の計算ロジック。</li>
+<li><code>utils/</code>: メモリ管理 (<code>AllocSet</code>)、サンプリングアルゴリズム、GUC、キャッシュ。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/tupconvert.h</code></li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>statistics/extended_stats_internal.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/attoptcache.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/sampling.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/vacuum.h</code>: <code>VacAttrStats</code> 等の定義。</li>
+<li><code>src/backend/commands/vacuum.c</code>: <code>VACUUM</code> コマンドとの共通処理。</li>
+<li><code>src/backend/statistics/</code>: 拡張統計の具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>anl_context</code> という専用のメモリコンテキストを作成し、分析終了時に一括解放する設計。計算ルーチン内でのメモリリークを防ぐため、<code>MemoryContextSwitchTo</code> を多用している。</li>
+<li>**ロック**: <code>ShareUpdateExclusiveLock</code> を使用し、<code>ANALYZE</code> 同士の競合を防ぐ。</li>
+<li>**制約**: <code>pg_statistic</code> 自体は分析対象外。</li>
+<li>**未実装/浅い部分**: 継承テーブルのサンプリングにおいて、子テーブル間のデータ分布の偏りが大きい場合の精度については、現状の単純な比例配分では限界がある。</li>
+<li>**パフォーマンス**: <code>WIDTH_THRESHOLD</code> を超える巨大なデータは統計計算から除外される。これはメモリ消費と計算コストを抑えるための意図的な設計。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__AnlIndexData.html" target="wiki-view"><code>AnlIndexData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__analyze_rel.html" target="wiki-view"><code>analyze_rel</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__do_analyze_rel.html" target="wiki-view"><code>do_analyze_rel</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__compute_index_stats.html" target="wiki-view"><code>compute_index_stats</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__examine_attribute.html" target="wiki-view"><code>examine_attribute</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__block_sampling_read_stream_next.html" target="wiki-view"><code>block_sampling_read_stream_next</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__acquire_sample_rows.html" target="wiki-view"><code>acquire_sample_rows</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__compare_rows.html" target="wiki-view"><code>compare_rows</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__acquire_inherited_sample_rows.html" target="wiki-view"><code>acquire_inherited_sample_rows</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__ScalarMCVItem.html" target="wiki-view"><code>ScalarMCVItem</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__CompareScalarsContext.html" target="wiki-view"><code>CompareScalarsContext</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__analyze_c__TrackItem.html" target="wiki-view"><code>TrackItem</code></a></li>
+</ul></body></html>

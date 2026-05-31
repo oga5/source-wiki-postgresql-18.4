@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/session.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Session</h1>
+<h2>概念</h2>
+<p>PostgreSQLにおける「Session（セッション）」という用語は、文脈によって異なる2つの独立した概念を指します。</p>
+<p>1. **バックエンドにおけるセッション**: クライアント接続内で、複数のバックエンドプロセス（並列クエリのワーカープロセスなど）が共有すべき状態やメモリ領域を管理するための仕組みです。 2. **分離レベルテストにおけるセッション**: テストツール（<code>isolationtester</code>）において、独立したデータベース接続と、その中で実行される一連のSQLステップをシミュレートするためのテスト定義の単位です。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**バックエンド**: 並列クエリの実行時などに、リーダープロセスとワーカープロセスが同一のセッション状態（動的共有メモリや型修飾子レジストリなど）を共有し、一貫した動作を保証するために不可欠です。また、将来的なバックエンドとクライアント接続の分離を見据えた設計の基礎となります。</li>
+<li>**テスト**: データベースのトランザクション分離レベルの挙動を検証する際、複数の独立した接続（セッション）が並行してSQLを実行する複雑なシナリオを正確にシミュレートするために重要です。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/access</code> (バックエンドのセッション管理)</li>
+<li><code>module:src/test/isolation</code> (分離レベルテストツール)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/access/session.h#Session</code> (構造体): セッションスコープのDSM（動的共有メモリ）セグメント、DSA（動的共有領域）、および共有型修飾子レジストリへのポインタを保持するデータ構造。</li>
+<li><code>symbol:src/test/isolation/isolationtester.h#Session</code> (構造体): テスト仕様（<code>TestSpec</code>）の一部として、セッション名、セットアップ/ティアダウンSQL、実行ステップの配列を保持するデータ構造。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報に基づく、それぞれの処理の流れは以下の通りです。</p>
+<h3>バックエンドセッションの流れ</h3>
+<p>1. **初期化**: <code>InitializeSession()</code> により、<code>TopMemoryContext</code> 上に <code>Session</code> 構造体が生成されます。 2. **共有メモリのセットアップ**: <code>GetSessionDsmHandle()</code> を通じてDSMセグメントが作成され、<code>shm_toc</code> を用いてDSA領域や型レジストリ領域が初期化されます。 3. **並列プロセスへの共有**: 並列クエリ実行時、リーダープロセスが生成したハンドルをワーカープロセスが受け取り、<code>AttachSession()</code> を実行することで同一のセッション状態にアクセスします。</p>
+<h3>テスト用セッションの流れ</h3>
+<p>1. **解析**: <code>specparse.y</code> がテスト仕様を解析し、セッション名、セットアップ/ティアダウンSQL、ステップ群を含む <code>Session</code> 構造体を構築します。 2. **リンク解決**: <code>isolationtester.c</code> 内の <code>check_testspec()</code> により、ステップ間のリンクが解決されます。 3. **実行**: 実行エンジン（<code>isolationtester.c</code>）が各セッションの <code>setupsql</code> を実行した後、定義された <code>steps</code> を順次処理します。</p>
+<p>*注意: バックエンドセッションの破棄にいたる完全なライフサイクルや、詳細な関数呼び出し関係など、上記以外のエンドツーエンドの流れは提供された情報からは未確定です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バックエンド**:</li>
+<li><code>Session</code> 構造体内の各フィールド（DSMセグメント、DSA領域など）は、セッションの生存期間中ずっと有効でなければなりません。</li>
+<li><code>shared_typmod_registry</code> 関連のフィールドは、<code>typcache.c</code> によって一貫して管理される必要があります。</li>
+<li>**テスト**:</li>
+<li><code>steps</code> は <code>Step</code> 構造体への有効なポインタ配列であり、その要素数は <code>nsteps</code> と一致している必要があります。</li>
+<li><code>check_testspec()</code> が実行されるまでは、内部のポインタ参照が未解決である可能性があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の混同**: <code>src/backend/access/common/session.c</code> などのバックエンドセッション管理機能と、<code>src/test/isolation</code> のテスト用構造体は、名前は同じ <code>Session</code> ですが完全に無関係です。コードリーディングや修正の際に混同しないよう注意が必要です。</li>
+<li>**バックエンドセッションの有効期間**: セッションの生存期間外で <code>Session</code> 構造体のメンバにアクセスすると、未定義の動作を引き起こす可能性があります。</li>
+<li>**テスト用セッションの初期化順序**: テスト用 <code>Session</code> 内の <code>Step</code> 構造体とのリンクは <code>check_testspec()</code> で構築されるため、この処理の前にステップを参照しようとすると、未解決のポインタによるエラーが発生する可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/access/session.h</code>: バックエンドにおけるセッション共有メモリ管理の定義。</li>
+<li><code>src/test/isolation/isolationtester.h</code>: 分離レベルテストにおけるセッションシミュレーションの定義。</li>
+</ul></body></html>

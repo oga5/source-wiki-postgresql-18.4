@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/network_selfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/network_selfuncs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの <code>inet</code> および <code>cidr</code> 型に対する演算子（サブネット包含、オーバーラップ）の選択率（Selectivity）を推定するモジュールです。クエリプランナが最適な実行計画を選択するために必要な統計情報（MCV、ヒストグラム）を活用します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内のネットワーク関連機能の一部であり、プランナが <code>selfuncs.c</code> を通じて呼び出す統計推定ロジックを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**制限句（Restriction）の推定**: <code>networksel</code> を通じ、<code>col OP const</code> 形式のクエリに対する選択率を算出します。</li>
+<li>**結合（Join）の推定**: <code>networkjoinsel</code> を通じ、<code>col1 OP col2</code> 形式の結合に対する選択率を算出します。</li>
+<li>**統計情報の統合**: MCV（最頻値）リストとヒストグラムを組み合わせ、NULLフラクションを考慮した確率計算を行います。</li>
+<li>**計算量の抑制**: 大規模な統計データに対しては、<code>MAX_CONSIDERED_ELEMS</code> を用いた間引き（デシメーション）を行い、プランナの計算コストを一定に保ちます。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>networksel</code>: 制限句の選択率推定のメインエントリポイント。</li>
+<li><code>networkjoinsel</code>: 結合選択率推定のメインエントリポイント。</li>
+<li><code>inet_hist_value_sel</code>: ヒストグラム内のバケットと定数の包含関係から選択率を推定するコアロジック。</li>
+<li><code>inet_opr_codenum</code>: 演算子を包含関係の数値（-2〜2）に変換し、包含ロジックを統一的に扱えるようにします。</li>
+<li><code>MAX_CONSIDERED_ELEMS</code>: 統計計算時に考慮する要素数の上限（1024）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>inet_hist_inclusion_join_sel</code></li>
+<li><code>inet_hist_match_divider</code></li>
+<li><code>inet_inclusion_cmp</code></li>
+<li><code>inet_masklen_inclusion_cmp</code></li>
+<li><code>inet_mcv_hist_sel</code></li>
+<li><code>inet_mcv_join_sel</code></li>
+<li><code>inet_semi_join_sel</code></li>
+<li><code>mcv_population</code></li>
+<li><code>networkjoinsel_inner</code></li>
+<li><code>networkjoinsel_semi</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>inet_opr_codenum</code> で演算子の種類を識別します。 2. **統計取得**: <code>get_attstatsslot</code> で MCV およびヒストグラムを取得します。 3. **MCV計算**: <code>mcv_selectivity</code> を呼び出し、MCVリストに一致する行の割合を算出します。 4. **ヒストグラム計算**: MCV以外の残りの母集団に対し、<code>inet_hist_value_sel</code> を適用します。</p>
+<ul>
+<li>ヒストグラムの境界値と定数を比較し、包含関係に応じて確率を累積します。</li>
+<li>包含関係が曖昧な場合は、ビット単位の比較（<code>inet_hist_match_divider</code>）を用いて確率を補正します。</li>
+<p>5. **結合**: MCV vs MCV、MCV vs ヒストグラム、ヒストグラム vs ヒストグラムの各組み合わせを計算し、最終的な選択率を算出します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/inet.h</code>: <code>inet</code> 型の内部構造と操作関数。</li>
+<li><code>utils/selfuncs.h</code>: 汎用的な選択率推定ユーティリティ。</li>
+<li><code>catalog/pg_statistic.h</code>: 統計情報の構造体定義。</li>
+<li><code>math.h</code>: 確率計算のための <code>pow</code> 関数。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/network.c</code>: <code>inet</code> 型の基本的な比較演算やビット操作の実装。</li>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 他のデータ型（数値、文字列等）の選択率推定ロジック。</li>
+<li><code>src/backend/optimizer/util/plancat.c</code>: プランナが統計情報を取得する際の起点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**包含関係の推定**: ネットワークアドレスの包含関係は単純な大小比較ではないため、<code>inet_hist_match_divider</code> でビット単位の「一致度」を計算するヒューリスティックな手法が取られています。</li>
+<li>**計算コスト**: 結合推定は $O(N^2)$ になりやすいため、<code>MAX_CONSIDERED_ELEMS</code> による間引きが重要です。この定数を変更する場合は、プランナの実行時間と推定精度のトレードオフを考慮してください。</li>
+<li>**デバッグ**: 推定値が不自然な場合、<code>pg_stats</code> ビューで対象カラムのヒストグラムやMCVが正しく収集されているか確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__networkjoinsel_inner.html" target="wiki-view"><code>networkjoinsel_inner</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__networkjoinsel_semi.html" target="wiki-view"><code>networkjoinsel_semi</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__mcv_population.html" target="wiki-view"><code>mcv_population</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_hist_value_sel.html" target="wiki-view"><code>inet_hist_value_sel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_mcv_join_sel.html" target="wiki-view"><code>inet_mcv_join_sel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_mcv_hist_sel.html" target="wiki-view"><code>inet_mcv_hist_sel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_hist_inclusion_join_sel.html" target="wiki-view"><code>inet_hist_inclusion_join_sel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_semi_join_sel.html" target="wiki-view"><code>inet_semi_join_sel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_opr_codenum.html" target="wiki-view"><code>inet_opr_codenum</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_inclusion_cmp.html" target="wiki-view"><code>inet_inclusion_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_masklen_inclusion_cmp.html" target="wiki-view"><code>inet_masklen_inclusion_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_selfuncs_c__inet_hist_match_divider.html" target="wiki-view"><code>inet_hist_match_divider</code></a></li>
+</ul></body></html>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/slotsync.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/slotsync.c</h1>
+<h2>概要</h2>
+<p>物理スタンバイサーバー上で、プライマリサーバーから論理レプリケーションスロットの情報を取得・同期するための機能を提供します。本ファイルは、スロットの作成、メタデータの更新、および不要になったスロットの削除を自動（バックグラウンドワーカー）または手動（SQL関数）で行うためのロジックを所有しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> サブシステムの一部として、スタンバイ昇格時に論理レプリケーションを継続可能にするための「状態の事前同期」を担当します。<code>worker.c</code> 等が適用を行うのに対し、本モジュールは適用前のスロットの永続化と整合性維持に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**同期管理**: プライマリからのスロット情報取得と、ローカルスロットへの反映。</li>
+<li>**ライフサイクル管理**: スロットの作成、更新、および不要なスロットの削除。</li>
+<li>**整合性保証**: <code>restart_lsn</code> や <code>catalog_xmin</code> の検証によるデータ損失の防止。</li>
+<li>**ワーカー制御**: バックグラウンドワーカーの起動・停止・再起動の制御と、スタンバイ昇格時の安全な停止。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有状態管理</h3>
+<ul>
+<li><code>SlotSyncCtx</code>: 共有メモリ上の制御構造体。同期プロセスのPID、停止フラグ、同期中フラグを保持。</li>
+<li><code>SlotSyncCtxStruct</code>: 同期プロセス間の競合を防ぐためのロックと状態を定義。</li>
+</ul>
+<h3>同期ロジック</h3>
+<ul>
+<li><code>ReplSlotSyncWorkerMain</code>: バックグラウンドワーカーのメインループ。</li>
+<li><code>SyncReplicationSlots</code>: SQL関数から呼び出される同期実行のメインエントリーポイント。</li>
+<li><code>synchronize_slots</code>: プライマリからスロット情報を取得し、ローカルへ適用するループ。</li>
+<li><code>synchronize_one_slot</code>: 個別のスロットの作成または更新を行う。</li>
+</ul>
+<h3>状態更新・検証</h3>
+<ul>
+<li><code>update_local_synced_slot</code>: リモート情報に基づきローカルスロットのメタデータを更新。</li>
+<li><code>reserve_wal_for_local_slot</code>: スロットに必要なWALを保護するためのLSN予約。</li>
+<li><code>drop_local_obsolete_slots</code>: プライマリに存在しない、または不要になったスロットを削除。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>HandleSlotSyncMessageInterrupt</code></li>
+<li><code>IsSyncingReplicationSlots</code></li>
+<li><code>ProcessSlotSyncMessage</code></li>
+<li><code>RemoteSlot</code></li>
+<li><code>ReplSlotSyncWorkerMain</code></li>
+<li><code>ShutDownSlotSync</code></li>
+<li><code>SlotSyncCtxStruct</code></li>
+<li><code>SlotSyncShmemInit</code></li>
+<li><code>SlotSyncShmemSize</code></li>
+<li><code>SlotSyncWorkerCanRestart</code></li>
+<li><code>SyncReplicationSlots</code></li>
+<li><code>ValidateSlotSyncParams</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続**: <code>ReplSlotSyncWorkerMain</code> または <code>SyncReplicationSlots</code> が <code>walrcv_connect</code> でプライマリに接続。 2. **情報取得**: <code>synchronize_slots</code> が <code>pg_replication_slots</code> をクエリし、<code>RemoteSlot</code> 構造体のリストを構築。 3. **同期処理**:</p>
+<ul>
+<li>各スロットに対し <code>synchronize_one_slot</code> を実行。</li>
+<li><code>update_local_synced_slot</code> が <code>SnapBuild</code> や <code>LogicalSlotAdvanceAndCheckSnapState</code> を利用して、スロットが「同期準備完了（RS_PERSISTENT）」状態に達したかを判定。</li>
+<p>4. **永続化**: 整合性が確認されたスロットは <code>ReplicationSlotSave()</code> でディスクに書き込まれる。 5. **待機**: <code>wait_for_slot_activity</code> がスロットの更新頻度に応じて動的にスリープ時間を調整。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/walreceiver.h</code>: プライマリとの通信インターフェース。</li>
+<li><code>replication/snapbuild.h</code>: スナップショットの整合性確認。</li>
+<li><code>storage/ipc.h</code>, <code>storage/lmgr.h</code>: 共有メモリおよびロック管理。</li>
+<li><code>access/xlogrecovery.h</code>: スタンバイ状態の確認。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timeout.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/replication/slotsync.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/replication/logical/worker.c</code>: 論理レプリケーション適用ワーカー。</li>
+<li><code>src/backend/replication/slot.c</code>: レプリケーションスロットの基本操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>RemoteSlot</code> 構造体は同期処理中に <code>palloc</code> され、処理終了後に <code>list_free_deep</code> で解放されます。</li>
+<li>**エラーパス**: <code>PG_ENSURE_ERROR_CLEANUP</code> を使用して、エラー発生時にも <code>ReplicationSlotCleanup</code> が確実に呼ばれるよう設計されています。</li>
+<li>**制約**: スロット同期は <code>wal_level &gt;= logical</code> かつ <code>hot_standby_feedback</code> が有効な場合にのみ動作します。</li>
+<li>**設計の意図**: スロットが「一時的（RS_TEMPORARY）」状態にある間は、データ損失を防ぐために永続化されません。これは、スタンバイがプライマリの <code>restart_lsn</code> に追いつくまでの安全策です。</li>
+<li>**省略箇所**: 本ファイルはスロットの「同期」に特化しており、実際のWALデコードや適用ロジックは他のファイル（<code>decode.c</code>, <code>worker.c</code>）に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__SlotSyncCtxStruct.html" target="wiki-view"><code>SlotSyncCtxStruct</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__RemoteSlot.html" target="wiki-view"><code>RemoteSlot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__ValidateSlotSyncParams.html" target="wiki-view"><code>ValidateSlotSyncParams</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__HandleSlotSyncMessageInterrupt.html" target="wiki-view"><code>HandleSlotSyncMessageInterrupt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__ProcessSlotSyncMessage.html" target="wiki-view"><code>ProcessSlotSyncMessage</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__ReplSlotSyncWorkerMain.html" target="wiki-view"><code>ReplSlotSyncWorkerMain</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__ShutDownSlotSync.html" target="wiki-view"><code>ShutDownSlotSync</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__SlotSyncWorkerCanRestart.html" target="wiki-view"><code>SlotSyncWorkerCanRestart</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__IsSyncingReplicationSlots.html" target="wiki-view"><code>IsSyncingReplicationSlots</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__SlotSyncShmemSize.html" target="wiki-view"><code>SlotSyncShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__SlotSyncShmemInit.html" target="wiki-view"><code>SlotSyncShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__slotsync_c__SyncReplicationSlots.html" target="wiki-view"><code>SyncReplicationSlots</code></a></li>
+</ul></body></html>

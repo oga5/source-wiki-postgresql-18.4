@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__mmgr__slab_c__SlabFree.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SlabFree</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/mmgr/slab.c:701</code></li>
+</ul>
+<h2>目的</h2>
+<p>SLAB アロケータによって割り当てられたメモリチャンクを解放し、管理ブロックの空きリストへ戻す。ブロックが完全に空になった場合は、再利用のために <code>emptyblocks</code> リストへ移動するか、メモリをシステムへ返却する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SlabFree(void *pointer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>pointer</code> - 解放対象のメモリ領域を指すポインタ。</li>
+<li>**出力**: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pointer</code> は、当該 SLAB コンテキストから割り当てられた有効なチャンクを指している必要がある。</li>
+<li><code>block-&gt;nfree</code> は常に <code>0</code> より大きく、<code>slab-&gt;chunksPerBlock</code> 以下であること。</li>
+<li><code>MEMORY_CONTEXT_CHECKING</code> が有効な場合、二重解放（<code>requested_size == InvalidAllocSize</code>）はエラーとして報告される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **チャンク特定**: <code>pointer</code> からチャンクヘッダーと所属する <code>SlabBlock</code> を特定する。 2. **解放処理**: チャンクをブロックの <code>freehead</code> リストの先頭に挿入し、<code>nfree</code> をインクリメントする。 3. **ブロックリスト更新**: 空き数（<code>nfree</code>）の変化に基づき、ブロックを適切な <code>blocklist</code> インデックスへ移動させる。必要に応じて <code>slab-&gt;curBlocklistIndex</code> を再計算する。 4. **空きブロック処理**: ブロックが完全に空（<code>nfree == chunksPerBlock</code>）になった場合:</p>
+<ul>
+<li><code>emptyblocks</code> リストのサイズが上限（<code>SLAB_MAXIMUM_EMPTY_BLOCKS</code>）未満であれば、再利用のためにリストへ移動する。</li>
+<li>上限を超えている場合は、<code>free()</code> を呼び出してメモリを解放し、コンテキストの <code>mem_allocated</code> を減算する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの <code>free_p</code> 関数ポインタとして登録されている。</li>
+<li>**呼び出し先**:</li>
+<li><code>SlabBlockIsValid</code> (マクロ/関数)</li>
+<li><code>SlabBlocklistIndex</code></li>
+<li><code>dlist_delete_from</code> / <code>dlist_push_head</code></li>
+<li><code>dclist_push_head</code> / <code>dclist_count</code></li>
+<li><code>SlabFindNextBlockListIndex</code></li>
+<li><code>free()</code> (標準ライブラリ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SlabContext</code>: SLAB アロケータのメイン構造体。</li>
+<li><code>SlabBlock</code>: メモリブロックの管理構造体。</li>
+<li><code>MemoryChunk</code>: チャンクヘッダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**二重解放**: <code>MEMORY_CONTEXT_CHECKING</code> 有効時、既に解放済みのチャンクに対して <code>elog(ERROR)</code> を発生させる。</li>
+<li>**境界外書き込み**: <code>MEMORY_CONTEXT_CHECKING</code> 有効時、チャンク末尾のセンチネル値が破壊されている場合に <code>elog(WARNING)</code> を発生させる。</li>
+<li>**メモリ解放**: <code>emptyblocks</code> が上限に達している場合、ブロック単位で <code>free()</code> が実行される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SlabAlloc</code> と対になる。<code>SlabRealloc</code> はサポートされていないため、本関数は固定サイズの解放のみを想定している。</li>
+<li><code>CLOBBER_FREED_MEMORY</code> が定義されている場合、解放されたメモリ領域はデバッグ用に上書きされる。</li>
+<li><code>curBlocklistIndex</code> の更新ロジックは、常に最も埋まっているブロックを優先的に使用するという SLAB の最適化方針を維持するために重要である。</li>
+</ul></body></html>

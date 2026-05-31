@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpython/plpy_main.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/plpython/plpy_main.c</h1>
+<h2>概要</h2>
+<p>PL/Python 言語ハンドラのメインエントリポイントです。PostgreSQL と Python インタプリタの橋渡しを行い、関数のバリデーション、実行ハンドラ、および匿名コードブロック（<code>DO</code> 文）の実行を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>plpy_main.c</code> は PL/Python モジュールの中心的な制御層です。他のファイル（<code>plpy_exec.c</code> や <code>plpy_procedure.c</code> など）が提供する具体的な実行ロジックや手続き管理機能を呼び出し、PostgreSQL の関数呼び出し規約（<code>PG_FUNCTION_INFO_V1</code>）に従って統合します。</p>
+<h2>責務</h2>
+<ul>
+<li>**初期化管理**: Python インタプリタの起動と、セッション内での複数バージョン競合の検出。</li>
+<li>**実行コンテキストの管理**: ネストされた Python 呼び出しを追跡するためのスタック管理（<code>PLyExecutionContext</code>）。</li>
+<li>**ハンドラ提供**: 関数呼び出し、トリガー実行、および <code>DO</code> ブロック実行の各エントリポイントの提供。</li>
+<li>**エラー報告**: PostgreSQL のエラースタックに Python 実行時のコンテキスト情報を付与するコールバックの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>plpython3_call_handler</code>: SQL 関数実行時のメインエントリポイント。</li>
+<li><code>PLy_initialize</code>: Python インタプリタの初回起動と環境設定を行う内部関数。</li>
+<li><code>PLyExecutionContext</code>: 実行中の手続きやメモリコンテキストを保持するスタック構造体。</li>
+<li><code>PLy_push_execution_context</code> / <code>PLy_pop_execution_context</code>: 実行コンテキストのスタック操作関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLy_current_execution_context</code></li>
+<li><code>PLy_get_scratch_context</code></li>
+<li><code>PLy_init_interp</code></li>
+<li><code>PLy_procedure_is_trigger</code></li>
+<li><code>plpython3_inline_handler</code></li>
+<li><code>plpython3_validator</code></li>
+<li><code>plpython_error_callback</code></li>
+<li><code>plpython_inline_error_callback</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> でプロセスレベルの競合チェックを行い、<code>PLy_initialize</code> で Python インタプリタを初期化します。 2. **呼び出し**: <code>plpython3_call_handler</code> が呼ばれると、<code>SPI_connect_ext</code> で SPI を確立し、<code>PLy_push_execution_context</code> で新しいコンテキストをスタックに積みます。 3. **実行**: <code>PG_TRY</code> ブロック内で <code>PLy_procedure_get</code> により手続きをロードし、<code>PLy_exec_function</code> または <code>PLy_exec_trigger</code> を実行します。 4. **終了**: <code>PG_CATCH</code> または正常終了時に <code>PLy_pop_execution_context</code> を呼び出し、コンテキストを破棄してメモリを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型とマクロ。</li>
+<li><code>plpy_main.h</code>: 実行コンテキスト構造体とグローバル変数の定義。</li>
+<li><code>plpy_exec.h</code>, <code>plpy_procedure.h</code>: 実行ロジックおよび手続きキャッシュの管理。</li>
+<li><code>executor/spi.h</code>: PostgreSQL の SPI（Server Programming Interface）機能。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>plpy_elog.h</code></li>
+<li><code>plpy_plpymodule.h</code></li>
+<li><code>plpy_subxactobject.h</code></li>
+<li><code>plpy_util.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>plpy_plpymodule.c</code>: Python 側から PostgreSQL 機能を利用するための <code>plpy</code> モジュールの実装。</li>
+<li><code>plpy_exec.c</code>: Python コードの実際の実行と結果変換。</li>
+<li><code>plpy_procedure.c</code>: 手続きのコンパイルとキャッシュ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PLyExecutionContext</code> は <code>TopTransactionContext</code> または <code>PortalContext</code> を使用して割り当てられます。<code>scratch_ctx</code> は必要に応じて遅延生成されるため、メモリリークを防ぐために <code>PLy_pop_execution_context</code> での削除が必須です。</li>
+<li>**競合検出**: <code>plpython_version_bitmask</code> を用いたチェックは、同一セッション内で異なる Python バージョンが混在することによるクラッシュを防ぐための重要な安全装置です。</li>
+<li>**設計上の注意**: <code>SPI_finish()</code> が <code>plpy_exec.c</code> 側で呼ばれる設計となっており、ハンドラ側との責務分担がやや複雑である点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_initialize.html" target="wiki-view"><code>PLy_initialize</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_init_interp.html" target="wiki-view"><code>PLy_init_interp</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__plpython3_validator.html" target="wiki-view"><code>plpython3_validator</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__plpython3_call_handler.html" target="wiki-view"><code>plpython3_call_handler</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__plpython3_inline_handler.html" target="wiki-view"><code>plpython3_inline_handler</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_procedure_is_trigger.html" target="wiki-view"><code>PLy_procedure_is_trigger</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__plpython_error_callback.html" target="wiki-view"><code>plpython_error_callback</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__plpython_inline_error_callback.html" target="wiki-view"><code>plpython_inline_error_callback</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_current_execution_context.html" target="wiki-view"><code>PLy_current_execution_context</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_get_scratch_context.html" target="wiki-view"><code>PLy_get_scratch_context</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_push_execution_context.html" target="wiki-view"><code>PLy_push_execution_context</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_main_c__PLy_pop_execution_context.html" target="wiki-view"><code>PLy_pop_execution_context</code></a></li>
+</ul></body></html>

@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/nodes/nodeFuncs.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/nodes/nodeFuncs.c</h1>
+<h2>概要</h2>
+<p><code>nodeFuncs.c</code> は、PostgreSQL のクエリ解析およびプランニングフェーズにおいて、ノードツリー（式ツリーやプランツリー）に対する汎用的な操作を提供する中心的なモジュールです。ノードの型解決、属性（型・照合順序・位置）の取得・設定、およびツリーの再帰的な走査・変形を行うための基盤機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/nodes</code> サブシステムにおいて、ノードの構造を理解し、クエリツリーを横断的に操作するための「ユーティリティ層」として機能します。<code>copyfuncs.c</code> や <code>equalfuncs.c</code> がノードのコピーや比較という「静的」な操作を担うのに対し、本ファイルは「意味論的」な操作（型解決やツリーの変形）を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**式属性の解決**: 式ツリーの戻り値の型（<code>Oid</code>）、型修飾子（<code>typmod</code>）、照合順序（<code>collation</code>）の抽出と設定。</li>
+<li>**ツリー走査・変形**: <code>expression_tree_walker</code> / <code>mutator</code> を用いた、式ツリーの再帰的な探索およびノードの置換・修正。</li>
+<li>**構文解析支援**: エラー報告のための式位置（<code>location</code>）の特定や、暗黙的な型変換の除去。</li>
+<li>**プラン実行支援**: <code>fix_opfuncids</code> による演算子関数 ID の解決や、プラン状態（<code>PlanState</code>）ツリーの走査。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>属性解決ファミリー</h3>
+<ul>
+<li><code>exprType(Node*)</code>, <code>exprTypmod(Node*)</code>: 式の戻り値の型と修飾子を再帰的に解決。</li>
+<li><code>exprCollation(Node*)</code>, <code>exprSetCollation(Node*, Oid)</code>: 照合順序の取得と設定。</li>
+<li><code>exprLocation(Node*)</code>: エラー報告用に、式ツリー内の最も左にあるトークンの位置を特定。</li>
+</ul>
+<h3>ツリー走査・変形（Walker/Mutator）</h3>
+<ul>
+<li><code>expression_tree_walker_impl</code>: 式ツリーを読み取り専用で走査する汎用エンジン。</li>
+<li><code>expression_tree_mutator_impl</code>: 式ツリーを走査しつつ、ノードを置換・修正して新しいツリーを構築するエンジン。</li>
+<li><code>query_tree_walker</code> / <code>mutator</code>: <code>Query</code> ノードを起点として、ターゲットリストやジョインツリーを網羅的に走査・変形。</li>
+</ul>
+<h3>変換・最適化支援</h3>
+<ul>
+<li><code>applyRelabelType</code>: 式に <code>RelabelType</code> ノードを付与し、型や照合順序を強制的に変更。</li>
+<li><code>strip_implicit_coercions</code>: 解析時に挿入された暗黙的な型変換ノードを除去。</li>
+<li><code>fix_opfuncids</code>: ツリー内の全演算子ノードに対して、演算子 ID から関数 ID を解決してキャッシュ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_functions_in_node</code></li>
+<li><code>expression_returns_set</code></li>
+<li><code>expression_returns_set_walker</code></li>
+<li><code>expression_tree_walker_impl</code></li>
+<li><code>fix_opfuncids</code></li>
+<li><code>fix_opfuncids_walker</code></li>
+<li><code>query_tree_walker_impl</code></li>
+<li><code>range_table_walker_impl</code></li>
+<li><code>relabel_to_typmod</code></li>
+<li><code>set_opfuncid</code></li>
+<li><code>set_sa_opfuncid</code></li>
+<li><code>strip_implicit_coercions</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**走査フロー**: <code>expression_tree_walker</code> は、ノードのタグ（<code>nodeTag</code>）に基づいて <code>switch</code> 文で分岐し、子ノード（<code>List</code> や <code>Expr</code>）に対して再帰的に自身を呼び出します。</li>
+<li>**変形フロー**: <code>expression_tree_mutator</code> は、ノードのコピーを作成（<code>FLATCOPY</code>）し、その子ノードに対して再帰的に <code>mutator</code> を適用することで、元のツリーを破壊せずに新しいツリーを構築します。</li>
+<li>**スタック保護**: 再帰的なツリー操作が深くなりすぎないよう、各走査関数内で <code>check_stack_depth()</code> を呼び出し、スタックオーバーフローを防止しています。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/execnodes.h</code>, <code>nodes/pathnodes.h</code>: プランおよび実行時ノードの定義。</li>
+<li><code>catalog/pg_type.h</code>, <code>catalog/pg_collation.h</code>: 型および照合順序の OID 定義。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス（演算子関数 ID の取得など）。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/nodes/copyfuncs.c</code>: ノードのディープコピー実装。</li>
+<li><code>src/backend/nodes/equalfuncs.c</code>: ノードの等価性比較実装。</li>
+<li><code>src/backend/nodes/makefuncs.c</code>: ノード生成用コンストラクタ。</li>
+<li><code>src/backend/nodes/outfuncs.c</code>: ノードのシリアライズ（デバッグ出力）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>mutator</code> は新しいノードを <code>palloc</code> で割り当てます。呼び出し元は、返されたツリーのメモリコンテキストが適切であることを確認する必要があります。</li>
+<li>**不変性**: <code>walker</code> はツリーを読み取るだけですが、<code>mutator</code> は新しいノードを生成するため、元のツリーを保持したい場合は <code>mutator</code> の結果を適切に管理してください。</li>
+<li>**網羅性**: 新しいノード型を <code>nodes/nodes.h</code> に追加した場合は、本ファイルの <code>walker</code> および <code>mutator</code> の <code>switch</code> 文にも必ずケースを追加する必要があります。追加漏れは <code>elog(ERROR)</code> で検出されます。</li>
+<li>**省略箇所**: <code>raw_expression_tree_walker</code> は、解析前の生のパースツリーを扱うための特殊な走査器であり、主に CTE の解析などで使用されます。通常のプランニング用走査とは対象ノードが異なる点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__relabel_to_typmod.html" target="wiki-view"><code>relabel_to_typmod</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__strip_implicit_coercions.html" target="wiki-view"><code>strip_implicit_coercions</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__expression_returns_set.html" target="wiki-view"><code>expression_returns_set</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__expression_returns_set_walker.html" target="wiki-view"><code>expression_returns_set_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__fix_opfuncids.html" target="wiki-view"><code>fix_opfuncids</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__fix_opfuncids_walker.html" target="wiki-view"><code>fix_opfuncids_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__set_opfuncid.html" target="wiki-view"><code>set_opfuncid</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__set_sa_opfuncid.html" target="wiki-view"><code>set_sa_opfuncid</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__check_functions_in_node.html" target="wiki-view"><code>check_functions_in_node</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__expression_tree_walker_impl.html" target="wiki-view"><code>expression_tree_walker_impl</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__query_tree_walker_impl.html" target="wiki-view"><code>query_tree_walker_impl</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__nodeFuncs_c__range_table_walker_impl.html" target="wiki-view"><code>range_table_walker_impl</code></a></li>
+</ul></body></html>

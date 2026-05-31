@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__tablespace_c__DropTableSpace.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DropTableSpace</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/tablespace.c:394</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたテーブルスペースをシステムから削除し、関連する物理ディレクトリおよびメタデータを破棄します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void DropTableSpace(DropTableSpaceStmt *stmt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>DropTableSpaceStmt *stmt</code>（削除対象のテーブルスペース名および <code>missing_ok</code> フラグを含む構造体）</li>
+<li>**出力**: なし（成功時はカタログ更新および物理削除を実行、失敗時はエラーをスロー）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は <code>pg_tablespace</code> カタログに対する <code>RowExclusiveLock</code> を保持している必要があります。</li>
+<li>実行ユーザーは対象テーブルスペースの所有者である必要があります。</li>
+<li>標準のテーブルスペース（<code>IsPinnedObject</code> が真のもの）は削除できません。</li>
+<li>依存オブジェクトが存在する場合、削除は拒否されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_tablespace</code> カタログから対象の OID を検索します。存在しない場合、<code>missing_ok</code> に応じてエラーまたは通知を返します。 2. 所有権チェックおよび依存関係チェック（<code>checkSharedDependencies</code>）を実行します。 3. <code>CatalogTupleDelete</code> によりカタログからエントリを削除し、関連するコメント、セキュリティラベル、所有者依存関係を削除します。 4. <code>TablespaceCreateLock</code> を排他モードで取得し、物理ディレクトリの削除（<code>destroy_tablespace_directories</code>）を試みます。 5. 削除に失敗した場合、チェックポイントを強制実行し、プロセスシグナルバリアを使用してファイルハンドルを解放させた後、再試行します。それでも失敗した場合はエラーをスローします。 6. 削除操作を WAL（<code>XLOG_TBLSPC_DROP</code>）に記録し、同期コミットを強制してトランザクションを完了します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/tcop/utility.c</code>（SQL 解析後の DDL 実行時）</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>table_beginscan_catalog</code>, <code>heap_getnext</code>, <code>object_ownercheck</code>, <code>IsPinnedObject</code>, <code>checkSharedDependencies</code>, <code>InvokeObjectDropHook</code>, <code>CatalogTupleDelete</code>, <code>DeleteSharedComments</code>, <code>DeleteSharedSecurityLabel</code>, <code>deleteSharedDependencyRecordsFor</code>, <code>LWLockAcquire</code>, <code>destroy_tablespace_directories</code>, <code>RequestCheckpoint</code>, <code>LWLockRelease</code>, <code>WaitForProcSignalBarrier</code>, <code>EmitProcSignalBarrier</code>, <code>XLogBeginInsert</code>, <code>XLogRegisterData</code>, <code>XLogInsert</code>, <code>ForceSyncCommit</code>, <code>table_close</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DropTableSpaceStmt</code>: 削除対象の情報を保持する構文解析ツリー構造体。</li>
+<li><code>pg_tablespace</code>: テーブルスペース情報を管理するシステムカタログ。</li>
+<li><code>xl_tblspc_drop_rec</code>: WAL 記録用の構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**オブジェクト不在**: テーブルスペースが存在しない場合、<code>missing_ok</code> が偽ならエラー。</li>
+<li>**権限不足**: 所有者でない場合、またはシステム固定のテーブルスペースである場合にエラー。</li>
+<li>**依存関係**: 他のオブジェクトがテーブルスペースを使用している場合、エラー。</li>
+<li>**ディレクトリ削除失敗**: 物理ディレクトリが空でない（ファイルが残っている）場合、チェックポイントとバリアによる解放を試みるが、それでも空でなければエラー。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>TablespaceCreateLock</code> を使用して、データベース作成処理との競合を回避しています。</li>
+<li>Windows 環境ではファイルハンドルが残存しやすいため、<code>PROCSIGNAL_BARRIER_SMGRRELEASE</code> を用いた明示的な解放処理が含まれています。</li>
+<li>物理削除後の WAL 記録と同期コミットの順序は、クラッシュリカバリ時の整合性を保つために重要です。</li>
+</ul></body></html>

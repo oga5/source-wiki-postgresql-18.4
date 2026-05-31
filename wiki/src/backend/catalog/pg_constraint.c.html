@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_constraint.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_constraint.c</h1>
+<h2>概要</h2>
+<p><code>pg_constraint.c</code> は、PostgreSQL のシステムカタログ <code>pg_constraint</code> に対する操作を抽象化・提供するモジュールです。制約（CHECK, FOREIGN KEY, UNIQUE, PRIMARY KEY, EXCLUSION, NOT NULL）の作成、検索、更新、削除、および名前解決を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>catalog/</code> サブシステムの一部として、DDL（<code>ALTER TABLE</code>, <code>CREATE TABLE</code> 等）実行時に制約のメタデータを永続化し、依存関係を管理します。<code>pg_constraint.h</code> で定義されたスキーマに基づき、カタログタプルの物理的な読み書きと、システムキャッシュ（<code>SysCache</code>）を介した高速な検索機能を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**制約のライフサイクル管理**: 制約の新規作成（<code>CreateConstraintEntry</code>）、削除（<code>RemoveConstraintById</code>）、名前変更（<code>RenameConstraintById</code>）。</li>
+<li>**依存関係の構築**: 制約と対象リレーション、ドメイン、インデックス、演算子間の依存関係（<code>DEPENDENCY_AUTO</code>, <code>DEPENDENCY_NORMAL</code>）の記録。</li>
+<li>**名前解決と検証**: 制約名の重複チェック（<code>ConstraintNameIsUsed</code>）および自動生成（<code>ChooseConstraintName</code>）。</li>
+<li>**NOT NULL 制約の特殊処理**: NOT NULL 制約の継承調整（<code>AdjustNotNullInheritance</code>）や、列単位での検索・抽出。</li>
+<li>**外部キーのメタデータ抽出**: <code>DeconstructFkConstraintRow</code> による外部キー定義の分解と、演算子情報の取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>制約の作成・操作</h3>
+<ul>
+<li><code>CreateConstraintEntry</code>: 制約のカタログエントリを作成し、依存関係を記録するメイン関数。</li>
+<li><code>RemoveConstraintById</code>: 制約を削除し、関連する <code>pg_class</code> の <code>relchecks</code> カウントを更新する。</li>
+<li><code>RenameConstraintById</code>: 制約名を変更し、Post-Alter フックを呼び出す。</li>
+</ul>
+<h3>検索・名前解決</h3>
+<ul>
+<li><code>ConstraintNameIsUsed</code> / <code>ConstraintNameExists</code>: 指定された名前が既存の制約と衝突するかを判定。</li>
+<li><code>ChooseConstraintName</code>: 制約名が衝突しないよう、サフィックスを付与して一意な名前を生成。</li>
+<li><code>get_relation_constraint_oid</code> / <code>get_domain_constraint_oid</code>: 名前から制約の OID を取得。</li>
+</ul>
+<h3>NOT NULL 制約関連</h3>
+<ul>
+<li><code>findNotNullConstraintAttnum</code>: 指定列の NOT NULL 制約タプルを検索。</li>
+<li><code>extractNotNullColumn</code>: NOT NULL 制約の <code>conkey</code> から列番号を抽出。</li>
+<li><code>AdjustNotNullInheritance</code>: 継承関係にある NOT NULL 制約の整合性チェックと更新。</li>
+</ul>
+<h3>外部キー・機能的依存性</h3>
+<ul>
+<li><code>DeconstructFkConstraintRow</code>: 外部キーの <code>pg_constraint</code> タプルから列番号や演算子 OID を分解。</li>
+<li><code>check_functional_grouping</code>: 主キー制約を用いて、クエリのグループ化における関数的依存性を検証。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AdjustNotNullInheritance</code></li>
+<li><code>AlterConstraintNamespaces</code></li>
+<li><code>ChooseConstraintName</code></li>
+<li><code>ConstraintNameExists</code></li>
+<li><code>ConstraintNameIsUsed</code></li>
+<li><code>ConstraintSetParentConstraint</code></li>
+<li><code>CreateConstraintEntry</code></li>
+<li><code>DeconstructFkConstraintRow</code></li>
+<li><code>FindFKPeriodOpers</code></li>
+<li><code>RelationGetNotNullConstraints</code></li>
+<li><code>RemoveConstraintById</code></li>
+<li><code>RenameConstraintById</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成フロー**: <code>CreateConstraintEntry</code> が呼び出されると、C 配列を Postgres 配列（<code>ArrayType</code>）に変換し、<code>heap_form_tuple</code> でタプルを構築。<code>CatalogTupleInsert</code> で挿入後、<code>record_object_address_dependencies</code> を用いて <code>pg_depend</code> に依存関係を登録する。 2. **検索フロー**: <code>systable_beginscan</code> を使用し、<code>ConstraintRelidTypidNameIndexId</code> などのインデックス経由で効率的にタプルをスキャンする。 3. **NOT NULL 抽出**: <code>extractNotNullColumn</code> は <code>SysCacheGetAttrNotNull</code> を使用して <code>conkey</code> 属性を直接取得し、<code>DatumGetArrayTypeP</code> でデトーストして列番号を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_constraint.h</code>, <code>dependency.h</code>, <code>indexing.h</code>, <code>heap.h</code> 等（カタログ操作の基盤）。</li>
+<li><code>access/</code>: <code>htup_details.h</code>, <code>table.h</code>（タプル操作とテーブルアクセス）。</li>
+<li><code>utils/</code>: <code>syscache.h</code>, <code>lsyscache.h</code>, <code>rel.h</code>（キャッシュとリレーション情報）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/gist.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_constraint.h</code>: カタログのスキーマ定義。</li>
+<li><code>src/backend/catalog/dependency.c</code>: 依存関係の記録と削除のロジック。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: <code>ALTER TABLE</code> 等のコマンドから本モジュールが呼び出される。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>CreateConstraintEntry</code> 内で作成される <code>ObjectAddresses</code> リストは、処理終了後に <code>free_object_addresses</code> で解放されます。</li>
+<li>**ロック**: カタログ操作時は <code>RowExclusiveLock</code> を使用します。<code>ConstraintNameIsUsed</code> 等の検索関数は <code>AccessShareLock</code> を使用しますが、呼び出し側で適切なロック（通常は対象テーブルの排他ロック）を保持していることが前提です。</li>
+<li>**制約の継承**: <code>coninhcount</code> や <code>conislocal</code> は、パーティションテーブルや継承テーブルにおける制約のライフサイクルを制御する重要なフラグです。</li>
+<li>**省略された詳細**: 本ファイルはカタログ操作に特化しており、制約の「実行時検証（トリガーやインデックスの作成）」ロジックは <code>commands/</code> 以下の各ハンドラに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__CreateConstraintEntry.html" target="wiki-view"><code>CreateConstraintEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__ConstraintNameIsUsed.html" target="wiki-view"><code>ConstraintNameIsUsed</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__ConstraintNameExists.html" target="wiki-view"><code>ConstraintNameExists</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__ChooseConstraintName.html" target="wiki-view"><code>ChooseConstraintName</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__AdjustNotNullInheritance.html" target="wiki-view"><code>AdjustNotNullInheritance</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__RelationGetNotNullConstraints.html" target="wiki-view"><code>RelationGetNotNullConstraints</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__RemoveConstraintById.html" target="wiki-view"><code>RemoveConstraintById</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__RenameConstraintById.html" target="wiki-view"><code>RenameConstraintById</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__AlterConstraintNamespaces.html" target="wiki-view"><code>AlterConstraintNamespaces</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__ConstraintSetParentConstraint.html" target="wiki-view"><code>ConstraintSetParentConstraint</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__DeconstructFkConstraintRow.html" target="wiki-view"><code>DeconstructFkConstraintRow</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_constraint_c__FindFKPeriodOpers.html" target="wiki-view"><code>FindFKPeriodOpers</code></a></li>
+</ul></body></html>

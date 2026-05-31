@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-exec.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-exec.c</h1>
+<h2>概要</h2>
+<p><code>fe-exec.c</code> は、<code>libpq</code> におけるクエリ実行の心臓部です。アプリケーションからのクエリ送信（同期・非同期・パイプライン）、サーバーからの結果セット（<code>PGresult</code>）の構築、および結果データのメモリ管理を担います。<code>libpq</code> の中で最も複雑なメモリ管理ロジックと、プロトコル状態遷移の多くを包含しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> のクエリ実行層の中核であり、<code>fe-protocol3.c</code>（プロトコル解析）と <code>fe-misc.c</code>（低レベル I/O）の間に位置します。アプリケーションが <code>PQexec</code> や <code>PQsendQuery</code> を呼び出すと、このファイルがリクエストを構築し、プロトコル層を介して送信し、結果を <code>PGresult</code> 構造体に集約します。</p>
+<h2>責務</h2>
+<ul>
+<li>**PGresult 管理**: <code>PGresult</code> のライフサイクル管理、属性設定、および効率的なメモリ割り当て。</li>
+<li>**クエリ送信**: 同期 (<code>PQexec</code>) および非同期 (<code>PQsendQuery</code>) クエリ実行のディスパッチ。</li>
+<li>**パイプライン管理**: パイプラインモードにおけるコマンドキューの管理と同期ポイントの制御。</li>
+<li>**データ変換・エスケープ**: SQL インジェクションを防ぐためのリテラルおよび識別子のエスケープ処理。</li>
+<li>**COPY 制御**: <code>COPY</code> プロトコルにおけるデータ転送の抽象化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>PGresult ライフサイクルとメモリ管理</h3>
+<ul>
+<li><code>PQmakeEmptyPGresult</code>: <code>PGresult</code> の初期化。</li>
+<li><code>PQclear</code>: <code>PGresult</code> が保持する全リソース（イベント、データブロック、タプル配列）の解放。</li>
+<li><code>pqResultAlloc</code>: <code>PGresult</code> 内部のメモリブロック管理。断片化を防ぐため、大きなブロックを確保し、その中でオフセット管理を行う。</li>
+<li><code>PQsetvalue</code>: <code>PGresult</code> にタプルデータを追加する。</li>
+</ul>
+<h3>クエリ実行 API</h3>
+<ul>
+<li><code>PQexec</code> / <code>PQexecParams</code>: 同期実行のメインエントリ。</li>
+<li><code>PQsendQuery</code> / <code>PQsendQueryParams</code>: 非同期実行のエントリ。</li>
+<li><code>PQgetResult</code>: サーバーからの応答を解析し、<code>PGresult</code> を返す。</li>
+</ul>
+<h3>パイプライン・状態管理</h3>
+<ul>
+<li><code>pqPipelineProcessQueue</code>: パイプラインモードで次のクエリ処理を開始する。</li>
+<li><code>pqCommandQueueAdvance</code>: コマンドキューの進捗管理。</li>
+<li><code>pqRowProcessor</code>: サーバーから受信した行データを <code>PGresult</code> に格納する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQclear</code></li>
+<li><code>PQcopyResult</code></li>
+<li><code>PQmakeEmptyPGresult</code></li>
+<li><code>PQresultAlloc</code></li>
+<li><code>PQresultMemorySize</code></li>
+<li><code>PQsendPrepare</code></li>
+<li><code>PQsendQuery</code></li>
+<li><code>PQsendQueryContinue</code></li>
+<li><code>PQsendQueryParams</code></li>
+<li><code>PQsendQueryPrepared</code></li>
+<li><code>PQsetResultAttrs</code></li>
+<li><code>PQsetvalue</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **送信**: <code>PQsendQueryInternal</code> がコマンドを構築し、<code>pqPutMsgStart</code> 等でバッファへ書き込み、<code>pqFlush</code> でソケットへ送出します。 2. **受信**: <code>PQgetResult</code> が <code>parseInput</code> を呼び出し、<code>fe-protocol3.c</code> のパーサーを駆動します。 3. **結果構築**: パーサーが受信した行データに対し <code>pqRowProcessor</code> が呼ばれ、<code>pqResultAlloc</code> を介して <code>PGresult</code> 内のメモリブロックにデータがコピーされます。 4. **状態遷移**: <code>conn-&gt;asyncStatus</code> が <code>BUSY</code> から <code>READY</code> へ遷移することで、アプリケーションに結果の準備完了を通知します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-int.h</code>: 内部構造体（<code>PGconn</code>, <code>PGresult</code>）の定義。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の処理。</li>
+<li><code>common/int.h</code>: 整数オーバーフローチェック。</li>
+<li><code>postgres_fe.h</code>: クライアント用共通定義。</li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq-fe.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-protocol3.c</code>: プロトコル v3.0 のメッセージ解析ロジック。</li>
+<li><code>fe-misc.c</code>: ソケット I/O およびバッファ操作。</li>
+<li><code>fe-connect.c</code>: 接続状態の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PGresult</code> は個別の <code>malloc</code> を最小化するため、<code>PGRESULT_DATA_BLOCKSIZE</code> (2048バイト) 単位のブロック割り当てを行っています。このため、<code>PQclear</code> を呼び出さないとメモリリークが確実に発生します。</li>
+<li>**スレッド安全性**: <code>libpq</code> は接続単位でスレッドセーフですが、同一の <code>PGconn</code> を複数のスレッドから同時に操作することはできません。</li>
+<li>**浅い領域**: <code>PQescapeString</code> 等のエスケープ関数は、マルチバイト文字の検証を行いますが、エンコーディングの完全なバリデーションはサーバー側の責務であるという前提で実装されています。</li>
+<li>**パイプラインモード**: パイプラインモードは非常に複雑な状態遷移を伴うため、<code>pqCommandQueueAdvance</code> のロジックを理解する際は、<code>PGconn</code> の <code>asyncStatus</code> と <code>pipelineStatus</code> の組み合わせに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQmakeEmptyPGresult.html" target="wiki-view"><code>PQmakeEmptyPGresult</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsetResultAttrs.html" target="wiki-view"><code>PQsetResultAttrs</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQcopyResult.html" target="wiki-view"><code>PQcopyResult</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsetvalue.html" target="wiki-view"><code>PQsetvalue</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQresultAlloc.html" target="wiki-view"><code>PQresultAlloc</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQresultMemorySize.html" target="wiki-view"><code>PQresultMemorySize</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQclear.html" target="wiki-view"><code>PQclear</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsendQuery.html" target="wiki-view"><code>PQsendQuery</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsendQueryContinue.html" target="wiki-view"><code>PQsendQueryContinue</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsendQueryParams.html" target="wiki-view"><code>PQsendQueryParams</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsendPrepare.html" target="wiki-view"><code>PQsendPrepare</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-exec_c__PQsendQueryPrepared.html" target="wiki-view"><code>PQsendQueryPrepared</code></a></li>
+</ul></body></html>

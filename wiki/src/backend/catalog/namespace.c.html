@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/namespace.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/namespace.c</h1>
+<h2>概要</h2>
+<p><code>namespace.c</code> は、PostgreSQL におけるオブジェクトの名前解決と可視性（Visibility）を制御する中核モジュールです。<code>search_path</code> に基づく名前空間の探索順序の管理、一時テーブル（TEMP）用名前空間のライフサイクル管理、および各オブジェクト型（テーブル、型、関数、演算子等）が現在の検索パスで可視であるかの判定機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムの一部として、<code>pg_namespace</code> カタログを直接操作する <code>pg_namespace.c</code> とは異なり、本ファイルは「カタログ定義をどのように探索するか」という論理的な検索パスの抽象化を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**検索パス管理**: GUC <code>search_path</code> の解析、キャッシュ、およびセッションごとの有効な検索パスの再計算。</li>
+<li>**名前解決**: 非修飾名（Unqualified Name）からオブジェクト OID への変換。</li>
+<li>**可視性判定**: 指定された OID が現在の検索パスにおいて「最初に見つかるもの」であるかの判定。</li>
+<li>**一時名前空間管理**: セッションごとの <code>pg_temp_N</code> 名前空間の初期化、クリーンアップ、およびライフサイクル管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>検索パス状態管理</h3>
+<ul>
+<li><code>activeSearchPath</code>: 現在有効な名前空間 OID のリスト。</li>
+<li><code>activeCreationNamespace</code>: オブジェクト作成時のデフォルトターゲット名前空間。</li>
+<li><code>activePathGeneration</code>: 検索パスの変更を追跡するためのカウンタ。</li>
+<li><code>baseSearchPath</code>: <code>search_path</code> GUC から導出されたベースリスト。</li>
+</ul>
+<h3>一時名前空間</h3>
+<ul>
+<li><code>myTempNamespace</code>: 現在のセッションの一時テーブル用名前空間 OID。</li>
+<li><code>myTempToastNamespace</code>: 一時テーブルの TOAST 用名前空間 OID。</li>
+<li><code>AccessTempTableNamespace()</code>: 一時名前空間の遅延初期化を行う。</li>
+</ul>
+<h3>名前解決・可視性 API</h3>
+<ul>
+<li><code>RangeVarGetRelidExtended()</code>: <code>RangeVar</code> からリレーション OID を解決するメイン関数。</li>
+<li><code>RelnameGetRelid()</code>: 非修飾リレーション名の解決。</li>
+<li><code>*IsVisible()</code>: 各オブジェクト型（<code>RelationIsVisible</code>, <code>TypeIsVisible</code> 等）の可視性判定関数。</li>
+<li><code>FuncnameGetCandidates()</code>: 関数呼び出し時の候補リスト取得（オーバーロード解決用）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOSubXact_Namespace</code></li>
+<li><code>AtEOXact_Namespace</code></li>
+<li><code>InitTempTableNamespace</code></li>
+<li><code>InitializeSearchPath</code></li>
+<li><code>RangeVarAdjustRelationPersistence</code></li>
+<li><code>RangeVarGetAndCheckCreationNamespace</code></li>
+<li><code>RangeVarGetCreationNamespace</code></li>
+<li><code>RangeVarGetRelidExtended</code></li>
+<li><code>RelnameGetRelid</code></li>
+<li><code>ResetTempTableNamespace</code></li>
+<li><code>SearchPathCacheEntry</code></li>
+<li><code>SearchPathCacheKey</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **パス再計算**: <code>recomputeNamespacePath()</code> が <code>baseSearchPathValid</code> をチェックし、無効であれば <code>cachedNamespacePath()</code> を呼び出す。 2. **キャッシュ**: <code>SearchPathCache</code>（<code>simplehash</code>）を用いて、<code>search_path</code> 文字列と <code>roleid</code> の組み合わせから計算済みパスを高速に取得する。 3. **名前解決**: <code>RelnameGetRelid</code> 等は <code>activeSearchPath</code> をイテレートし、各名前空間で <code>get_relname_relid</code> 等のカタログ検索を実行する。 4. **無効化**: <code>InvalidationCallback</code> が <code>SysCache</code> の変更を検知し、<code>baseSearchPathValid</code> を <code>false</code> に設定することで、次回の検索時にパスの再計算を強制する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/syscache.h</code>: カタログ検索の高速化。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化通知の受信。</li>
+<li><code>storage/lmgr.h</code>: 名前解決時のロック管理。</li>
+<li><code>lib/simplehash.h</code>: 検索パスキャッシュの実装。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_conversion.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_ts_parser.h</code></li>
+<li><code>catalog/pg_ts_template.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>common/hashfn_unstable.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pg_namespace.c</code>: <code>pg_namespace</code> カタログそのものの操作。</li>
+<li><code>aclchk.c</code>: 名前空間に対する <code>USAGE</code> や <code>CREATE</code> 権限の検証。</li>
+<li><code>commands/dbcommands.c</code>: データベースレベルの操作と名前空間の関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 検索パス関連のリストは <code>TopMemoryContext</code> に保持されます。</li>
+<li>**一時テーブルの特殊性**: <code>pg_temp</code> は検索パスの先頭に暗黙的に挿入されますが、これはセッションごとに動的に生成されるため、<code>AccessTempTableNamespace</code> による遅延初期化が重要です。</li>
+<li>**並列処理**: 並列ワーカーはリーダーの <code>myTempNamespace</code> を引き継ぎます（<code>SetTempNamespaceState</code>）。</li>
+<li>**パフォーマンス**: <code>recomputeNamespacePath</code> は頻繁に呼ばれるため、<code>activePathGeneration</code> による変更検知と <code>SearchPathCache</code> による計算結果の再利用が最適化の鍵となっています。</li>
+<li>**省略された詳細**: 本ファイルは非常に多くのオブジェクト型（TSParser, TSDictionary 等）の可視性判定を含みますが、これらはすべて <code>*IsVisibleExt</code> パターンに従う定型的な実装であるため、個別のロジックは省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__SearchPathCacheKey.html" target="wiki-view"><code>SearchPathCacheKey</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__SearchPathCacheEntry.html" target="wiki-view"><code>SearchPathCacheEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetRelidExtended.html" target="wiki-view"><code>RangeVarGetRelidExtended</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetCreationNamespace.html" target="wiki-view"><code>RangeVarGetCreationNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetAndCheckCreationNamespace.html" target="wiki-view"><code>RangeVarGetAndCheckCreationNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarAdjustRelationPersistence.html" target="wiki-view"><code>RangeVarAdjustRelationPersistence</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RelnameGetRelid.html" target="wiki-view"><code>RelnameGetRelid</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__InitTempTableNamespace.html" target="wiki-view"><code>InitTempTableNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__AtEOXact_Namespace.html" target="wiki-view"><code>AtEOXact_Namespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__AtEOSubXact_Namespace.html" target="wiki-view"><code>AtEOSubXact_Namespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__ResetTempTableNamespace.html" target="wiki-view"><code>ResetTempTableNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__InitializeSearchPath.html" target="wiki-view"><code>InitializeSearchPath</code></a></li>
+</ul></body></html>

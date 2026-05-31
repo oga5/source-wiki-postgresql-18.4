@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/parallel.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/parallel.c</h1>
+<h2>概要</h2>
+<p><code>parallel.c</code> は、PostgreSQL の並列クエリ実行基盤を支えるバックエンド側のインフラストラクチャです。リーダープロセスがワーカープロセスを起動・管理し、共有メモリを介してトランザクション状態やスナップショットなどのコンテキストを同期するための仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールの一部として、トランザクション管理と密接に連携します。並列実行される各ワーカーが、リーダーと同じトランザクション環境（スナップショット、GUC、ユーザー権限など）を再現できるようにし、実行結果やエラーをリーダーに伝播させる役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**並列コンテキストの管理**: <code>ParallelContext</code> の作成、破棄、およびライフサイクル管理。</li>
+<li>**共有メモリの初期化**: 動的共有メモリ（DSM）を用いた、ワーカー間での状態共有領域の構築。</li>
+<li>**ワーカーの起動と同期**: バックグラウンドワーカーの登録、起動、および終了待ち合わせ。</li>
+<li>**メッセージ伝播**: ワーカーからリーダーへのエラー、通知、進捗状況の転送。</li>
+<li>**状態の復元**: ワーカー起動時に、リーダーのトランザクション状態やセッション情報をワーカー側で再構築。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行の単位を管理する構造体。</li>
+<li><code>FixedParallelState</code>: ワーカーがリーダーから継承すべき固定サイズの共有状態（ユーザーID、トランザクションタイムスタンプ等）。</li>
+<li><code>LaunchParallelWorkers()</code>: ワーカープロセスを実際に起動する関数。</li>
+<li><code>ParallelWorkerMain()</code>: ワーカープロセスのエントリポイント。</li>
+<li><code>ProcessParallelMessages()</code>: ワーカーから送られてきたメッセージ（エラー等）をリーダーが処理する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOSubXact_Parallel</code></li>
+<li><code>AtEOXact_Parallel</code></li>
+<li><code>CreateParallelContext</code></li>
+<li><code>InitializeParallelDSM</code></li>
+<li><code>LaunchParallelWorkers</code></li>
+<li><code>ReinitializeParallelDSM</code></li>
+<li><code>ReinitializeParallelWorkers</code></li>
+<li><code>WaitForParallelWorkersToAttach</code></li>
+<li><code>WaitForParallelWorkersToExit</code></li>
+<li><code>WaitForParallelWorkersToFinish</code></li>
+<li><code>parallel_worker_main_type</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: リーダーが <code>CreateParallelContext</code> でコンテキストを作成し、<code>InitializeParallelDSM</code> で共有メモリに状態を書き込む。 2. **起動**: <code>LaunchParallelWorkers</code> がバックグラウンドワーカーを登録。 3. **ワーカー実行**: <code>ParallelWorkerMain</code> が起動し、共有メモリから状態を読み込み、自身のメモリ空間をリーダーと同期させる。 4. **通信**: ワーカーは <code>shm_mq</code>（共有メモリキュー）を通じてエラーや通知を送信。リーダーは <code>CHECK_FOR_INTERRUPTS</code> 経由で <code>ProcessParallelMessages</code> を呼び出し、これらを回収する。 5. **終了**: リーダーが <code>WaitForParallelWorkersToFinish</code> でワーカーの完了を待ち、<code>DestroyParallelContext</code> でリソースを解放する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/ipc.h</code>, <code>storage/dsm.h</code>: 共有メモリ管理。</li>
+<li><code>libpq/pqmq.h</code>: 共有メモリベースのメッセージキュー。</li>
+<li><code>access/xact.h</code>, <code>access/xlog.h</code>: トランザクションおよび WAL 管理。</li>
+<li><code>utils/snapmgr.h</code>: スナップショットのシリアライズと復元。</li>
+<li><code>pgstat.h</code>: 進捗状況の報告。</li>
+<li><code>access/brin.h</code></li>
+<li><code>access/gin.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/session.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>executor/execParallel.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/combocid.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/parallel.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/executor/execParallel.c</code>: クエリ実行層での並列処理の実装。</li>
+<li><code>src/backend/storage/ipc/shm_mq.c</code>: メッセージキューの低レイヤー実装。</li>
+<li><code>src/backend/postmaster/bgworker.c</code>: バックグラウンドワーカーの起動・管理基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「リーダーの環境をワーカーにコピーする」という複雑なシリアライズ処理が中心です。特に <code>InitializeParallelDSM</code> 内の各 <code>Serialize</code> 関数群は、並列化対象の機能が増えるたびに拡張される箇所です。</li>
+<li>ワーカーがエラーを報告する際は、<code>shm_mq</code> を介して <code>ErrorResponse</code> を送ります。リーダー側で <code>ProcessParallelMessages</code> が呼ばれないとエラーが伝播しないため、リーダーは定期的なチェックを怠らない必要があります。</li>
+<li><code>EXEC_BACKEND</code> ビルド（Windows等）では関数ポインタを直接渡せないため、<code>LookupParallelWorkerFunction</code> を介して名前ベースでエントリポイントを解決する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__FixedParallelState.html" target="wiki-view"><code>FixedParallelState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__parallel_worker_main_type.html" target="wiki-view"><code>parallel_worker_main_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__CreateParallelContext.html" target="wiki-view"><code>CreateParallelContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__InitializeParallelDSM.html" target="wiki-view"><code>InitializeParallelDSM</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__ReinitializeParallelDSM.html" target="wiki-view"><code>ReinitializeParallelDSM</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__ReinitializeParallelWorkers.html" target="wiki-view"><code>ReinitializeParallelWorkers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__LaunchParallelWorkers.html" target="wiki-view"><code>LaunchParallelWorkers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__WaitForParallelWorkersToAttach.html" target="wiki-view"><code>WaitForParallelWorkersToAttach</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__WaitForParallelWorkersToFinish.html" target="wiki-view"><code>WaitForParallelWorkersToFinish</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__WaitForParallelWorkersToExit.html" target="wiki-view"><code>WaitForParallelWorkersToExit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__AtEOSubXact_Parallel.html" target="wiki-view"><code>AtEOSubXact_Parallel</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__parallel_c__AtEOXact_Parallel.html" target="wiki-view"><code>AtEOXact_Parallel</code></a></li>
+</ul></body></html>

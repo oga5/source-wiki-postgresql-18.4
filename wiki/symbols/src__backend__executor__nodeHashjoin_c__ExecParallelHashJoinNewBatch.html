@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeHashjoin_c__ExecParallelHashJoinNewBatch.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecParallelHashJoinNewBatch</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeHashjoin.c:1270</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ハッシュ結合において、未処理のバッチを検索し、必要に応じてハッシュテーブルの構築やロードを行い、プローブ可能な状態へ遷移させる。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>static bool ExecParallelHashJoinNewBatch(HashJoinState *hjstate)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>HashJoinState *hjstate</code>（結合状態を保持する構造体）</li>
+<li>**出力**: <code>bool</code>（新しいバッチの準備が完了し、プローブを開始できる場合は <code>true</code>、すべてのバッチが処理済みであれば <code>false</code>）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>hjstate-&gt;hj_HashTable</code> が有効であること。</li>
+<li>並列実行環境下で呼び出されること。</li>
+<li>デッドロック回避のため、<code>PHJ_BATCH_PROBE</code> フェーズではバリア待機を行わないこと。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **バッチの切り替え**: 現在のバッチがあれば完了状態にし、デタッチする。 2. **バッチの選択**: <code>parallel_state-&gt;distributor</code> を用いて、参加プロセス間で負荷分散するように開始バッチ番号を決定する。</p>
+<ul>
+<li><code>BarrierAttach</code> によりバッチのフェーズを判定し、以下の処理を行う。</li>
+<li><code>PHJ_BATCH_ELECT</code>: 1つのバックエンドがハッシュテーブルを割り当てる。</li>
+<li><code>PHJ_BATCH_ALLOCATE</code>: 割り当て完了を待機する。</li>
+<li><code>PHJ_BATCH_LOAD</code>: 共有タプルストアからタプルを読み込み、ハッシュテーブルへ挿入する。</li>
+<li><code>PHJ_BATCH_PROBE</code>: プローブフェーズへ移行し、<code>true</code> を返して呼び出し元へ制御を戻す。</li>
+<li><code>PHJ_BATCH_SCAN</code>: 完了済みとしてマークし、デタッチする。</li>
+<li><code>PHJ_BATCH_FREE</code>: メモリ解放等の後処理を行い、デタッチする。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHashjoin.c</code> 内の並列実行ロジック（<code>ExecParallelHashJoin</code> 等から間接的に参照される）。</li>
+<li>**呼び出し先**: <code>ExecHashTableDetachBatch</code>, <code>BarrierAttach</code>, <code>BarrierArriveAndWait</code>, <code>ExecParallelHashTableAlloc</code>, <code>ExecParallelHashTableSetCurrentBatch</code>, <code>sts_begin_parallel_scan</code>, <code>sts_parallel_scan_next</code>, <code>ExecForceStoreMinimalTuple</code>, <code>ExecParallelHashTableInsertCurrentBatch</code>, <code>sts_end_parallel_scan</code>, <code>BarrierDetach</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HashJoinState</code>: 結合ノードの状態管理。</li>
+<li><code>HashJoinTable</code>: ハッシュテーブルの共有状態。</li>
+<li><code>Barrier</code>: 並列処理の同期用バリア。</li>
+<li><code>SharedTuplestoreAccessor</code>: 共有メモリ上のタプルストアへのアクセス用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>未定義のバッチフェーズに遭遇した場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>すべてのバッチが処理済みの場合、<code>false</code> を返して終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は並列実行時のデッドロック回避のため、<code>PHJ_BATCH_PROBE</code> フェーズでバリア待機を行わない設計となっている。</li>
+</ul></body></html>

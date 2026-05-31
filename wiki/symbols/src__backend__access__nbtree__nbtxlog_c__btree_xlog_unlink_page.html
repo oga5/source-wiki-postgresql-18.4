@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_unlink_page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>btree_xlog_unlink_page</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtxlog.c:801</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスにおけるページ削除（unlink）操作の WAL リプレイを実行し、物理的なページ構造の再構築とリンクの修正を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void btree_xlog_unlink_page(uint8 info, XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>info</code>: WAL レコードのサブタイプ（メタページ更新の有無を判定）。</li>
+<li><code>record</code>: リプレイ対象の WAL レコードデータ。</li>
+<li>出力: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>xl_btree_unlink_page</code> 構造体に含まれる <code>leftsib</code>、<code>rightsib</code>、<code>level</code> 等の情報が有効であること。</li>
+<li>ページ削除の対象がリーフページ（<code>level == 0</code>）またはレベル1の場合、<code>leaftopparent</code> は無効であること。</li>
+<li>ページロックは <code>leftsib</code> -&gt; <code>target</code> -&gt; <code>rightsib</code> の順序で取得されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **左兄弟のリンク修正**: <code>leftsib</code> が存在する場合、その <code>btpo_next</code> を <code>rightsib</code> に更新する。 2. **ターゲットページの初期化**: ターゲットページを空の削除済みページとして再初期化し、<code>btpo_prev</code>/<code>next</code> を設定して削除フラグ（<code>safexid</code>）を付与する。 3. **右兄弟のリンク修正**: <code>rightbuf</code> の <code>btpo_prev</code> を <code>leftsib</code> に更新する。 4. **兄弟ページのロック解放**: 修正完了後、<code>leftbuf</code> および <code>rightbuf</code> を解放する。 5. **親ページの更新（オプション）**: WAL レコードにブロック参照（ID: 3）が含まれる場合、削除されたサブツリーの親ページを再構築し、ダミーのハイキー（<code>leaftopparent</code> を含む）を追加する。 6. **メタページ更新**: <code>info</code> が <code>XLOG_BTREE_UNLINK_PAGE_META</code> の場合、<code>_bt_restore_meta</code> を呼び出してメタページを更新する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>btree_redo</code>（<code>src/backend/access/nbtree/nbtxlog.c</code> 内でディスパッチされる）。</li>
+<li>**呼び出し先**: </li>
+<li><code>XLogRecGetData</code>, <code>XLogReadBufferForRedo</code>, <code>XLogInitBufferForRedo</code>, <code>XLogRecHasBlockRef</code></li>
+<li><code>_bt_pageinit</code>, <code>_bt_restore_meta</code></li>
+<li><code>BufferGetPage</code>, <code>BTPageGetOpaque</code>, <code>BTPageSetDeleted</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code></li>
+<li><code>PageAddItem</code>, <code>BTreeTupleSetTopParent</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_btree_unlink_page</code>: WAL レコードのデータ構造。</li>
+<li><code>BTPageOpaque</code>: B-tree ページヘッダーのメタデータ。</li>
+<li><code>Buffer</code>: PostgreSQL のバッファ管理構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が失敗した場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、そのバッファに対する更新はスキップされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリ時の物理的なページ状態復元に特化している。</li>
+<li>ページロックの順序はデッドロック回避のため厳密に守る必要がある。</li>
+<li><code>leaftopparent</code> を含むダミーハイキーの追加は、削除対象がリーフページそのものではなく、その親ページである場合にのみ発生する。</li>
+</ul></body></html>

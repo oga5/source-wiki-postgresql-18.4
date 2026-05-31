@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/setrefs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/setrefs.c</h1>
+<h2>概要</h2>
+<p><code>setrefs.c</code> は、プランナの最終フェーズを担当するモジュールです。論理的なプランツリーを、実行エンジン（Executor）が直接解釈可能な物理的な形式へ変換します。このファイルは、プランニングの「後処理」の核心であり、変数参照の解決、演算子の関数解決、プラン依存関係の追跡などを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムにおいて、<code>createplan.c</code> が <code>Path</code> から <code>Plan</code> ノードを生成した直後に呼び出されます。プランツリー全体を走査し、実行時に必要なメタデータを付与・正規化することで、プランナからエグゼキュータへの橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**参照解決**: <code>Var</code> ノードの <code>varno</code> を、フラット化されたレンジテーブル（<code>finalrtable</code>）上のインデックスへ書き換える。</li>
+<li>**プランの正規化**: 不要な <code>SubqueryScan</code> や <code>Append</code> ノードの削除、<code>AlternativeSubPlan</code> の最適化。</li>
+<li>**依存関係の追跡**: プランが依存するリレーション、関数、ドメインを抽出し、プランキャッシュの無効化メカニズム（<code>PlanInvalItem</code>）を構築する。</li>
+<li>**演算子解決**: <code>OpExpr</code> 等の演算子に対し、実行時に呼び出す関数（<code>regproc</code>）を特定する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プラン変換・走査</h3>
+<ul>
+<li><code>set_plan_references</code>: 本ファイルのメインエントリーポイント。プランツリー全体を再帰的に走査し、参照解決と最適化を行う。</li>
+<li><code>set_plan_refs</code>: 各プランノードの型に応じた具体的な変換処理をディスパッチする。</li>
+<li><code>fix_scan_expr</code> / <code>fix_join_expr</code> / <code>fix_upper_expr</code>: 式ツリー内の <code>Var</code> を、スキャン、結合、上位ノードの出力形式に合わせて書き換えるためのミューテータ群。</li>
+</ul>
+<h3>データ構造とインデックス</h3>
+<ul>
+<li><code>indexed_tlist</code>: ターゲットリストを高速検索するためのインデックス構造体。<code>build_tlist_index</code> で生成される。</li>
+<li><code>tlist_vinfo</code>: <code>indexed_tlist</code> 内で <code>Var</code> の位置情報を保持する。</li>
+<li><code>NullingRelsMatch</code>: 外部結合等で発生する <code>varnullingrels</code> の一致条件（完全一致、サブセット、スーパーセット）を定義する列挙型。</li>
+</ul>
+<h3>依存関係管理</h3>
+<ul>
+<li><code>record_plan_function_dependency</code>: 特定の関数への依存を <code>PlannerGlobal</code> に記録する。</li>
+<li><code>extract_query_dependencies</code>: プランニング前のクエリから依存関係を抽出するユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>NullingRelsMatch</code></li>
+<li><code>add_rtes_to_flat_rtable</code></li>
+<li><code>fix_join_expr_context</code></li>
+<li><code>fix_scan_expr_context</code></li>
+<li><code>fix_upper_expr_context</code></li>
+<li><code>fix_windowagg_cond_context</code></li>
+<li><code>flatten_rtes_walker</code></li>
+<li><code>flatten_rtes_walker_context</code></li>
+<li><code>flatten_unplanned_rtes</code></li>
+<li><code>indexed_tlist</code></li>
+<li><code>set_plan_references</code></li>
+<li><code>tlist_vinfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>set_plan_references</code> が呼び出され、<code>add_rtes_to_flat_rtable</code> によりクエリ内の全レンジテーブルエントリをフラット化する。 2. **再帰的変換**: <code>set_plan_refs</code> がプランツリーをトップダウンで走査。</p>
+<ul>
+<li>各ノードの <code>targetlist</code> や <code>qual</code> は、<code>fix_scan_expr</code> 等のミューテータを介して、現在のプランレベルのコンテキスト（<code>rtoffset</code>）に合わせて書き換えられる。</li>
+<li>結合ノードでは <code>fix_join_expr</code> が <code>outer_itlist</code> / <code>inner_itlist</code> を使用して <code>Var</code> を <code>OUTER_VAR</code> / <code>INNER_VAR</code> に変換する。</li>
+<p>3. **最適化**: <code>trivial_subqueryscan</code> 等の判定により、不要なノードを <code>clean_up_removed_plan_level</code> で除去する。 4. **最終化**: 依存関係（<code>relationOids</code>, <code>invalItems</code>）が <code>PlannerGlobal</code> に集約され、実行可能な <code>PlannedStmt</code> の準備が整う。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: 式ツリーの走査・変異（<code>expression_tree_mutator</code> 等）。</li>
+<li><code>optimizer/planmain.h</code>, <code>optimizer/planner.h</code>: プランニングのコンテキスト情報。</li>
+<li><code>utils/syscache.h</code>: 関数や型の依存関係解決のためのシステムキャッシュアクセス。</li>
+<li><code>access/transam.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>tcop/utility.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>createplan.c</code>: <code>setrefs.c</code> の直前に実行される、プラン生成の主要ファイル。</li>
+<li><code>plancache.c</code>: 本モジュールが生成した依存関係リスト（<code>invalItems</code>）を利用して、プランの無効化を管理する。</li>
+<li><code>subselect.c</code>: サブクエリのプランニングに関連するロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>set_plan_references</code> はプランノードをインプレースで修正しますが、式ツリー（<code>targetlist</code> 等）は <code>expression_tree_mutator</code> を用いてコピー・修正されます。これはプランノードが単一の参照であることを前提としています。</li>
+<li>**インデックスのオフセット**: <code>rtoffset</code> は、サブクエリのレンジテーブルをフラットなレンジテーブルにマージする際に、インデックスの衝突を避けるために使用されます。</li>
+<li>**省略された詳細**: <code>fix_scan_expr_walker</code> 等の補助関数は、特定の式ノードに対する詳細な走査ロジックを含みますが、基本的には <code>expression_tree_walker</code> のラッパーです。</li>
+<li>**注意点**: <code>AlternativeSubPlan</code> の解決は、プランの実行回数（<code>num_exec</code>）の推定値に基づいて行われます。この推定はヒューリスティックであり、厳密なコスト計算ではないことに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__NullingRelsMatch.html" target="wiki-view"><code>NullingRelsMatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__tlist_vinfo.html" target="wiki-view"><code>tlist_vinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__indexed_tlist.html" target="wiki-view"><code>indexed_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__fix_scan_expr_context.html" target="wiki-view"><code>fix_scan_expr_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__fix_join_expr_context.html" target="wiki-view"><code>fix_join_expr_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__fix_upper_expr_context.html" target="wiki-view"><code>fix_upper_expr_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__fix_windowagg_cond_context.html" target="wiki-view"><code>fix_windowagg_cond_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__flatten_rtes_walker_context.html" target="wiki-view"><code>flatten_rtes_walker_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__set_plan_references.html" target="wiki-view"><code>set_plan_references</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__add_rtes_to_flat_rtable.html" target="wiki-view"><code>add_rtes_to_flat_rtable</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__flatten_unplanned_rtes.html" target="wiki-view"><code>flatten_unplanned_rtes</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__setrefs_c__flatten_rtes_walker.html" target="wiki-view"><code>flatten_rtes_walker</code></a></li>
+</ul></body></html>

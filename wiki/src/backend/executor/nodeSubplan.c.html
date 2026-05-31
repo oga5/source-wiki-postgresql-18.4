@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeSubplan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeSubplan.c</h1>
+<h2>概要</h2>
+<p>式の中に埋め込まれたサブクエリ（SubPlan）を実行するための実行エンジンモジュールです。SQLの <code>IN</code>, <code>EXISTS</code>, <code>ANY</code>, <code>ALL</code>, <code>ARRAY</code> などのサブリンクを処理し、クエリ実行時の式評価の一部としてサブクエリの結果を算出します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムにおいて、式評価（<code>execExpr.c</code> 等）とプランノード実行（<code>node*.c</code>）の橋渡しをします。式評価中にサブクエリが必要になった際、その実行戦略（ハッシュ化または逐次スキャン）を決定し、結果を返します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SubPlanの実行**: <code>ExecSubPlan</code> を通じて、通常のサブクエリを評価する。</li>
+<li>**InitPlanの管理**: クエリ実行中に一度だけ評価されるべきサブクエリ（InitPlan）の遅延評価と再計算（<code>ExecSetParamPlan</code>）を制御する。</li>
+<li>**ハッシュ化戦略**: <code>ANY</code> サブリンク等で、サブクエリ結果をメモリ上のハッシュテーブルに保持し、高速なルックアップを実現する。</li>
+<li>**結果の型変換**: サブクエリの出力を、式評価に必要なデータ型（<code>Datum</code>）や配列形式に変換する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecSubPlan</code>: サブクエリ実行のメインエントリポイント。</li>
+<li><code>ExecInitSubPlan</code>: <code>SubPlanState</code> を初期化し、実行に必要なメモリコンテキストや投影（Projection）情報を構築する。</li>
+<li><code>ExecHashSubPlan</code>: ハッシュテーブルを用いてサブクエリ結果を照合する。</li>
+<li><code>ExecScanSubPlan</code>: ハッシュ化できない場合に、サブクエリを毎回スキャンして評価する。</li>
+<li><code>ExecSetParamPlan</code>: InitPlanの出力を評価し、親プランのパラメータへ値をセットする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecReScanSetParamPlan</code></li>
+<li><code>ExecSetParamPlanMulti</code></li>
+<li><code>buildSubPlanHash</code></li>
+<li><code>execTuplesUnequal</code></li>
+<li><code>findPartialMatch</code></li>
+<li><code>slotAllNulls</code></li>
+<li><code>slotNoNulls</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitSubPlan</code> がプラン実行開始時に呼ばれ、ハッシュテーブル用メモリや投影情報を準備する。 2. **実行**:</p>
+<ul>
+<li><code>ExecSubPlan</code> が呼ばれると、<code>useHashTable</code> フラグに基づき <code>ExecHashSubPlan</code> または <code>ExecScanSubPlan</code> へ分岐する。</li>
+<li><code>ExecHashSubPlan</code> は、初回実行時に <code>buildSubPlanHash</code> を呼び出し、サブクエリ結果をハッシュテーブルにロードする。</li>
+<li><code>ExecScanSubPlan</code> は、サブクエリのプランノードを <code>ExecProcNode</code> で反復実行し、結果を結合（OR/AND等）する。</li>
+<p>3. **パラメータ更新**: InitPlanの場合、<code>ExecSetParamPlan</code> が必要に応じて呼ばれ、<code>EState</code> 内の <code>ParamExecData</code> を更新する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/executor.h</code>: 実行エンジンの基本構造体（<code>EState</code>, <code>PlanState</code> 等）。</li>
+<li><code>nodes/makefuncs.h</code>, <code>nodes/nodeFuncs.h</code>: ノード操作用ユーティリティ。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeSubplan.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/executor/execExprInterp.c</code>: 式評価の実行エンジン。</li>
+<li><code>src/backend/executor/nodeHash.c</code>: ハッシュ結合等のハッシュ処理ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**InitPlan vs Regular SubPlan**: InitPlanはクエリ実行中に一度だけ評価される（またはパラメータ変更時に再評価される）もので、<code>setParam</code> リストを持つ点が特徴です。</li>
+<li>**メモリ管理**: サブクエリの実行は、式評価のコンテキスト（<code>econtext</code>）や、InitPlan用の永続的なメモリコンテキストを切り替えながら行われます。<code>MemoryContextSwitchTo</code> の呼び出し箇所に注意してください。</li>
+<li>**ハッシュテーブルの分離**: <code>ANY</code> サブリンクにおいて、NULLを含む行と含まない行でハッシュテーブルを分けることで、SQLの三値論理（TRUE/FALSE/UNKNOWN）を正しく処理しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecSubPlan.html" target="wiki-view"><code>ExecSubPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecHashSubPlan.html" target="wiki-view"><code>ExecHashSubPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecScanSubPlan.html" target="wiki-view"><code>ExecScanSubPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__buildSubPlanHash.html" target="wiki-view"><code>buildSubPlanHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__execTuplesUnequal.html" target="wiki-view"><code>execTuplesUnequal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__findPartialMatch.html" target="wiki-view"><code>findPartialMatch</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__slotAllNulls.html" target="wiki-view"><code>slotAllNulls</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__slotNoNulls.html" target="wiki-view"><code>slotNoNulls</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecInitSubPlan.html" target="wiki-view"><code>ExecInitSubPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecSetParamPlan.html" target="wiki-view"><code>ExecSetParamPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecSetParamPlanMulti.html" target="wiki-view"><code>ExecSetParamPlanMulti</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSubplan_c__ExecReScanSetParamPlan.html" target="wiki-view"><code>ExecReScanSetParamPlan</code></a></li>
+</ul></body></html>

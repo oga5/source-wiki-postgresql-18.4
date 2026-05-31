@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__interfaces__libpq__fe-auth_c__pg_SSPI_continue.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_SSPI_continue</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/interfaces/libpq/fe-auth.c:225</code></li>
+</ul>
+<h2>目的</h2>
+<p>SSPI（Security Support Provider Interface）認証プロトコルの継続処理を実行し、サーバーからの認証トークンを処理して、必要に応じて応答を返します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int pg_SSPI_continue(PGconn *conn, int payloadlen)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: 接続状態を保持する <code>PGconn</code> 構造体。</li>
+<li><code>payloadlen</code>: サーバーから受信した認証ペイロードのバイト数。</li>
+<li>**出力**:</li>
+<li><code>STATUS_OK</code> (0): 処理が正常に完了した場合。</li>
+<li><code>STATUS_ERROR</code> (-1): メモリ確保失敗、SSPIエラー、または通信エラーが発生した場合。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conn-&gt;sspictx</code> が <code>NULL</code> の場合は初回実行とみなされ、コンテキストの初期化が行われます。</li>
+<li><code>payloadlen</code> は、サーバーからのメッセージ全体が既に <code>conn</code> の入力バッファに存在していることを前提としています。</li>
+<li>認証が完了すると <code>conn-&gt;client_finished_auth</code> が <code>true</code> に設定されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **入力バッファの準備**: 初回実行時以外は、<code>payloadlen</code> 分のメモリを確保し、<code>pqGetnchar</code> でサーバーからのトークンを読み込みます。 2. **SSPIコンテキストの更新**: <code>InitializeSecurityContext</code> を呼び出し、SSPI認証状態を更新します。 3. **コンテキストの保存**: 初回実行時は、生成された <code>newContext</code> を <code>conn-&gt;sspictx</code> にコピーして保持します。 4. **応答の送信**: SSPIが生成した出力バッファ（<code>outbuf</code>）にデータがある場合、<code>pqPacketSend</code> を使用して <code>PqMsg_GSSResponse</code> としてサーバーへ送信します。 5. **終了判定**: SSPIの戻り値が <code>SEC_E_OK</code> であれば、認証完了フラグを立てます。 6. **クリーンアップ**: 使用した一時バッファを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/interfaces/libpq/fe-auth.c</code> 内の認証フロー制御ロジックから呼び出されます。</li>
+<li>**呼び出し先**:</li>
+<li><code>InitializeSecurityContext</code> (Windows SSPI API)</li>
+<li><code>pqGetnchar</code>, <code>pqPacketSend</code>, <code>libpq_append_conn_error</code> (libpq 内部関数)</li>
+<li><code>malloc</code>, <code>free</code>, <code>memcpy</code> (標準ライブラリ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: 接続情報および認証状態（<code>sspictx</code>, <code>sspicred</code>, <code>sspitarget</code> 等）を保持。</li>
+<li><code>SecBufferDesc</code>, <code>SecBuffer</code>: SSPIで使用されるバッファ構造体。</li>
+<li><code>CtxtHandle</code>: SSPIのセキュリティコンテキストハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>malloc</code> が失敗した場合、エラーメッセージを記録して <code>STATUS_ERROR</code> を返します。</li>
+<li>**SSPIエラー**: <code>InitializeSecurityContext</code> が <code>SEC_E_OK</code> または <code>SEC_I_CONTINUE_NEEDED</code> 以外を返した場合、<code>pg_SSPI_error</code> を経由してエラーを報告します。</li>
+<li>**不正なバッファ数**: SSPIが期待しない数の出力バッファを返した場合、エラーとして処理されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はWindows環境のSSPI認証に特化しています。</li>
+<li><code>conn-&gt;sspictx</code> のメモリ管理は <code>freePGconn()</code> に依存しているため、本関数内ではコンテキストの初期化と更新のみに注力しています。</li>
+<li>認証完了後のデータ送信は、サーバーが期待している場合にのみ行われるよう制御されています。</li>
+</ul></body></html>

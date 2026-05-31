@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeHash.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeHash.c</h1>
+<h2>概要</h2>
+<p><code>nodeHash.c</code> は、PostgreSQL のハッシュ結合（Hash Join）におけるハッシュテーブルの構築および管理を担う実行ノードです。メモリ内でのハッシュテーブル作成、メモリ不足時のディスク退避（バッチ処理）、および並列クエリ実行時の共有ハッシュテーブル構築ロジックをカプセル化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、<code>Hash</code> ノードは <code>HashJoin</code> ノードの「内側（Inner）」の入力を処理し、結合のためのハッシュテーブルを生成する役割を持ちます。<code>nodeHashjoin.c</code> が結合の実行フローを制御するのに対し、本ファイルはハッシュテーブルの物理的なメモリレイアウトと、並列実行時の同期メカニズムに特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ハッシュテーブルのライフサイクル管理**: メモリコンテキストの作成・破棄、バッチ用一時ファイルの管理。</li>
+<li>**メモリ管理**: <code>work_mem</code> に基づくハッシュテーブルサイズの決定、メモリ不足時のバッチ数増加（再ハッシュ）、および <code>dense_alloc</code> による効率的なメモリ確保。</li>
+<li>**並列実行の調整**: <code>Barrier</code> を用いたワーカー間の同期、DSA（Dynamic Shared Area）を用いた共有ハッシュテーブルの構築。</li>
+<li>**最適化**: 頻出値（MCV）に対するスキュー最適化（Skew Optimization）の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ハッシュテーブル構築・操作</h3>
+<ul>
+<li><code>MultiExecHash</code>: ハッシュテーブル構築のメインエントリーポイント。並列/非並列を切り替える。</li>
+<li><code>ExecHashTableCreate</code>: ハッシュテーブルの制御構造体（<code>HashJoinTable</code>）を初期化し、メモリコンテキストを構築する。</li>
+<li><code>ExecHashTableInsert</code>: タプルをハッシュテーブルに挿入。メモリ不足時はバッチファイルへ退避。</li>
+<li><code>ExecParallelHashTableInsert</code>: 並列実行時に共有メモリへタプルを挿入。</li>
+</ul>
+<h3>メモリ・バッチ制御</h3>
+<ul>
+<li><code>ExecChooseHashTableSize</code>: 統計情報に基づき、最適なバケット数とバッチ数を算出する。</li>
+<li><code>ExecHashIncreaseNumBatches</code>: メモリ不足時にバッチ数を倍増させ、再ハッシュを行う。</li>
+<li><code>ExecHashIncreaseNumBuckets</code>: バケットのロードファクタを維持するためにバケット数を増やす。</li>
+</ul>
+<h3>並列実行同期</h3>
+<ul>
+<li><code>MultiExecParallelHash</code>: 並列ハッシュ構築のメインループ。<code>Barrier</code> を用いてワーカー間のフェーズを同期する。</li>
+<li><code>ExecParallelHashIncreaseNumBatches</code>: 並列環境でのバッチ数増加処理。</li>
+<li><code>ExecParallelHashTupleAlloc</code>: 共有メモリ（DSA）からタプル用領域を確保する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecHash</code></li>
+<li><code>ExecHashInitializeDSM</code></li>
+<li><code>ExecHashInitializeWorker</code></li>
+<li><code>ExecHashTableCreate</code></li>
+<li><code>ExecHashTableReset</code></li>
+<li><code>ExecHashTableResetMatchFlags</code></li>
+<li><code>ExecInitHash</code></li>
+<li><code>ExecParallelHashTableAlloc</code></li>
+<li><code>ExecParallelHashTupleAlloc</code></li>
+<li><code>MultiExecHash</code></li>
+<li><code>MultiExecParallelHash</code></li>
+<li><code>MultiExecPrivateHash</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitHash</code> でノード状態を構築。<code>ExecHashTableCreate</code> で <code>work_mem</code> に基づく初期サイズを決定。 2. **構築**: <code>MultiExecHash</code> が呼び出されると、<code>ExecProcNode</code> で子ノードからタプルをプルし、<code>ExecHashTableInsert</code> でハッシュテーブルへ格納。 3. **動的拡張**: メモリ制限に達すると <code>ExecHashIncreaseNumBatches</code> が呼ばれ、既存のタプルを再スキャンしてバッチファイルへ書き出すか、新しいバッチへ移動させる。 4. **並列実行**: <code>MultiExecParallelHash</code> が <code>Barrier</code> を使用して、構築フェーズ（<code>PHJ_BUILD_HASH_INNER</code>）から実行フェーズへの遷移を制御。ワーカーは <code>LWLock</code> を用いて共有メモリのチャンクを確保する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/dynahash.h</code>: ハッシュテーブルの基礎構造。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/parallel.h</code>: 並列クエリの同期プリミティブ。</li>
+<li><code>executor/hashjoin.h</code>: ハッシュ結合の共有データ構造定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_statistic.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeHash.h</code></li>
+<li><code>executor/nodeHashjoin.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeHashjoin.c</code>: ハッシュ結合の実行ロジック。本ノードで作成されたハッシュテーブルを消費する。</li>
+<li><code>src/backend/utils/hash/dynahash.c</code>: 汎用ハッシュテーブル実装。</li>
+<li><code>src/backend/storage/ipc/dsa.c</code>: 並列実行時の共有メモリ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>HashJoinTable</code> は <code>hashCxt</code> を持ち、その配下に <code>batchCxt</code>（バッチごとのメモリ）と <code>spillCxt</code>（ディスク退避用）を保持します。<code>ExecHashTableDestroy</code> はこれらを再帰的に解放します。</li>
+<li>**並列実行の複雑性**: 並列ハッシュ結合は、<code>Barrier</code> を用いたフェーズ管理が非常に複雑です。特に <code>PHJ_BUILD_HASH_INNER</code> フェーズでのワーカー間の競合解決や、バッチ数増加時の再パーティション処理は、デッドロックを避けるために厳密な順序で実装されています。</li>
+<li>**スキュー最適化**: <code>ExecHashBuildSkewHash</code> は、統計情報から頻出値を見つけ、それらをメインのハッシュテーブルとは別の領域で管理することで、ハッシュ衝突による性能劣化を防ぎます。</li>
+<li>**省略された詳細**: 本ファイル内の <code>dense_alloc</code> 関連のチャンク管理ロジックは、メモリ断片化を防ぐための最適化ですが、実装が非常に低レイヤーであるため、詳細なメモリレイアウトの理解には <code>HashMemoryChunk</code> 構造体の定義を併せて参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHash.html" target="wiki-view"><code>ExecHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__MultiExecHash.html" target="wiki-view"><code>MultiExecHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__MultiExecPrivateHash.html" target="wiki-view"><code>MultiExecPrivateHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__MultiExecParallelHash.html" target="wiki-view"><code>MultiExecParallelHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecInitHash.html" target="wiki-view"><code>ExecInitHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHashTableCreate.html" target="wiki-view"><code>ExecHashTableCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHashTableReset.html" target="wiki-view"><code>ExecHashTableReset</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHashTableResetMatchFlags.html" target="wiki-view"><code>ExecHashTableResetMatchFlags</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHashInitializeDSM.html" target="wiki-view"><code>ExecHashInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecHashInitializeWorker.html" target="wiki-view"><code>ExecHashInitializeWorker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecParallelHashTupleAlloc.html" target="wiki-view"><code>ExecParallelHashTupleAlloc</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHash_c__ExecParallelHashTableAlloc.html" target="wiki-view"><code>ExecParallelHashTableAlloc</code></a></li>
+</ul></body></html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-tzdir.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_TZDIR</h1>
+<h2>概念</h2>
+<p><code>pg_TZDIR</code> は、PostgreSQLがタイムゾーン定義ファイル（tzdb）を読み込む際に参照する、タイムゾーンデータベースのルートディレクトリパスを取得するための内部関数です。この関数は、ビルド時の設定や実行時のインストールパスに基づいて、適切なディレクトリパスを決定します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLがタイムゾーン依存の処理を正しく行うためには、正確なタイムゾーンデータベースへのアクセスが不可欠です。<code>pg_TZDIR</code> は、システム標準のタイムゾーンデータベースを使用するか、PostgreSQLに同梱されている独自のタイムゾーンデータを使用するかに応じて、適切なパスを動的または静的に提供します。これにより、異なる環境やインストール構成であっても、一貫してタイムゾーンデータにアクセスできるようになります。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたソースコードに基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/bin/initdb</code></li>
+<li><code>module:src/timezone</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/initdb/findtimezone.c#pg_TZDIR</code>**: <code>initdb</code> ユーティリティにおいて、初期化時に適切なタイムゾーンディレクトリパスを取得するために使用される <code>static</code> 関数。</li>
+<li>**<code>symbol:src/timezone/pgtz.c#pg_TZDIR</code>**: PostgreSQLサーバーのタイムゾーン処理モジュールにおいて、タイムゾーンファイルのオープン（<code>pg_open_tzfile</code> など）やディレクトリ走査の際に、タイムゾーンデータベースのパスを取得するために使用される <code>static</code> 関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **パスの決定**:</p>
+<ul>
+<li>コンパイル時に <code>SYSTEMTZDIR</code> マクロが定義されている場合、両方の <code>pg_TZDIR</code> 関数はシステム標準のタイムゾーンデータベースパスをそのまま返します。</li>
+<li><code>SYSTEMTZDIR</code> が定義されていない場合：</li>
+<li><code>src/bin/initdb/findtimezone.c</code> では、グローバル変数 <code>tzdirpath</code> の値を返します。</li>
+<li><code>src/timezone/pgtz.c</code> では、<code>get_share_path</code> を用いて実行ファイルの場所から共有ディレクトリパスを特定し、それに <code>/timezone</code> を連結したパスを構築して返します。このパスは静的変数 <code>tzdir</code> にキャッシュされ、2回目以降の呼び出しでは即座に返されます。</li>
+<p>2. **利用**:</p>
+<li><code>initdb</code> 実行時や、PostgreSQLサーバーの起動・動作時に、この関数が返すパスを基準としてタイムゾーンファイルが探索・読み込まれます。</li>
+</ul>
+<p>※なお、<code>initdb</code> 側での <code>tzdirpath</code> の初期化タイミングや、サーバー側と <code>initdb</code> 側での具体的な連携・同期といった詳細なエンドツーエンドの制御フロー全体は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>SYSTEMTZDIR</code> 優先の原則**: <code>SYSTEMTZDIR</code> マクロが定義されている環境では、実行時のパス探索（<code>get_share_path</code> や <code>tzdirpath</code> の参照）を行わず、ビルド時に指定されたシステムパスが最優先で返されます。</li>
+<li>**キャッシュの不変性（<code>src/timezone/pgtz.c</code>）**: <code>SYSTEMTZDIR</code> 未定義時のパス構築は初回呼び出し時に一度だけ行われ、以降の呼び出しでは常に同一のキャッシュされたパス（静的変数 <code>tzdir</code>）が返されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**パスの切り詰め**: <code>src/timezone/pgtz.c</code> の実装において、パスの構築に <code>strlcpy</code> が使用されており、構築されたパスの長さが <code>MAXPGPATH</code> を超える場合は、パス文字列が途中で切り詰められる可能性があります。</li>
+<li>**環境依存の存在性**: <code>pg_TZDIR</code> 関数自体は常に何らかのパス文字列ポインタを返しますが、その返されたパスが実際にファイルシステム上に存在するかどうかは、呼び出し側の環境やインストール状態に依存します。</li>
+<li>**重複定義と保守性**: 同名の <code>pg_TZDIR</code> 関数が <code>src/bin/initdb/findtimezone.c</code> と <code>src/timezone/pgtz.c</code> の両方に個別に定義されています。パス決定ロジックを変更する際は、両方のファイルを同期して修正する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/initdb/findtimezone.c</code> (特に <code>pg_TZDIR</code> の定義と <code>tzdirpath</code> の使われ方)</li>
+<li><code>src/timezone/pgtz.c</code> (特に <code>pg_TZDIR</code> の定義、<code>get_share_path</code> の呼び出し、および <code>pg_open_tzfile</code> での利用箇所)</li>
+</ul></body></html>

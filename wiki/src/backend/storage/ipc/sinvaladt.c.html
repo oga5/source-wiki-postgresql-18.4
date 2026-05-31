@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/sinvaladt.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/sinvaladt.c</h1>
+<h2>概要</h2>
+<p>共有キャッシュ無効化（Shared Cache Invalidation）メッセージを全バックエンド間で伝播させるための共有メモリ管理機構です。各バックエンドが保持するキャッシュ（リレーション定義など）の整合性を保つため、変更通知をキューイングし、各プロセスが個別に読み取る仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> において、プロセス間通信（IPC）のインフラとして機能します。<code>sinval.c</code> が無効化メッセージの送信・受信のインターフェースを提供するのに対し、本ファイルはそれらのメッセージを格納する共有メモリ上の循環バッファと、各バックエンドの読み取り進捗を管理するデータ構造を定義します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージキューの管理**: 共有メモリ上の循環バッファへのメッセージ挿入と、全バックエンドが読み終えた古いメッセージの削除（クリーンアップ）。</li>
+<li>**進捗追跡**: 各バックエンドが次に読み込むべきメッセージ番号（<code>nextMsgNum</code>）の保持。</li>
+<li>**遅延バックエンドの救済**: 処理が極端に遅れたバックエンドに対し、<code>PROCSIG_CATCHUP_INTERRUPT</code> を送信して強制的に追いつかせる、あるいはリセット（<code>resetState</code>）させる。</li>
+<li>**ローカルトランザクションIDの管理**: 仮想トランザクションID生成のためのローカルIDの永続化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SISeg</code>: 共有メモリ上のメイン構造体。循環バッファと全バックエンドの <code>ProcState</code> を保持。</li>
+<li><code>ProcState</code>: 各バックエンドの進捗状態（PID、次に読むべき番号、リセットフラグ等）。</li>
+<li><code>SIInsertDataEntries</code>: メッセージをキューに追加する。バッファ溢れ時にはクリーンアップを誘発。</li>
+<li><code>SIGetDataEntries</code>: 自プロセスの進捗に基づき、未読メッセージを抽出する。</li>
+<li><code>SICleanupQueue</code>: 全バックエンドの進捗をスキャンし、不要になった古いメッセージを解放する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CleanupInvalidationState</code></li>
+<li><code>GetNextLocalTransactionId</code></li>
+<li><code>SharedInvalBackendInit</code></li>
+<li><code>SharedInvalShmemInit</code></li>
+<li><code>SharedInvalShmemSize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入**: <code>SIInsertDataEntries</code> が <code>SInvalWriteLock</code> を取得し、バッファにメッセージを書き込みます。バッファが閾値を超えると <code>SICleanupQueue</code> を呼び出し、空き領域を確保します。 2. **読み取り**: <code>SIGetDataEntries</code> が <code>SInvalReadLock</code>（共有モード）を取得し、自身の <code>nextMsgNum</code> から <code>maxMsgNum</code> までのメッセージを読み取ります。 3. **クリーンアップ**: <code>SICleanupQueue</code> は全バックエンドの <code>nextMsgNum</code> を確認し、最小値（<code>minMsgNum</code>）を更新します。遅延しているプロセスにはシグナルを送り、回復不能な場合は <code>resetState</code> を立てて強制リセットを促します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>: 共有メモリの割り当て。</li>
+<li><code>storage/spin.h</code>: <code>maxMsgNum</code> へのアクセス保護（メモリバリア用）。</li>
+<li><code>storage/proc.h</code>, <code>storage/procsignal.h</code>: プロセス管理とシグナル送信。</li>
+<li><code>storage/sinvaladt.h</code>: 公開プロトタイプ定義。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/sinval.c</code>: 本モジュールの高レベルAPI。</li>
+<li><code>src/backend/storage/ipc/procarray.c</code>: プロセス管理の基盤。</li>
+<li><code>src/include/storage/sinval.h</code>: メッセージ構造体 <code>SharedInvalidationMessage</code> の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリバリア**: <code>maxMsgNum</code> の更新にはスピンロックを使用していますが、これは単なる排他制御ではなく、マルチプロセッサ環境でのメモリ順序付け（書き込み完了の保証）が主目的です。</li>
+<li>**ロックの挙動**: <code>SIGetDataEntries</code> は共有ロックを取得しますが、これは「読み取り専用」を意味しません。自身の <code>ProcState</code> を更新するため、他のバックエンドの <code>ProcState</code> と競合しない範囲で並列実行を許可する設計になっています。</li>
+<li>**リセット状態**: 処理が遅れすぎてバッファから溢れたバックエンドは <code>resetState</code> になります。この状態のバックエンドは、自身のキャッシュをすべて破棄して再構築する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__ProcState.html" target="wiki-view"><code>ProcState</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SISeg.html" target="wiki-view"><code>SISeg</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SharedInvalShmemSize.html" target="wiki-view"><code>SharedInvalShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SharedInvalShmemInit.html" target="wiki-view"><code>SharedInvalShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SharedInvalBackendInit.html" target="wiki-view"><code>SharedInvalBackendInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__CleanupInvalidationState.html" target="wiki-view"><code>CleanupInvalidationState</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SIInsertDataEntries.html" target="wiki-view"><code>SIInsertDataEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SIGetDataEntries.html" target="wiki-view"><code>SIGetDataEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__SICleanupQueue.html" target="wiki-view"><code>SICleanupQueue</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinvaladt_c__GetNextLocalTransactionId.html" target="wiki-view"><code>GetNextLocalTransactionId</code></a></li>
+</ul></body></html>

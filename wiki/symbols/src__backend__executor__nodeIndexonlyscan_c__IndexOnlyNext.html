@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeIndexonlyscan_c__IndexOnlyNext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>IndexOnlyNext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeIndexonlyscan.c:60</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックスのみスキャン（Index-Only Scan）のメインループとして、インデックスから次のタプルを抽出し、可視性判定を経て結果スロットへ格納する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>IndexOnlyScanState *node</code>（スキャンノードの状態管理構造体）</li>
+<li>**出力**: <code>TupleTableSlot *</code>（取得したタプルを保持するスロット、またはスキャン終了時は空のスロット）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>MVCCスナップショットのみをサポートする。</li>
+<li>非MVCCスナップショットでの実行や、<code>xs_heap_continue</code> が設定された状態での呼び出しはエラーとなる。</li>
+<li>インデックスの可視性判定において、可視性マップ（Visibility Map）のビットがクリアされている場合、ヒープへのアクセスが必要となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: スキャン記述子（<code>scandesc</code>）が未初期化の場合、<code>index_beginscan</code> で開始し、インデックススキャン用に設定する。 2. **反復処理**: <code>index_getnext_tid</code> を使用してインデックスからTIDを順次取得する。 3. **可視性チェック**: <code>VM_ALL_VISIBLE</code> を確認し、全トランザクションから可視であればヒープアクセスをスキップする。不可視の場合は <code>index_fetch_heap</code> を呼び出し、ヒープから可視性を確認する。 4. **データ格納**: インデックスまたはヒープから取得したデータを <code>TupleTableSlot</code> に格納する。 5. **再チェック**: インデックスが損失（lossy）である場合、<code>ExecQualAndReset</code> を用いてインデックス条件（quals）の再評価を行う。 6. **終了判定**: 取得したタプルが条件を満たさない場合は次のエントリへ進み、全エントリを走査し終えたら終了する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: ソースコード上での直接的な呼び出し元は明示されていないが、実行エンジン内のスキャンメソッドとして登録されている（<code>nodeIndexonlyscan.c:348</code>）。</li>
+<li>**呼び出し先**: <code>index_beginscan</code>, <code>index_rescan</code>, <code>index_getnext_tid</code>, <code>VM_ALL_VISIBLE</code>, <code>index_fetch_heap</code>, <code>ExecForceStoreHeapTuple</code>, <code>StoreIndexTuple</code>, <code>ExecQualAndReset</code>, <code>CHECK_FOR_INTERRUPTS</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexOnlyScanState</code>: スキャンノードの実行状態を保持。</li>
+<li><code>TupleTableSlot</code>: 抽出されたタプルを保持する。</li>
+<li><code>IndexScanDesc</code>: インデックススキャンの制御情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: 非MVCCスナップショット使用時や、<code>xs_heap_continue</code> が発生した際にエラーを投げる。</li>
+<li>**エラー**: データが返されない場合（<code>xs_hitup</code> も <code>xs_itup</code> も存在しない場合）にエラーを投げる。</li>
+<li>**エラー**: ORDER BY 句の再チェック（<code>xs_recheckorderby</code>）はサポート外のためエラーを投げる。</li>
+<li>**境界条件**: インデックスが損失（lossy）な場合、再チェックによりタプルがフィルタリングされる可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>可視性マップのチェックはロックを伴わないため、メモリバリアとインデックスのロック順序に依存した同期が行われている。</li>
+<li><code>StoreIndexTuple</code> は <code>cstring</code> 型などの変換を担うため、データ型の追加や変更時には注意が必要である。</li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/hash/hashinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/hash/hashinsert.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのハッシュインデックスにおける、単一または複数のインデックス行（タプル）の挿入処理を担うモジュールです。バケット内の空き容量管理、オーバーフローページの連鎖、および必要に応じたインデックスの拡張（スプリット）を制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/hash</code> サブシステムにおいて、インデックスの更新操作の入り口となります。<code>hash.c</code> から呼び出され、ハッシュインデックス特有のページ構造（バケットページとオーバーフローページ）を維持しながらデータを格納する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**挿入ロジックの実行**: 指定されたハッシュキーに基づき、適切なバケットページを特定してタプルを挿入する。</li>
+<li>**ページ管理**: ページ内に空きがない場合のオーバーフローページの割り当て、および不要なタプル（<code>LP_DEAD</code>）の削除による空間再利用。</li>
+<li>**インデックスの整合性**: 挿入後のタプル数に基づき、必要であれば <code>_hash_expandtable</code> を呼び出してハッシュテーブルの拡張をトリガーする。</li>
+<li>**WALログの記録**: 挿入操作の原子性を保証するためのXLOG記録。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>_hash_doinsert</code>: 挿入処理のメインエントリポイント。バケットの特定から挿入、必要に応じたスプリットまでを統括する。</li>
+<li><code>_hash_pgaddtup</code>: 特定のページにタプルを挿入する低レベル関数。ページ内のハッシュキー順序を維持する。</li>
+<li><code>_hash_vacuum_one_page</code>: ページ内の <code>LP_DEAD</code> フラグが立ったタプルを削除し、空き容量を確保する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_hash_get_indextuple_hashkey</code> でハッシュキーを計算し、メタページを読み込む。 2. **バケット特定**: <code>_hash_getbucketbuf_from_hashkey</code> で対象バケットをロック。スプリット中の場合は <code>_hash_finish_split</code> で完了を待機。 3. **挿入試行**:</p>
+<ul>
+<li>ページに空きがあれば <code>_hash_pgaddtup</code> を実行。</li>
+<li>空きがなければ <code>_hash_vacuum_one_page</code> でデッドタプルを掃除。</li>
+<li>それでも不足する場合はオーバーフローページへ移動、または <code>_hash_addovflpage</code> で新規作成。</li>
+<p>4. **コミット**: メタページを排他ロックし、タプル数を更新。WALを書き込み、ロックを解放。 5. **拡張**: 閾値を超えていれば <code>_hash_expandtable</code> を呼び出し、バケットを増やす。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>access/hash.h</code>: ハッシュインデックスの構造体定義と関数宣言。</li>
+<li><code>access/hash_xlog.h</code>: ハッシュインデックス専用のWALレコード定義。</li>
+<li><code>access/xloginsert.h</code>: WALログ挿入用インターフェース。</li>
+<li><code>storage/predicate.h</code>: シリアライザブル分離レベルの競合チェック。</li>
+<li><code>utils/rel.h</code>: リレーション情報の操作。</li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>hashpage.c</code>: ページレベルの操作（バッファ取得、初期化など）の基盤。</li>
+<li><code>hashovfl.c</code>: オーバーフローページの管理ロジック。</li>
+<li><code>hash.c</code>: インデックスの構築やスキャンなど、高レベルなインターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**順序の維持**: ハッシュインデックスの各ページ内はハッシュキー順にソートされている必要があります。<code>_hash_pgaddtup</code> はこの順序を維持するように設計されています。</li>
+<li>**デッドロック回避**: メタページとバケットページのロック順序には注意が必要です。本ファイルでは、バケットを先にロックし、メタページは更新時にのみ排他ロックを取得する設計になっています。</li>
+<li>**スプリットのトリガー**: <code>do_expand</code> の判定ロジックは、<code>hashm_ffactor</code>（fillfactor）に基づいています。この値が小さいほど、頻繁にスプリットが発生します。</li>
+</ul></body></html>

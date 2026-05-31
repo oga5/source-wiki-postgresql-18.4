@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/uuid.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/uuid.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける <code>uuid</code> 型のデータ型定義および関連する演算子、関数を実装するモジュールです。RFC 9562 に準拠した UUID の生成（v4, v7）や、型変換、比較、ソートサポートを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> ディレクトリにおいて、組み込みデータ型 <code>uuid</code> の実体として機能します。<code>uuid.h</code> で定義された <code>pg_uuid_t</code> 構造体を操作し、SQL レベルの関数と C 言語のロジックを橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換**: 文字列表現（<code>uuid_in</code>, <code>uuid_out</code>）およびバイナリ表現（<code>uuid_recv</code>, <code>uuid_send</code>）の相互変換。</li>
+<li>**比較演算**: B-tree インデックス等で使用される比較関数（<code>uuid_eq</code>, <code>uuid_lt</code> 等）の提供。</li>
+<li>**UUID 生成**: 乱数ベースの v4 および時刻ベースの v7 UUID の生成。</li>
+<li>**最適化**: ソート時のパフォーマンス向上のための <code>SortSupport</code> および <code>SkipSupport</code> の実装。</li>
+<li>**メタデータ抽出**: UUID からバージョンやタイムスタンプを抽出する機能。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_uuid_t</code>: UUID を保持する 16 バイトの構造体。</li>
+<li><code>uuid_in</code> / <code>uuid_out</code>: SQL 型と文字列間の入出力ハンドラ。</li>
+<li><code>gen_random_uuid</code>: v4 UUID を生成する SQL 関数。</li>
+<li><code>uuidv7</code>: 現在時刻に基づき v7 UUID を生成する SQL 関数。</li>
+<li><code>uuid_sortsupport</code>: ソート時の比較を高速化するためのフック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>string_to_uuid</code></li>
+<li><code>uuid_eq</code></li>
+<li><code>uuid_ge</code></li>
+<li><code>uuid_gt</code></li>
+<li><code>uuid_internal_cmp</code></li>
+<li><code>uuid_le</code></li>
+<li><code>uuid_lt</code></li>
+<li><code>uuid_recv</code></li>
+<li><code>uuid_send</code></li>
+<li><code>uuid_sortsupport_state</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**UUID 生成**: <code>get_real_time_ns_ascending()</code> で単調増加するナノ秒単位の時刻を取得し、<code>generate_uuidv7()</code> で RFC 9562 に基づくビット配置と乱数付与を行い、<code>pg_uuid_t</code> を構築します。</li>
+<li>**ソート**: <code>uuid_sortsupport</code> が呼び出されると、<code>uuid_abbrev_convert</code> を通じて UUID の先頭バイトを <code>Datum</code>（整数）に変換し、比較コストを削減します。</li>
+<li>**比較**: <code>uuid_internal_cmp</code> が <code>memcmp</code> を用いて 16 バイトのバイナリ比較を直接行います。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/uuid.h</code>: <code>pg_uuid_t</code> 定義およびマクロ。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用。</li>
+<li><code>lib/hyperloglog.h</code>: ソート時のカーディナリティ推定用。</li>
+<li><code>port/pg_bswap.h</code>: エンディアン変換用。</li>
+<li><code>utils/timestamp.h</code>: 時刻計算用。</li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/skipsupport.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/uuid.h</code>: 型定義のヘッダー。</li>
+<li><code>src/backend/utils/adt/timestamp.c</code>: タイムスタンプ操作の参照先。</li>
+<li><code>src/backend/access/nbtree/</code>: B-tree インデックスのソートサポートの利用側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**単調性**: <code>uuidv7</code> はシステム時刻に依存しますが、<code>get_real_time_ns_ascending</code> により同一トランザクション内や高頻度生成時でも単調増加が保証される設計になっています。</li>
+<li>**プラットフォーム依存**: <code>SUBMS_MINIMAL_STEP_BITS</code> は OS の時刻精度（macOS 等のマイクロ秒制限）を考慮して動的に調整されます。</li>
+<li>**ソート最適化**: <code>uuid_abbrev_convert</code> は <code>Datum</code> へのキャストを利用した高速化を行っていますが、リトルエンディアン環境ではバイトスワップが必要である点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_sortsupport_state.html" target="wiki-view"><code>uuid_sortsupport_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_in.html" target="wiki-view"><code>uuid_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_out.html" target="wiki-view"><code>uuid_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__string_to_uuid.html" target="wiki-view"><code>string_to_uuid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_recv.html" target="wiki-view"><code>uuid_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_send.html" target="wiki-view"><code>uuid_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_internal_cmp.html" target="wiki-view"><code>uuid_internal_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_lt.html" target="wiki-view"><code>uuid_lt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_le.html" target="wiki-view"><code>uuid_le</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_eq.html" target="wiki-view"><code>uuid_eq</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_ge.html" target="wiki-view"><code>uuid_ge</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__uuid_c__uuid_gt.html" target="wiki-view"><code>uuid_gt</code></a></li>
+</ul></body></html>

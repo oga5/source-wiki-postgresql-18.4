@@ -1,0 +1,131 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_shdepend.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_shdepend.c</h1>
+<h2>概要</h2>
+<p><code>pg_shdepend.c</code> は、データベースクラスタ全体で共有されるオブジェクト（ロール、テーブルスペース、データベースなど）と、それらに依存するオブジェクト間の関係を管理する <code>pg_shdepend</code> システムカタログの操作を担います。<code>pg_depend</code> がデータベースローカルな依存関係を扱うのに対し、本ファイルはクラスタ横断的な依存関係（特に所有権や権限）を追跡し、<code>DROP</code> や <code>REASSIGN OWNED</code> などの DDL 操作の整合性を保証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムの一部として、オブジェクトのライフサイクル管理における「共有依存関係」のレイヤーを提供します。<code>commands/</code> 以下の DDL ハンドラ（<code>dbcommands.c</code>, <code>tablecmds.c</code> 等）から呼び出され、オブジェクト削除時の連鎖チェックや、所有者変更時の依存関係更新を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**依存関係の記録**: オブジェクト間の共有依存関係（所有者、ACL、テーブルスペース等）の挿入・更新・削除。</li>
+<li>**削除整合性の検証**: オブジェクト削除時に、依存する共有オブジェクトが存在しないかを確認し、エラーメッセージを生成。</li>
+<li>**一括操作のサポート**: <code>DROP OWNED</code> や <code>REASSIGN OWNED</code> による、特定のロールに関連する全オブジェクトの特定と一括処理。</li>
+<li>**テンプレートデータベースの複製**: 新規データベース作成時に、テンプレートデータベースの共有依存関係をコピー。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>依存関係操作（パブリックAPI）</h3>
+<ul>
+<li><code>recordSharedDependencyOn</code>: 2つのオブジェクト間の共有依存関係を記録。</li>
+<li><code>recordDependencyOnOwner</code> / <code>recordDependencyOnTablespace</code>: 特定の属性（所有者、テーブルスペース）の依存関係を記録するラッパー。</li>
+<li><code>changeDependencyOnOwner</code> / <code>changeDependencyOnTablespace</code>: 属性変更に伴う依存関係の更新。</li>
+<li><code>updateAclDependencies</code> / <code>updateInitAclDependencies</code>: ACL 更新時の依存関係の同期。</li>
+</ul>
+<h3>削除・一括処理</h3>
+<ul>
+<li><code>checkSharedDependencies</code>: オブジェクト削除前に依存関係をチェックし、エラー詳細を生成。</li>
+<li><code>shdepDropOwned</code> / <code>shdepReassignOwned</code>: ロールに関連するオブジェクトの削除または所有者変更。</li>
+<li><code>dropDatabaseDependencies</code>: データベース削除時の関連レコードクリーンアップ。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>shdepAddDependency</code> / <code>shdepDropDependency</code>: <code>pg_shdepend</code> への低レベルな挿入・削除。</li>
+<li><code>shdepChangeDep</code>: 既存の依存関係を更新するワークホース。</li>
+<li><code>shdepLockAndCheckObject</code>: 依存先オブジェクトの存在確認とロック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ShDependObjectInfo</code></li>
+<li><code>SharedDependencyObjectType</code></li>
+<li><code>changeDependencyOnOwner</code></li>
+<li><code>getOidListDiff</code></li>
+<li><code>recordDependencyOnOwner</code></li>
+<li><code>recordSharedDependencyOn</code></li>
+<li><code>remoteDep</code></li>
+<li><code>shared_dependency_comparator</code></li>
+<li><code>shdepChangeDep</code></li>
+<li><code>shdepReassignOwned_InitAcl</code></li>
+<li><code>shdepReassignOwned_Owner</code></li>
+<li><code>updateInitAclDependencies</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL 実行時**: <code>recordSharedDependencyOn</code> 等が呼ばれ、<code>pg_shdepend</code> を <code>RowExclusiveLock</code> で開きます。 2. **更新フロー**: <code>shdepChangeDep</code> がインデックス（<code>SharedDependDependerIndexId</code>）を使用して既存レコードを検索し、存在すれば <code>CatalogTupleUpdate</code>、なければ <code>CatalogTupleInsert</code> を実行します。 3. **削除チェック**: <code>checkSharedDependencies</code> は <code>SharedDependReferenceIndexId</code> を使用して、削除対象オブジェクトを「参照している」レコードをスキャンします。見つかった依存オブジェクトは <code>ShDependObjectInfo</code> 構造体に格納され、<code>shared_dependency_comparator</code> でソートされた後、エラーメッセージとして整形されます。 4. **一括処理**: <code>shdepDropOwned</code> は、指定されたロールを参照する全レコードをスキャンし、<code>ObjectAddresses</code> リストに収集してから <code>performMultipleDeletions</code> で一括削除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_shdepend.h</code>: カタログ定義とインデックス定義。</li>
+<li><code>access/table.h</code> / <code>access/genam.h</code>: テーブルアクセスおよびインデックススキャン用。</li>
+<li><code>utils/syscache.h</code>: オブジェクトの存在確認用。</li>
+<li><code>commands/</code> 各種ヘッダ: <code>ALTER</code> や <code>DROP</code> 処理の呼び出し用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_conversion.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_default_acl.h</code></li>
+<li><code>catalog/pg_event_trigger.h</code></li>
+<li><code>catalog/pg_extension.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/alter.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>commands/schemacmds.h</code></li>
+<li><code>commands/subscriptioncmds.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_shdepend.h</code>: カタログスキーマ定義。</li>
+<li><code>src/backend/catalog/dependency.c</code>: ローカルな依存関係（<code>pg_depend</code>）の管理。</li>
+<li><code>src/backend/commands/dbcommands.c</code>: データベース削除時の依存関係処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>shdepReassignOwned</code> 等のループ処理では、メモリリークを防ぐために <code>AllocSetContextCreate</code> を使用してコンテキストを切り替えています。</li>
+<li>**ロック**: <code>pg_shdepend</code> への操作は常に適切なロック（<code>RowExclusiveLock</code> 等）を伴います。また、依存先オブジェクトの存在確認には <code>shdepLockAndCheckObject</code> を経由して同時削除を防いでいます。</li>
+<li>**制約**: <code>pg_shdepend</code> は「共有オブジェクト」への依存を記録するため、<code>dbid</code> が 0 のレコードはクラスタ全体で有効です。</li>
+<li>**未実装/浅い部分**: <code>remoteDep</code> の管理は単純なリスト構造で行われており、データベース数が多い場合のパフォーマンスは考慮されていません（現状の想定では十分と判断）。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__SharedDependencyObjectType.html" target="wiki-view"><code>SharedDependencyObjectType</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__ShDependObjectInfo.html" target="wiki-view"><code>ShDependObjectInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__recordSharedDependencyOn.html" target="wiki-view"><code>recordSharedDependencyOn</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__recordDependencyOnOwner.html" target="wiki-view"><code>recordDependencyOnOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepChangeDep.html" target="wiki-view"><code>shdepChangeDep</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__changeDependencyOnOwner.html" target="wiki-view"><code>changeDependencyOnOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__getOidListDiff.html" target="wiki-view"><code>getOidListDiff</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__updateInitAclDependencies.html" target="wiki-view"><code>updateInitAclDependencies</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__remoteDep.html" target="wiki-view"><code>remoteDep</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shared_dependency_comparator.html" target="wiki-view"><code>shared_dependency_comparator</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_Owner.html" target="wiki-view"><code>shdepReassignOwned_Owner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_InitAcl.html" target="wiki-view"><code>shdepReassignOwned_InitAcl</code></a></li>
+</ul></body></html>

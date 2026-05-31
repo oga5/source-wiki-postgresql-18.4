@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/ipc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/ipc.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのプロセス終了時におけるクリーンアップ処理を管理するモジュールです。名称は「IPC」ですが、実態はプロセス終了時のコールバック管理およびリソース解放のオーケストレーションを担っています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>storage/ipc</code> サブシステムの一部として、バックエンドプロセスやポストマスターが終了する際、共有メモリや低レベルリソースを安全に解放するためのフックを提供します。<code>proc_exit()</code> を中心とした終了シーケンスを制御し、システムの一貫性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**終了コールバックの管理**: プロセス終了時に実行すべき関数（<code>on_proc_exit</code>, <code>before_shmem_exit</code>, <code>on_shmem_exit</code>）の登録と実行。</li>
+<li>**終了シーケンスの制御**: 共有メモリのデタッチ、ロックの解放、動的共有メモリ（DSM）のシャットダウンを正しい順序で実行。</li>
+<li>**安全な終了の保証**: <code>atexit()</code> を利用したバックストップ機能により、直接 <code>exit()</code> が呼ばれた場合でもクリーンアップを強制。</li>
+<li>**エラー時の再帰防止**: コールバック実行中にエラーが発生しても無限ループに陥らないよう、実行前にリストからコールバックを削除する仕組みの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>proc_exit(int code)</code>: プロセス終了のメインエントリポイント。</li>
+<li><code>shmem_exit(int code)</code>: 共有メモリ関連のクリーンアップを実行する内部関数。</li>
+<li><code>before_shmem_exit</code> / <code>on_shmem_exit</code>: 終了処理のフェーズに応じたコールバック登録関数。</li>
+<li><code>proc_exit_inprogress</code> / <code>shmem_exit_inprogress</code>: 終了処理中であることを示すフラグ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ONEXIT</code></li>
+<li><code>atexit_callback</code></li>
+<li><code>cancel_before_shmem_exit</code></li>
+<li><code>check_on_shmem_exit_lists_are_empty</code></li>
+<li><code>on_exit_reset</code></li>
+<li><code>on_proc_exit</code></li>
+<li><code>proc_exit</code></li>
+<li><code>proc_exit_prepare</code></li>
+<li><code>shmem_exit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>proc_exit()</code> が呼ばれると、<code>proc_exit_prepare()</code> を通じて終了処理中フラグを立て、割り込みを無効化します。 2. **共有メモリ解放**: <code>shmem_exit()</code> が呼ばれ、以下の順序で処理されます。</p>
+<ul>
+<li><code>before_shmem_exit</code> リスト（高レベルなクリーンアップ）。</li>
+<li><code>dsm_backend_shutdown()</code>（動的共有メモリの解放）。</li>
+<li><code>on_shmem_exit</code> リスト（低レベルな共有メモリリソースの解放）。</li>
+<p>3. **プロセス終了**: 最後に <code>on_proc_exit</code> リストを実行し、<code>exit()</code> を呼び出します。 4. **バックストップ**: <code>atexit()</code> に登録された <code>atexit_callback()</code> が、意図しない <code>exit()</code> 呼び出し時にも同様のクリーンアップを保証します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/ipc.h</code>: 公開API定義。</li>
+<li><code>storage/dsm.h</code>: 動的共有メモリのシャットダウン用。</li>
+<li><code>storage/lwlock.h</code>: 終了前のロック解放用。</li>
+<li><code>miscadmin.h</code>: プロセス状態管理用。</li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/ipc.h</code>: 本ファイルのヘッダー。<code>PG_ENSURE_ERROR_CLEANUP</code> マクロなどが定義されており、エラーハンドリングと終了処理の連携に重要です。</li>
+<li><code>src/backend/storage/ipc/ipci.c</code>: 共有メモリの初期化を担当する対となるファイル。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「IPC」という名前ですが、プロセス間通信そのものよりも「プロセス終了時の後始末」に特化しています。</li>
+<li>コールバックはLIFO（後入れ先出し）で実行される設計です。</li>
+<li><code>on_exit_reset()</code> は、フォーク直後のバックエンドプロセスが親プロセスの終了処理を引き継がないようにするために不可欠です。</li>
+<li>コールバック内で <code>ereport(ERROR)</code> を投げると、そのコールバックは再実行されず、終了処理が継続されるようになっています。これは無限ループを防ぐための重要な設計です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__ONEXIT.html" target="wiki-view"><code>ONEXIT</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__proc_exit.html" target="wiki-view"><code>proc_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__proc_exit_prepare.html" target="wiki-view"><code>proc_exit_prepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__shmem_exit.html" target="wiki-view"><code>shmem_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__atexit_callback.html" target="wiki-view"><code>atexit_callback</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__on_proc_exit.html" target="wiki-view"><code>on_proc_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__before_shmem_exit.html" target="wiki-view"><code>before_shmem_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__on_shmem_exit.html" target="wiki-view"><code>on_shmem_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__cancel_before_shmem_exit.html" target="wiki-view"><code>cancel_before_shmem_exit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__on_exit_reset.html" target="wiki-view"><code>on_exit_reset</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__ipc_c__check_on_shmem_exit_lists_are_empty.html" target="wiki-view"><code>check_on_shmem_exit_lists_are_empty</code></a></li>
+</ul></body></html>

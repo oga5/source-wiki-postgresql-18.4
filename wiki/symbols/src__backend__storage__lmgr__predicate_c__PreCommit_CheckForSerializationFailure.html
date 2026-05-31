@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__predicate_c__PreCommit_CheckForSerializationFailure.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PreCommit_CheckForSerializationFailure</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/predicate.c:4702</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクションのコミット直前に、直列化可能スナップショット分離（SSI）の観点から競合を検証し、直列化不可能な依存関係（サイクル等）が存在する場合はトランザクションを失敗させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void PreCommit_CheckForSerializationFailure(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし（グローバル変数 <code>MySerializableXact</code> を参照）</li>
+<li>出力: なし（成功時は副作用として状態更新、失敗時は <code>ERROR</code> をスロー）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MySerializableXact</code> が <code>InvalidSerializableXact</code> でないこと。</li>
+<li>現在のトランザクション分離レベルが <code>SERIALIZABLE</code> であること（<code>IsolationIsSerializable()</code> のアサーション）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>SerializableXactHashLock</code> を排他モードで取得する。 2. 自トランザクションが既に <code>DOOMED</code> 状態であればエラーを発生させる。 3. 自トランザクションの <code>inConflicts</code> リストを走査し、未コミットかつ未 <code>DOOMED</code> な競合先（<code>nearConflict</code>）を特定する。 4. さらにその先の依存関係（<code>farConflict</code>）を辿り、サイクルを形成する可能性があるか確認する。 5. 競合先が準備済み（<code>prepared</code>）であれば、自トランザクションをエラー終了させる。 6. それ以外の場合、競合先のトランザクションに <code>SXACT_FLAG_DOOMED</code> を付与してロールバックを強制する。 7. 最後に、自トランザクションのコミット順序番号を更新し、<code>SXACT_FLAG_PREPARED</code> フラグを立ててロックを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/access/transam/xact.c</code>（<code>PreCommit_CheckForSerializationFailure()</code> として呼び出し）</li>
+<li>呼び出し先: <code>LWLockAcquire</code>, <code>LWLockRelease</code>, <code>ereport</code> 等の内部ユーティリティ。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SERIALIZABLEXACT</code>: 直列化可能トランザクションの状態管理構造体。</li>
+<li><code>RWConflictData</code>: トランザクション間の読み書き依存関係を保持する構造体。</li>
+<li><code>SerializableXactHashLock</code>: 共有メモリ上の直列化可能トランザクション情報を保護するロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ERRCODE_T_R_SERIALIZATION_FAILURE</code>: 読み書き依存関係により直列化が不可能と判断された場合に発生。</li>
+<li>準備済みトランザクションとの競合: 相手が準備済みの場合、自らがエラーを投げる必要がある。</li>
+<li>部分解放中: <code>SxactIsPartiallyReleased</code> が真の場合は <code>DOOMED</code> チェックをスキップする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はコミットの最終段階で実行されるため、ここでのエラーはトランザクションのロールバックを誘発する。</li>
+<li><code>SerializableXactHashLock</code> を保持したまま複雑なリスト走査を行うため、競合が多い環境ではパフォーマンスへの影響に注意が必要。</li>
+</ul></body></html>

@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/pg_backup_archiver.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/pg_backup_archiver.c</h1>
+<h2>概要</h2>
+<p><code>pg_backup_archiver.c</code> は、PostgreSQL の論理バックアップおよびリストア処理における「アーカイブエンジン」の中核です。ダンプ・リストアの実行状態を管理する <code>ArchiveHandle</code> を中心に、アーカイブ形式（Custom, Tar, Directory）の抽象化、TOC（Table of Contents）の管理、並列処理のオーケストレーション、およびデータベース接続のライフサイクルを制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_dump</code> サブシステムにおいて、このファイルは「高レベルな制御層」として機能します。具体的なデータ抽出（<code>pg_dump.c</code>）や、特定のアーカイブ形式への物理的な書き込み（<code>pg_backup_custom.c</code> 等）を抽象化し、一貫したインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**アーカイブ管理**: <code>ArchiveHandle</code> を通じたアーカイブのオープン、クローズ、および入出力の抽象化。</li>
+<li>**TOC 管理**: ダンプ対象オブジェクトのリスト（TOC）の構築、依存関係の解決、およびリストア順序の制御。</li>
+<li>**並列リストア**: <code>ParallelState</code> を用いたマルチプロセスによるリストアの実行と、依存関係に基づくジョブスケジューリング。</li>
+<li>**セッション制御**: リストア時の <code>SET SESSION AUTHORIZATION</code>、<code>search_path</code>、<code>default_tablespace</code> 等のセッション状態の管理。</li>
+<li>**ラージオブジェクト（LO）処理**: LO のダンプ・リストアにおけるバッファリングとストリーミング。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>アーカイブ管理</h3>
+<ul>
+<li><code>CreateArchive</code> / <code>OpenArchive</code>: アーカイブハンドルの初期化と生成。</li>
+<li><code>CloseArchive</code>: リソースの解放と最終的な I/O 終了処理。</li>
+<li><code>RestoreArchive</code>: リストア処理のメインエントリーポイント。</li>
+</ul>
+<h3>TOC 操作</h3>
+<ul>
+<li><code>ArchiveEntry</code>: 新しい TOC エントリをアーカイブに追加。</li>
+<li><code>PrintTOCSummary</code>: アーカイブのメタデータとエントリ一覧の出力。</li>
+<li><code>SortTocFromFile</code>: 外部ファイルに基づいた TOC の順序変更。</li>
+</ul>
+<h3>並列処理・依存関係</h3>
+<ul>
+<li><code>WriteDataChunks</code>: 並列ダンプ時のジョブディスパッチ。</li>
+<li><code>restore_toc_entries_parallel</code>: 並列リストアのメインループ。</li>
+<li><code>fix_dependencies</code>: オブジェクト間の依存関係グラフの構築と調整。</li>
+<li><code>reduce_dependencies</code>: 完了したジョブに基づき、依存する後続ジョブの実行可能フラグを更新。</li>
+</ul>
+<h3>状態管理・ユーティリティ</h3>
+<ul>
+<li><code>ArchiveHandle</code>: アーカイブの全状態を保持する構造体。</li>
+<li><code>ahprintf</code> / <code>ahwrite</code>: アーカイブ出力へのフォーマット済み書き込み。</li>
+<li><code>_doSetFixedOutputState</code>: リストア開始時に必要なセッションパラメータ（<code>statement_timeout</code> 等）の設定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ArchiveEntry</code></li>
+<li><code>CloseArchive</code></li>
+<li><code>CreateArchive</code></li>
+<li><code>InitDumpOptions</code></li>
+<li><code>NewDumpOptions</code></li>
+<li><code>NewRestoreOptions</code></li>
+<li><code>OpenArchive</code></li>
+<li><code>PrintTOCSummary</code></li>
+<li><code>ProcessArchiveRestoreOptions</code></li>
+<li><code>RestoreArchive</code></li>
+<li><code>SetArchiveOptions</code></li>
+<li><code>WriteData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>OpenArchive</code> が <code>ArchiveHandle</code> を生成し、アーカイブ形式に応じた関数ポインタ（<code>InitArchiveFmt_*</code>）をセットアップします。 2. **依存関係構築**: <code>fix_dependencies</code> が TOC エントリ間の依存関係をグラフ化し、<code>depCount</code> を計算します。 3. **リストア実行**:</p>
+<ul>
+<li>**直列**: <code>restore_toc_entry</code> を <code>RESTORE_PASS</code> ごとに呼び出します。</li>
+<li>**並列**: <code>restore_toc_entries_parallel</code> が <code>binaryheap</code> を使用して、依存関係が解決された（<code>depCount == 0</code>）エントリを優先的にワーカーへディスパッチします。</li>
+<p>4. **データフロー**: <code>WriteData</code> / <code>ahwrite</code> が呼び出されると、<code>ArchiveHandle</code> 内の関数ポインタを通じて、圧縮層（<code>CompressFileHandle</code>）または直接データベース接続（<code>ExecuteSqlCommandBuf</code>）へデータが流れます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>pg_backup_archiver.h</code>: アーカイブハンドルの定義と定数。</li>
+<li><code>parallel.h</code>: 並列処理の制御構造。</li>
+<li><code>compress_io.h</code>: 圧縮アルゴリズムの抽象化。</li>
+<li><code>libpq-fe.h</code>: データベース接続とクエリ実行。</li>
+<li><code>lib/binaryheap.h</code>: 並列リストア時の優先度付きキュー管理。</li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>dumputils.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>io.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>libpq/libpq-fs.h</code></li>
+<li><code>pg_backup_db.h</code></li>
+<li><code>pg_backup_utils.h</code></li>
+<li><code>pgtar.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pg_backup_custom.c</code>, <code>pg_backup_tar.c</code>, <code>pg_backup_directory.c</code>: 各アーカイブ形式の実装。</li>
+<li><code>pg_dump.c</code>: ダンプ時のオブジェクト収集と <code>ArchiveEntry</code> の呼び出し元。</li>
+<li><code>pg_restore.c</code>: リストア時のコマンドライン解析と <code>RestoreArchive</code> の呼び出し元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ArchiveHandle</code> は非常に大きな構造体であり、<code>CloneArchive</code> で複製される際は、接続状態やバッファが適切に分離されるよう注意が必要です。</li>
+<li>**並列リストアの制約**: 並列リストアは <code>ArchiveHandle</code> の <code>ClonePtr</code> が実装されている形式（Custom, Directory）でのみサポートされます。</li>
+<li>**セッション状態**: <code>_selectOutputSchema</code> や <code>_becomeUser</code> は、不要な <code>SET</code> コマンドを避けるために現在の状態をキャッシュしています。このキャッシュをクリアするタイミング（<code>_reconnectToDB</code> 等）が重要です。</li>
+<li>**未実装・浅い部分**: <code>SortTocFromFile</code> による順序変更は、並列リストア時の依存関係グラフと競合する可能性があるため、複雑な依存関係を持つアーカイブでは注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__NewDumpOptions.html" target="wiki-view"><code>NewDumpOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__InitDumpOptions.html" target="wiki-view"><code>InitDumpOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__CreateArchive.html" target="wiki-view"><code>CreateArchive</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__OpenArchive.html" target="wiki-view"><code>OpenArchive</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__CloseArchive.html" target="wiki-view"><code>CloseArchive</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__SetArchiveOptions.html" target="wiki-view"><code>SetArchiveOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__ProcessArchiveRestoreOptions.html" target="wiki-view"><code>ProcessArchiveRestoreOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__RestoreArchive.html" target="wiki-view"><code>RestoreArchive</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__NewRestoreOptions.html" target="wiki-view"><code>NewRestoreOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__WriteData.html" target="wiki-view"><code>WriteData</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__ArchiveEntry.html" target="wiki-view"><code>ArchiveEntry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_archiver_c__PrintTOCSummary.html" target="wiki-view"><code>PrintTOCSummary</code></a></li>
+</ul></body></html>

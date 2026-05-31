@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/toast_internals.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/toast_internals.c</h1>
+<h2>概要</h2>
+<p>TOAST（The Oversized-Attribute Storage Technique）システムにおいて、巨大な属性値を外部ストレージへ保存・削除・圧縮するための内部ユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> モジュールの一部として、TOASTテーブルの物理的な操作（チャンクの挿入・削除）や、インデックスの管理、圧縮処理の抽象化を担います。<code>detoast.c</code> が読み取り（展開）を主導するのに対し、本ファイルは書き込みと管理を主導します。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ圧縮**: <code>toast_compress_datum</code> を通じて、varlena形式のデータを圧縮し、効率的な格納を試みる。</li>
+<li>**外部保存**: <code>toast_save_datum</code> により、巨大なデータをチャンクに分割し、TOASTテーブルへ挿入する。</li>
+<li>**ライフサイクル管理**: <code>toast_delete_datum</code> による不要なTOASTチャンクの削除。</li>
+<li>**インデックス管理**: TOASTテーブルに関連付けられたインデックスのオープン・クローズおよび有効なインデックスの特定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>toast_compress_datum</code>: データを圧縮し、圧縮後のサイズが十分に小さい場合のみ圧縮済みデータを返す。</li>
+<li><code>toast_save_datum</code>: データをTOASTテーブルに保存し、外部ポインタ（<code>varatt_external</code>）を生成する。</li>
+<li><code>toast_delete_datum</code>: 指定された <code>valueid</code> を持つ全てのチャンクをTOASTテーブルから削除する。</li>
+<li><code>toast_open_indexes</code> / <code>toast_close_indexes</code>: TOASTテーブルのインデックス群を管理するヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>get_toast_snapshot</code></li>
+<li><code>toast_get_valid_index</code></li>
+<li><code>toastid_valueid_exists</code></li>
+<li><code>toastrel_valueid_exists</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **保存フロー**: <code>toast_save_datum</code> が呼び出されると、まず対象のTOASTテーブルとインデックスを開きます。データは <code>TOAST_MAX_CHUNK_SIZE</code> ごとに分割され、<code>heap_insert</code> でTOASTテーブルへ挿入されます。各チャンク挿入後、対応するインデックスも更新されます。 2. **削除フロー**: <code>toast_delete_datum</code> は、外部ポインタから <code>valueid</code> を抽出し、<code>systable_beginscan_ordered</code> を用いて該当する全チャンクをスキャンし、<code>simple_heap_delete</code> で物理削除します。 3. **圧縮フロー**: <code>toast_compress_datum</code> は、指定された圧縮アルゴリズム（PGLZまたはLZ4）を適用し、ヘッダー情報（<code>toast_compress_header</code>）を付与して返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>, <code>access/table.h</code>: TOASTテーブルの物理的な挿入・削除操作。</li>
+<li><code>access/toast_internals.h</code>: 共有データ構造とインターフェース定義。</li>
+<li><code>utils/rel.h</code>, <code>utils/snapmgr.h</code>: リレーション管理およびスナップショットの取得。</li>
+<li><code>catalog/catalog.h</code>: システムカタログ関連の定数。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/common/toast_compression.c</code>: 圧縮アルゴリズムの実装詳細。</li>
+<li><code>src/backend/access/common/detoast.c</code>: TOASTデータの展開（読み取り）ロジック。</li>
+<li><code>src/include/access/heaptoast.h</code>: TOAST関連の公開マクロと構造体定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクションの安全性**: <code>get_toast_snapshot</code> が示す通り、TOASTデータの操作は必ずアクティブなスナップショットが存在するトランザクション内で行う必要があります。</li>
+<li>**インデックスの制約**: TOASTテーブルには通常1つの有効なインデックスが存在することが前提となっており、<code>toast_open_indexes</code> はその特定を自動化します。</li>
+<li>**再利用のロジック**: <code>toast_save_datum</code> 内には、テーブル再構築（CLUSTER等）時にTOASTのOIDを維持するための複雑な条件分岐が含まれています。これはデータ重複を避けるための重要な最適化です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_compress_datum.html" target="wiki-view"><code>toast_compress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_save_datum.html" target="wiki-view"><code>toast_save_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_delete_datum.html" target="wiki-view"><code>toast_delete_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toastrel_valueid_exists.html" target="wiki-view"><code>toastrel_valueid_exists</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toastid_valueid_exists.html" target="wiki-view"><code>toastid_valueid_exists</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_get_valid_index.html" target="wiki-view"><code>toast_get_valid_index</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_open_indexes.html" target="wiki-view"><code>toast_open_indexes</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__toast_close_indexes.html" target="wiki-view"><code>toast_close_indexes</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_internals_c__get_toast_snapshot.html" target="wiki-view"><code>get_toast_snapshot</code></a></li>
+</ul></body></html>

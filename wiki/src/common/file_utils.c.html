@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/file_utils.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/file_utils.c</h1>
+<h2>概要</h2>
+<p>ファイルおよびディレクトリ操作のためのユーティリティ関数群を提供します。主にPostgreSQLのフロントエンドツール（<code>pg_basebackup</code> 等）において、データディレクトリの同期、耐久性を考慮したファイルリネーム、および堅牢なI/O操作をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> モジュールの一部として、プラットフォーム固有のファイルシステム操作を抽象化します。バックエンド（<code>src/backend</code>）とフロントエンド（<code>src/bin</code>）の両方から利用可能な低レベルなファイル操作インターフェースを提供し、特にデータディレクトリの整合性維持に貢献します。</p>
+<h2>責務</h2>
+<ul>
+<li>**データディレクトリの同期**: <code>sync_pgdata</code> を通じて、<code>fsync</code> または <code>syncfs</code> を用いたデータディレクトリ全体の永続化。</li>
+<li>**耐久性のあるファイル操作**: <code>durable_rename</code> による、クラッシュ耐性を備えたファイルリネーム処理。</li>
+<li>**堅牢なI/O**: <code>pg_pwritev_with_retry</code> や <code>pg_pwrite_zeros</code> による、部分書き込みを考慮した安全な書き込み処理。</li>
+<li>**ディレクトリ走査**: <code>walkdir</code> による、シンボリックリンクや除外パスを考慮した再帰的なディレクトリ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sync_pgdata</code>: データディレクトリ全体を同期するメイン関数。</li>
+<li><code>durable_rename</code>: ファイル移動時に、移動元・移動先・親ディレクトリを確実に <code>fsync</code> する関数。</li>
+<li><code>walkdir</code>: ディレクトリツリーを走査し、各エントリに対して指定されたアクション（<code>fsync</code>等）を実行する。</li>
+<li><code>pg_pwritev_with_retry</code>: <code>pwritev</code> の部分書き込みを自動的に再試行するラッパー。</li>
+<li><code>get_dirent_type</code>: ファイルタイプを判定する（<code>dirent</code>の拡張機能または<code>stat</code>を使用）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>compute_remaining_iovec</code></li>
+<li><code>do_syncfs</code></li>
+<li><code>fsync_fname</code></li>
+<li><code>fsync_parent_path</code></li>
+<li><code>pg_pwrite_zeros</code></li>
+<li><code>pre_sync_fname</code></li>
+<li><code>sync_dir_recurse</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **同期処理**: <code>sync_pgdata</code> は <code>DataDirSyncMethod</code> に応じて <code>syncfs</code>（ファイルシステム単位）または <code>walkdir</code>（ファイル単位）を選択します。<code>walkdir</code> は再帰的にディレクトリを辿り、各ファイルに対して <code>fsync_fname</code> を呼び出します。 2. **耐久性リネーム**: <code>durable_rename</code> は、まず <code>oldfile</code> を <code>fsync</code> し、次に <code>newfile</code> が存在すれば <code>fsync</code> します。<code>rename</code> 実行後、<code>newfile</code> とその親ディレクトリに対して再度 <code>fsync</code> を行い、メタデータの永続化を保証します。 3. **I/O再試行**: <code>pg_pwritev_with_retry</code> は、<code>compute_remaining_iovec</code> を使用して、部分的に書き込まれた <code>iovec</code> の残量を計算し、すべてのデータが書き込まれるまでループを継続します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>dirent.h</code>, <code>fcntl.h</code>, <code>sys/stat.h</code>, <code>unistd.h</code>: 標準的なファイルシステム操作。</li>
+<li><code>common/file_utils.h</code>: 公開インターフェース定義。</li>
+<li><code>port/pg_iovec.h</code>: ベクトルI/Oのポータブルな定義。</li>
+<li><code>common/relpath.h</code>: PostgreSQLのパス構造定義。</li>
+<li><code>common/logging.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fe.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/file/fd.c</code>: バックエンド版のファイル操作および <code>walkdir</code> 実装。</li>
+<li><code>src/include/common/file_utils.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/port/</code>: <code>pg_pwritev</code> 等のプラットフォーム依存の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**FRONTEND マクロ**: 本ファイルの大部分は <code>FRONTEND</code> 定義時にのみコンパイルされます。バックエンドコードから利用可能な関数（<code>get_dirent_type</code> 等）と、フロントエンド専用の関数が混在している点に注意してください。</li>
+<li>**fsync の重要性**: <code>durable_rename</code> や <code>sync_pgdata</code> は、OSのクラッシュ時にデータが失われないよう、ディレクトリの <code>fsync</code> を含めた厳格な順序で操作を行います。</li>
+<li>**エラー処理**: <code>fsync_fname</code> などは、ディレクトリの <code>fsync</code> がサポートされていない環境でのエラーを適切に無視するよう設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__file_utils_c__do_syncfs.html" target="wiki-view"><code>do_syncfs</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__sync_pgdata.html" target="wiki-view"><code>sync_pgdata</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__sync_dir_recurse.html" target="wiki-view"><code>sync_dir_recurse</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__walkdir.html" target="wiki-view"><code>walkdir</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__pre_sync_fname.html" target="wiki-view"><code>pre_sync_fname</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__fsync_fname.html" target="wiki-view"><code>fsync_fname</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__fsync_parent_path.html" target="wiki-view"><code>fsync_parent_path</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__durable_rename.html" target="wiki-view"><code>durable_rename</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__get_dirent_type.html" target="wiki-view"><code>get_dirent_type</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__compute_remaining_iovec.html" target="wiki-view"><code>compute_remaining_iovec</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__pg_pwritev_with_retry.html" target="wiki-view"><code>pg_pwritev_with_retry</code></a></li>
+<li><a href="../../symbols/src__common__file_utils_c__pg_pwrite_zeros.html" target="wiki-view"><code>pg_pwrite_zeros</code></a></li>
+</ul></body></html>

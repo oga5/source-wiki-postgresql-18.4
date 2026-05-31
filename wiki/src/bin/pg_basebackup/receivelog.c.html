@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/receivelog.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/receivelog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのストリーミングレプリケーションプロトコルを使用して、WAL（Write-Ahead Log）データをリモートサーバーから受信し、ローカルストレージに書き出すためのコアロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_basebackup</code> や <code>pg_receivewal</code> といったツールが、サーバーからWALを継続的に取得する際のバックエンドエンジンとして機能します。<code>streamutil.c</code> で定義された抽象化レイヤー（<code>WalWriteMethod</code>）を利用し、ファイルシステムやアーカイブへの書き込みを抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALストリームの管理**: <code>START_REPLICATION</code> コマンドの発行と、<code>COPY</code> モードでのデータ受信。</li>
+<li>**WALファイルのライフサイクル管理**: セグメント単位でのファイルのオープン、書き込み、同期（fsync）、クローズ、およびアーカイブ完了フラグの作成。</li>
+<li>**フィードバック制御**: サーバーへの進捗報告（<code>Standby Status Update</code>）の送信と、同期レプリケーション時のフラッシュ位置の通知。</li>
+<li>**タイムライン追跡**: タイムライン切り替え時の履歴ファイル取得と、新しいタイムラインへのシームレスな移行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ReceiveXlogStream</code>: ストリーミングのメインエントリーポイント。接続確立後の全プロセスを制御します。</li>
+<li><code>StreamCtl</code>: ストリーミングの動作（開始位置、タイムライン、同期設定、停止条件など）を定義する構造体。</li>
+<li><code>HandleCopyStream</code>: <code>COPY</code> プロトコルによるデータ受信ループを管理する中心関数。</li>
+<li><code>walfile</code>: 現在書き込み中のWALファイルハンドルを保持する静的変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CalculateCopyStreamSleeptime</code></li>
+<li><code>CheckCopyStreamStop</code></li>
+<li><code>CheckServerVersionForStreaming</code></li>
+<li><code>CopyStreamPoll</code></li>
+<li><code>CopyStreamReceive</code></li>
+<li><code>HandleEndOfCopyStream</code></li>
+<li><code>ProcessKeepaliveMsg</code></li>
+<li><code>ProcessXLogDataMsg</code></li>
+<li><code>ReadEndOfStreamingResult</code></li>
+<li><code>mark_file_as_archived</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ReceiveXlogStream</code> がサーバーバージョンを確認し、<code>START_REPLICATION</code> を発行。 2.  **受信ループ**: <code>HandleCopyStream</code> が <code>CopyStreamReceive</code> を介してサーバーからのメッセージを待機。 3.  **メッセージ処理**:</p>
+<ul>
+<li><code>w</code> (XLogData): WALデータを受信し、<code>open_walfile</code> / <code>close_walfile</code> を経由してディスクへ書き込み。</li>
+<li><code>k</code> (Keepalive): サーバーからの生存確認に応答し、必要に応じてフィードバックを送信。</li>
+<p>4.  **終了処理**: 停止条件（<code>stream_stop</code> コールバック）を満たすか、サーバーから終了通知を受けた際に <code>COPY</code> モードを終了。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: サーバーとの通信（<code>COPY</code> プロトコル）。</li>
+<li><code>receivelog.h</code>: 公開インターフェースと <code>StreamCtl</code> 定義。</li>
+<li><code>streamutil.h</code>: ログ出力やWAL書き込みメソッドの抽象化。</li>
+<li><code>access/xlog_internal.h</code>: WALセグメント計算やLSN操作。</li>
+<li><code>common/logging.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/select.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/walmethods.c</code>: <code>WalWriteMethod</code> の実装（ファイル、tar、圧縮など）。</li>
+<li><code>src/bin/pg_basebackup/pg_receivewal.c</code>: 本ファイルを呼び出す主要なクライアントツール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**抽象化の理解**: <code>walmethod-&gt;ops</code> を通じた操作は、単なるファイル書き込みだけでなく、圧縮やtarアーカイブへの変換も含まれるため、直接的な <code>write()</code> 呼び出しを探さないように注意してください。</li>
+<li>**停止条件**: <code>stream_stop</code> コールバックは、ストリーミングをいつ終了させるかを決定する重要なフックです。この関数が <code>true</code> を返すと、ストリーミングは正常終了します。</li>
+<li>**同期書き込み**: <code>synchronous</code> フラグが有効な場合、WALデータが書き込まれるたびに <code>fsync</code> が発生するため、パフォーマンスに大きな影響を与えます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__mark_file_as_archived.html" target="wiki-view"><code>mark_file_as_archived</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__CheckServerVersionForStreaming.html" target="wiki-view"><code>CheckServerVersionForStreaming</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__ReceiveXlogStream.html" target="wiki-view"><code>ReceiveXlogStream</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__ReadEndOfStreamingResult.html" target="wiki-view"><code>ReadEndOfStreamingResult</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__HandleCopyStream.html" target="wiki-view"><code>HandleCopyStream</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__CopyStreamPoll.html" target="wiki-view"><code>CopyStreamPoll</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__CopyStreamReceive.html" target="wiki-view"><code>CopyStreamReceive</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__ProcessKeepaliveMsg.html" target="wiki-view"><code>ProcessKeepaliveMsg</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__ProcessXLogDataMsg.html" target="wiki-view"><code>ProcessXLogDataMsg</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__HandleEndOfCopyStream.html" target="wiki-view"><code>HandleEndOfCopyStream</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__CheckCopyStreamStop.html" target="wiki-view"><code>CheckCopyStreamStop</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__receivelog_c__CalculateCopyStreamSleeptime.html" target="wiki-view"><code>CalculateCopyStreamSleeptime</code></a></li>
+</ul></body></html>

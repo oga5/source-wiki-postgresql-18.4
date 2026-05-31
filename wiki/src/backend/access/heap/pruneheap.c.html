@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/pruneheap.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/pruneheap.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのヒープページにおける「HOT（Heap-Only Tuple）剪定」および「タプル凍結（Freezing）」の実行エンジンを実装しています。ページ内の不要なタプルを削除して領域を回収し、HOTチェーンを再構築することで、インデックス更新を伴わない効率的な更新処理を維持します。また、VACUUM処理の一環として、古いタプルのXIDを凍結し、トランザクションIDの周回問題を防止します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールにおいて、物理的なページメンテナンスの最下層を担います。<code>vacuumlazy.c</code>（VACUUMの制御）や <code>heapam.c</code>（アクセスメソッド）から呼び出され、バッファロックを保持した状態でページ内のタプル配置を最適化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**HOT剪定**: 不要になったタプルをチェーンから切り離し、リダイレクトポインタを更新して領域を解放する。</li>
+<li>**タプル凍結**: <code>VACUUM</code> の基準に基づき、古いタプルを凍結（<code>FrozenTransactionId</code> への更新）して <code>relfrozenxid</code> の進行を助ける。</li>
+<li>**ページメンテナンス**: 剪定後の断片化解消（<code>PageRepairFragmentation</code>）および可視性マップ（VM）更新のための情報収集。</li>
+<li>**WAL記録**: 剪定および凍結操作を単一のWALレコード（<code>XLOG_HEAP2_PRUNE_FREEZE</code>）として記録し、リカバリ時の整合性を保証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>PruneState</code>: 剪定・凍結処理中のコンテキストを保持する構造体。処理対象のタプルリスト、可視性判定結果、凍結計画などを集約する。</li>
+</ul>
+<h3>剪定・凍結エンジン</h3>
+<ul>
+<li><code>heap_page_prune_opt</code>: ページが剪定候補かヒューリスティックに判断し、必要に応じて剪定を実行する（オンアクセス剪定）。</li>
+<li><code>heap_page_prune_and_freeze</code>: 剪定と凍結のメインエントリポイント。ページをスキャンし、変更計画を立てて実行する。</li>
+<li><code>heap_prune_chain</code>: HOTチェーンを走査し、どのタプルを削除・リダイレクトすべきか決定する。</li>
+</ul>
+<h3>補助・記録関数</h3>
+<ul>
+<li><code>heap_page_prune_execute</code>: 決定された変更計画を実際にページに適用する。</li>
+<li><code>log_heap_prune_and_freeze</code>: 剪定・凍結操作をWALに書き出す。</li>
+<li><code>heap_get_root_tuples</code>: ページ内の全タプルについて、所属するHOTチェーンのルートを特定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PruneState</code></li>
+<li><code>heap_get_root_tuples</code></li>
+<li><code>heap_page_prune_and_freeze</code></li>
+<li><code>heap_page_prune_opt</code></li>
+<li><code>heap_prune_chain</code></li>
+<li><code>heap_prune_record_dead</code></li>
+<li><code>heap_prune_record_dead_or_unused</code></li>
+<li><code>heap_prune_record_prunable</code></li>
+<li><code>heap_prune_record_redirect</code></li>
+<li><code>heap_prune_record_unused</code></li>
+<li><code>heap_prune_satisfies_vacuum</code></li>
+<li><code>htsv_get_valid_status</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PruneState</code> を初期化し、ページ内の全タプルについて <code>heap_prune_satisfies_vacuum</code> を用いて可視性を一度だけ計算する。 2. **チェーン走査**: <code>heap_prune_chain</code> がHOTチェーンを辿り、不要なタプルを特定して <code>PruneState</code> の配列（<code>redirected</code>, <code>nowdead</code>, <code>nowunused</code>）に記録する。 3. **凍結計画**: <code>heap_prepare_freeze_tuple</code> を呼び出し、凍結が必要なタプルのリストを作成する。 4. **実行**: <code>START_CRIT_SECTION()</code> 内で <code>heap_page_prune_execute</code> を呼び出し、ページを物理的に変更。その後、<code>log_heap_prune_and_freeze</code> でWALを生成する。 5. **終了**: 処理結果（削除数、凍結数など）を呼び出し元に返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>: ヒープAMの基本定義。</li>
+<li><code>access/htup_details.h</code>: タプルヘッダの操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とロック。</li>
+<li><code>access/xloginsert.h</code>: WAL生成。</li>
+<li><code>access/heapam_xlog.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>vacuumlazy.c</code>: 本ファイルの主要な呼び出し元。</li>
+<li><code>heapam_visibility.c</code>: タプルの可視性判定ロジックの共有。</li>
+<li><code>hio.c</code>: ヒープページI/Oの低レベル管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PruneState</code> はスタック上に確保され、処理終了とともに破棄されます。</li>
+<li>**クリティカルセクション**: ページ変更は <code>START_CRIT_SECTION</code> 内で行われ、エラー発生時はパニックを避けるため、変更前の検証（<code>page_verify_redirects</code> 等）が重要です。</li>
+<li>**パフォーマンス**: 可視性判定は高コストなため、ページ内で一度だけ計算し、結果を <code>htsv</code> 配列にキャッシュしています。</li>
+<li>**省略された詳細**: 本ファイルは剪定の「実行」に特化しており、VACUUMの「どのページを処理するか」という高レベルな決定ロジックは含まれていません。また、TOASTタプルの具体的な圧縮ロジックは <code>heaptoast.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__PruneState.html" target="wiki-view"><code>PruneState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_page_prune_opt.html" target="wiki-view"><code>heap_page_prune_opt</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_page_prune_and_freeze.html" target="wiki-view"><code>heap_page_prune_and_freeze</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_satisfies_vacuum.html" target="wiki-view"><code>heap_prune_satisfies_vacuum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__htsv_get_valid_status.html" target="wiki-view"><code>htsv_get_valid_status</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_chain.html" target="wiki-view"><code>heap_prune_chain</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_record_prunable.html" target="wiki-view"><code>heap_prune_record_prunable</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_record_redirect.html" target="wiki-view"><code>heap_prune_record_redirect</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_record_dead.html" target="wiki-view"><code>heap_prune_record_dead</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_record_dead_or_unused.html" target="wiki-view"><code>heap_prune_record_dead_or_unused</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_prune_record_unused.html" target="wiki-view"><code>heap_prune_record_unused</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__pruneheap_c__heap_get_root_tuples.html" target="wiki-view"><code>heap_get_root_tuples</code></a></li>
+</ul></body></html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/tsmroutine.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TsmRoutine</h1>
+<h2>概念</h2>
+<p><code>TsmRoutine</code> は、PostgreSQL の <code>TABLESAMPLE</code> 句で使用されるサンプリングメソッド（例: Bernoulli, System など）のインターフェースを定義する構造体です。プランナやエグゼキュータが、具体的なサンプリングアルゴリズムを抽象化された共通のインターフェースを介して利用できるように設計されています。</p>
+<h2>なぜ重要か</h2>
+<p><code>TsmRoutine</code> は、<code>TABLESAMPLE</code> の拡張性を担保する中心的な API です。新しいサンプリングメソッドを追加する際、コアコード（プランナやエグゼキュータ）を直接修正することなく、この構造体を正しく実装・登録するだけで独自のサンプリングロジックを PostgreSQL に統合できるようになります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/tablesample</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/tsmapi.h#TsmRoutine</code>**</li>
+<p>サンプリングメソッドのインターフェースを定義する構造体。各実行フェーズに対応する関数ポインタ（<code>SampleScanGetSampleSize</code>、<code>BeginSampleScan</code>、<code>NextSampleTuple</code> など）や、パラメータ型リスト、クエリ/スキャンをまたぐ再現性の有無を示すフラグを保持します。</p>
+<li>**<code>symbol:src/backend/access/tablesample/tablesample.c#GetTsmRoutine</code>**</li>
+<p>指定されたサンプリングメソッドのハンドラ OID (<code>tsmhandler</code>) を受け取り、対応する <code>TsmRoutine</code> 構造体を取得・検証する関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **ハンドラの取得と検証**: <code>GetTsmRoutine</code> が呼び出されると、内部で <code>OidFunctionCall1</code> を使用して引数 <code>NULL</code> でハンドラ関数を実行します。返された <code>Datum</code> を <code>TsmRoutine *</code> にキャストし、<code>IsA</code> マクロによる型チェックを行って検証します。 2. **プランニングフェーズ**: プランナは <code>TsmRoutine</code> の <code>SampleScanGetSampleSize</code> 関数ポインタを呼び出し、サンプリング後の推定ページ数とタプル数を算出してコスト見積もりに利用します。 3. **実行（エグゼキュータ）フェーズ**:</p>
+<ul>
+<li><code>InitSampleScan</code> で状態を初期化します（定義されている場合）。</li>
+<li><code>BeginSampleScan</code> でスキャンを開始します。</li>
+<li><code>NextSampleBlock</code> で対象ブロックを順次取得します（<code>NULL</code> の場合は通常のシーケンシャルスキャンにフォールバックします）。</li>
+<li><code>NextSampleTuple</code> で対象タプルを順次取得します。</li>
+<li><code>EndSampleScan</code> によりリソースを解放します（定義されている場合）。</li>
+</ul>
+<p>*注意: 呼び出し元（<code>nodeSamplescan.c</code> や <code>allpaths.c</code> など）から <code>GetTsmRoutine</code> が呼び出される具体的なタイミングや、詳細なエンドツーエンドの制御フローの全容は、提供されたコンテキストからは完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の要件**: <code>TsmRoutine</code> 構造体の初期化には必ず <code>makeNode(TsmRoutine)</code> を使用しなければなりません。これにより、将来的なフィールド追加時のメモリ安全性が保証されます。</li>
+<li>**型チェックの通過**: <code>GetTsmRoutine</code> が返す構造体は、<code>IsA(routine, TsmRoutine)</code> による型チェックを通過する必要があります。</li>
+<li>**必須関数ポインタ**: <code>BeginSampleScan</code>、<code>NextSampleTuple</code>、<code>SampleScanGetSampleSize</code> は必須（非NULL）であり、これらが欠落している場合の動作は未定義です。</li>
+<li>**オプション関数ポインタ**: <code>InitSampleScan</code>、<code>NextSampleBlock</code>、<code>EndSampleScan</code> は <code>NULL</code> を許容します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**必須関数の未実装**: <code>BeginSampleScan</code>、<code>NextSampleTuple</code>、<code>SampleScanGetSampleSize</code> のいずれかを <code>NULL</code> のままにすると、動作が未定義となりシステムがクラッシュするなどの問題を引き起こす可能性があります。</li>
+<li>**不適切な初期化**: <code>makeNode(TsmRoutine)</code> を使用せずに構造体を初期化した場合、将来的に構造体に新しいフィールドが追加された際にメモリ安全性が損なわれるリスクがあります。</li>
+<li>**ハンドラ関数の不正な戻り値**: ハンドラ関数が <code>NULL</code> を返したり、<code>TsmRoutine</code> 以外の型を返したりした場合、<code>GetTsmRoutine</code> は <code>ERROR</code> を発生させて処理を中断します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/tablesample/tablesample.c</code></li>
+<li><code>src/include/access/tsmapi.h</code></li>
+</ul></body></html>

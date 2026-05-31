@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/createas.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/createas.c</h1>
+<h2>概要</h2>
+<p><code>CREATE TABLE AS</code> (CTAS) および <code>CREATE MATERIALIZED VIEW</code> コマンドの実行を担うモジュールです。クエリの実行結果を通常のクライアントへの返送ではなく、新規作成したテーブルへ直接流し込むための専用の <code>DestReceiver</code> を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> 内において、クエリ結果を永続化するコマンドの実行エンジンとして機能します。<code>tablecmds.c</code> がテーブル定義の物理的な作成を担うのに対し、本ファイルは「クエリ実行」と「結果の挿入」を統合する高レベルな制御フローを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ターゲットテーブルの作成**: <code>DefineRelation</code> を呼び出し、CTAS 用のスキーマを構築する。</li>
+<li>**DestReceiver の実装**: クエリ実行エンジンから流れてくるタプルを、新規作成したテーブルへ挿入するインターフェース（<code>intorel_*</code> 関数群）の提供。</li>
+<li>**実行制御**: <code>WITH NO DATA</code> オプションの有無に応じた実行パスの分岐（プランナのスキップやマテリアライズドビューの更新処理）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecCreateTableAs</code>: CTAS コマンド実行のメインエントリポイント。</li>
+<li><code>DR_intorel</code>: クエリ結果をテーブルに書き込むための <code>DestReceiver</code> 構造体。</li>
+<li><code>create_ctas_internal</code>: <code>DefineRelation</code> をラップし、TOAST テーブル作成やマテリアライズドビューのメタデータ保存を行うユーティリティ。</li>
+<li><code>intorel_receive</code>: <code>DestReceiver</code> の一部として、各タプルをテーブルに挿入する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateIntoRelDestReceiver</code></li>
+<li><code>CreateTableAsRelExists</code></li>
+<li><code>GetIntoRelEFlags</code></li>
+<li><code>create_ctas_nodata</code></li>
+<li><code>intorel_destroy</code></li>
+<li><code>intorel_shutdown</code></li>
+<li><code>intorel_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ExecCreateTableAs</code> が呼び出され、<code>CreateIntoRelDestReceiver</code> で <code>DR_intorel</code> を初期化。 2.  **定義作成**: <code>WITH NO DATA</code> の場合は <code>create_ctas_nodata</code> を経由し、それ以外は <code>intorel_startup</code> 内で <code>DefineRelation</code> を呼び出しテーブルを物理作成。 3.  **実行**:</p>
+<ul>
+<li><code>WITH NO DATA</code> でない場合、<code>ExecutorStart</code> / <code>Run</code> を呼び出し、クエリ結果を <code>intorel_receive</code> に流し込む。</li>
+<li><code>intorel_receive</code> は <code>table_tuple_insert</code> を使用してデータを格納。</li>
+<p>4.  **終了**: <code>intorel_shutdown</code> でバルク挿入状態をクリーンアップし、テーブルを閉じる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッドの抽象化レイヤー。</li>
+<li><code>catalog/namespace.h</code>: 名前空間とリレーションの解決。</li>
+<li><code>commands/tablecmds.h</code>: <code>DefineRelation</code> 等のテーブル定義操作。</li>
+<li><code>executor/executor.h</code>: クエリ実行エンジンの制御。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/toasting.h</code></li>
+<li><code>commands/createas.h</code></li>
+<li><code>commands/matview.h</code></li>
+<li><code>commands/prepare.h</code></li>
+<li><code>commands/view.h</code></li>
+<li><code>executor/execdesc.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/queryjumble.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rls.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/matview.c</code>: マテリアライズドビュー固有の更新処理（<code>RefreshMatViewByOid</code> 等）。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: <code>DefineRelation</code> の実装元。</li>
+<li><code>src/include/tcop/dest.h</code>: <code>DestReceiver</code> インターフェースの定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**レガシーな設計**: CTAS は歴史的に <code>SELECT</code> の亜種として実装されており、<code>QueryCompletion</code> への行数報告など、その名残がコードの随所に見られます。</li>
+<li>**WITH NO DATA**: このオプションが指定された場合、プランナやエグゼキュータを完全にバイパスしてテーブル定義のみを作成します。このパスはダンプ/リストア時の依存関係問題を回避するために重要です。</li>
+<li>**RLS の制限**: 現時点では CTAS で作成されるテーブルに対して行レベルセキュリティ (RLS) はサポートされておらず、<code>intorel_startup</code> で明示的にエラーチェックを行っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__createas_c__DR_intorel.html" target="wiki-view"><code>DR_intorel</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__create_ctas_internal.html" target="wiki-view"><code>create_ctas_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__create_ctas_nodata.html" target="wiki-view"><code>create_ctas_nodata</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__ExecCreateTableAs.html" target="wiki-view"><code>ExecCreateTableAs</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__GetIntoRelEFlags.html" target="wiki-view"><code>GetIntoRelEFlags</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__CreateTableAsRelExists.html" target="wiki-view"><code>CreateTableAsRelExists</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__CreateIntoRelDestReceiver.html" target="wiki-view"><code>CreateIntoRelDestReceiver</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__intorel_startup.html" target="wiki-view"><code>intorel_startup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__intorel_receive.html" target="wiki-view"><code>intorel_receive</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__intorel_shutdown.html" target="wiki-view"><code>intorel_shutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__createas_c__intorel_destroy.html" target="wiki-view"><code>intorel_destroy</code></a></li>
+</ul></body></html>

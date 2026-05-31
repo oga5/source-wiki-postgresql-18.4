@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistsplit_c__gistUserPicksplit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistUserPicksplit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistsplit.c:414</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスのページ分割において、ユーザー定義の <code>picksplit</code> メソッドを呼び出し、その結果を評価・調整する。特にマルチカラムインデックスにおいて、分割の品質を向上させるための再帰的な最適化を制御する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool gistUserPicksplit(Relation r, GistEntryVector *entryvec, int attno, GistSplitVector *v, IndexTuple *itup, int len, GISTSTATE *giststate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>r</code>: 対象のリレーション。</li>
+<li><code>entryvec</code>: 分割対象のインデックスエントリベクトル。</li>
+<li><code>attno</code>: 現在処理中の列インデックス。</li>
+<li><code>v</code>: 分割状態を保持する構造体。</li>
+<li><code>itup</code>: インデックスタプルの配列。</li>
+<li><code>len</code>: タプル数。</li>
+<li><code>giststate</code>: GiSTの実行状態。</li>
+<li>**出力**: </li>
+<li><code>bool</code>: 分割が不十分であり、後続の列で再分割（再帰）が必要な場合に <code>true</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>entryvec</code> 内に NULL キーは存在しない。</li>
+<li>ユーザー定義の <code>picksplit</code> が片側に全タプルを寄せるような不適切な分割を行った場合、<code>genericPickSplit</code> によるフォールバックが行われる。</li>
+<li>戻り値が <code>true</code> の場合、呼び出し元は後続の列を使用して再分割を試みる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期分割**: ユーザー定義の <code>picksplit</code> 関数を呼び出し、初期分割を実行する。 2. **フォールバック**: 分割結果が空（片側のみ）の場合、<code>genericPickSplit</code> を実行して補正する。 3. **二次分割の処理**: <code>supportSecondarySplit</code> を呼び出し、必要に応じて二次分割を処理する。 4. **最適化（Don&#x27;t-care タプルの特定）**:</p>
+<ul>
+<li>現在の列でペナルティなしで移動可能なタプル（don&#x27;t-care）を <code>findDontCares</code> で特定する。</li>
+<li>don&#x27;t-care タプルが存在する場合、それらを分割から除外し、<code>gistunionsubkey</code> でユニオンキーを再計算する。</li>
+<li>don&#x27;t-care タプルが1つのみの場合は <code>placeOne</code> でペナルティの低い側へ割り当てる。</li>
+<li>複数ある場合は <code>true</code> を返し、後続列での再分割を促す。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gistSplitByKey</code>（ソースコード内の文脈より）</li>
+<li>**呼び出し先**: </li>
+<li><code>FunctionCall2Coll</code> (ユーザー定義 <code>picksplit</code> 実行)</li>
+<li><code>genericPickSplit</code></li>
+<li><code>supportSecondarySplit</code></li>
+<li><code>findDontCares</code></li>
+<li><code>removeDontCares</code></li>
+<li><code>gistunionsubkey</code></li>
+<li><code>placeOne</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GistEntryVector</code>: 分割対象のエントリ群。</li>
+<li><code>GistSplitVector</code>: 分割結果を保持する構造体。</li>
+<li><code>GIST_SPLITVEC</code>: ユーザー定義メソッドとやり取りするための分割ベクトル。</li>
+<li><code>GISTSTATE</code>: GiSTインデックスの操作状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**分割失敗**: ユーザー定義の <code>picksplit</code> が片側に全タプルを配置した場合、<code>DEBUG1</code> レベルで警告を発行し、<code>genericPickSplit</code> で強制的に分割する。</li>
+<li>**縮退した分割**: 左側と右側のユニオンキーが等しい場合、分割は縮退していると判断し、後続列での再分割を要求する。</li>
+<li>**Don&#x27;t-care タプルによる空分割**: don&#x27;t-care タプルを除去した結果、どちらかの側が空になる場合、その分割を破棄して後続列での再分割を優先する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はマルチカラム最適化の要であり、<code>attno</code> をインクリメントしながら再帰的に呼び出される。</li>
+<li><code>gistunionsubkey</code> によるユニオンキーの再計算は、後続の <code>gistUserPicksplit</code> 呼び出し時に正しい値が渡されることを保証するために不可欠である。</li>
+<li><code>NumDontCare == 1</code> の特殊ケースでは、ペナルティ比較のみで配置を決定するが、この際ユニオンキーは一時的に不整合となる可能性がある。これは最上位の呼び出し元で修正される設計となっている。</li>
+</ul></body></html>

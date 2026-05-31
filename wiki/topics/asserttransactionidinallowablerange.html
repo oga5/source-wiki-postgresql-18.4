@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/asserttransactionidinallowablerange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AssertTransactionIdInAllowableRange</h1>
+<h2>概念</h2>
+<p><code>AssertTransactionIdInAllowableRange</code> は、PostgreSQLの開発ビルド（アサーション有効時）において、指定されたトランザクションID（XID）がシステム上の有効な許容範囲内（<code>oldestXid</code> から <code>nextXid</code> の間）に収まっているかを検証するためのデバッグ用関数です。</p>
+<h2>なぜ重要か</h2>
+<p>トランザクションIDの管理において、範囲外の不正なXIDがシステム内で処理されると、データの不整合や可視性（Visibility）のバグを引き起こす可能性があります。本関数は、開発段階で不正なXIDを早期に検出し、アサート失敗によってプログラムを停止させることで、システムの健全性を担保します。また、呼び出し元がロックを保持している場合でもデッドロックを引き起こさないよう、ロックを取得せずに安全に共有メモリ上の最新状態と比較できるように設計されています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/transam/varsup.c#AssertTransactionIdInAllowableRange</code>**: 関数本体の実装。</li>
+<li>**<code>symbol:src/include/access/transam.h#AssertTransactionIdInAllowableRange</code>**: 関数のプロトタイプ宣言。</li>
+<li>**<code>TransamVariables</code>**: 共有メモリ上に配置された、トランザクション状態（<code>oldestXid</code> や <code>nextXid</code> など）を管理する構造体。</li>
+<li>**<code>TransactionId</code>**: 検証対象となる32bitのトランザクション識別子。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>本関数が実行される際の流れは以下の通りです。</p>
+<p>1. **呼び出し**: <code>varsup.c</code> や <code>procarray.c</code> などの呼び出し元から、検証対象の <code>xid</code> を伴って呼び出されます。 2. **有効性検証**: <code>TransactionIdIsValid(xid)</code> マクロにより、渡されたXIDが有効であることを検証します（無効な場合はアサート失敗）。 3. **正規性検証**: <code>TransactionIdIsNormal(xid)</code> マクロにより、正規のXIDであるかを確認します。<code>BootstrapTransactionId</code> や <code>FrozenTransactionId</code> などの非正規なIDである場合は、検証をスキップして即座にリターンします。 4. **メモリ同期**: <code>pg_memory_barrier()</code> を実行し、共有メモリ上の最新状態を確実に読み込めるようにします。 5. **範囲比較**: <code>TransamVariables</code> から <code>oldestXid</code> と <code>nextXid</code> を取得し、<code>xid</code> がその範囲内にあることを検証します。</p>
+<p>※なお、システム全体におけるトランザクションのライフサイクルの中で、どのような契機で本関数が呼び出されるかという完全なエンドツーエンドのフローは、提供された情報からは明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**許容範囲の不変性**: 検証対象の正規な <code>xid</code> は、常に <code>oldestXid</code> 以上かつ <code>nextXid</code> 以下でなければなりません（<code>oldestXid &lt;= xid &lt;= nextXid</code>）。</li>
+<li>**境界値の許容**: <code>xid</code> が <code>nextXid</code> と等しい場合も許容されます。これは、<code>ProcArray</code> から取得したXIDが、<code>nextXid</code> が更新される直前の値である可能性があるためです。</li>
+<li>**非正規IDの除外**: 非正規なXID（特別な意味を持つ固定ID）は、範囲検証の対象外（不変条件の適用外）として扱われます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ロックの非取得**: 本関数は <code>XidGenLock</code> などのロックを取得しません。これは呼び出し元がすでにロックを保持している可能性があるためですが、その代わりにアトミックな32bit読み取りとメモリバリア（<code>pg_memory_barrier</code>）に依存しています。</li>
+<li>**32bit比較の制限**: <code>nextXid</code> は内部的に64bit（<code>FullTransactionId</code>）で管理されていますが、本関数では下位32bit（<code>TransactionId</code>）のみを比較対象としています。そのため、ラップアラウンドを考慮した比較マクロ（<code>TransactionIdFollowsOrEquals</code> など）が正しく機能している必要があります。</li>
+<li>**開発ビルド限定**: 本関数はアサーションが有効な開発ビルドでのみ動作します。本番ビルドでは検証が行われないため、本番環境特有のタイミング問題などを検出することはできません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/transam/varsup.c</code>: 関数の具体的な実装および <code>TransamVariables</code> の操作ロジック。</li>
+<li><code>src/include/access/transam.h</code>: 関数宣言および関連するトランザクションID操作マクロ。</li>
+<li><code>src/backend/storage/ipc/procarray.c</code>: 本関数を呼び出す主要な箇所のコード。</li>
+</ul></body></html>

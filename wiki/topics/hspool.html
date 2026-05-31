@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/hspool.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HSpool</h1>
+<h2>概念</h2>
+<p><code>HSpool</code>（Hash Spool）は、PostgreSQL のハッシュインデックス構築（ビルド）時に、インデックスエントリを一時的に保持・ソートするためのスプール（一時格納領域）を管理する構造体です。</p>
+<p>ヘッダーファイル <code>src/include/access/hash.h</code> においては、構造体の内部定義を隠蔽した不透明な型（opaque struct）として <code>typedef struct HSpool HSpool;</code> と宣言されており、具体的な構造体のメンバー定義は <code>src/backend/access/hash/hashsort.c</code> にカプセル化されています。</p>
+<h2>なぜ重要か</h2>
+<p>ハッシュインデックスの構築において、インデックスエントリをバケット番号およびハッシュ値に基づいて事前にソートし、インデックスページへ順次挿入することで、ディスクアクセスの局所性を最適化し、構築パフォーマンスを大幅に向上させるために重要です。ソートを行わずにランダムな順序で挿入すると、ディスク I/O のオーバーヘッドが極めて大きくなります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/hash</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/hash.h#HSpool</code>**: 外部モジュール向けに公開されている不透明な構造体（前方宣言）。</li>
+<li>**<code>symbol:src/backend/access/hash/hashsort.c#HSpool</code>**: 実際のメンバー（<code>Tuplesortstate</code>, <code>Relation</code>, バケットマスクなど）を保持する具体的な構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>ハッシュインデックス構築時における <code>HSpool</code> を介したデータフローは以下の通りです。</p>
+<p>1. **初期化**: <code>hashbuild</code>（<code>src/backend/access/hash/hash.c</code>）から <code>_h_spoolinit</code> が呼び出され、<code>HSpool</code> 構造体が初期化されます。この際、内部の <code>Tuplesortstate</code> やバケットマスク情報（<code>high_mask</code>, <code>low_mask</code>, <code>max_buckets</code>）が設定されます。 2. **データの蓄積**: インデックス対象のタプルデータ（<code>ItemPointer</code>、<code>Datum</code> 値、<code>isnull</code> 配列）が <code>_h_spool</code> 関数を介して <code>sortstate</code> に投入され、一時的に蓄積されます。 3. **ソートと挿入**: <code>_h_indexbuild</code> が呼び出され、内部で <code>tuplesort_performsort</code> を用いてバケット番号順にタプルがソートされます。その後、ソートされたタプルを順次取り出し、<code>_hash_doinsert</code> を用いて実際のハッシュインデックスへ書き込みます。 4. **破棄**: 構築完了後、<code>_h_spooldestroy</code> を呼び出して <code>HSpool</code> および関連するリソース（<code>sortstate</code> など）を解放します。</p>
+<p>*注意: <code>hashbuild</code> や <code>_hash_doinsert</code> の詳細な内部処理、およびエラー発生時のクリーンアップ処理などのエンドツーエンドの完全なフローは、提供されたコンテキストからは明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**マスク情報の同期**: <code>HSpool</code> 内の <code>high_mask</code>、<code>low_mask</code>、<code>max_buckets</code> は、対象ハッシュインデックスのメタデータ管理と完全に同期していなければなりません。</li>
+<li>**リソース管理のライフサイクル**: <code>_h_spoolinit</code> で初期化された <code>HSpool</code> は、処理終了時に必ず <code>_h_spooldestroy</code> によって確実に破棄されなければなりません。</li>
+<li>**カプセル化の維持**: <code>HSpool</code> は不透明な構造体として定義されているため、<code>hashsort.c</code> 以外の外部モジュールから構造体の内部フィールド（<code>sortstate</code> など）に直接アクセスしてはならず、必ず <code>_h_</code> 接頭辞を持つ専用の関数群を介して操作しなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ消費量の増大**: 大規模なインデックス作成時、<code>maintenance_work_mem</code> の制限により、ソート処理（<code>Tuplesortstate</code>）に伴うメモリ消費量が増大し、リソースが逼迫する可能性があります。</li>
+<li>**メタデータの不整合**: バケットマスク（<code>high_mask</code>, <code>low_mask</code>）の計算がインデックスのメタデータと不整合を起こすと、挿入先バケットを正しく特定できなくなる可能性があります。</li>
+<li>**直接アクセスの試み**: <code>hash.h</code> をインクルードする外部ファイルから <code>HSpool</code> のメンバに直接アクセスしようとすると、不透明な構造体であるためコンパイルエラーになります。必ず提供されている API 関数を使用する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/access/hash/hashsort.c</code>**: 具体的な <code>HSpool</code> 構造体の定義と、<code>_h_spoolinit</code>、<code>_h_spool</code>、<code>_h_indexbuild</code>、<code>_h_spooldestroy</code> などの実装。</li>
+<li>**<code>src/include/access/hash.h</code>**: 外部公開されている <code>HSpool</code> の型宣言および関連する API 関数のプロトタイプ宣言。</li>
+</ul></body></html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/memoizepath.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MemoizePath</h1>
+<h2>概念</h2>
+<p><code>MemoizePath</code> は、PostgreSQL のクエリプランナにおいて、Nested Loop 結合の内部リレーション（inner relation）の再スキャンコストを削減するために導入される実行パス（<code>Path</code>）です。パラメータ化されたクエリや Lateral 参照などの実行結果をキャッシュ（メモ化）し、同一のキーでの再評価を回避する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>Nested Loop 結合では、外部リレーション（outer relation）の各行に対して内部リレーションの走査が繰り返し実行されます。この際、内部リレーションがパラメータ化されている（外部リレーションの値を参照している）場合、同じパラメータ値に対して何度も同じ走査が発生し、非効率になります。<code>MemoizePath</code> を適用して結果をキャッシュすることで、重複するパラメータ値に対する再スキャンコストを劇的に削減し、クエリ全体の実行パフォーマンスを向上させることができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/optimizer/path</code></li>
+<li><code>module:src/backend/optimizer/util</code></li>
+<li><code>module:src/include/nodes</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/nodes/pathnodes.h#MemoizePath</code>: <code>Memoize</code> パスを表現するデータ構造。</li>
+<li><code>symbol:src/backend/optimizer/path/joinpath.c#get_memoize_path</code>: 結合処理において <code>Memoize</code> パスを生成すべきかを判定し、条件を満たす場合にパスを構築する関数。</li>
+<li><code>symbol:src/backend/optimizer/util/pathnode.c#create_memoize_path</code>: <code>MemoizePath</code> インスタンスを実際に生成して初期化する低レベル関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **結合パスの検討**: プランナが結合パス（<code>add_paths_to_joinrel</code> 等の文脈）を生成する際、Nested Loop 結合の内部パスに対して <code>get_memoize_path</code> を呼び出します。 2. **適用可能性の判定**: <code>get_memoize_path</code> 内で、<code>enable_memoize</code> の有効性、外部パスの行数、キャッシュキー（Lateral 変数やパラメータ化句など）の存在、揮発性関数の有無、ハッシュ演算子の可用性などを検証します。 3. **パスの生成**: すべての条件を満たした場合、<code>create_memoize_path</code> を呼び出して <code>MemoizePath</code> を作成し、呼び出し元に返します。 4. **プランへの統合**: 生成された <code>MemoizePath</code> は、最終的な実行プラン（<code>Memoize</code> 計画ノード）へと変換されます。</p>
+<p>*注意: <code>create_memoize_path</code> の内部実装や、<code>MemoizePath</code> から実際の実行プラン（<code>Memoize</code> ノード）への変換、および実行時（Executor）におけるキャッシュの具体的なルックアップ・更新のライフサイクルなど、詳細なエンドツーエンドの流れは提供されたコンテキストからは未確定です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効化フラグ**: <code>enable_memoize</code> 設定が有効（真）でなければなりません。</li>
+<li>**外部パスの行数**: 外部パスの推定行数が 2 以上である必要があります（1 行のみの場合はキャッシュの恩恵がないため）。</li>
+<li>**キャッシュキーの存在**: 内部パスまたはリレーションに、キャッシュキーとして利用可能なパラメータ化句、Lateral 変数、または <code>PlaceHolderVar</code> が存在しなければなりません。</li>
+<li>**非揮発性**: 内部リレーションのターゲットリストや制限句、およびパラメータ化されたパスの制限句に、揮発性関数（volatile functions）が含まれていてはなりません（キャッシュの安全性を保証するため）。</li>
+<li>**ハッシュ演算子の存在**: キャッシュキーとなるパラメータに対して、等価性を判定するためのハッシュ演算子（<code>paraminfo_get_equal_hashops</code> で取得可能）が存在しなければなりません。</li>
+<li>**一意性制約と完全性**: <code>SEMI</code> または <code>ANTI</code> 結合の場合、<code>inner_unique</code> が真でなければなりません。また、<code>inner_unique</code> が真の結合においては、結合条件のすべてがパラメータ化されている必要があります（完全なキャッシュエントリ完了を保証するため）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**キャッシュキーの欠如**: 内部リレーションにキャッシュ可能なキー（パラメータ化された句など）が存在しない場合、<code>get_memoize_path</code> は <code>NULL</code> を返し、メモ化は適用されません。</li>
+<li>**揮発性関数による無効化**: 制限句などに <code>random()</code> などの揮発性関数が1つでも含まれていると、キャッシュの安全性が担保できないため、メモ化パスの生成は即座にスキップされます。</li>
+<li>**ハッシュ演算子の未定義**: キャッシュキーに対応するデータ型に適切なハッシュ演算子が定義されていない場合、ハッシュベースのキャッシュが機能しないため、パス生成は行われません。</li>
+<li>**結合タイプと一意性の不一致**: <code>SEMI</code>/<code>ANTI</code> 結合において <code>inner_unique</code> が真でない場合、または <code>inner_unique</code> が真であっても結合条件の一部がパラメータ化されていない場合は、キャッシュの完了判定が困難になるため、生成が却下されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/optimizer/path/joinpath.c</code>: <code>get_memoize_path</code> の実装および結合パス生成ロジック。</li>
+<li><code>src/backend/optimizer/util/pathnode.c</code>: <code>create_memoize_path</code> の実装。</li>
+<li><code>src/include/nodes/pathnodes.h</code>: <code>MemoizePath</code> 構造体の定義。</li>
+</ul></body></html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/backup/basebackup_incremental.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/backup/basebackup_incremental.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの増分バックアップ（Incremental Backup）をサポートするための補助機能を提供します。バックアップの実行自体は <code>basebackup.c</code> が担いますが、本ファイルは先行するバックアップの「バックアップマニフェスト」を解析し、どのブロックが変更されたかを特定するためのメタデータ処理を専任します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/backup</code> モジュールにおいて、増分バックアップの準備フェーズを抽象化する役割を持ちます。WALサマリー（<code>walsummary.c</code>）と連携し、過去のバックアップ状態と現在のデータベース状態の差分を計算するための基盤を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**マニフェスト解析**: クライアントから提供されるバックアップマニフェスト（JSON形式）をインクリメンタルに解析し、WAL範囲やファイル情報を抽出する。</li>
+<li>**変更ブロックの特定**: WALサマリーを読み込み、<code>BlockRefTable</code> を構築して、どのファイル・どのブロックが変更されたかを追跡する。</li>
+<li>**バックアップ戦略の決定**: 各ファイルに対し、フルバックアップを行うか、変更ブロックのみの増分バックアップを行うかを判定する。</li>
+<li>**メタデータ管理**: 増分バックアップに必要なヘッダーサイズやファイルパスの計算を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>IncrementalBackupInfo</code>: 増分バックアップのメタデータ（マニフェスト情報、ブロック参照テーブル）を保持する主要構造体。</li>
+<li><code>CreateIncrementalBackupInfo</code>: <code>IncrementalBackupInfo</code> の初期化とパーサーの設定を行う。</li>
+<li><code>PrepareForIncrementalBackup</code>: マニフェスト解析完了後、WALサマリーを統合して変更ブロックテーブルを構築する準備関数。</li>
+<li><code>GetFileBackupMethod</code>: 特定のファイルに対してフルバックアップか増分バックアップかを判定するロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AppendIncrementalManifestData</code></li>
+<li><code>FinalizeIncrementalManifest</code></li>
+<li><code>GetIncrementalFilePath</code></li>
+<li><code>GetIncrementalFileSize</code></li>
+<li><code>GetIncrementalHeaderSize</code></li>
+<li><code>backup_file_entry</code></li>
+<li><code>backup_wal_range</code></li>
+<li><code>hash_string_pointer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>CreateIncrementalBackupInfo</code> で解析用コンテキストを作成。 2. **データ供給**: <code>AppendIncrementalManifestData</code> を繰り返し呼び出し、マニフェストの断片を解析。 3. **完了**: <code>FinalizeIncrementalManifest</code> で解析を終了。 4. **準備**: <code>PrepareForIncrementalBackup</code> が呼び出され、以下の処理を実行：</p>
+<ul>
+<li>マニフェスト内のWAL範囲とサーバーのタイムライン履歴を照合。</li>
+<li>必要なWALサマリーファイルを特定し、<code>BlockRefTable</code> に変更ブロック情報をマージ。</li>
+<p>5. **判定**: バックアップ実行中、<code>GetFileBackupMethod</code> が各ファイルに対して呼び出され、変更の有無に基づきバックアップ手法を決定。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>backup/basebackup_incremental.h</code>: 公開API定義。</li>
+<li><code>postmaster/walsummarizer.h</code> / <code>backup/walsummary.h</code>: WALサマリーの取得と解析。</li>
+<li><code>common/blkreftable.h</code>: 変更ブロック追跡用テーブルの操作。</li>
+<li><code>common/parse_manifest.h</code>: JSONマニフェストの解析。</li>
+<li><code>lib/simplehash.h</code>: ファイル名管理用ハッシュテーブル。</li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/backup/basebackup.c</code>: 本ファイルのAPIを利用して実際のバックアップデータストリームを生成するメインロジック。</li>
+<li><code>src/backend/backup/walsummary.c</code>: WALサマリーの生成と読み込みを担当。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「増分バックアップの準備」に特化しており、実際のデータ転送ロジックは含みません。</li>
+<li><code>BlockRefTable</code> はメモリを消費するため、大規模なデータベースで増分バックアップを行う際はメモリ使用量に注意が必要です。</li>
+<li><code>GetFileBackupMethod</code> 内の「90%ルール」は、変更ブロック数が多すぎる場合に増分バックアップのオーバーヘッドを避けてフルバックアップに切り替えるためのヒューリスティックです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__backup_wal_range.html" target="wiki-view"><code>backup_wal_range</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__backup_file_entry.html" target="wiki-view"><code>backup_file_entry</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__IncrementalBackupInfo.html" target="wiki-view"><code>IncrementalBackupInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__CreateIncrementalBackupInfo.html" target="wiki-view"><code>CreateIncrementalBackupInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__AppendIncrementalManifestData.html" target="wiki-view"><code>AppendIncrementalManifestData</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__FinalizeIncrementalManifest.html" target="wiki-view"><code>FinalizeIncrementalManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__PrepareForIncrementalBackup.html" target="wiki-view"><code>PrepareForIncrementalBackup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__GetIncrementalFilePath.html" target="wiki-view"><code>GetIncrementalFilePath</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__GetFileBackupMethod.html" target="wiki-view"><code>GetFileBackupMethod</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__GetIncrementalHeaderSize.html" target="wiki-view"><code>GetIncrementalHeaderSize</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__GetIncrementalFileSize.html" target="wiki-view"><code>GetIncrementalFileSize</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_incremental_c__hash_string_pointer.html" target="wiki-view"><code>hash_string_pointer</code></a></li>
+</ul></body></html>

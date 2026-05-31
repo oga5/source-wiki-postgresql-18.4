@@ -1,0 +1,122 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/postmaster.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/postmaster.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL サーバーのライフサイクルを司るメインプロセス（Postmaster）の司令塔です。サーバーの起動・停止、クライアント接続の受付、およびバックグラウンド補助プロセスの生成・監視・リカバリを統括します。</p>
+<h2>モジュール内での役割</h2>
+<p>Postmaster サブシステムの中心であり、他の補助プロセス（<code>checkpointer.c</code>, <code>autovacuum.c</code> 等）をフォークし、共有メモリやシグナルを通じてシステム全体の状態遷移を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス管理**: 子プロセスのフォーク、死活監視（<code>SIGCHLD</code>）、および異常終了時のリカバリ（<code>HandleChildCrash</code>）。</li>
+<li>**状態遷移**: 起動、リカバリ、稼働、シャットダウンの各フェーズ管理（<code>PMState</code>）。</li>
+<li>**接続受付**: TCP/Unix ソケットの監視と、接続要求に対するバックエンドプロセスの生成。</li>
+<li>**リソース保護**: データディレクトリのロック管理、共有メモリの初期化、およびプロセス間通信の基盤提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li>**状態管理**:</li>
+<li><code>PMState</code>: サーバーの現在の稼働状態（<code>PM_RUN</code>, <code>PM_STARTUP</code> 等）。</li>
+<li><code>Shutdown</code>: シャットダウンのモード（Smart, Fast, Immediate）。</li>
+<li><code>FatalError</code>: 異常終了からのリカバリ中であることを示すフラグ。</li>
+<li>**プロセス管理**:</li>
+<li><code>ActiveChildList</code>: 稼働中の全子プロセスを管理するリスト。</li>
+<li><code>PMChild</code>: 子プロセスの情報を保持する構造体。</li>
+<li><code>StartChildProcess()</code>: 指定した型の補助プロセスを起動する関数。</li>
+<li>**シグナル・イベント**:</li>
+<li><code>ServerLoop()</code>: メインのイベントループ。<code>WaitEventSet</code> を使用してソケットとシグナルを多重監視。</li>
+<li><code>handle_pm_*_signal()</code>: シグナルハンドラ。シグナル受信をフラグ化し、ラッチをセットしてメインループへ通知。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BackendTypeMask</code></li>
+<li><code>CloseServerPorts</code></li>
+<li><code>ConfigurePostmasterWaitSet</code></li>
+<li><code>CreateOptsFile</code></li>
+<li><code>DetermineSleepTime</code></li>
+<li><code>InitPostmasterDeathWatchHandle</code></li>
+<li><code>InitProcessGlobals</code></li>
+<li><code>PostmasterMain</code></li>
+<li><code>StartupStatusEnum</code></li>
+<li><code>getInstallationPaths</code></li>
+<li><code>win32_deadchild_waitinfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PostmasterMain</code> が起動し、GUC 設定、データディレクトリのロック、共有メモリの確保を行う。 2. **メインループ**: <code>ServerLoop</code> が <code>WaitEventSet</code> で待機。</p>
+<ul>
+<li>**接続要求**: <code>AcceptConnection</code> 後、<code>BackendStartup</code> が子プロセスをフォーク。</li>
+<li>**シグナル**: <code>SIGCHLD</code> 受信時、<code>process_pm_child_exit</code> が終了したプロセスを回収し、必要に応じて再起動やリカバリをトリガー。</li>
+<p>3. **状態遷移**: <code>PostmasterStateMachine</code> が現在の <code>pmState</code> と <code>Shutdown</code> モードに基づき、次に実行すべきアクション（プロセスの停止・起動）を決定。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**基盤**: <code>postgres.h</code>, <code>storage/pg_shmem.h</code>, <code>storage/pmsignal.h</code></li>
+<li>**補助プロセス**: <code>postmaster/syslogger.h</code>, <code>postmaster/autovacuum.h</code>, <code>replication/walsender.h</code> 等</li>
+<li>**OS/通信**: <code>sys/socket.h</code>, <code>signal.h</code>, <code>unistd.h</code>, <code>libpq/pqsignal.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>dns_sd.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>pg_getopt.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postmaster/bgworker_internals.h</code></li>
+<li><code>postmaster/pgarch.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>pthread.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/io_worker.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>sys/param.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>systemd/sd-daemon.h</code></li>
+<li><code>tcop/backend_startup.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/datetime.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pidfile.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/postmaster.h</code>: 公開構造体（<code>PMChild</code>）と定数の定義。</li>
+<li><code>src/backend/postmaster/launch_backend.c</code>: プロセス生成の抽象化。</li>
+<li><code>src/backend/postmaster/pmchild.c</code>: 子プロセス管理のユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: Postmaster は共有メモリを直接操作しません。これは、バックエンドのクラッシュが Postmaster 自体のクラッシュを誘発するのを防ぐためです。</li>
+<li>**シグナル処理**: シグナルハンドラ内では <code>ereport</code> 等の複雑な処理は行わず、フラグを立てて <code>SetLatch</code> を呼び出すことでメインループに処理を委譲しています。</li>
+<li>**プラットフォーム依存**: <code>EXEC_BACKEND</code>（Windows 等）と <code>fork()</code> ベースのシステムでプロセス起動ロジックが分岐します。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であるため、個別の補助プロセスの詳細な起動ロジックや、特定のプラットフォーム（Windows）固有の複雑な waitpid 実装の詳細は省略しています。これらは <code>pmchild.c</code> や各補助プロセスのソースを参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__BackendTypeMask.html" target="wiki-view"><code>BackendTypeMask</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__StartupStatusEnum.html" target="wiki-view"><code>StartupStatusEnum</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__PMState.html" target="wiki-view"><code>PMState</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__win32_deadchild_waitinfo.html" target="wiki-view"><code>win32_deadchild_waitinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__PostmasterMain.html" target="wiki-view"><code>PostmasterMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__CloseServerPorts.html" target="wiki-view"><code>CloseServerPorts</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__getInstallationPaths.html" target="wiki-view"><code>getInstallationPaths</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__DetermineSleepTime.html" target="wiki-view"><code>DetermineSleepTime</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__ConfigurePostmasterWaitSet.html" target="wiki-view"><code>ConfigurePostmasterWaitSet</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__InitProcessGlobals.html" target="wiki-view"><code>InitProcessGlobals</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__CreateOptsFile.html" target="wiki-view"><code>CreateOptsFile</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__postmaster_c__InitPostmasterDeathWatchHandle.html" target="wiki-view"><code>InitPostmasterDeathWatchHandle</code></a></li>
+</ul></body></html>

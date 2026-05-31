@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/json.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/json.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける <code>json</code> 型の入出力、変換、および集約処理を実装するコアモジュールです。JSONデータの妥当性検証、型変換（DatumからJSONへのシリアライズ）、およびJSONオブジェクト内のキー重複チェック機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュール群の一部として、JSONデータ型に対するSQLインターフェースを定義します。<code>jsonb</code> 型とは異なり、テキストベースのJSON処理に特化しており、主に <code>json</code> 型の型変換関数や集約関数（<code>json_agg</code>, <code>json_object_agg</code>）のバックエンド実装を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**JSONシリアライズ**: SQLの各データ型（Datum）をJSON形式の文字列へ変換する。</li>
+<li>**キー重複チェック**: JSONオブジェクト構築時や解析時に、同一キーの存在を高速に検出する。</li>
+<li>**集約処理**: <code>json_agg</code> や <code>json_object_agg</code> の状態管理と最終的なJSON文字列の生成。</li>
+<li>**文字列エスケープ**: JSON仕様に従った特殊文字のエスケープ処理（SIMD最適化を含む）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>datum_to_json_internal</code>: 任意のDatumをJSON形式に変換する中心的な再帰関数。</li>
+<li><code>escape_json_with_len</code>: SIMD命令を活用して高速に文字列をエスケープする関数。</li>
+<li><code>JsonAggState</code>: 集約関数実行中の状態を保持する構造体。</li>
+<li><code>JsonUniqueParsingState</code>: JSON解析時のキー重複チェック用コンテキスト。</li>
+<li><code>json_in</code> / <code>json_out</code>: <code>json</code> 型の標準的な入出力関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>JsonEncodeDateTime</code></li>
+<li><code>JsonUniqueBuilderState</code></li>
+<li><code>JsonUniqueCheckState</code></li>
+<li><code>JsonUniqueHashEntry</code></li>
+<li><code>JsonUniqueStackEntry</code></li>
+<li><code>json_recv</code></li>
+<li><code>json_send</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **変換**: SQL関数（<code>to_json</code>等）が呼び出されると、<code>datum_to_json_internal</code> が型カテゴリ（<code>JsonTypeCategory</code>）に基づいて適切な変換処理へ分岐します。 2.  **再帰**: 配列や複合型（レコード）の場合、<code>array_to_json_internal</code> や <code>composite_to_json</code> が再帰的に呼び出され、ネストされた構造を構築します。 3.  **集約**: <code>json_agg_transfn</code> 等の遷移関数が <code>JsonAggState</code> を更新し、最終的に <code>json_agg_finalfn</code> がバッファを <code>text</code> 型として返します。 4.  **検証**: <code>json_validate</code> は <code>JsonLexContext</code> を使用して構文解析を行い、必要に応じてハッシュテーブル（<code>JsonUniqueCheckState</code>）を用いてキーの重複を検証します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQL環境。</li>
+<li><code>utils/json.h</code>: 公開ヘッダー。</li>
+<li><code>utils/jsonfuncs.h</code>: JSON解析・字句解析の共通機能。</li>
+<li><code>port/simd.h</code>: 高速エスケープ処理のためのSIMD命令セット。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュとカテゴリ判定。</li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/datetime.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/jsonb.c</code>: バイナリ形式のJSONB型実装。</li>
+<li><code>src/backend/utils/adt/jsonfuncs.c</code>: JSONパスやJSON変換の補助関数群。</li>
+<li><code>src/include/utils/json.h</code>: 本ファイルの関数宣言。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**SIMD最適化**: <code>escape_json_with_len</code> はパフォーマンス向上のためSIMD命令を使用しています。この領域を修正する場合は、ベクトル演算の境界条件に注意してください。</li>
+<li>**メモリ管理**: 集約関数では <code>MemoryContext</code> の切り替えが頻繁に行われます。<code>JsonAggState</code> のライフサイクルは集約の実行期間に依存するため、メモリリークや不正なポインタ参照に注意が必要です。</li>
+<li>**キー重複**: <code>json_object_agg</code> 等でキー重複チェックを行う際、ハッシュテーブルのキーとして文字列をコピーする処理が含まれています。これはバッファの再配置によるポインタ無効化を防ぐための設計です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonUniqueCheckState.html" target="wiki-view"><code>JsonUniqueCheckState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonUniqueHashEntry.html" target="wiki-view"><code>JsonUniqueHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonUniqueStackEntry.html" target="wiki-view"><code>JsonUniqueStackEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonUniqueParsingState.html" target="wiki-view"><code>JsonUniqueParsingState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonUniqueBuilderState.html" target="wiki-view"><code>JsonUniqueBuilderState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonAggState.html" target="wiki-view"><code>JsonAggState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__json_in.html" target="wiki-view"><code>json_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__json_out.html" target="wiki-view"><code>json_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__json_send.html" target="wiki-view"><code>json_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__json_recv.html" target="wiki-view"><code>json_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__datum_to_json_internal.html" target="wiki-view"><code>datum_to_json_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__json_c__JsonEncodeDateTime.html" target="wiki-view"><code>JsonEncodeDateTime</code></a></li>
+</ul></body></html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/latch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/latch.c</h1>
+<h2>概要</h2>
+<p><code>latch.c</code> は、PostgreSQL におけるプロセス間通信（IPC）および同期のための「ラッチ（Latch）」メカニズムを実装するファイルです。ラッチは、プロセスが特定のイベント（シグナルや共有メモリ上のフラグ更新など）を待機してスリープし、イベント発生時に効率的に起床するための軽量な同期プリミティブです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールにおいて、プロセスが待機状態に入る際の標準的なインターフェースを提供します。<code>waiteventset.c</code> と密接に連携し、OS 固有の待機システムコール（<code>epoll</code>, <code>kqueue</code>, <code>select</code> 等）を抽象化して、シグナルハンドラや他プロセスからの通知を確実に受け取れるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ラッチのライフサイクル管理**: ローカルラッチおよび共有ラッチの初期化、所有権の割り当て（<code>OwnLatch</code>）、解放（<code>DisownLatch</code>）。</li>
+<li>**待機と通知**: <code>WaitLatch</code> による待機処理と、<code>SetLatch</code> による他プロセス（または自身）への起床通知。</li>
+<li>**競合の回避**: メモリバリアを用いたフラグ更新の順序保証と、シグナルハンドラ内での安全な通知処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>Latch</code>: ラッチの状態を保持する構造体。<code>is_set</code>（状態）、<code>owner_pid</code>（所有者）、<code>is_shared</code>（共有フラグ）を含む。</li>
+<li><code>SetLatch(Latch *latch)</code>: ラッチをセットし、待機中のプロセスを起床させる。シグナルハンドラから呼び出し可能。</li>
+<li><code>WaitLatch(...)</code>: ラッチがセットされるか、タイムアウト、またはポストマスターの終了を待機する。</li>
+<li><code>ResetLatch(Latch *latch)</code>: ラッチをクリアする。待機ループの開始時に呼び出す必要がある。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DisownLatch</code></li>
+<li><code>InitLatch</code></li>
+<li><code>InitSharedLatch</code></li>
+<li><code>InitializeLatchWaitSet</code></li>
+<li><code>OwnLatch</code></li>
+<li><code>ResetLatch</code></li>
+<li><code>SetLatch</code></li>
+<li><code>WaitLatch</code></li>
+<li><code>WaitLatchOrSocket</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **待機側**: <code>ResetLatch</code> で状態をリセットし、<code>WaitLatch</code> を呼び出して待機状態へ移行します。<code>WaitLatch</code> は内部で <code>WaitEventSet</code> を使用し、OS の待機プリミティブに登録されます。 2. **通知側**: <code>SetLatch</code> が呼び出されると、<code>is_set</code> フラグが真になり、必要に応じて <code>kill()</code> 等のシグナル送信や Windows の <code>SetEvent</code> を通じて待機側プロセスを起床させます。 3. **メモリバリア**: <code>SetLatch</code> と <code>ResetLatch</code> の前後で <code>pg_memory_barrier()</code> を使用し、フラグの更新が他プロセスから正しく観測されることを保証します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/latch.h</code>: ラッチの定義とインターフェース。</li>
+<li><code>storage/waiteventset.h</code>: 待機イベントセットの管理。</li>
+<li><code>port/atomics.h</code>: メモリバリア操作。</li>
+<li><code>miscadmin.h</code>: プロセス ID やポストマスター状態の取得。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/latch.h</code>: ラッチの利用パターンや設計思想が詳細に記述されています。</li>
+<li><code>src/backend/storage/ipc/waiteventset.c</code>: <code>WaitLatch</code> が内部で利用する基盤実装。</li>
+<li><code>src/backend/storage/ipc/proc.c</code>: プロセス固有のラッチ（<code>PGPROC.procLatch</code>）の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**コーディングパターン**: <code>WaitLatch</code> を使用する際は、必ず <code>ResetLatch</code> をループの適切な位置（通常は <code>WaitLatch</code> の前）に配置してください。これを怠ると、シグナルが <code>ResetLatch</code> の直前に届いた場合にイベントを見逃す競合が発生します。</li>
+<li>**シグナルハンドラ**: <code>SetLatch</code> はシグナルハンドラから呼び出されることを想定しています。そのため、内部で <code>errno</code> を破壊しないよう注意が払われていますが、呼び出し側でも必要に応じて <code>errno</code> の保存・復元を行うのが安全です。</li>
+<li>**共有ラッチ**: 共有メモリ上のラッチを扱う際は、初期化順序と所有権の移譲に注意してください。<code>OwnLatch</code> はロックを伴わないため、呼び出し側の排他制御が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitializeLatchWaitSet.html" target="wiki-view"><code>InitializeLatchWaitSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitLatch.html" target="wiki-view"><code>InitLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitSharedLatch.html" target="wiki-view"><code>InitSharedLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__OwnLatch.html" target="wiki-view"><code>OwnLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__DisownLatch.html" target="wiki-view"><code>DisownLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__WaitLatch.html" target="wiki-view"><code>WaitLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__WaitLatchOrSocket.html" target="wiki-view"><code>WaitLatchOrSocket</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__SetLatch.html" target="wiki-view"><code>SetLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__ResetLatch.html" target="wiki-view"><code>ResetLatch</code></a></li>
+</ul></body></html>

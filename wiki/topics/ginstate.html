@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/ginstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GinState</h1>
+<h2>概念</h2>
+<p><code>GinState</code> は、GIN（Generalized Inverted Index）インデックスの操作（挿入、走査、クリーンアップ、検証など）において、実行時の状態管理およびメタデータ保持を行うための主要な構造体です。インデックスの各カラムに対応する演算子クラス（OpClass）のサポート関数（<code>extractValue</code>, <code>extractQuery</code>, <code>consistent</code> など）や型情報、照合順序（Collation）などをキャッシュし、実行時のオーバーヘッドを削減する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>GIN インデックスの操作では、演算子クラスで定義された各種サポート関数を頻繁に呼び出す必要があります。<code>GinState</code> は、これらの関数呼び出しに必要な <code>FmgrInfo</code> やタプル記述子（<code>TupleDesc</code>）などのメタデータをキャッシュすることで、関数ルックアップのオーバーヘッドを削減し、効率的なインデックス操作を実現するために極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/gin</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/gin_private.h#GinState</code>** (構造体)</li>
+<p>GIN インデックスの実行時状態やサポート関数のキャッシュを保持する主要な構造体。</p>
+<li>**<code>symbol:src/backend/access/gin/ginutil.c#initGinState</code>** (関数)</li>
+<p><code>GinState</code> 構造体を初期化し、インデックスの OpClass からサポート関数や型情報を取得してキャッシュする関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化のトリガー** インデックス操作（挿入、走査、検証など）の開始時に、呼び出し元（<code>gininsert</code> や <code>gingetbitmap</code> など）が <code>GinState</code> 構造体のメモリ領域を確保し、<code>initGinState</code> を呼び出します。 2. **メタデータとサポート関数のキャッシュ** <code>initGinState</code> は、インデックスの属性（カラム）ごとにループ処理を行い、必要なサポート関数（<code>extractValue</code>, <code>extractQuery</code>、および <code>consistent</code> または <code>triConsistent</code>）や比較関数を検索・取得し、<code>GinState</code> 内の <code>FmgrInfo</code> 配列にキャッシュします。また、部分一致機能の可否（<code>canPartialMatch</code>）や照合順序（<code>supportCollation</code>）も設定します。 3. **実行時の関数呼び出し** インデックスの操作中、<code>GinState</code> にキャッシュされた <code>FmgrInfo</code> を経由して演算子クラスのサポート関数が直接呼び出され、キーの抽出や一致判定が効率的に実行されます。</p>
+<p>※なお、インデックス操作全体の詳細なライフサイクルや、個々の操作における具体的な遷移の全容は、提供されたモジュール情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**必須サポート関数の存在**</li>
+<p>インデックスの OpClass は、必須のサポート関数（<code>extractValue</code>, <code>extractQuery</code>、および <code>consistent</code> または <code>triConsistent</code> のいずれか）を提供していなければなりません。これらが存在しない場合、<code>initGinState</code> は <code>elog(ERROR)</code> により処理を中断します。</p>
+<li>**カラム数の制限**</li>
+<p>インデックスのカラム数は <code>INDEX_MAX_KEYS</code> を超えてはなりません。</p>
+<li>**タプル記述子（TupleDesc）の構成**</li>
+<li>単一カラムインデックスの場合、<code>oneCol</code> は <code>true</code> となり、<code>origTupdesc</code> はリーフタプルを直接記述します。</li>
+<li>複数カラムインデックスの場合、リーフタプルはカラム番号とキーデータで構成され、<code>tupdesc[i]</code> は <code>(int2, keytype)</code> の形式を記述します。</li>
+<li>**メモリコンテキストの整合性**</li>
+<p><code>initGinState</code> でキャッシュされる <code>FmgrInfo</code> などのメモリは <code>CurrentMemoryContext</code> に割り当てられるため、このコンテキストの生存期間はキャッシュされた情報の利用期間に適したものでなければなりません。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリコンテキストの生存期間**</li>
+<p><code>GinState</code> の初期化時に割り当てられるメモリは <code>CurrentMemoryContext</code> に依存するため、呼び出し元のメモリコンテキストが短命である場合、キャッシュされた <code>FmgrInfo</code> が無効化されて不正アクセスを引き起こす危険性があります。</p>
+<li>**サポート関数の欠落**</li>
+<p>演算子クラスに必要なサポート関数が定義されていない場合、初期化時（<code>initGinState</code>）にエラーが発生するか、実行時の <code>FmgrInfo</code> 呼び出し時にエラーが発生します。</p>
+<li>**構造体変更の影響範囲**</li>
+<p><code>GinState</code> は GIN インデックスの内部実装（<code>gininsert.c</code> や <code>ginget.c</code> など）で広範に参照されているため、フィールドの追加や変更を行うと、多くの関連コードに影響を及ぼします。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/access/gin/ginutil.c</code>**</li>
+<p><code>initGinState</code> の具体的な初期化アルゴリズムとサポート関数のルックアップ処理が実装されています。</p>
+<li>**<code>src/include/access/gin_private.h</code>**</li>
+<p><code>GinState</code> 構造体の定義と、保持される各フィールドの詳細が記述されています。</p>
+<li>**<code>src/backend/access/gin/README</code>**</li>
+<p>リーフタプルの構造と <code>tupdesc</code> のマッピング関係の詳細な設計が記載されています。</p>
+</ul></body></html>

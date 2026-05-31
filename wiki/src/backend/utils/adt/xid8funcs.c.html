@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/xid8funcs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/xid8funcs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの内部トランザクションID（<code>FullTransactionId</code>、通称 <code>xid8</code>）をユーザーレベルで操作・参照するための関数群を提供します。従来の32ビットXIDの制限を克服し、64ビットのトランザクションIDを安全に扱うためのインターフェースを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、SQL関数として呼び出される型変換やデータ操作機能を提供します。特に、トランザクションの可視性判定やスナップショットの外部表現（入出力）を担う、システム管理およびデバッグ用のユーティリティ層に位置します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スナップショットの管理**: <code>pg_snapshot</code> 型の定義、およびそのシリアライズ・デシリアライズ（入出力関数）。</li>
+<li>**可視性判定**: 指定された <code>xid8</code> がスナップショット内で可視かどうかを判定するロジックの提供。</li>
+<li>**トランザクション状態の公開**: 現在のトランザクションIDの取得や、過去のトランザクション状態（コミット/アボート/進行中）の問い合わせ機能。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_snapshot</code>: 64ビットトランザクションIDを保持するスナップショット構造体。</li>
+<li><code>FullTransactionId</code>: 64ビットのトランザクションID。エポック（上位32ビット）を含む。</li>
+<li><code>pg_current_snapshot()</code>: 現在のトランザクションスナップショットを <code>pg_snapshot</code> 型で取得する関数。</li>
+<li><code>pg_xact_status()</code>: 指定した <code>xid8</code> の状態を文字列で返す関数。</li>
+<li><code>TransactionIdInRecentPast()</code>: 指定した <code>xid8</code> がCLOG（Commit Log）から参照可能かを確認する内部ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>TransactionIdInRecentPast</code></li>
+<li><code>buf_add_txid</code></li>
+<li><code>buf_finalize</code></li>
+<li><code>buf_init</code></li>
+<li><code>cmp_fxid</code></li>
+<li><code>is_visible_fxid</code></li>
+<li><code>parse_snapshot</code></li>
+<li><code>pg_current_snapshot</code></li>
+<li><code>pg_current_xact_id</code></li>
+<li><code>pg_current_xact_id_if_assigned</code></li>
+<li><code>sort_snapshot</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **スナップショット生成**: <code>pg_current_snapshot</code> は <code>GetActiveSnapshot()</code> から情報を取得し、<code>FullTransactionId</code> に変換後、<code>sort_snapshot</code> でソートと重複排除を行い、<code>pg_snapshot</code> 構造体に格納します。 2.  **可視性判定**: <code>is_visible_fxid</code> は、対象の <code>xid8</code> がスナップショットの <code>xmin</code>/<code>xmax</code> 範囲内にあるかを確認し、範囲内の場合は <code>xip</code> 配列をバイナリサーチ（または線形探索）して進行中かどうかを判定します。 3.  **状態問い合わせ**: <code>pg_xact_status</code> は <code>XactTruncationLock</code> を取得し、<code>TransactionIdInRecentPast</code> でCLOGの有効性を確認した後、<code>TransactionIdIsInProgress</code> や <code>TransactionIdDidCommit</code> を用いて状態を特定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/transam.h</code>, <code>access/xact.h</code>: トランザクション管理の基本機能。</li>
+<li><code>storage/procarray.h</code>, <code>storage/lwlock.h</code>: プロセス配列とロック管理。</li>
+<li><code>utils/xid8.h</code>: <code>FullTransactionId</code> 関連の定義。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ入出力用。</li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/transam.h</code>: <code>FullTransactionId</code> の定義元。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションのライフサイクル管理。</li>
+<li><code>src/backend/utils/adt/xid.c</code>: 従来の32ビットXID操作関数（本ファイルはこれの64ビット版への移行を意図している）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**サブトランザクションの扱い**: 本ファイルで公開されるのはトップレベルのトランザクションIDのみです。サブトランザクションIDは親と関連付けられない可能性があるため、意図的に除外されています。</li>
+<li>**ロックの重要性**: <code>pg_xact_status</code> 等でCLOGを参照する際は、CLOGの切り捨てを防ぐために <code>XactTruncationLock</code> が必須です。</li>
+<li>**将来の展望**: <code>txid_XXX</code> 系の古い関数は将来的に削除される予定であり、本ファイルで定義される <code>pg_current_xact_id</code> 等への移行が推奨されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__pg_snapshot.html" target="wiki-view"><code>pg_snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__TransactionIdInRecentPast.html" target="wiki-view"><code>TransactionIdInRecentPast</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__cmp_fxid.html" target="wiki-view"><code>cmp_fxid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__sort_snapshot.html" target="wiki-view"><code>sort_snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__is_visible_fxid.html" target="wiki-view"><code>is_visible_fxid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__buf_init.html" target="wiki-view"><code>buf_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__buf_add_txid.html" target="wiki-view"><code>buf_add_txid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__buf_finalize.html" target="wiki-view"><code>buf_finalize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__parse_snapshot.html" target="wiki-view"><code>parse_snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__pg_current_xact_id.html" target="wiki-view"><code>pg_current_xact_id</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__pg_current_xact_id_if_assigned.html" target="wiki-view"><code>pg_current_xact_id_if_assigned</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__xid8funcs_c__pg_current_snapshot.html" target="wiki-view"><code>pg_current_snapshot</code></a></li>
+</ul></body></html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/predtest.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/predtest.c</h1>
+<h2>概要</h2>
+<p><code>predtest.c</code> は、PostgreSQL のクエリ最適化プロセスにおいて、述語（Predicate）間の論理的な包含関係（Implication）や矛盾（Refutation）を証明するためのルーチン群を提供します。主に、WHERE 句や CHECK 制約の推論、パーティションプルーニング、インデックス条件の最適化などで利用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、クエリの制約条件を論理的に解析する役割を担います。<code>clauses.c</code> 等で正規化された式ツリーを受け取り、それらが論理的に「真」を導くか、あるいは「偽」を導くかを判定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**論理包含の証明**: ある条件（<code>clause_list</code>）が別の述語（<code>predicate_list</code>）を論理的に含意するかを判定する。</li>
+<li>**論理矛盾の証明**: ある条件が別の述語を否定（refute）できるかを判定する。</li>
+<li>**式構造の抽象化**: AND/OR 構造や <code>ScalarArrayOpExpr</code> を統一的に扱うためのイテレータ機構の提供。</li>
+<li>**演算子ベースの推論**: B-tree 演算子ファミリーの知識を利用した、定数比較や演算子間の包含関係の証明。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>predicate_implied_by()</code>: 外部から呼び出されるメインの包含判定関数。</li>
+<li><code>predicate_refuted_by()</code>: 外部から呼び出されるメインの矛盾判定関数。</li>
+<li><code>PredClass</code> / <code>PredIterInfo</code>: AND/OR 構造を抽象化するための列挙型と構造体。</li>
+<li><code>MAX_SAOP_ARRAY_SIZE</code>: <code>ScalarArrayOpExpr</code> を AND/OR 展開する際の要素数上限（デフォルト 100）。</li>
+<li><code>OprProofCacheHash</code>: 演算子間の包含関係をキャッシュするハッシュテーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ArrayConstIterState</code></li>
+<li><code>ArrayExprIterState</code></li>
+<li><code>InvalidateOprProofCacheCallBack</code></li>
+<li><code>OprProofCacheEntry</code></li>
+<li><code>OprProofCacheKey</code></li>
+<li><code>PredIterInfoData</code></li>
+<li><code>predicate_implied_by</code></li>
+<li><code>predicate_implied_by_recurse</code></li>
+<li><code>predicate_refuted_by</code></li>
+<li><code>predicate_refuted_by_recurse</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **分類**: <code>predicate_classify()</code> が入力式を <code>CLASS_ATOM</code>, <code>CLASS_AND</code>, <code>CLASS_OR</code> に分類し、イテレータを初期化します。 2. **再帰的走査**: <code>predicate_implied_by_recurse()</code> / <code>predicate_refuted_by_recurse()</code> が、AND/OR の論理規則に従って再帰的に式を分解します。 3. **終端判定**: 最終的に <code>predicate_implied_by_simple_clause()</code> 等の「単純な節」に対する判定関数に到達します。 4. **演算子推論**: 演算子同士の比較が必要な場合、<code>operator_predicate_proof()</code> が B-tree オペレータファミリーの情報を参照し、定数比較用の演算子を特定して実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>, <code>nodes/pathnodes.h</code>: 式ツリーの操作とノード定義。</li>
+<li><code>utils/lsyscache.h</code>, <code>utils/syscache.h</code>: 演算子や型情報のカタログ参照。</li>
+<li><code>utils/array.h</code>: <code>ScalarArrayOpExpr</code> の解析用。</li>
+<li><code>executor/executor.h</code>: 実行時コンテキスト（<code>EState</code>）の管理。</li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/inval.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/util/clauses.c</code>: 式の正規化（AND/OR のフラット化など）を行うため、本ファイルの前提条件を整える。</li>
+<li><code>src/backend/access/nbtree/nbtcompare.c</code>: B-tree 演算子の意味論的な定義。</li>
+<li><code>src/backend/utils/cache/lsyscache.c</code>: 演算子の negator/commutator 取得。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**不変性（Immutability）**: 本モジュールは、関数や演算子が <code>IMMUTABLE</code> であることを前提に推論を行います。これに違反する式を渡すと、プラン作成時と実行時で結果が乖離するリスクがあります。</li>
+<li>**再帰の深さ**: 複雑な AND/OR 構造を持つ式は再帰的に処理されるため、極端に深い式ツリーはスタックオーバーフローやパフォーマンス低下を招く可能性があります。</li>
+<li>**キャッシュ**: <code>OprProofCacheHash</code> は <code>pg_amop</code> の変更時に <code>InvalidateOprProofCacheCallBack</code> によってフラッシュされます。デバッグ時はキャッシュのヒット状況に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__PredClass.html" target="wiki-view"><code>PredClass</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__PredIterInfo.html" target="wiki-view"><code>PredIterInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__PredIterInfoData.html" target="wiki-view"><code>PredIterInfoData</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__predicate_implied_by.html" target="wiki-view"><code>predicate_implied_by</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__predicate_refuted_by.html" target="wiki-view"><code>predicate_refuted_by</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__predicate_implied_by_recurse.html" target="wiki-view"><code>predicate_implied_by_recurse</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__predicate_refuted_by_recurse.html" target="wiki-view"><code>predicate_refuted_by_recurse</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__ArrayConstIterState.html" target="wiki-view"><code>ArrayConstIterState</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__ArrayExprIterState.html" target="wiki-view"><code>ArrayExprIterState</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__OprProofCacheKey.html" target="wiki-view"><code>OprProofCacheKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__OprProofCacheEntry.html" target="wiki-view"><code>OprProofCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__predtest_c__InvalidateOprProofCacheCallBack.html" target="wiki-view"><code>InvalidateOprProofCacheCallBack</code></a></li>
+</ul></body></html>

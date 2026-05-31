@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/storage/smgr.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/storage/smgr.h</h1>
+<h2>概要</h2>
+<p><code>smgr.h</code> は、PostgreSQL のストレージマネージャ（SMgr）層の公開インターフェースを定義するヘッダーファイルです。物理的なリレーションファイル（テーブルやインデックスなど）に対するすべての I/O 操作を抽象化し、上位レイヤーがファイルシステムの実装詳細を意識せずにデータアクセスを行えるようにします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/storage</code> モジュールにおいて、SMgr はバッファマネージャ（<code>bufmgr.h</code>）と物理ストレージ（<code>md.c</code> 等）の間に位置するスイッチング層です。リレーションのオープン、クローズ、読み書き、同期といった物理的なファイル操作を、<code>SMgrRelation</code> というキャッシュされたハンドルを通じて一元管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**リレーションハンドルの管理**: <code>SMgrRelation</code> オブジェクトの生成・破棄・ピン留め（参照カウント管理）のインターフェース提供。</li>
+<li>**I/O 操作の抽象化**: 読み込み（<code>smgrreadv</code>）、書き込み（<code>smgrwritev</code>）、拡張（<code>smgrextend</code>）などの物理 I/O 操作の定義。</li>
+<li>**リソースのライフサイクル制御**: トランザクション終了時のリソース解放や、ファイル記述子の強制クローズ（<code>smgrreleaseall</code>）の制御。</li>
+<li>**キャッシュの保持**: リレーションのサイズ（ブロック数）や挿入ターゲットブロックの情報を保持し、I/O 効率を向上させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SMgrRelationData</code>: リレーションの物理識別子（<code>RelFileLocatorBackend</code>）と、オープン中のファイル記述子、キャッシュされたブロック数などを保持する構造体。</li>
+<li><code>SMgrRelation</code>: <code>SMgrRelationData</code> へのポインタ。</li>
+<li><code>smgropen()</code>: 指定されたリレーションのハンドルを取得または作成する。</li>
+<li><code>smgrreadv</code> / <code>smgrwritev</code>: 複数のブロックを一度に処理するベクトル I/O インターフェース。</li>
+<li><code>smgrpin()</code> / <code>smgrunpin()</code>: リレーションハンドルがトランザクション終了時に破棄されないよう保護する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>smgrread</code></li>
+<li><code>smgrwrite</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **オープン**: 上位レイヤーが <code>smgropen()</code> を呼び出し、ハッシュテーブルから既存の <code>SMgrRelation</code> を取得するか、新規作成します。 2. **操作**: <code>smgrreadv</code> や <code>smgrwritev</code> が呼び出されると、内部で適切なストレージマネージャ（通常は <code>md.c</code>）へディスパッチされます。 3. **同期**: <code>smgrdosyncall</code> 等により、ダーティなデータが物理ディスクへフラッシュされます。 4. **クローズ**: トランザクション終了時に <code>AtEOXact_SMgr</code> が呼ばれ、ピン留めされていない <code>SMgrRelation</code> が解放されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/ilist.h</code>: <code>dlist_node</code> によるリスト管理に使用。</li>
+<li><code>storage/aio_types.h</code>: 非同期 I/O 関連の型定義。</li>
+<li><code>storage/block.h</code>: <code>BlockNumber</code> や <code>ForkNumber</code> 等のブロック管理用定義。</li>
+<li><code>storage/relfilelocator.h</code>: リレーションを特定するための識別子定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/smgr/smgr.c</code>: 本ヘッダーで宣言された関数の実装およびハッシュテーブル管理。</li>
+<li><code>src/backend/storage/smgr/md.c</code>: 実際のファイルシステム I/O を行うストレージマネージャの実装。</li>
+<li><code>src/include/storage/bufmgr.h</code>: バッファマネージャ。SMgr を利用してディスク I/O を実行する主要なクライアント。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>SMgrRelation</code> はトランザクション単位で管理されます。ピン留めされていないものはトランザクション終了時に自動的にクローズされるため、長期的な参照が必要な場合は必ず <code>smgrpin()</code> を使用してください。</li>
+<li><code>smgr.c</code> の関数は、割り込み（<code>elog(ERROR)</code> 等）によって <code>smgrreleaseall</code> がトリガーされる可能性があるため、リエントラントではないことに注意が必要です。</li>
+<li><code>smgrread</code> / <code>smgrwrite</code> は <code>smgrreadv</code> / <code>smgrwritev</code> の単一ブロック用ラッパーです。新規実装時はベクトル I/O の利用が推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__storage__smgr_h__SMgrRelationData.html" target="wiki-view"><code>SMgrRelationData</code></a></li>
+<li><a href="../../../symbols/src__include__storage__smgr_h__SMgrRelation.html" target="wiki-view"><code>SMgrRelation</code></a></li>
+<li><a href="../../../symbols/src__include__storage__smgr_h__smgrread.html" target="wiki-view"><code>smgrread</code></a></li>
+<li><a href="../../../symbols/src__include__storage__smgr_h__smgrwrite.html" target="wiki-view"><code>smgrwrite</code></a></li>
+</ul></body></html>

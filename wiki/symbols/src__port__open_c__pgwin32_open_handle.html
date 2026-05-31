@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__port__open_c__pgwin32_open_handle.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgwin32_open_handle</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/port/open.c:64</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows 環境において、POSIX 互換のフラグ指定でファイルを開き、アンチウイルスソフト等による一時的なロック（共有違反）に対して再試行ロジックを適用した上で、Windows ネイティブの <code>HANDLE</code> を取得する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>HANDLE pgwin32_open_handle(const char *fileName, int fileFlags, bool backup_semantics)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>fileName</code>: 開く対象のファイルパス。</li>
+<li><code>fileFlags</code>: POSIX 準拠のオープンフラグ（<code>O_RDONLY</code>, <code>O_CREAT</code>, <code>O_CLOEXEC</code> 等）。</li>
+<li><code>backup_semantics</code>: <code>FILE_FLAG_BACKUP_SEMANTICS</code> を適用するかどうかのフラグ。</li>
+<li>**出力**:</li>
+<li>成功時: 開かれたファイルの <code>HANDLE</code>。</li>
+<li>失敗時: <code>INVALID_HANDLE_VALUE</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>initialize_ntdll()</code> が成功していること。</li>
+<li><code>fileFlags</code> は、関数内で許可されたビットマスクの組み合わせであること（<code>assert</code> により検証）。</li>
+<li><code>O_CLOEXEC</code> が指定された場合、生成されるハンドルは非継承（non-inheritable）となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>initialize_ntdll()</code> を呼び出し、失敗した場合は即座に <code>INVALID_HANDLE_VALUE</code> を返す。 2. **ハンドル属性設定**: <code>O_CLOEXEC</code> の有無に基づき、<code>SECURITY_ATTRIBUTES</code> の <code>bInheritHandle</code> を設定する。 3. **ファイルオープン試行**: <code>CreateFile</code> を呼び出し、共有モードとして <code>FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE</code> を指定する。 4. **再試行ループ**: <code>ERROR_SHARING_VIOLATION</code> または <code>ERROR_LOCK_VIOLATION</code> が発生した場合、<code>pg_usleep</code> を用いて 100ms 待機し、最大 30 秒間（300 回）リトライする。 5. **エラー変換**: <code>ERROR_ACCESS_DENIED</code> かつ NT ステータスが <code>STATUS_DELETE_PENDING</code> の場合、状況に応じて <code>ERROR_FILE_EXISTS</code> または <code>ERROR_FILE_NOT_FOUND</code> に変換する。 6. **終了**: 最終的なエラーコードを <code>_dosmaperr</code> で <code>errno</code> にマッピングし、結果を返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/port/open.c</code> (内部)</li>
+<li><code>src/port/win32stat.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>initialize_ntdll</code></li>
+<li><code>CreateFile</code> (Windows API)</li>
+<li><code>openFlagsToCreateFileFlags</code></li>
+<li><code>pg_usleep</code></li>
+<li><code>pg_RtlGetLastNtStatus</code></li>
+<li><code>_dosmaperr</code></li>
+<li><code>ereport</code> (バックエンドビルド時のみ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HANDLE</code> (Windows API 型)</li>
+<li><code>SECURITY_ATTRIBUTES</code> (Windows API 構造体)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**共有違反**: アンチウイルスソフト等によるロックに対し、30 秒間の再試行を行う。</li>
+<li>**削除保留**: <code>STATUS_DELETE_PENDING</code> 状態のファイルに対し、POSIX 互換のエラーコードを返す。</li>
+<li>**無効なフラグ**: <code>assert</code> により、サポート外のフラグが渡された場合は異常終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>O_CLOEXEC</code> の実装において、<code>SetHandleInformation</code> ではなく <code>CreateFile</code> 時の <code>SECURITY_ATTRIBUTES</code> を利用しているのは、マルチスレッド環境での競合を避けるための設計である。</li>
+<li><code>STATUS_DELETE_PENDING</code> のハンドリングは、Windows 特有の「削除中だがまだファイルが存在する」状態を POSIX の期待通りに扱うための工夫である。</li>
+</ul></body></html>

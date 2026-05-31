@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__smgr__bulk_write_c__BulkWriteState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BulkWriteState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/smgr/bulk_write.c:61</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーションの新規作成や初期ロード時において、バッファマネージャを介さず直接ストレージへ書き込むための状態管理を行う構造体です。WAL ログのバッチ処理や書き込みキューの管理を担います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct BulkWriteState
+{
+    SMgrRelation smgr;
+    ForkNumber   forknum;
+    bool         use_wal;
+    int          npending;
+    PendingWrite pending_writes[MAX_PENDING_WRITES];
+    BlockNumber  relsize;
+    XLogRecPtr   start_RedoRecPtr;
+    MemoryContext memcxt;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>smgr_bulk_start_rel</code> または <code>smgr_bulk_start_smgr</code> によって初期化され、対象リレーション情報や WAL 使用フラグが設定されます。</li>
+<li>**出力**: <code>smgr_bulk_finish</code> を通じて、保留中の書き込みが物理ストレージへフラッシュされ、必要に応じて <code>fsync</code> が実行されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象リレーションに対して、他のバックエンドがアクセスしない（排他制御が保証されている）環境で使用される必要があります。</li>
+<li><code>smgr_bulk_write</code> に渡されたバッファの所有権は本構造体へ移譲されるため、呼び出し側で <code>pfree</code> してはなりません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **キューイング**: <code>smgr_bulk_write</code> を介してページを <code>pending_writes</code> に追加します。 2. **バッチ処理**: <code>npending</code> が <code>MAX_PENDING_WRITES</code> に達すると、<code>smgr_bulk_flush</code> が自動的に呼び出され、WAL ログの生成と物理書き込みが行われます。 3. **整合性維持**: 操作開始時の <code>start_RedoRecPtr</code> を保持し、終了時にチェックポイントとの競合を考慮した同期処理を行います。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gistbuild.c</code>, <code>rewriteheap.c</code>, <code>nbtree.c</code>, <code>nbtsort.c</code>, <code>spginsert.c</code>, <code>catalog/storage.c</code> など、インデックス構築やテーブル再構築を行うモジュールから利用されます。</li>
+<li>**呼び出し先**: <code>smgr_bulk_flush</code>（内部関数）を呼び出します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PendingWrite</code>: <code>pending_writes</code> 配列の各要素として、書き込み待ちのページ情報を保持します。</li>
+<li><code>SMgrRelation</code>: 書き込み対象のリレーションハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>MAX_PENDING_WRITES</code> を超える書き込み要求は、自動フラッシュによって処理されます。</li>
+<li>チェックポイント発生時に <code>smgr_bulk_finish</code> が実行される場合、<code>MyProc-&gt;delayChkptFlags</code> を用いてチェックポイントを一時的に抑制し、書き込み完了後の <code>fsync</code> 漏れを防ぐ必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有バッファプールをバイパスするため、キャッシュ整合性の管理は呼び出し側の責務となります。</li>
+<li><code>memcxt</code> は、バルク書き込み操作に関連するメモリ割り当てのライフサイクル管理に使用されます。</li>
+</ul></body></html>

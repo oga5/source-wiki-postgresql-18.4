@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeGather_c__gather_readnext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gather_readnext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeGather.c:310</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、複数のバックグラウンドワーカーが管理する <code>TupleQueueReader</code> からタプルを非ブロックで取得し、統合する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static MinimalTuple gather_readnext(GatherState *gatherstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>GatherState *gatherstate</code>（並列実行の状態を保持する構造体）</li>
+<li>**出力**: 取得した <code>MinimalTuple</code>。すべてのワーカーからの読み取りが完了した場合は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>gatherstate-&gt;nextreader</code> は常に <code>gatherstate-&gt;nreaders</code> 未満であること。</li>
+<li>ワーカーが初期化に失敗した場合、<code>TupleQueueReaderNext</code> は <code>NULL</code> を返すが、本関数はそれをタプル未生成として扱い、後続の <code>WaitForParallelWorkersToFinish</code> でエラーを検出する設計となっている。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **割り込みチェック**: <code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、非同期イベントを処理する。 2. **非ブロック読み取り**: 現在の <code>nextreader</code> が指すキューから <code>TupleQueueReaderNext</code> を用いてタプルを取得する。 3. **完了処理**: 読み取りが完了したキューは <code>gatherstate-&gt;reader</code> 配列から削除し、すべてのキューが空になれば <code>ExecShutdownGatherWorkers</code> を呼び出して終了する。 4. **ラウンドロビン**: タプルが取得できなかった場合、<code>nextreader</code> を進めて次のキューを走査する。 5. **待機**: すべての生存するキューを走査してもタプルが得られない場合、<code>need_to_scan_locally</code> が真であれば <code>NULL</code> を返し、偽であれば <code>WaitLatch</code> を用いてタプルの到着を待機する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gather_getnext</code>（ソース内の記述より推測）</li>
+<li>**呼び出し先**: <code>TupleQueueReaderNext</code>, <code>ExecShutdownGatherWorkers</code>, <code>WaitLatch</code>, <code>ResetLatch</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GatherState</code>: 並列実行の進捗とキューの状態を管理する。</li>
+<li><code>TupleQueueReader</code>: ワーカーからタプルを読み取るためのキューインターフェース。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ワーカーの終了**: すべてのワーカーがタプル生成を終えた場合、<code>nreaders</code> が 0 となり処理を終了する。</li>
+<li>**ローカル実行**: <code>need_to_scan_locally</code> が有効な場合、ワーカーからタプルが得られなくても待機せず <code>NULL</code> を返すことで、リーダープロセスによるローカル実行へ制御を戻す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は非ブロック読み取りを前提としているため、ワーカーがタプルを生成するまで待機しない。</li>
+<li><code>nextreader</code> の更新はラウンドロビン方式で行われるが、効率化のため、ブロックが必要になるまでは同一のキューを優先的に読み取る実装となっている。</li>
+</ul></body></html>

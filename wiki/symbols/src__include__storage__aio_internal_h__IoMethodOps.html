@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__aio_internal_h__IoMethodOps.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>IoMethodOps</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/aio_internal.h:260</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL の非同期 I/O (AIO) サブシステムにおいて、異なる I/O 実装（同期、ワーカー、io_uring 等）をプラグイン可能にするための関数ポインタテーブルおよびプロパティ定義を提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct IoMethodOps
+{
+    bool        wait_on_fd_before_close;
+    size_t      (*shmem_size) (void);
+    void        (*shmem_init) (bool first_time);
+    void        (*init_backend) (void);
+    bool        (*needs_synchronous_execution) (PgAioHandle *ioh);
+    int         (*submit) (uint16 num_staged_ios, PgAioHandle **staged_ios);
+    void        (*wait_one) (PgAioHandle *ioh, uint64 ref_generation);
+} IoMethodOps;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>shmem_size</code>: 共有メモリの追加サイズを <code>size_t</code> で返します。</li>
+<li><code>submit</code>: 投入した I/O 数を <code>int</code> で返します。</li>
+<li><code>wait_one</code>: 戻り値はありません。<code>PgAioHandle</code> の状態を完了状態へ遷移させます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>submit</code> はクリティカルセクション内で呼び出されます。</li>
+<li><code>submit</code> 呼び出し時、<code>num_staged_ios</code> は <code>PGAIO_SUBMIT_BATCH_SIZE</code>（32）以下である必要があります。</li>
+<li><code>wait_one</code> は、ハンドルが既に完了状態にある場合や再利用されている場合にはブロックしてはなりません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**初期化**: <code>shmem_size</code>, <code>shmem_init</code>, <code>init_backend</code> により、各 I/O メソッド固有のメモリ管理やバックエンドごとのセットアップを行います。</li>
+<li>**実行**: <code>needs_synchronous_execution</code> が <code>true</code> を返した場合、<code>submit</code> は呼び出されません。それ以外の場合、<code>submit</code> は I/O を発行し、状態を <code>PGAIO_HS_SUBMITTED</code> 以上へ進めます。</li>
+<li>**待機**: <code>wait_one</code> は I/O 完了を待ちます。完了後、状態は <code>PGAIO_HS_COMPLETED_IO</code>、<code>PGAIO_HS_COMPLETED_SHARED</code>、または <code>PGAIO_HS_COMPLETED_LOCAL</code> のいずれかである必要があります。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/aio/aio.c</code> 内の AIO サブシステム制御ロジックから参照されます。</li>
+<li>**呼び出し先**: <code>src/backend/storage/aio/method_io_uring.c</code>、<code>method_sync.c</code>、<code>method_worker.c</code> で各メソッドの実装が定義されています。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioHandle</code>: I/O 操作の追跡に使用される主要な構造体。</li>
+<li><code>PGAIO_SUBMIT_BATCH_SIZE</code>: 一括投入可能な最大 I/O 数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>wait_one</code> が提供されない場合、I/O メソッドは <code>pgaio_io_process_completion()</code> を自律的に呼び出し、完了を通知する責任を負います。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>extern PGDLLIMPORT</code> として宣言されたグローバルなメソッドテーブル（<code>pgaio_sync_ops</code> 等）を通じて利用されます。</li>
+<li>新しい I/O メソッドを追加する際は、各関数ポインタが定義する状態遷移の不変条件を厳守してください。</li>
+</ul></body></html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/pathkeys.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/pathkeys.c</h1>
+<h2>概要</h2>
+<p><code>pathkeys.c</code> は、PostgreSQL のクエリプランナにおいて「パスキー（PathKey）」の構築、管理、および比較を行うためのユーティリティ群を提供します。パスキーは、クエリの実行計画（Path）が保持するデータのソート順序を表現するデータ構造であり、マージ結合の可否判定や、<code>ORDER BY</code>、<code>GROUP BY</code>、<code>DISTINCT</code> などの最適化において極めて重要な役割を果たします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> モジュールにおいて、本ファイルは「順序の抽象化」を担当します。他のファイル（<code>joinpath.c</code> や <code>indxpath.c</code> など）が特定のアルゴリズムでパスを生成する際、そのパスがどのような順序でデータを出力するかをパスキーとして表現し、プランナが後続の処理でその順序を利用できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**パスキーの正規化**: <code>EquivalenceClass</code>（等価クラス）に基づき、意味的に同一な順序を同一のパスキーとして管理する。</li>
+<li>**冗長性の排除**: 既に存在する順序と重複するパスキーを検出し、計画の探索空間を効率化する。</li>
+<li>**有用性の判定**: 特定のパスキーが、マージ結合やクエリの最終出力順序として「有用」かどうかを判定し、不要なパスキーを切り捨てる（<code>truncate_useless_pathkeys</code>）。</li>
+<li>**変換**: インデックスやパーティションの定義から、そのスキャンが提供する順序をパスキーとして導出する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PathKey</code>: 順序を表現する主要な構造体。<code>EquivalenceClass</code> への参照を保持する。</li>
+<li><code>make_canonical_pathkey</code>: 正規化されたパスキーを生成・取得する。</li>
+<li><code>pathkey_is_redundant</code>: 与えられたパスキーが既存のリストに対して冗長かどうかを判定する。</li>
+<li><code>truncate_useless_pathkeys</code>: クエリの実行計画において、これ以上利用価値のないパスキーをリストから削除する。</li>
+<li><code>compare_pathkeys</code>: 2 つのパスキーリストを比較し、包含関係や優劣を判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>append_pathkeys</code></li>
+<li><code>get_cheapest_fractional_path_for_pathkeys</code></li>
+<li><code>get_cheapest_path_for_pathkeys</code></li>
+<li><code>get_useful_group_keys_orderings</code></li>
+<li><code>group_keys_reorder_by_pathkeys</code></li>
+<li><code>make_pathkey_from_sortinfo</code></li>
+<li><code>make_pathkey_from_sortop</code></li>
+<li><code>pathkeys_contained_in</code></li>
+<li><code>pathkeys_count_contained_in</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **構築**: プランナがインデックススキャンやソートノードを検討する際、<code>make_pathkey_from_sortinfo</code> 等を呼び出し、<code>EquivalenceClass</code> を介して正規化された <code>PathKey</code> を作成します。 2.  **検証**: <code>append_pathkeys</code> や <code>pathkey_is_redundant</code> を通じて、リストに追加する前に冗長性をチェックします。 3.  **最適化**: <code>truncate_useless_pathkeys</code> が、マージ結合の可能性や <code>ORDER BY</code> への適合性を評価し、不要なパスキーを削ぎ落とすことで、プランナが保持するパスの数を抑制します。 4.  **比較**: 結合処理において、<code>compare_pathkeys</code> や <code>pathkeys_contained_in</code> を用いて、入力パスの順序が結合条件を満たしているかを確認します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス関連のデータ構造とインターフェース。</li>
+<li><code>optimizer/cost.h</code>: コスト計算や比較のための定義。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログ（演算子や型情報）へのアクセス。</li>
+<li><code>catalog/pg_opfamily.h</code>: 演算子族の定義。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>partitioning/partbounds.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>equivclass.c</code>: パスキーの基盤となる <code>EquivalenceClass</code> の管理。</li>
+<li><code>allpaths.c</code>: パス生成の全体的な制御。</li>
+<li><code>joinpath.c</code>: マージ結合のパス生成において、本ファイルの関数を多用する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**正規化の重要性**: 本ファイルで扱うパスキーはすべて「正規化（Canonical）」されていることが前提です。これにより、複雑な式比較をポインタ比較（<code>==</code>）に置き換えて高速に処理しています。</li>
+<li>**冗長性の定義**: 単なる重複だけでなく、定数との等価性や、既に存在する順序による包含関係も冗長とみなされます。</li>
+<li>**デバッグ**: <code>pathkey_is_redundant</code> のロジックを理解することが、プランナがなぜ特定のソート順序を無視するのかを解明する鍵となります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__make_canonical_pathkey.html" target="wiki-view"><code>make_canonical_pathkey</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__append_pathkeys.html" target="wiki-view"><code>append_pathkeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__pathkey_is_redundant.html" target="wiki-view"><code>pathkey_is_redundant</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__make_pathkey_from_sortinfo.html" target="wiki-view"><code>make_pathkey_from_sortinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__make_pathkey_from_sortop.html" target="wiki-view"><code>make_pathkey_from_sortop</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__compare_pathkeys.html" target="wiki-view"><code>compare_pathkeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__pathkeys_contained_in.html" target="wiki-view"><code>pathkeys_contained_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__group_keys_reorder_by_pathkeys.html" target="wiki-view"><code>group_keys_reorder_by_pathkeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__get_useful_group_keys_orderings.html" target="wiki-view"><code>get_useful_group_keys_orderings</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__pathkeys_count_contained_in.html" target="wiki-view"><code>pathkeys_count_contained_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__get_cheapest_path_for_pathkeys.html" target="wiki-view"><code>get_cheapest_path_for_pathkeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__pathkeys_c__get_cheapest_fractional_path_for_pathkeys.html" target="wiki-view"><code>get_cheapest_fractional_path_for_pathkeys</code></a></li>
+</ul></body></html>

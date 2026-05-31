@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__relation_c__sepgsql_attribute_post_create.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>sepgsql_attribute_post_create</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>contrib/sepgsql/relation.c:42</code></li>
+</ul>
+<h2>目的</h2>
+<p>新規作成されたテーブルカラムに対し、SELinuxポリシーに基づいたデフォルトのセキュリティラベルを計算・適用し、その作成権限を検証する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void sepgsql_attribute_post_create(Oid relOid, AttrNumber attnum)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relOid</code> (Oid): カラムが属するリレーションのOID。</li>
+<li><code>attnum</code> (AttrNumber): 作成されたカラムの属性番号。</li>
+<li>**出力**: なし（副作用としてシステムカタログ <code>pg_seclabel</code> を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象のリレーションが <code>RELKIND_RELATION</code> または <code>RELKIND_PARTITIONED_TABLE</code> であること（それ以外の場合は何もせず終了する）。</li>
+<li><code>SnapshotSelf</code> を使用して、現在のトランザクション内で作成されたカラムのカタログレコードが参照可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **対象確認**: リレーションの種類を判定し、対象外であれば早期リターンする。 2. **カタログ取得**: <code>pg_attribute</code> を <code>SnapshotSelf</code> でスキャンし、指定された <code>relOid</code> と <code>attnum</code> に該当するタプルを取得する。 3. **ラベル計算**:</p>
+<ul>
+<li>クライアントのラベルと親リレーションのラベルを取得。</li>
+<li><code>sepgsql_compute_create</code> を呼び出し、カラム名に基づいた新しいセキュリティラベルを生成する。</li>
+<p>4. **権限検証**: <code>sepgsql_avc_check_perms_label</code> を呼び出し、<code>db_column:{create}</code> 権限を検証する。 5. **ラベル適用**: <code>SetSecurityLabel</code> を使用して、生成したラベルを対象カラムに永続化する。 6. **クリーンアップ**: スキャン終了、テーブルクローズ、およびメモリ確保したラベル文字列の解放を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/sepgsql/hooks.c:138</code>（DDLフック経由）。</li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>systable_beginscan</code>, <code>systable_getnext</code>, <code>systable_endscan</code></li>
+<li><code>sepgsql_get_client_label</code>, <code>sepgsql_get_label</code>, <code>sepgsql_compute_create</code></li>
+<li><code>sepgsql_avc_check_perms_label</code></li>
+<li><code>SetSecurityLabel</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Form_pg_attribute</code>: カラムのメタデータ構造体。</li>
+<li><code>ObjectAddress</code>: ラベル適用対象を特定するための構造体。</li>
+<li><code>StringInfoData</code>: 監査ログ用の識別名生成に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: 指定された <code>relOid</code> と <code>attnum</code> に対応するタプルがカタログに見つからない場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>**境界条件**: インデックスなど、個別のセキュリティラベルを持たないオブジェクトに対しては処理を行わない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SnapshotSelf</code> を使用しているため、DDL実行直後の未コミット状態のカタログレコードを正しく参照できる。</li>
+<li>監査ログには <code>getObjectIdentity</code> で取得したリレーション名とカラム名を連結した文字列が使用される。</li>
+</ul></body></html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/test/modules/injection_points/injection_points.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/test/modules/injection_points/injection_points.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのコードパス上に任意のコールバックを挿入（インジェクション）し、テストを容易にするためのフレームワークを提供します。主にエラー発生、通知、待機処理をシミュレートするために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>injection_points</code> モジュールの中心的な実装であり、SQLインターフェースを通じてインジェクションポイントの登録・実行・待機・解除を制御します。共有メモリを介してプロセス間での状態共有や同期を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**インジェクションポイントの管理**: SQL関数経由で特定のコードパスにコールバックをアタッチ/デタッチする。</li>
+<li>**実行制御**: <code>error</code>, <code>notice</code>, <code>wait</code> といった標準的なアクションの提供。</li>
+<li>**プロセス間同期**: <code>ConditionVariable</code> を用いた待機と、<code>injection_points_wakeup</code> による再開処理。</li>
+<li>**ライフサイクル管理**: <code>injection_points_set_local</code> によるプロセス固有のインジェクションポイントの自動クリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>InjectionPointSharedState</code>: 共有メモリ上の状態管理構造体。待機中のポイント名やカウンタを保持。</li>
+<li><code>injection_wait</code>: 待機処理を行うコールバック。<code>ConditionVariable</code> を使用してシグナルを待つ。</li>
+<li><code>injection_points_attach</code>: SQLから呼び出され、特定の名前のポイントにアクションを紐付ける。</li>
+<li><code>injection_points_wakeup</code>: 待機中のインジェクションポイントを再開させるための関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InjectionPointCondition</code></li>
+<li><code>InjectionPointConditionType</code></li>
+<li><code>injection_error</code></li>
+<li><code>injection_init_shmem</code></li>
+<li><code>injection_notice</code></li>
+<li><code>injection_point_allowed</code></li>
+<li><code>injection_point_init_state</code></li>
+<li><code>injection_points_cleanup</code></li>
+<li><code>injection_shmem_request</code></li>
+<li><code>injection_shmem_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <code>injection_points_attach</code> が <code>InjectionPointAttach</code> を呼び出し、指定された関数名と条件を登録します。 2. **実行**: <code>INJECTION_POINT()</code> マクロが実行されると、登録されたコールバック（<code>injection_error</code> 等）が起動します。 3. **待機フロー**:</p>
+<ul>
+<li><code>injection_wait</code> が呼ばれると、共有メモリの空きスロットを確保し、<code>ConditionVariableSleep</code> で待機します。</li>
+<li>別のプロセスが <code>injection_points_wakeup</code> を呼び出すと、共有メモリ上のカウンタがインクリメントされ、<code>ConditionVariableBroadcast</code> により待機中のプロセスが起床します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>, <code>storage/condition_variable.h</code>: 共有メモリと同期プリミティブ。</li>
+<li><code>utils/injection_point.h</code>: インジェクションポイントの基盤API。</li>
+<li><code>injection_stats.h</code>: 統計情報の記録用ヘッダー。</li>
+<li><code>fmgr.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>nodes/value.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/dsm_registry.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/lwlock.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>injection_stats.c</code>: インジェクションポイントの実行統計を記録する機能。</li>
+<li><code>regress_injection.c</code>: テストスイート用の補助関数群。</li>
+<li><code>src/backend/utils/misc/injection_point.c</code>: 本モジュールが利用するバックエンド側のコア実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本モジュールはテスト専用です。本番環境での使用は想定されていません。</li>
+<li><code>injection_points_set_local</code> を使用すると、プロセス終了時に自動的にクリーンアップされるため、並列テストでの競合を防ぐことができます。</li>
+<li>共有メモリの初期化は、モジュールロード時またはDSM（動的共有メモリ）経由で動的に行われます。<code>inj_state</code> が NULL の場合は適宜初期化される設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__InjectionPointConditionType.html" target="wiki-view"><code>InjectionPointConditionType</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__InjectionPointCondition.html" target="wiki-view"><code>InjectionPointCondition</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__InjectionPointSharedState.html" target="wiki-view"><code>InjectionPointSharedState</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_point_init_state.html" target="wiki-view"><code>injection_point_init_state</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_shmem_request.html" target="wiki-view"><code>injection_shmem_request</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_shmem_startup.html" target="wiki-view"><code>injection_shmem_startup</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_init_shmem.html" target="wiki-view"><code>injection_init_shmem</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_point_allowed.html" target="wiki-view"><code>injection_point_allowed</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_points_cleanup.html" target="wiki-view"><code>injection_points_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_error.html" target="wiki-view"><code>injection_error</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_notice.html" target="wiki-view"><code>injection_notice</code></a></li>
+<li><a href="../../../../symbols/src__test__modules__injection_points__injection_points_c__injection_wait.html" target="wiki-view"><code>injection_wait</code></a></li>
+</ul></body></html>

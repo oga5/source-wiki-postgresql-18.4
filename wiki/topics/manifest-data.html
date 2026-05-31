@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/manifest-data.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>manifest_data</h1>
+<h2>概念</h2>
+<p><code>manifest_data</code> は、PostgreSQL のバックアップマニフェスト（<code>backup_manifest</code>）の内容をメモリ上で保持するためのルート構造体です。バックアップの統合（<code>pg_combinebackup</code>）や検証（<code>pg_verifybackup</code>）において、構成情報、ファイル情報、および WAL 範囲を管理・検索するために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p>バックアップマニフェスト全体の解析結果を構造化して保持することで、以下の処理を効率的に行うための基盤となるため重要です。</p>
+<ul>
+<li><code>simplehash</code> を使用したハッシュテーブルによる、ファイルパスをキーとした高速なファイル情報の検索。</li>
+<li>バックアップに含まれる WAL の連続性の検証。</li>
+<li><code>system_identifier</code> によるバックアップ元データベースクラスタの一意な識別。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_combinebackup</code></li>
+<li><code>module:src/bin/pg_verifybackup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_combinebackup/load_manifest.h#manifest_data</code>**</li>
+<p>バックアップ統合処理用の構造体。システム識別子、ファイル情報のハッシュテーブル、および WAL 範囲の双方向リスト（先頭と末尾）を保持します。</p>
+<li>**<code>symbol:src/bin/pg_verifybackup/pg_verifybackup.h#manifest_data</code>**</li>
+<p>バックアップ検証処理用の構造体。バージョン情報、システム識別子、ファイル情報のハッシュテーブル、および WAL 範囲のリスト（先頭と末尾）を保持します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各ツールにおいて、以下のようにマニフェストデータの構築と利用が行われます。</p>
+<h3>pg_combinebackup における流れ</h3>
+<p>1. <code>load_backup_manifest()</code> が指定されたディレクトリ内のマニフェストファイルを読み込み、JSON 解析コンテキストを初期化します。 2. 解析されたファイル情報を <code>files</code> ハッシュテーブルに格納します。 3. WAL 範囲情報をリストとして連結し、<code>first_wal_range</code> と <code>last_wal_range</code> に格納します。 4. 構築された <code>manifest_data</code> 構造体を返却し、バックアップ統合処理で利用します。</p>
+<h3>pg_verifybackup における流れ</h3>
+<p>1. メインロジック（<code>pg_verifybackup.c</code> 等）がマニフェストファイルを解析し、<code>manifest_data</code> 構造体を構築します。 2. 検証の実行中、ファイルパスをキーとして <code>files</code> ハッシュテーブルを検索し、対応するファイル情報の整合性を確認します。 3. <code>first_wal_range</code> から <code>last_wal_range</code> までの WAL 範囲リストを走査し、WAL の連続性を検証します。</p>
+<p>※ 両ツール間を跨ぐ直接的なデータの受け渡しなど、統合的なエンドツーエンドの全体フローは定義されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ファイル検索の高速性**: <code>files</code> フィールドは <code>lib/simplehash.h</code> を用いて生成されたハッシュテーブル（<code>manifest_files_hash</code>）であり、ファイルパスをキーとして個別のファイル情報（<code>manifest_file</code>）を高速に検索できなければなりません。</li>
+<li>**一意なクラスタ識別**: <code>system_identifier</code> は、バックアップ元のデータベースクラスタを一意に識別する値として保持されます。</li>
+<li>**WAL 範囲の管理**: <code>first_wal_range</code> および <code>last_wal_range</code> は、WAL のタイムラインと LSN 範囲を管理するリスト構造の先頭と末尾を正しく指し示している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**重複定義と変更の影響**: <code>manifest_data</code> 構造体は <code>pg_combinebackup</code> と <code>pg_verifybackup</code> の両方で個別に定義されています。構造体のフィールドや仕様を変更する場合は、両方のツールへの影響を考慮する必要があります。</li>
+<li>**ハッシュテーブルの仕様変更**: <code>manifest_files_hash</code> は <code>simplehash.h</code> のテンプレート生成マクロによって定義されているため、ハッシュテーブルの仕様を変更する際は <code>pg_verifybackup.h</code> や <code>load_manifest.c</code> 内の <code>SH_</code> マクロ定義を確認する必要があります。</li>
+<li>**メモリ管理とリーク**: <code>pg_combinebackup</code> では複数のバックアップを扱うため、<code>manifest_data</code> が配列として管理されることが想定されています。メモリのライフサイクル管理を誤るとリークの原因になります。また、メモリ確保失敗時には <code>pg_malloc0</code> 等によりプロセスが終了する可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_combinebackup/load_manifest.h</code></li>
+<li><code>src/bin/pg_verifybackup/pg_verifybackup.h</code></li>
+<li><code>src/bin/pg_combinebackup/load_manifest.c</code></li>
+</ul></body></html>

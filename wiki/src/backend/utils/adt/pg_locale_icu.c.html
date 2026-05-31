@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/pg_locale_icu.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/pg_locale_icu.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおけるICU（International Components for Unicode）ライブラリを用いたロケールおよび照合順序（Collation）機能の実装を提供します。データベースの文字エンコーディングとICUの内部表現（UChar）間の変換、およびICUの照合・ケース変換機能のラッパーとして機能します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、ロケール依存の文字列操作（比較、変換、ソートキー生成）を抽象化します。<code>pg_locale.c</code> が提供する汎用ロケールインターフェースに対し、ICUプロバイダー固有の実装を注入する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**照合順序の管理**: <code>pg_collation</code> カタログから情報を読み取り、ICUの <code>UCollator</code> オブジェクトを生成・管理する。</li>
+<li>**エンコーディング変換**: データベースのエンコーディングとICUが扱うUTF-16（UChar）間の相互変換を、セッション単位の <code>UConverter</code> を用いて効率的に行う。</li>
+<li>**文字列操作の提供**: 大文字・小文字変換、タイトルケース変換、ケースフォールディング、および照合（比較）関数の実装。</li>
+<li>**互換性の吸収**: ICUのバージョン差異（特に古いバージョンでの「und」ロケールや属性設定の挙動）を吸収する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>create_pg_locale_icu</code>: ICUベースのロケール構造体を初期化するメインエントリーポイント。</li>
+<li><code>pg_ucol_open</code>: ICUの <code>ucol_open</code> をラップし、バージョン依存の回避策を適用する。</li>
+<li><code>strncoll_icu</code> / <code>strncoll_icu_utf8</code>: ICUを用いた文字列比較関数。</li>
+<li><code>icu_converter</code>: セッション内で共有される、エンコーディング変換用の静的オブジェクト。</li>
+<li><code>collate_methods_icu</code> / <code>collate_methods_icu_utf8</code>: 照合操作を抽象化するためのメソッドテーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>UErrorCode</code></li>
+<li><code>get_collation_actual_version_icu</code></li>
+<li><code>make_icu_collator</code></li>
+<li><code>strfold_icu</code></li>
+<li><code>strlower_icu</code></li>
+<li><code>strnxfrm_icu</code></li>
+<li><code>strnxfrm_prefix_icu_utf8</code></li>
+<li><code>strtitle_icu</code></li>
+<li><code>strupper_icu</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>create_pg_locale_icu</code> が呼び出されると、システムカタログからロケール設定を取得し、<code>make_icu_collator</code> を経由して <code>UCollator</code> を生成します。 2. **変換**: 文字列操作関数（<code>strlower_icu</code> 等）は、<code>icu_to_uchar</code> を呼び出し、データベースエンコーディングから <code>UChar</code> バッファへ変換します。 3. **処理**: ICUの標準関数（<code>u_strToLower</code> 等）を呼び出し、必要に応じてバッファを再確保します。 4. **戻し**: <code>icu_from_uchar</code> を使用して、結果をデータベースエンコーディングに戻し、メモリを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**ICUライブラリ**: <code>&lt;unicode/ucnv.h&gt;</code>, <code>&lt;unicode/ustring.h&gt;</code></li>
+<li>**PostgreSQLコア**: <code>postgres.h</code>, <code>utils/pg_locale.h</code>, <code>utils/memutils.h</code>, <code>catalog/pg_collation.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>unicode/ucnv.h</code></li>
+<li><code>unicode/ustring.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/pg_locale.c</code>: ロケール機能の全体的な管理と、プロバイダー（ICU/libc）の切り替えロジック。</li>
+<li><code>src/backend/utils/adt/pg_locale_libc.c</code>: libcベースのロケール実装。</li>
+<li><code>src/include/utils/pg_locale.h</code>: <code>pg_locale_t</code> 構造体および照合メソッドテーブルの定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: ICUの変換処理では、可能な限りスタック上の <code>TEXTBUFLEN</code> バッファを使用し、溢れた場合のみ <code>palloc</code> を行う設計になっています。</li>
+<li>**UTF-8最適化**: データベースエンコーディングがUTF-8の場合、<code>ucol_strcollUTF8</code> を直接利用することで、変換コストを抑えた高速な比較が可能です。</li>
+<li>**バージョン注意**: ICU 53未満では <code>ucol_strcollUTF8</code> が不安定であるため、マクロ <code>HAVE_UCOL_STRCOLLUTF8</code> で機能の有効・無効を制御しています。</li>
+<li>**エラーハンドリング**: ICUの <code>UErrorCode</code> を常に監視し、エラー発生時は <code>ereport(ERROR, ...)</code> でPostgreSQLのトランザクションメカニズムに制御を戻します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__UErrorCode.html" target="wiki-view"><code>UErrorCode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__create_pg_locale_icu.html" target="wiki-view"><code>create_pg_locale_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__pg_ucol_open.html" target="wiki-view"><code>pg_ucol_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__make_icu_collator.html" target="wiki-view"><code>make_icu_collator</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strlower_icu.html" target="wiki-view"><code>strlower_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strtitle_icu.html" target="wiki-view"><code>strtitle_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strupper_icu.html" target="wiki-view"><code>strupper_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strfold_icu.html" target="wiki-view"><code>strfold_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strncoll_icu_utf8.html" target="wiki-view"><code>strncoll_icu_utf8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strnxfrm_icu.html" target="wiki-view"><code>strnxfrm_icu</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__strnxfrm_prefix_icu_utf8.html" target="wiki-view"><code>strnxfrm_prefix_icu_utf8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_icu_c__get_collation_actual_version_icu.html" target="wiki-view"><code>get_collation_actual_version_icu</code></a></li>
+</ul></body></html>

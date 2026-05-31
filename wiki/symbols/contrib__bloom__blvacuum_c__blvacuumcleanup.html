@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__bloom__blvacuum_c__blvacuumcleanup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>blvacuumcleanup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/bloom/blvacuum.c:164</code></li>
+</ul>
+<h2>目的</h2>
+<p>Bloom フィルタインデックスの <code>VACUUM</code> 処理の最終段階として、インデックス全体のページを走査し、削除済みページの解放および統計情報の更新を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>IndexBulkDeleteResult *blvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>info</code>: <code>IndexVacuumInfo</code> 構造体（インデックスリレーションや <code>analyze_only</code> フラグを含む）。</li>
+<li><code>stats</code>: <code>IndexBulkDeleteResult</code> 構造体（既存の統計情報、または <code>NULL</code>）。</li>
+<li>**出力**: 更新された <code>IndexBulkDeleteResult</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>info-&gt;analyze_only</code> が真の場合、処理を行わずに即座に <code>stats</code> を返す。</li>
+<li><code>stats</code> が <code>NULL</code> の場合、内部でメモリを割り当てる。</li>
+<li>インデックスの各ページに対して共有ロック（<code>BUFFER_LOCK_SHARE</code>）を取得して読み込む。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. インデックスの全ページ数（<code>npages</code>）を取得し、統計情報を初期化する。 2. <code>BLOOM_HEAD_BLKNO</code> から順に全ページを走査する。</p>
+<ul>
+<li>各ページで <code>vacuum_delay_point</code> を呼び出し、VACUUM の遅延制御を行う。</li>
+<li>ページが新規（<code>PageIsNew</code>）または削除済み（<code>BloomPageIsDeleted</code>）である場合、<code>RecordFreeIndexPage</code> を呼び出して FSM に登録し、<code>stats-&gt;pages_free</code> をインクリメントする。</li>
+<li>それ以外の場合、<code>BloomPageGetMaxOffset</code> を用いて有効なタプル数をカウントし、<code>stats-&gt;num_index_tuples</code> に加算する。</li>
+<p>3. 全ページの走査終了後、<code>IndexFreeSpaceMapVacuum</code> を呼び出し、インデックス全体の空き領域管理を完了させる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/bloom/blutils.c</code> 内で <code>amroutine-&gt;amvacuumcleanup</code> に割り当てられており、PostgreSQL のインデックスメンテナンスプロセスから呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>RecordFreeIndexPage</code> (FSM への登録)</li>
+<li><code>IndexFreeSpaceMapVacuum</code> (FSM の最終処理)</li>
+<li><code>vacuum_delay_point</code> (VACUUM 制御)</li>
+<li><code>ReadBufferExtended</code>, <code>LockBuffer</code>, <code>UnlockReleaseBuffer</code> (バッファ管理)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexVacuumInfo</code>: VACUUM の実行パラメータ。</li>
+<li><code>IndexBulkDeleteResult</code>: インデックスの統計情報（ページ数、空きページ数、タプル数）。</li>
+<li><code>BloomPageOpaqueData</code>: ページが削除済みかどうかを判定するために参照される。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>stats</code> が <code>NULL</code> の場合にメモリ割り当てが失敗する可能性がある。</li>
+<li>インデックスが空の場合、ループは実行されず、初期化された統計情報が返される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>VACUUM</code> の終了時に実行されるため、インデックスの物理的な再構成（タプルの詰め直し）は行わない。再構成は <code>blbulkdelete</code> の責務である。</li>
+<li>削除済みページを FSM に登録する際、<code>GenericXLog</code> による WAL 記録は行われない（読み取り専用の走査であるため）。</li>
+</ul></body></html>

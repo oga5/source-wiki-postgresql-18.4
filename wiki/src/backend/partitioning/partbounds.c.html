@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/partitioning/partbounds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/partitioning/partbounds.c</h1>
+<h2>概要</h2>
+<p>パーティションテーブルの境界定義（<code>PartitionBoundInfo</code>）の生成、正規化、比較、および結合最適化のためのマージロジックを実装するコアエンジンです。カタログから読み取った境界仕様（<code>PartitionBoundSpec</code>）を、実行時に効率的な二分探索が可能なメモリ内表現へ変換する責務を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>partitioning</code> サブシステムにおいて、境界値の「意味論的解釈」を司ります。<code>partdesc.c</code> がキャッシュ管理を行うのに対し、本ファイルは境界値の数学的な整合性チェックや、パーティションワイズ結合時の境界マージといった計算処理を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**境界の正規化と構築**: パーティション定義から、ソート済みかつ重複排除された <code>PartitionBoundInfo</code> を生成する。</li>
+<li>**境界の比較と検証**: パーティション間の重複チェック、境界値の大小比較、および論理的な等価性判定。</li>
+<li>**結合最適化（マージ）**: パーティションワイズ結合において、結合対象の境界をマージし、共通の境界構造を導出する。</li>
+<li>**制約生成**: パーティションの <code>CHECK</code> 制約（<code>WHERE</code> 句のプルーニング条件）を構築する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>PartitionBoundInfoData</code>: パーティション境界のメモリ内表現。戦略（Hash/List/Range）に応じた境界値とインデックスを保持。</li>
+<li><code>PartitionMap</code>: 結合時にパーティション間の対応関係を追跡するための作業用構造体。</li>
+<li><code>PartitionHashBound</code>, <code>PartitionListValue</code>, <code>PartitionRangeBound</code>: 構築過程で境界をソート・処理するために使用される一時的な内部表現。</li>
+</ul>
+<h3>境界構築・管理</h3>
+<ul>
+<li><code>partition_bounds_create</code>: 境界仕様から <code>PartitionBoundInfo</code> を生成するエントリポイント。</li>
+<li><code>partition_bounds_equal</code>: 2つの境界定義が論理的に等しいか判定（relcacheの更新判断に使用）。</li>
+<li><code>partition_bounds_copy</code>: 境界情報のディープコピー。</li>
+</ul>
+<h3>結合マージロジック</h3>
+<ul>
+<li><code>partition_bounds_merge</code>: 結合対象の境界をマージし、パーティションワイズ結合が可能か判定する。</li>
+<li><code>merge_list_bounds</code>, <code>merge_range_bounds</code>: 戦略別のマージ実装。</li>
+</ul>
+<h3>制約生成</h3>
+<ul>
+<li><code>get_qual_from_partbound</code>: パーティション境界から制約式（<code>List *</code>）を生成する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ColumnsHashData</code></li>
+<li><code>PartitionHashBound</code></li>
+<li><code>PartitionListValue</code></li>
+<li><code>PartitionMap</code></li>
+<li><code>PartitionRangeBound</code></li>
+<li><code>create_hash_bounds</code></li>
+<li><code>create_list_bounds</code></li>
+<li><code>create_range_bounds</code></li>
+<li><code>get_non_null_list_datum_count</code></li>
+<li><code>get_qual_from_partbound</code></li>
+<li><code>partition_bounds_create</code></li>
+<li><code>partition_bounds_equal</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **構築フロー**: <code>partition_bounds_create</code> が各戦略に応じた <code>create_*_bounds</code> を呼び出し、入力をソートして <code>PartitionBoundInfo</code> を構築します。 2. **マージフロー**: <code>partition_bounds_merge</code> は <code>PartitionMap</code> を初期化し、<code>merge_list_bounds</code> 等で両側の境界を走査（マージジョインに類似）します。一致するパーティションペアが見つかると、<code>merge_matching_partitions</code> でインデックスを割り当て、最終的に <code>build_merged_partition_bounds</code> で新しい境界構造を生成します。 3. **検証フロー**: <code>check_new_partition_bound</code> は、新規パーティション追加時に既存の境界と重複がないかを二分探索（<code>partition_range_bsearch</code> 等）で検証します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/partition.h</code>: パーティションカタログ定義。</li>
+<li><code>partitioning/partbounds.h</code>: 境界構造体の定義。</li>
+<li><code>utils/partcache.h</code>: リレーションキャッシュとの連携。</li>
+<li><code>nodes/makefuncs.h</code>: 制約式（<code>Expr</code>）の構築用。</li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/pathnodes.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>partdesc.c</code>: 本ファイルで構築された境界情報を保持する <code>PartitionDesc</code> の管理。</li>
+<li><code>partprune.c</code>: 本ファイルで構築された境界情報を利用してクエリ実行時のパーティション除外を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>partition_bounds_create</code> 等で生成されるオブジェクトは、呼び出し元のメモリコンテキストに依存します。特に <code>partition_bounds_copy</code> は長寿命なコンテキストで呼ばれることが多いため、カタログアクセスを避ける設計になっています。</li>
+<li>**境界の正規化**: Rangeパーティションでは、境界値の重複排除や <code>MINVALUE</code>/<code>MAXVALUE</code> の扱いが複雑です。<code>partition_rbound_cmp</code> が比較の基盤となっており、ここでの論理がすべてのRange操作の正当性を保証します。</li>
+<li>**省略された詳細**: ハッシュパーティションのモジュロ計算や、複雑なRange境界の交差判定ロジックは、コードの可読性を優先して詳細な分岐を追う必要があります。特に <code>merge_range_bounds</code> は、結合タイプ（INNER/LEFT/FULL）に応じた境界の包含関係の計算が非常に繊細です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__PartitionHashBound.html" target="wiki-view"><code>PartitionHashBound</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__PartitionListValue.html" target="wiki-view"><code>PartitionListValue</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__PartitionRangeBound.html" target="wiki-view"><code>PartitionRangeBound</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__PartitionMap.html" target="wiki-view"><code>PartitionMap</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__get_qual_from_partbound.html" target="wiki-view"><code>get_qual_from_partbound</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__partition_bounds_create.html" target="wiki-view"><code>partition_bounds_create</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__create_hash_bounds.html" target="wiki-view"><code>create_hash_bounds</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__get_non_null_list_datum_count.html" target="wiki-view"><code>get_non_null_list_datum_count</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__create_list_bounds.html" target="wiki-view"><code>create_list_bounds</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__create_range_bounds.html" target="wiki-view"><code>create_range_bounds</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__partition_bounds_equal.html" target="wiki-view"><code>partition_bounds_equal</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partbounds_c__ColumnsHashData.html" target="wiki-view"><code>ColumnsHashData</code></a></li>
+</ul></body></html>

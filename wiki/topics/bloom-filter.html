@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/bloom-filter.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>bloom_filter</h1>
+<h2>概念</h2>
+<p><code>bloom_filter</code> は、集合への要素の包含判定を確率的に行うためのメモリ効率に優れたデータ構造です。偽陽性（要素が含まれていないのに含まれていると判定されること）は許容しますが、偽陰性（要素が含まれているのに含まれていないと判定されること）は発生させない設計となっています。</p>
+<p>ヘッダーファイル（<code>src/include/lib/bloomfilter.h</code>）では不透明な構造体（opaque struct）として定義されており、具体的なメンバレイアウトは実装ファイル（<code>src/backend/lib/bloomfilter.c</code>）に隠蔽されています。</p>
+<h2>なぜ重要か</h2>
+<p>高コストな検索処理を回避するための事前フィルタリング（偽陰性のない確率的判定）を目的としています。メモリ効率を最優先した設計になっており、<code>contrib/amcheck/verify_nbtree.c</code> や <code>src/backend/utils/adt/acl.c</code> などのコンポーネントにおいて、不要なディスクアクセスや重い探索処理を削減するために利用されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/lib</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/lib/bloomfilter.h#bloom_filter</code>**: 外部に公開される不透明な構造体定義（<code>typedef struct bloom_filter bloom_filter;</code>）。</li>
+<li>**<code>symbol:src/backend/lib/bloomfilter.c#bloom_filter</code>**: 内部の具体的な構造体定義。ハッシュ関数の数（<code>k_hash_funcs</code>）、ハッシュ用シード（<code>seed</code>）、ビットセットサイズ（<code>m</code>）、および可変長配列のビットセット（<code>bitset</code>）を保持します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>bloom_create()</code> を呼び出し、推定要素数とメモリ制限（KB）を指定してフィルタを初期化します。ビットセットのサイズはメモリ制限に基づき、自動的に2のべき乗に調整されます。 2. **要素の追加**: <code>bloom_add_element()</code> を通じて要素を追加します。内部では拡張ダブルハッシュ法を用いて <code>k</code> 個のハッシュ値を算出し、<code>bitset</code> の対応するビットを OR 操作でセットします。 3. **存在判定**: <code>bloom_lacks_element()</code> を用いて要素の有無を判定します。同様のハッシュ計算を行い、対応するビットのいずれか一つでも立っていなければ、要素は「確実に含まれていない」と判定します。すべてのビットが立っている場合は「含まれている可能性がある」と判定します。 4. **解放**: 使用後は <code>bloom_free()</code> を呼び出してメモリを解放します。</p>
+<p>※なお、<code>verify_nbtree.c</code> や <code>acl.c</code> などの具体的な呼び出し元における、システム全体を通じたエンドツーエンドの統合フローの全容は、提供されたモジュール情報からは未詳です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**偽陰性ゼロ**: 要素が正しく追加されていれば、<code>bloom_lacks_element()</code> が誤って「含まれていない」と判定することはありません。</li>
+<li>**ビットセットサイズ（<code>m</code>）の制約**: <code>m</code> は必ず 2 のべき乗でなければなりません。これにより、剰余演算を高速なビットマスク処理に置き換えています。</li>
+<li>**最大サイズ制限**: 32ビットハッシュ値の範囲制限により、<code>m</code> は最大 2^32 ビット（512MB）に制限されます。</li>
+<li>**カプセル化の維持**: 外部モジュールからは <code>bloom_filter</code> の内部メンバに直接アクセスできず、必ず提供されたインターフェース関数を経由する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ制限と精度低下**: <code>bloom_create()</code> で指定する <code>bloom_work_mem</code> が不足している場合、または設計時の想定容量を超えて要素を追加した場合、ビットセットが埋まりすぎて偽陽性率が急激に高まります。</li>
+<li>**直接アクセスの試み**: 構造体は不透明型であるため、メンバへ直接アクセスしようとするとコンパイルエラーになります。</li>
+<li>**動的メモリ確保の複雑さ**: 構造体内部で <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、メモリ確保時には <code>offsetof(bloom_filter, bitset)</code> を使用した動的なサイズ計算が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/lib/bloomfilter.c</code> (ハッシュ生成、ビット操作、および <code>bloom_create</code> などの具体的な関数実装)</li>
+<li><code>src/include/lib/bloomfilter.h</code> (公開インターフェース定義)</li>
+<li><code>src/include/common/hashfn.h</code> (ハッシュ計算の基盤)</li>
+<li><code>src/port/pg_bitutils.h</code> (ビット操作ユーティリティ)</li>
+</ul></body></html>

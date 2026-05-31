@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/psql/input.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/psql/input.c</h1>
+<h2>概要</h2>
+<p><code>input.c</code> は、<code>psql</code> における対話的および非対話的な入力処理を抽象化するモジュールです。主に <code>readline</code> ライブラリとの統合、コマンド履歴の管理（保存・読み込み・エンコーディング）、および標準入力からの行読み込みを担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>psql</code> のメインループ（<code>mainloop.c</code>）がユーザー入力を受け取る際の窓口となります。<code>readline</code> が利用可能な環境では、コマンド補完や履歴操作を透過的に提供し、利用不可能な環境では標準的な <code>fgets</code> ベースの入力にフォールバックします。</p>
+<h2>責務</h2>
+<ul>
+<li>**入力の抽象化**: <code>gets_interactive</code> を通じて、環境に応じた適切な入力メソッドを提供。</li>
+<li>**履歴管理**: ユーザーの入力履歴を <code>readline</code> の履歴リストへ追加し、終了時にファイル（<code>.psql_history</code>）へ永続化。</li>
+<li>**マルチライン対応**: 履歴内の改行を特殊文字（<code>NL_IN_HISTORY</code>）に変換して保存し、読み込み時に復元することで、複数行のクエリを履歴として保持。</li>
+<li>**シグナル制御**: 入力待機中に <code>SIGINT</code> を適切に処理するためのフラグ管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gets_interactive()</code>: 対話モードでの入力取得関数。<code>readline</code> が有効ならそれを使用。</li>
+<li><code>gets_fromFile()</code>: ファイルまたは標準入力から行単位で読み込む汎用関数。</li>
+<li><code>pg_append_history()</code> / <code>pg_send_history()</code>: 入力されたクエリを履歴バッファに蓄積し、<code>readline</code> の履歴リストへコミットする一連の処理。</li>
+<li><code>initializeInput()</code>: 起動時に履歴ファイルパスの決定や <code>readline</code> の初期化を行う。</li>
+<li><code>printHistory()</code>: <code>\s</code> コマンド等で履歴をコンソールまたはファイルに出力する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>decode_history</code></li>
+<li><code>encode_history</code></li>
+<li><code>finishInput</code></li>
+<li><code>gets_fromFile</code></li>
+<li><code>gets_interactive</code></li>
+<li><code>initializeInput</code></li>
+<li><code>pg_append_history</code></li>
+<li><code>pg_send_history</code></li>
+<li><code>printHistory</code></li>
+<li><code>saveHistory</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>initializeInput</code> が環境変数 <code>PSQL_HISTORY</code> やホームディレクトリから履歴ファイルパスを特定し、<code>read_history</code> で読み込みます。 2.  **入力**: <code>gets_interactive</code> が呼び出されると、<code>readline</code> が入力を待ち受けます。入力された行は <code>pg_append_history</code> でバッファリングされます。 3.  **履歴コミット**: クエリ実行のタイミングで <code>pg_send_history</code> が呼ばれ、履歴の重複排除やスペース無視のフィルタリングを経て <code>add_history</code> に渡されます。 4.  **終了**: <code>atexit</code> に登録された <code>finishInput</code> が、<code>saveHistory</code> を呼び出し、履歴をファイルへ書き出します。この際、<code>encode_history</code> により改行がエスケープされます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通定義。</li>
+<li><code>input.h</code>: 公開インターフェース定義。</li>
+<li><code>settings.h</code>: <code>pset</code> 構造体を通じたグローバル設定（履歴サイズや制御オプション）へのアクセス。</li>
+<li><code>tab-complete.h</code>: <code>readline</code> 補完機能との連携。</li>
+<li><code>readline/readline.h</code> / <code>history.h</code>: 履歴管理ライブラリ（<code>USE_READLINE</code> 定義時）。</li>
+<li><code>common.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/psql/mainloop.c</code>: 本モジュールの主要な利用者。</li>
+<li><code>src/bin/psql/tab-complete.in.c</code>: <code>readline</code> 補完ロジックの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**libedit への対応**: <code>readline</code> と <code>libedit</code> の挙動差異（特に履歴のイテレーション方向）を吸収するためのマクロ <code>BEGIN_ITERATE_HISTORY</code> が定義されています。この複雑なロジックは、移植性維持のための重要なハックです。</li>
+<li>**SIGINT の扱い**: 入力中に <code>SIGINT</code> が発生した場合、<code>sigint_interrupt_enabled</code> フラグを介して <code>longjmp</code> を行う設計になっています。このため、入力関数を呼び出す際は必ず <code>sigint_interrupt_jmp</code> が設定されている必要があります。</li>
+<li>**履歴の永続化**: <code>saveHistory</code> は、可能な限り <code>append_history</code> を使用して既存の履歴ファイルを破壊しないように設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__psql__input_c__gets_interactive.html" target="wiki-view"><code>gets_interactive</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__pg_append_history.html" target="wiki-view"><code>pg_append_history</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__pg_send_history.html" target="wiki-view"><code>pg_send_history</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__gets_fromFile.html" target="wiki-view"><code>gets_fromFile</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__encode_history.html" target="wiki-view"><code>encode_history</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__decode_history.html" target="wiki-view"><code>decode_history</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__initializeInput.html" target="wiki-view"><code>initializeInput</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__saveHistory.html" target="wiki-view"><code>saveHistory</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__printHistory.html" target="wiki-view"><code>printHistory</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__input_c__finishInput.html" target="wiki-view"><code>finishInput</code></a></li>
+</ul></body></html>

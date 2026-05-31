@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/archive/shell_archive.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/archive/shell_archive.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのWAL（Write-Ahead Log）ファイルを外部コマンド経由でアーカイブするための標準的な実装です。GUCパラメータ <code>archive_command</code> で指定されたシェルコマンドを実行し、ログファイルを外部ストレージへ転送します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>archive_module</code> インターフェースを実装するコアモジュールです。PostgreSQLのアーカイブプロセスがWALファイルを処理する際、デフォルトの手段として利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**設定確認**: <code>archive_command</code> が空でないことを検証する。</li>
+<li>**コマンド実行**: <code>%f</code>（ファイル名）や <code>%p</code>（パス）のプレースホルダーを置換し、<code>system()</code> を介してシェルコマンドを実行する。</li>
+<li>**エラーハンドリング**: コマンドの終了ステータス（正常終了、シグナル終了、異常終了）を判定し、適切なログ出力またはFATALエラーを発生させる。</li>
+<li>**統計情報**: <code>pgstat</code> を利用して、アーカイブコマンド実行中の待機イベントを記録する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>shell_archive_callbacks</code>: <code>ArchiveModuleCallbacks</code> 構造体のインスタンス。アーカイブプロセスの各フェーズで呼び出される関数ポインタを保持します。</li>
+<li><code>shell_archive_init</code>: アーカイブモジュールとして登録するための初期化関数。</li>
+<li><code>shell_archive_file</code>: 実際に <code>system()</code> を呼び出し、アーカイブコマンドを実行するメインロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>shell_archive_configured</code></li>
+<li><code>shell_archive_shutdown</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>shell_archive_init</code> がコールバック構造体を返し、アーカイブプロセスに登録されます。 2. **設定チェック**: <code>shell_archive_configured</code> が <code>XLogArchiveCommand</code> の存在を確認します。 3. **実行**: <code>shell_archive_file</code> が呼び出されると、以下のフローが発生します。</p>
+<ul>
+<li><code>replace_percent_placeholders</code> でコマンド文字列を生成。</li>
+<li><code>pgstat_report_wait_start</code> で待機状態を開始。</li>
+<li><code>system()</code> でコマンドを実行。</li>
+<li>終了コードを解析し、失敗時は <code>wait_result_is_any_signal</code> 等でエラーレベルを決定して報告。</li>
+<p>4. **終了**: <code>shell_archive_shutdown</code> がプロセス終了時に呼び出されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQL環境定義。</li>
+<li><code>sys/wait.h</code>: <code>system()</code> の終了ステータス解析用。</li>
+<li><code>access/xlog.h</code>: WAL関連の定義と <code>XLogArchiveCommand</code> へのアクセス。</li>
+<li><code>archive/archive_module.h</code>: アーカイブモジュールインターフェースの定義。</li>
+<li><code>common/percentrepl.h</code>: コマンド文字列内のプレースホルダー置換機能。</li>
+<li><code>pgstat.h</code>: 待機イベントの統計記録。</li>
+<li><code>archive/shell_archive.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/archive/archive_module.h</code>: アーカイブモジュールが実装すべきインターフェース定義。</li>
+<li><code>src/backend/access/transam/xlogarchive.c</code>: アーカイブプロセスが本モジュールを呼び出す側の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>archive_command</code> を実行する標準的な実装ですが、PostgreSQLは動的ライブラリをロードすることで、より高度なアーカイブモジュール（S3転送など）を追加可能です。</li>
+<li><code>system()</code> を使用しているため、コマンド実行中はシェルが起動されます。セキュリティ上の観点から、<code>archive_command</code> に設定する文字列には十分注意してください。</li>
+<li><code>wait_result_is_any_signal</code> の判定により、シグナルでコマンドが中断された場合はFATALとして扱い、アーカイブプロセス自体を再起動させる設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__archive__shell_archive_c__shell_archive_init.html" target="wiki-view"><code>shell_archive_init</code></a></li>
+<li><a href="../../../symbols/src__backend__archive__shell_archive_c__shell_archive_configured.html" target="wiki-view"><code>shell_archive_configured</code></a></li>
+<li><a href="../../../symbols/src__backend__archive__shell_archive_c__shell_archive_file.html" target="wiki-view"><code>shell_archive_file</code></a></li>
+<li><a href="../../../symbols/src__backend__archive__shell_archive_c__shell_archive_shutdown.html" target="wiki-view"><code>shell_archive_shutdown</code></a></li>
+</ul></body></html>

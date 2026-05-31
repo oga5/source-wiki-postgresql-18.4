@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__pruneheap_c__PruneState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PruneState</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/backend/access/heap/pruneheap.c:33</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページの剪定（Pruning）および凍結（Freezing）処理中における作業状態を保持する構造体です。削除対象のタプル、HOTチェーンの構成、可視性判定結果、および処理後の統計情報を集約します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct {
+    /* 入力引数 */
+    GlobalVisState *vistest;
+    bool        mark_unused_now;
+    bool        freeze;
+    struct VacuumCutoffs *cutoffs;
+
+    /* ページ変更計画 */
+    TransactionId new_prune_xid;
+    TransactionId latest_xid_removed;
+    int         nredirected, ndead, nunused, nfrozen;
+    OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
+    OffsetNumber nowdead[MaxHeapTuplesPerPage];
+    OffsetNumber nowunused[MaxHeapTuplesPerPage];
+    HeapTupleFreeze frozen[MaxHeapTuplesPerPage];
+
+    /* HOTチェーン処理用作業領域 */
+    int         nroot_items;
+    OffsetNumber root_items[MaxHeapTuplesPerPage];
+    int         nheaponly_items;
+    OffsetNumber heaponly_items[MaxHeapTuplesPerPage];
+    bool        processed[MaxHeapTuplesPerPage + 1];
+    int8        htsv[MaxHeapTuplesPerPage + 1];
+    HeapPageFreeze pagefrz;
+
+    /* 処理結果統計 */
+    int         ndeleted;
+    int         live_tuples;
+    int         recently_dead_tuples;
+    bool        hastup;
+    int         lpdead_items;
+    OffsetNumber *deadoffsets;
+    bool        all_visible;
+    bool        all_frozen;
+    TransactionId visibility_cutoff_xid;
+} PruneState;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>heap_page_prune_and_freeze</code> 呼び出し時に初期化され、可視性判定用の <code>GlobalVisState</code> や凍結用の <code>VacuumCutoffs</code> を受け取ります。</li>
+<li>**出力**: 処理完了後、<code>ndeleted</code> や <code>all_visible</code> などの統計情報が呼び出し元の <code>PruneFreezeResult</code> へコピーされます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>processed</code> および <code>htsv</code> 配列は <code>MaxHeapTuplesPerPage + 1</code> のサイズを持ち、<code>FirstOffsetNumber</code>（1）を直接インデックスとして使用します。</li>
+<li><code>htsv</code> 配列において、値 <code>-1</code> は可視性が未計算であることを示します。</li>
+<li><code>all_frozen</code> は <code>all_visible</code> が真である場合にのみ有効とみなされます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: ページ内の全タプルの可視性を一度だけ判定し <code>htsv</code> に格納します。 2. **走査**: <code>root_items</code>（リダイレクト先や非HOTタプル）と <code>heaponly_items</code> を分類し、HOTチェーンを辿ります。 3. **記録**: 削除やリダイレクトが必要なオフセットを各配列に蓄積します。 4. **実行**: 蓄積された計画に基づき、物理的なページ変更を適用します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>heap_page_prune_and_freeze</code> が本構造体を管理します。</li>
+<li>**呼び出し先**: <code>heap_prune_satisfies_vacuum</code>、<code>heap_prune_record_prunable</code>、<code>heap_prune_record_redirect</code> 等の <code>heap_prune_record_*</code> 系関数群が、本構造体のフィールドを更新するために使用します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GlobalVisState</code>: 可視性判定に使用。</li>
+<li><code>HeapTupleFreeze</code>: 凍結対象タプルの情報を保持。</li>
+<li><code>HeapPageFreeze</code>: ページ全体の凍結状態を管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>MaxHeapTuplesPerPage</code> を超えるオフセット操作は発生しない設計ですが、配列サイズが固定であるため、ページ内のタプル数が上限を超えないことが前提となります。</li>
+<li><code>deadoffsets</code> は呼び出し元のメモリ領域を指すポインタであるため、生存期間の管理に注意が必要です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は剪定処理の「一時的な作業台」です。処理終了後に呼び出し元へ結果を渡す役割も兼ねているため、フィールドの追加時には <code>heap_page_prune_and_freeze</code> でのコピー処理も併せて確認してください。</li>
+<li><code>htsv</code> 配列のインデックス操作は、<code>FirstOffsetNumber</code> を考慮した設計になっているため、オフセットのオフセット（-1）を行わないよう注意してください。</li>
+</ul></body></html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/huge-page-size.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>huge_page_size</h1>
+<h2>概念</h2>
+<p><code>huge_page_size</code> は、PostgreSQLが共有メモリを確保する際に使用する Huge Page（ラージページ）のサイズを指定するためのGUC（Grand Unified Configuration）パラメータ、およびそれに関連するシステム制御機構です。</p>
+<h2>なぜ重要か</h2>
+<p>Huge Pageを使用することで、TLB（Translation Lookaside Buffer）のキャッシュミスを減らし、大規模な共有メモリ（<code>shared_buffers</code>など）へのアクセス効率を向上させることができます。<code>huge_page_size</code> パラメータを適切に設定・取得することで、システムデフォルト以外の特定のHuge Pageサイズを明示的に選択し、メモリ割り当てを最適化することが可能になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/port</code></li>
+<li><code>module:src/backend/utils/misc</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/utils/misc/guc_tables.c#huge_page_size</code>: 設定パラメータ（GUC変数）としての <code>huge_page_size</code>。</li>
+<li><code>symbol:src/backend/port/sysv_shmem.c#GetHugePageSize</code>: Linux等の環境で、GUC設定やシステム情報を基に実際のHuge Pageサイズと <code>mmap</code> フラグを決定する関数。</li>
+<li><code>symbol:src/backend/port/win32_shmem.c#GetHugePageSize</code>: Windows環境用の <code>GetHugePageSize</code> のスタブ実装。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **設定の読み込み**: GUC変数 <code>huge_page_size</code>（<code>guc_tables.c</code>）を介して、ユーザーが希望するHuge Pageサイズが設定されます。 2. **サイズとフラグの取得**: 共有メモリの初期化時（<code>ipci.c</code> や <code>shmem.c</code> などから呼び出される際）に <code>GetHugePageSize</code> が実行されます。</p>
+<ul>
+<li>**Linux等（<code>sysv_shmem.c</code>）**:</li>
+<li><code>MAP_HUGETLB</code> が定義されていない場合は、サイズとフラグに <code>0</code> を設定して終了します。</li>
+<li><code>/proc/meminfo</code> からシステムデフォルトのHuge Pageサイズ（<code>default_hugepagesize</code>）の取得を試みます。</li>
+<li>優先順位（明示的な <code>huge_page_size</code> 設定 ＞ システムデフォルト ＞ フォールバック値 2MB）に従って、最終的な <code>hugepagesize</code> を決定します。</li>
+<li><code>MAP_HUGETLB</code> フラグを設定し、必要に応じてページサイズに応じたシフト値をフラグに加算します。</li>
+<li>**Windows（<code>win32_shmem.c</code>）**:</li>
+<li>常にサイズとフラグに <code>0</code> を設定して終了します（スタブ実装）。</li>
+<p>3. **メモリ確保**: 取得されたサイズとフラグを用いて、実際の共有メモリ確保（<code>mmap</code> 等）が行われます（※ただし、<code>GetHugePageSize</code> 呼び出し以降の具体的なメモリ確保の全体フローやエラーハンドリングの詳細は、提供されたコンテキストからは未確定です）。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**プラットフォーム依存性**: <code>MAP_HUGETLB</code> が定義されていないプラットフォームや、Windows環境（<code>win32_shmem.c</code>）では、<code>GetHugePageSize</code> は常にサイズおよびフラグとして <code>0</code> を返します。</li>
+<li>**優先順位の不変規則**: <code>sysv_shmem.c</code> において、明示的に設定された <code>huge_page_size</code> は、システムデフォルト（<code>/proc/meminfo</code> から取得）よりも常に優先されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**Windowsでの未サポート**: Windows環境における <code>GetHugePageSize</code> は現状スタブ実装であり、常に <code>0</code> を返すため、Windows上でラージページを有効化するには <code>GetLargePageMinimum</code> などのWindows APIを用いたコードの書き換えが必要です。</li>
+<li>**アライメントエラー**: 実際のシステム設定がフォールバック値（2MB）より大きい場合、<code>mmap</code> や <code>munmap</code> がアライメントエラーで失敗する可能性があります。</li>
+<li>**Linux以外の非Windows環境**: Linux以外のプラットフォームでは <code>/proc/meminfo</code> が存在しないため、システムデフォルトの取得ロジックがなく、2MBのフォールバック値に依存します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/port/sysv_shmem.c</code>: Linux等におけるHuge Pageサイズ取得および <code>mmap</code> フラグ計算の具体的なロジック。</li>
+<li><code>src/backend/port/win32_shmem.c</code>: Windows環境におけるスタブ実装の定義。</li>
+<li><code>src/backend/utils/misc/guc_tables.c</code>: GUC変数 <code>huge_page_size</code> の定義と管理。</li>
+</ul></body></html>

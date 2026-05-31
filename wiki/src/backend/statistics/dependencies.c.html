@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/statistics/dependencies.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/dependencies.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの拡張統計情報における「関数従属性（Functional Dependencies）」の計算、シリアライズ、およびクエリプランナによる選択率推定ロジックを実装しています。関数従属性とは、ある列の集合（決定側）の値が決まれば、別の列（被決定側）の値が一意に決まるという関係性を指します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/statistics</code> モジュールの一部として、<code>ANALYZE</code> 実行時の統計構築と、プランナによるクエリ最適化時の選択率補正を担います。独立性の仮定（各列の選択率を単純に乗算する）が成り立たない相関関係のある列に対し、より正確なカーディナリティ見積もりを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計構築**: テーブルデータから列間の関数従属性を検出し、その度合い（0.0〜1.0）を算出する。</li>
+<li>**永続化**: 算出された従属性情報をシステムカタログ（<code>pg_statistic_ext_data</code>）に格納するためのシリアライズ・デシリアライズ処理。</li>
+<li>**選択率推定**: プランナがクエリ条件（<code>WHERE</code> 句など）を評価する際、従属性を利用して条件の選択率を補正する。</li>
+<li>**互換性チェック**: クエリ内の式や列が、統計情報で定義された従属性と適合するかを検証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>統計構築・管理</h3>
+<ul>
+<li><code>DependencyGenerator</code>: 属性の組み合わせを生成するイテレータ。<code>k</code> 個の属性の組み合わせを効率的に生成する。</li>
+<li><code>dependency_degree</code>: 指定された属性集合間での関数従属性の度合いを計算する。ソートとグループ化を用いて、決定側が被決定側をどれだけ一意に決定できるかを測定する。</li>
+<li><code>statext_dependencies_build</code>: テーブルデータから全ての可能な関数従属性を探索・構築する。</li>
+</ul>
+<h3>シリアライズ・永続化</h3>
+<ul>
+<li><code>statext_dependencies_serialize</code> / <code>deserialize</code>: <code>MVDependencies</code> 構造体と <code>bytea</code> 形式の相互変換を行う。</li>
+<li><code>statext_dependencies_load</code>: システムカタログから特定の統計オブジェクトの従属性情報をロードする。</li>
+</ul>
+<h3>選択率推定</h3>
+<ul>
+<li><code>dependencies_clauselist_selectivity</code>: プランナが呼び出すメインのエントリポイント。適用可能な従属性を特定し、選択率を補正する。</li>
+<li><code>clauselist_apply_dependencies</code>: 従属性の度合いに基づき、条件付き確率の公式を用いて選択率を再計算する。</li>
+<li><code>find_strongest_dependency</code>: 複数の従属性の中から、最も強力（属性数が多く、度合いが高い）なものを選択する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DependencyGenerator</code></li>
+<li><code>DependencyGeneratorData</code></li>
+<li><code>DependencyGenerator_free</code></li>
+<li><code>DependencyGenerator_init</code></li>
+<li><code>DependencyGenerator_next</code></li>
+<li><code>dependency_degree</code></li>
+<li><code>dependency_is_fully_matched</code></li>
+<li><code>generate_dependencies</code></li>
+<li><code>generate_dependencies_recurse</code></li>
+<li><code>statext_dependencies_build</code></li>
+<li><code>statext_dependencies_deserialize</code></li>
+<li><code>statext_dependencies_serialize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **構築フロー**: <code>statext_dependencies_build</code> が <code>DependencyGenerator</code> を用いて属性の全組み合わせを生成し、<code>dependency_degree</code> で各組み合わせの有効性を検証。有効なものを <code>MVDependencies</code> 構造体に格納する。 2. **推定フロー**:</p>
+<ul>
+<li><code>dependencies_clauselist_selectivity</code> がクエリ内の条件をスキャンし、統計情報と適合する列/式を特定。</li>
+<li><code>find_strongest_dependency</code> が適用すべき従属性を決定。</li>
+<li><code>clauselist_apply_dependencies</code> が、<code>P(a,b) = f * Min(P(a), P(b)) + (1-f) * P(a) * P(b)</code> のような公式を用いて、独立性の仮定を補正した選択率を算出する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic_ext.h</code>: 統計情報のカタログ定義。</li>
+<li><code>optimizer/clauses.h</code>: クエリ句の解析・評価。</li>
+<li><code>statistics/extended_stats_internal.h</code>: 内部的な統計データ構造。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定の共通ユーティリティ。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_statistic_ext_data.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/nodes.h</code></li>
+<li><code>nodes/pathnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/statistics/extended_stats.c</code>: 拡張統計の全体的な制御層。</li>
+<li><code>src/backend/statistics/mcv.c</code>: 多変量MCV統計の管理。</li>
+<li><code>src/backend/statistics/mvdistinct.c</code>: 多変量NDistinct統計の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>dependency_degree</code> 内では <code>AllocSetContextCreate</code> を使用して一時的なメモリを管理し、計算終了後に解放することでメモリリークを防いでいます。</li>
+<li>**計算量**: 属性数 <code>n</code> に対して <code>2^n</code> に近い組み合わせを生成するため、統計対象の列数には制限があります。</li>
+<li>**推定ロジック**: 従属性の度合い <code>f</code> は、データが完全に従属している割合を示します。<code>f=1.0</code> の場合、完全に決定可能（独立性の仮定を完全に無視）となり、<code>f=0.0</code> の場合は独立しているとみなされます。</li>
+<li>**省略された詳細**: 本ファイルは従属性の「計算」と「適用」に特化しており、カタログの更新処理そのものは <code>extended_stats.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__DependencyGeneratorData.html" target="wiki-view"><code>DependencyGeneratorData</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__DependencyGenerator.html" target="wiki-view"><code>DependencyGenerator</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__generate_dependencies_recurse.html" target="wiki-view"><code>generate_dependencies_recurse</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__generate_dependencies.html" target="wiki-view"><code>generate_dependencies</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__DependencyGenerator_init.html" target="wiki-view"><code>DependencyGenerator_init</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__DependencyGenerator_free.html" target="wiki-view"><code>DependencyGenerator_free</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__DependencyGenerator_next.html" target="wiki-view"><code>DependencyGenerator_next</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__dependency_degree.html" target="wiki-view"><code>dependency_degree</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__statext_dependencies_build.html" target="wiki-view"><code>statext_dependencies_build</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__statext_dependencies_serialize.html" target="wiki-view"><code>statext_dependencies_serialize</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__statext_dependencies_deserialize.html" target="wiki-view"><code>statext_dependencies_deserialize</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__dependencies_c__dependency_is_fully_matched.html" target="wiki-view"><code>dependency_is_fully_matched</code></a></li>
+</ul></body></html>

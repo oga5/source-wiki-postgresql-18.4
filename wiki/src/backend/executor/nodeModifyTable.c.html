@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeModifyTable.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeModifyTable.c</h1>
+<h2>概要</h2>
+<p><code>nodeModifyTable.c</code> は、PostgreSQL の実行エンジンにおいて <code>INSERT</code>、<code>UPDATE</code>、<code>DELETE</code>、および <code>MERGE</code> 文を実行するための中心的なプランノードです。プランナが生成した <code>ModifyTable</code> ノードを解釈し、ターゲットリレーション（テーブル、パーティション、外部テーブル、ビュー）に対してデータ操作を適用します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュール内の「ノード層」に位置し、<code>ExecProcNode</code> から呼び出される実行ノードの一つです。他のノードが主にデータの読み取りを行うのに対し、本ノードはデータ変更という副作用を伴う処理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**DML 操作の実行**: ターゲットリレーションに対する行の挿入、更新、削除の実行。</li>
+<li>**トリガー管理**: <code>BEFORE/AFTER</code> 行レベルトリガーおよびステートメントレベルトリガーの起動。</li>
+<li>**制約とポリシーの適用**: <code>CHECK</code> 制約、<code>NOT NULL</code> 制約、<code>RLS</code> (Row Level Security) ポリシー、および <code>WITH CHECK OPTION</code> の検証。</li>
+<li>**パーティションルーティング**: パーティションテーブルへの挿入時に、適切なリーフパーティションを特定し、必要に応じてタプルを変換してルーティングする。</li>
+<li>**競合解決**: <code>INSERT ... ON CONFLICT</code> における競合検知と、それに応じた <code>UPDATE</code> または <code>DO NOTHING</code> の実行。</li>
+<li>**MERGE 処理**: ソースとターゲットの結合結果に基づき、<code>WHEN MATCHED</code> / <code>NOT MATCHED</code> 条件に応じたアクションのディスパッチ。</li>
+<li>**RETURNING 句の処理**: 操作後のタプルを射影し、呼び出し元へ返却。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行コンテキスト</h3>
+<ul>
+<li><code>ModifyTableContext</code>: 操作中の状態（<code>EState</code>、<code>ModifyTableState</code>、<code>EPQState</code>）や、操作結果を保持する一時的なスロットをまとめた構造体。</li>
+<li><code>UpdateContext</code>: <code>UPDATE</code> 操作特有の状態（パーティション移動の有無、インデックス更新フラグ、ロックモード）を保持。</li>
+</ul>
+<h3>主要な実行関数</h3>
+<ul>
+<li><code>ExecModifyTable</code>: ノードのメインループ。サブプランからタプルを取得し、操作タイプに応じて <code>ExecInsert</code> / <code>ExecUpdate</code> / <code>ExecDelete</code> / <code>ExecMerge</code> を呼び出す。</li>
+<li><code>ExecInsert</code> / <code>ExecUpdate</code> / <code>ExecDelete</code>: 各操作の核心。トリガー、制約、FDW 呼び出し、インデックス更新を統合する。</li>
+<li><code>ExecMerge</code>: <code>MERGE</code> 文のロジック。<code>ExecMergeMatched</code> と <code>ExecMergeNotMatched</code> を用いて条件分岐を行う。</li>
+</ul>
+<h3>初期化・ユーティリティ</h3>
+<ul>
+<li><code>ExecInitModifyTable</code>: ノードの初期化。ターゲットリレーションの準備、FDW の初期化、トリガー状態のセットアップを行う。</li>
+<li><code>ExecInitGenerated</code> / <code>ExecComputeStoredGenerated</code>: 生成列（Generated Columns）の計算と初期化。</li>
+<li><code>ExecInitInsertProjection</code> / <code>ExecInitUpdateProjection</code>: 射影（Projection）の準備。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecDelete</code></li>
+<li><code>ExecDeleteAct</code></li>
+<li><code>ExecDeleteEpilogue</code></li>
+<li><code>ExecDeletePrologue</code></li>
+<li><code>ExecInitGenerated</code></li>
+<li><code>ExecInitInsertProjection</code></li>
+<li><code>ExecInitMerge</code></li>
+<li><code>ExecInitMergeTupleSlots</code></li>
+<li><code>ExecInitUpdateProjection</code></li>
+<li><code>MTTargetRelLookup</code></li>
+<li><code>ModifyTableContext</code></li>
+<li><code>UpdateContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitModifyTable</code> が <code>ResultRelInfo</code> を構築し、ターゲットリレーションをオープン。 2. **ループ処理**: <code>ExecModifyTable</code> がサブプランからタプルをプルアップ。 3. **ルーティング**: パーティションテーブルの場合、<code>ExecPrepareTupleRouting</code> で適切なリーフパーティションを特定。 4. **操作実行**:</p>
+<ul>
+<li><code>ExecInsert</code> 等がトリガーを起動し、<code>table_tuple_insert</code> 等の Table AM を呼び出す。</li>
+<li><code>INSERT ... ON CONFLICT</code> の場合、競合検知後に <code>ExecOnConflictUpdate</code> を呼び出し、必要に応じて <code>UPDATE</code> パスへ遷移。</li>
+<li><code>UPDATE</code> でパーティションキーが変更された場合、<code>ExecCrossPartitionUpdate</code> が <code>DELETE</code> と <code>INSERT</code> を組み合わせてタプルを移動。</li>
+<p>5. **RETURNING**: <code>ExecProcessReturning</code> が射影を行い、結果を呼び出し元へ返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセス層（Table AM）の抽象化インターフェース。</li>
+<li><code>executor/execPartition.h</code>: パーティションルーティング機能。</li>
+<li><code>foreign/fdwapi.h</code>: 外部テーブル（FDW）の操作インターフェース。</li>
+<li><code>commands/trigger.h</code>: トリガー実行エンジン。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeModifyTable.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: 実行全体のライフサイクル管理。</li>
+<li><code>src/backend/executor/execPartition.c</code>: パーティションの検索とルーティングの補助。</li>
+<li><code>src/backend/executor/nodeModifyTable.h</code>: 公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ModifyTable</code> はクエリ実行期間中生存する <code>EState</code> を多用します。<code>ExecInit</code> 時に割り当てられたメモリは <code>ExecutorEnd</code> で解放されます。</li>
+<li>**副作用**: 本ノードはトランザクションの状態を直接変更します。<code>ExecReScanModifyTable</code> は未実装であり、再実行は想定されていません。</li>
+<li>**複雑性**: <code>MERGE</code> 処理は <code>UPDATE</code> や <code>DELETE</code> と複雑に絡み合っており、特に同時実行制御（EvalPlanQual）のパスが非常に深いため、デバッグ時は <code>TM_Result</code> の戻り値（<code>TM_Updated</code> 等）の追跡が重要です。</li>
+<li>**省略**: 本ファイルには <code>ExecBatchInsert</code> のような FDW 向けの最適化パスが含まれていますが、これらは特定の FDW 実装に依存するため、詳細な挙動は各 FDW の実装に委ねられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__MTTargetRelLookup.html" target="wiki-view"><code>MTTargetRelLookup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ModifyTableContext.html" target="wiki-view"><code>ModifyTableContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__UpdateContext.html" target="wiki-view"><code>UpdateContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecInitGenerated.html" target="wiki-view"><code>ExecInitGenerated</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecInitInsertProjection.html" target="wiki-view"><code>ExecInitInsertProjection</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecInitUpdateProjection.html" target="wiki-view"><code>ExecInitUpdateProjection</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecDeletePrologue.html" target="wiki-view"><code>ExecDeletePrologue</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecDeleteAct.html" target="wiki-view"><code>ExecDeleteAct</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecDeleteEpilogue.html" target="wiki-view"><code>ExecDeleteEpilogue</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecDelete.html" target="wiki-view"><code>ExecDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecInitMerge.html" target="wiki-view"><code>ExecInitMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeModifyTable_c__ExecInitMergeTupleSlots.html" target="wiki-view"><code>ExecInitMergeTupleSlots</code></a></li>
+</ul></body></html>

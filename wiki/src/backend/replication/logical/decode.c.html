@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/decode.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/decode.c</h1>
+<h2>概要</h2>
+<p><code>decode.c</code> は、PostgreSQL の WAL（Write-Ahead Log）レコードを論理デコーディング可能な形式に変換する中核モジュールです。<code>xlogreader</code> を通じて読み込まれた低レベルな WAL レコードを解析し、<code>reorderbuffer</code>（変更の蓄積）および <code>snapbuild</code>（カタログスナップショットの構築）へ情報を引き渡す役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>論理デコーディングパイプラインの「変換層」として機能します。WAL レコードの物理的な構造を理解し、それを論理的な変更（INSERT, UPDATE, DELETE 等）に抽象化して、上位のバッファリング層へ渡します。</p>
+<h2>責務</h2>
+<ul>
+<li>WAL レコードの種別（Rmgr）に応じたデコード関数のディスパッチ。</li>
+<li>トランザクションの開始・コミット・アボート・準備（2PC）のライフサイクル管理。</li>
+<li>データベース ID やレプリケーションオリジンに基づく不要なレコードのフィルタリング。</li>
+<li><code>reorderbuffer</code> への変更キューイングと、<code>snapbuild</code> によるスナップショット状態の更新。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LogicalDecodingProcessRecord</code>: エントリポイント。WAL レコードを受け取り、適切なデコード関数を呼び出す。</li>
+<li><code>xlog_decode</code>, <code>xact_decode</code>, <code>heap_decode</code>: 各リソースマネージャ（Rmgr）ごとのデコード処理関数。</li>
+<li><code>XLogRecordBuffer</code>: WAL レコードとその LSN 範囲を保持する構造体。</li>
+<li><code>DecodeInsert</code>, <code>DecodeUpdate</code>, <code>DecodeDelete</code>: ヒープ操作を論理変更として再構築するヘルパー関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DecodeAbort</code></li>
+<li><code>DecodeCommit</code></li>
+<li><code>DecodeMultiInsert</code></li>
+<li><code>DecodePrepare</code></li>
+<li><code>DecodeSpecConfirm</code></li>
+<li><code>DecodeTruncate</code></li>
+<li><code>FilterByOrigin</code></li>
+<li><code>FilterPrepare</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>LogicalDecodingProcessRecord</code> が WAL レコードを読み込み、<code>XLogRecordBuffer</code> を作成。 2. **サブトランザクション処理**: トップレベル XID を確認し、<code>ReorderBufferAssignChild</code> で親子関係を登録。 3. **ディスパッチ**: <code>GetRmgr()</code> でレコードタイプを特定し、対応する <code>rm_decode</code> 関数（例: <code>heap_decode</code>）を実行。 4. **フィルタリング**: <code>DecodeTXNNeedSkip</code> や <code>FilterByOrigin</code> を用いて、対象外のデータベースやオリジンのレコードを早期に破棄。 5. **出力**: 必要な変更を <code>ReorderBufferQueueChange</code> を通じて <code>reorderbuffer</code> に蓄積し、必要に応じて <code>snapbuild</code> でスナップショットを更新。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlogreader.h</code>: WAL レコードの読み込みインターフェース。</li>
+<li><code>replication/reorderbuffer.h</code>: 変更の蓄積とトランザクション管理。</li>
+<li><code>replication/snapbuild.h</code>: カタログスナップショットの構築と管理。</li>
+<li><code>replication/logical.h</code>: 論理デコーディングのコンテキスト定義。</li>
+<li><code>access/heapam_xlog.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogrecord.h</code></li>
+<li><code>catalog/pg_control.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/decode.h</code></li>
+<li><code>replication/message.h</code></li>
+<li><code>storage/standbydefs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/reorderbuffer.c</code>: デコードされた変更を保持し、最終的に出力プラグインへ渡すためのバッファ。</li>
+<li><code>src/backend/replication/logical/snapbuild.c</code>: 論理デコーディングに必要な一貫性のあるスナップショットを構築するロジック。</li>
+<li><code>src/include/replication/decode.h</code>: 本ファイルの関数宣言と <code>XLogRecordBuffer</code> 定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは WAL レコードの物理構造を抽象化する場所であり、ビジネスロジック（レプリケーションの適用など）は含みません。</li>
+<li><code>fast_forward</code> モードが存在し、スナップショット構築のみを行い、実際のデータデコードをスキップするパスがある点に注意してください。</li>
+<li><code>DecodeTXNNeedSkip</code> は、不要なトランザクションを効率的にスキップするための重要なガードレールです。デバッグ時には、どの条件でスキップされているかを確認するのが近道です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__LogicalDecodingProcessRecord.html" target="wiki-view"><code>LogicalDecodingProcessRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__FilterPrepare.html" target="wiki-view"><code>FilterPrepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__FilterByOrigin.html" target="wiki-view"><code>FilterByOrigin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeCommit.html" target="wiki-view"><code>DecodeCommit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodePrepare.html" target="wiki-view"><code>DecodePrepare</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeAbort.html" target="wiki-view"><code>DecodeAbort</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeInsert.html" target="wiki-view"><code>DecodeInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeUpdate.html" target="wiki-view"><code>DecodeUpdate</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeDelete.html" target="wiki-view"><code>DecodeDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeTruncate.html" target="wiki-view"><code>DecodeTruncate</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeMultiInsert.html" target="wiki-view"><code>DecodeMultiInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__decode_c__DecodeSpecConfirm.html" target="wiki-view"><code>DecodeSpecConfirm</code></a></li>
+</ul></body></html>

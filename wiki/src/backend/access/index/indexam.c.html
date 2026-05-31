@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/index/indexam.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/index/indexam.c</h1>
+<h2>概要</h2>
+<p><code>indexam.c</code> は、PostgreSQL のインデックスアクセス手法（AM）に対する汎用的なインターフェース層です。特定のインデックス型（B-tree, GIN, GiST 等）の実装詳細を隠蔽し、実行エンジンがインデックスを操作するための統一された API を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/index</code> モジュールの中核であり、上位層（エグゼキュータ等）と下位層（各インデックス AM の実装）を仲介します。<code>genam.c</code> がインデックススキャンの初期化や構築といった補助的な処理を担うのに対し、本ファイルはスキャンの実行、挿入、保守といったライフサイクル全般を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス操作の抽象化**: <code>aminsert</code>, <code>amgettuple</code>, <code>ambulkdelete</code> 等の AM API を呼び出すためのラッパーを提供。</li>
+<li>**整合性チェック**: <code>RELATION_CHECKS</code> や <code>SCAN_CHECKS</code> マクロを用い、不正な状態でのアクセスを防止。</li>
+<li>**リソース管理**: インデックスのオープン/クローズ、スキャン中の参照カウント管理、スキャン終了時のメモリ解放。</li>
+<li>**サポート関数管理**: <code>pg_amproc</code> に登録されたサポート関数の検索とキャッシュ（<code>index_getprocinfo</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>index_open</code> / <code>index_close</code>: インデックスリレーションのライフサイクル管理。</li>
+<li><code>index_insert</code>: インデックスへのタプル挿入。</li>
+<li><code>index_beginscan</code> / <code>index_endscan</code>: スキャンの開始と終了。</li>
+<li><code>index_getnext_tid</code>: スキャンにおける次のタプル識別子（TID）の取得。</li>
+<li><code>index_fetch_heap</code>: インデックスが指すヒープタプルの取得。</li>
+<li><code>index_getprocinfo</code>: インデックスの演算子クラスに関連付けられたサポート関数の取得。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>index_beginscan_bitmap</code></li>
+<li><code>index_beginscan_internal</code></li>
+<li><code>index_insert_cleanup</code></li>
+<li><code>index_markpos</code></li>
+<li><code>index_rescan</code></li>
+<li><code>try_index_open</code></li>
+<li><code>validate_relation_kind</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャン開始**: <code>index_beginscan</code> が呼び出されると、<code>index_beginscan_internal</code> を経由して対象 AM の <code>ambeginscan</code> が実行され、<code>IndexScanDesc</code> が生成されます。 2. **タプル取得**: <code>index_getnext_slot</code> がループ内で <code>index_getnext_tid</code>（AM 固有の検索）と <code>index_fetch_heap</code>（ヒープからの実データ取得）を交互に呼び出し、結果をスロットに格納します。 3. **保守処理**: <code>index_bulk_delete</code> や <code>index_vacuum_cleanup</code> は、VACUUM 処理中に AM 固有のクリーンアップロジックを起動します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/amapi.h</code>: インデックス AM のインターフェース定義。</li>
+<li><code>access/relscan.h</code>: スキャン記述子（<code>IndexScanDesc</code>）の定義。</li>
+<li><code>access/tableam.h</code>: ヒープアクセス層との連携。</li>
+<li><code>utils/syscache.h</code>: システムカタログ（<code>pg_amproc</code> 等）のキャッシュアクセス。</li>
+<li><code>access/relation.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/index/genam.c</code>: インデックススキャンの初期化や構築を補助するユーティリティ群。</li>
+<li><code>src/backend/access/index/amvalidate.c</code>: インデックス AM の定義や演算子クラスの検証ロジック。</li>
+<li><code>src/backend/access/nbtree/</code>: B-tree インデックスの具体的な実装例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**マクロの活用**: <code>CHECK_REL_PROCEDURE</code> や <code>CHECK_SCAN_PROCEDURE</code> は、特定の AM が関数を実装していない場合にエラーを投げる重要なガードです。</li>
+<li>**HOT チェーン**: <code>index_fetch_heap</code> は HOT（Heap Only Tuple）チェーンを考慮しており、MVCC スナップショット下での整合性を維持するよう設計されています。</li>
+<li>**ロックの注意点**: <code>index_close</code> はロックを解放しますが、トランザクション終了までロックを保持し続ける設計が一般的であるため、呼び出しタイミングには注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_open.html" target="wiki-view"><code>index_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__try_index_open.html" target="wiki-view"><code>try_index_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_close.html" target="wiki-view"><code>index_close</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__validate_relation_kind.html" target="wiki-view"><code>validate_relation_kind</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_insert.html" target="wiki-view"><code>index_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_insert_cleanup.html" target="wiki-view"><code>index_insert_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_beginscan.html" target="wiki-view"><code>index_beginscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_beginscan_bitmap.html" target="wiki-view"><code>index_beginscan_bitmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_beginscan_internal.html" target="wiki-view"><code>index_beginscan_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_rescan.html" target="wiki-view"><code>index_rescan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_endscan.html" target="wiki-view"><code>index_endscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__index__indexam_c__index_markpos.html" target="wiki-view"><code>index_markpos</code></a></li>
+</ul></body></html>

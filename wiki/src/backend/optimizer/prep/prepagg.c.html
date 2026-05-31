@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/prep/prepagg.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/prep/prepagg.c</h1>
+<h2>概要</h2>
+<p>クエリ内の集約関数（<code>Aggref</code>）を最適化するための前処理ルーチンを提供します。同一の集約呼び出しの統合や、異なる集約間での遷移状態（Transition State）の共有を検出し、プランニング段階で集約の実行効率を向上させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/prep</code> サブシステムの一部として、クエリの最適化フェーズにおいて集約ノードの構造を決定します。ここで収集された情報は、後のプラン生成やコスト見積もりに利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**集約の統合**: クエリ内の重複する集約関数を特定し、計算を一度に済ませるよう <code>aggno</code> を割り当てる。</li>
+<li>**遷移状態の共有**: 異なる集約関数であっても、遷移関数や初期値が同一であれば遷移状態を共有（<code>transno</code> の共有）させる。</li>
+<li>**メタデータ解決**: 多相型（Polymorphic）の遷移型を解決し、必要な関数（<code>transfn</code>, <code>finalfn</code>, <code>combinefn</code> 等）の情報を収集する。</li>
+<li>**コスト見積もり**: <code>get_agg_clause_costs</code> を通じて、集約実行に必要な計算コストとメモリ使用量を算出する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>preprocess_aggrefs</code>: 集約前処理のメインエントリーポイント。</li>
+<li><code>AggInfo</code>: 集約関数の最終計算に関する情報を保持する構造体。</li>
+<li><code>AggTransInfo</code>: 遷移状態の計算に関する情報を保持する構造体。</li>
+<li><code>find_compatible_agg</code>: 同一の集約呼び出しを検索する。</li>
+<li><code>find_compatible_trans</code>: 遷移状態を共有可能な既存の <code>AggTransInfo</code> を検索する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetAggInitVal</code></li>
+<li><code>get_agg_clause_costs</code></li>
+<li><code>preprocess_aggref</code></li>
+<li><code>preprocess_aggrefs_walker</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. <code>preprocess_aggrefs</code> がクエリツリーを走査し、<code>Aggref</code> ノードを見つけるたびに <code>preprocess_aggref</code> を呼び出す。 2. <code>preprocess_aggref</code> はシステムカタログ（<code>pg_aggregate</code>）から集約情報を取得し、型解決を行う。 3. <code>find_compatible_agg</code> で同一の集約を検索し、見つかれば <code>aggno</code> を再利用する。 4. 見つからない場合、<code>find_compatible_trans</code> で遷移状態の共有可能性を判定し、必要に応じて新しい <code>AggTransInfo</code> を <code>root-&gt;aggtransinfos</code> に追加する。 5. 最終的に <code>Aggref</code> ノードの <code>aggno</code> と <code>aggtransno</code> が更新される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_aggregate.h</code>: 集約関数の定義情報。</li>
+<li><code>nodes/pathnodes.h</code>: <code>PlannerInfo</code> や <code>AggInfo</code> 等のプランニング用データ構造。</li>
+<li><code>optimizer/optimizer.h</code>: オプティマイザの共通定義。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeAgg.c</code>: 本ファイルで準備された <code>AggInfo</code> 等を利用して実際に集約を実行するコード。</li>
+<li><code>src/include/nodes/pathnodes.h</code>: <code>AggInfo</code> および <code>AggTransInfo</code> の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**インプレース更新**: <code>preprocess_aggrefs</code> は入力された式ツリー内の <code>Aggref</code> ノードを直接書き換えます。</li>
+<li>**実行時コスト**: 本ファイルで行う最適化はプランニング時のみ有効です。実行時のオーバーヘッドを減らすため、将来的にはこれらの情報を <code>Agg</code> ノード自体に保持させる構想がありますが、現在はプランニングの初期段階で処理されています。</li>
+<li>**部分集約**: <code>hasNonPartialAggs</code> などのフラグは、部分集約（Partial Aggregation）が可能かどうかを判断するために重要です。特に <code>INTERNAL</code> 型の遷移状態を持つ場合、シリアライズ関数の有無が制約となります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__preprocess_aggrefs.html" target="wiki-view"><code>preprocess_aggrefs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__preprocess_aggref.html" target="wiki-view"><code>preprocess_aggref</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__preprocess_aggrefs_walker.html" target="wiki-view"><code>preprocess_aggrefs_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__find_compatible_agg.html" target="wiki-view"><code>find_compatible_agg</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__find_compatible_trans.html" target="wiki-view"><code>find_compatible_trans</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__GetAggInitVal.html" target="wiki-view"><code>GetAggInitVal</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepagg_c__get_agg_clause_costs.html" target="wiki-view"><code>get_agg_clause_costs</code></a></li>
+</ul></body></html>

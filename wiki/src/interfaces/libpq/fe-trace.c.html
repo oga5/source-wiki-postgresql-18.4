@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-trace.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-trace.c</h1>
+<h2>概要</h2>
+<p><code>fe-trace.c</code> は、PostgreSQL のフロントエンド・バックエンド間の通信プロトコルをデバッグ用にトレース出力するための機能を実装しています。接続ごとのトレース設定管理と、バイナリ形式のプロトコルメッセージを人間が読みやすいテキスト形式に変換して出力する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の通信スタックの一部として、プロトコルメッセージの送受信時にフックされるデバッグユーティリティです。<code>PGconn</code> 構造体に紐付いたトレース設定を読み取り、通信内容を <code>FILE *</code> ストリームへ書き出します。</p>
+<h2>責務</h2>
+<ul>
+<li>**トレース制御**: <code>PQtrace</code> / <code>PQuntrace</code> によるデバッグ出力の有効化・無効化および <code>PQsetTraceFlags</code> による詳細設定。</li>
+<li>**メッセージ解析**: フロントエンドおよびバックエンドのプロトコルメッセージを解析し、型に応じたフォーマットで出力。</li>
+<li>**回帰テスト対応**: <code>PQTRACE_REGRESS_MODE</code> を通じて、テスト結果に影響を与える可変情報（タイムスタンプや特定の内部フィールド）を抑制する機能の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PQtrace</code>: トレース対象の接続と出力先を関連付けるエントリポイント。</li>
+<li><code>pqTraceOutputMessage</code>: メッセージの型を識別し、適切な解析関数へディスパッチするメインルーチン。</li>
+<li><code>pqTraceOutputNoTypeByteMessage</code>: 型バイトを持たない特殊なメッセージ（StartupMessage, SSLRequest 等）の処理。</li>
+<li><code>PGconn.Pfdebug</code>: トレース出力先のファイルポインタ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQsetTraceFlags</code></li>
+<li><code>PQuntrace</code></li>
+<li><code>pqTraceOutput_Bind</code></li>
+<li><code>pqTraceOutput_Close</code></li>
+<li><code>pqTraceOutput_CommandComplete</code></li>
+<li><code>pqTraceOutput_CopyData</code></li>
+<li><code>pqTraceOutput_DataRow</code></li>
+<li><code>pqTraceOutput_Describe</code></li>
+<li><code>pqTraceOutput_ErrorResponse</code></li>
+<li><code>pqTraceOutput_NotificationResponse</code></li>
+<li><code>pqTraceOutput_SASLInitialResponse</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PQtrace</code> が <code>PGconn</code> に出力先を設定。 2. **メッセージ受信/送信**: 通信処理中に <code>pqTraceOutputMessage</code> が呼び出される。 3. **解析**:</p>
+<ul>
+<li>メッセージの先頭バイト（ID）と長さを読み取る。</li>
+<li><code>regress</code> モード判定を行い、必要に応じて出力をサニタイズする。</li>
+<li><code>switch</code> 文でメッセージ型を特定し、<code>pqTraceOutput_XXX</code> 系の関数でペイロードをデコードする。</li>
+<p>4. **出力**: 解析されたデータが <code>Pfdebug</code> に書き込まれる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-int.h</code>: <code>PGconn</code> 構造体および内部定数へのアクセス。</li>
+<li><code>port/pg_bswap.h</code>: ネットワークバイトオーダーからホストバイトオーダーへの変換。</li>
+<li>標準ライブラリ: <code>&lt;sys/time.h&gt;</code> (タイムスタンプ用), <code>&lt;ctype.h&gt;</code> (文字判定用)。</li>
+<li><code>ctype.h</code></li>
+<li><code>libpq-fe.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-protocol3.c</code>: プロトコル v3 の実際の通信処理。ここで <code>pqTraceOutputMessage</code> が呼び出される。</li>
+<li><code>libpq-fe.h</code>: ユーザーが利用する公開 API 定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メッセージの重複**: プロトコル上、異なるメッセージが同じ型バイトを共有している場合があります（例: <code>Describe</code> と <code>DataRow</code>）。このファイルでは <code>toServer</code> フラグや <code>conn-&gt;current_auth_response</code> を用いて文脈を判断しています。</li>
+<li>**回帰テスト**: <code>regress</code> モードは、ファイル名や行番号など、サーバー側の変更で頻繁に変わる値を隠蔽するために重要です。新しいメッセージ型を追加する際は、このモードでの出力がテストを壊さないか確認してください。</li>
+<li>**拡張**: 新しいプロトコルメッセージを追加した場合は、<code>pqTraceOutputMessage</code> の <code>switch</code> 文にケースを追加し、必要に応じて専用の <code>pqTraceOutput_XXX</code> 関数を実装してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__PQtrace.html" target="wiki-view"><code>PQtrace</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__PQuntrace.html" target="wiki-view"><code>PQuntrace</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__PQsetTraceFlags.html" target="wiki-view"><code>PQsetTraceFlags</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_NotificationResponse.html" target="wiki-view"><code>pqTraceOutput_NotificationResponse</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_Bind.html" target="wiki-view"><code>pqTraceOutput_Bind</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_Close.html" target="wiki-view"><code>pqTraceOutput_Close</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_CommandComplete.html" target="wiki-view"><code>pqTraceOutput_CommandComplete</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_CopyData.html" target="wiki-view"><code>pqTraceOutput_CopyData</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_DataRow.html" target="wiki-view"><code>pqTraceOutput_DataRow</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_Describe.html" target="wiki-view"><code>pqTraceOutput_Describe</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_ErrorResponse.html" target="wiki-view"><code>pqTraceOutput_ErrorResponse</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-trace_c__pqTraceOutput_SASLInitialResponse.html" target="wiki-view"><code>pqTraceOutput_SASLInitialResponse</code></a></li>
+</ul></body></html>

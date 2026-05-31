@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/postgres_fdw/option.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/postgres_fdw/option.c</h1>
+<h2>概要</h2>
+<p><code>option.c</code> は、<code>postgres_fdw</code> が使用する外部データラッパー（FDW）関連のオプションおよび GUC（Grand Unified Configuration）パラメータの定義と検証を担うモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postgres_fdw</code> の設定管理の基盤です。ユーザーが <code>CREATE SERVER</code> や <code>CREATE FOREIGN TABLE</code> 等で指定したオプションが、システムカタログの定義に適合しているかを検証し、接続時に <code>libpq</code> へ渡すパラメータを抽出する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**オプション検証**: <code>postgres_fdw_validator</code> を通じて、指定されたオプション名が正しいか、またその値が型や制約（数値範囲、権限など）を満たしているかをチェックする。</li>
+<li>**設定の初期化**: <code>libpq</code> が提供するデフォルトオプションと、<code>postgres_fdw</code> 固有のオプションを統合したリストを管理する。</li>
+<li>**接続パラメータ抽出**: 外部サーバー接続時に必要な <code>libpq</code> 関連オプションのみを抽出する。</li>
+<li>**GUC 管理**: <code>postgres_fdw.application_name</code> などの拡張固有パラメータを定義・管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>postgres_fdw_validator</code>: SQL レベルの検証関数。オプション指定時に呼び出される。</li>
+<li><code>InitPgFdwOptions</code>: 内部的なオプションリストを構築する初期化関数。</li>
+<li><code>PgFdwOption</code>: オプション名、適用対象（カタログOID）、<code>libpq</code> 依存フラグを保持する構造体。</li>
+<li><code>ExtractConnectionOptions</code>: 接続時に <code>libpq</code> へ渡すオプションを抽出するユーティリティ。</li>
+<li><code>process_pgfdw_appname</code>: <code>application_name</code> 内の <code>%</code> エスケープシーケンスを現在のプロセス情報で置換する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExtractExtensionList</code></li>
+<li><code>is_libpq_option</code></li>
+<li><code>is_valid_option</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitPgFdwOptions</code> が初回呼び出し時に <code>PQconndefaults()</code> を取得し、<code>postgres_fdw</code> 固有のオプションとマージして静的配列 <code>postgres_fdw_options</code> を構築する。 2. **検証**: <code>postgres_fdw_validator</code> が <code>untransformRelOptions</code> でリスト化されたオプションを走査し、<code>is_valid_option</code> で存在確認を行う。 3. **型チェック**: 各オプション名に応じて、<code>defGetBoolean</code> や <code>parse_int</code> 等で値の妥当性を検証し、不正な場合は <code>ereport(ERROR, ...)</code> で処理を中断する。 4. **抽出**: 接続確立時、<code>ExtractConnectionOptions</code> がオプションリストから <code>libpq</code> 関連のものだけをフィルタリングして抽出する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>access/reloptions.h</code>: オプション処理の基盤。</li>
+<li><code>catalog/pg_*.h</code>: 外部テーブル、サーバー、ユーザーマッピング等のカタログ定義。</li>
+<li><code>libpq/libpq-be.h</code>: <code>libpq</code> の接続オプション構造体。</li>
+<li><code>utils/guc.h</code>: GUC パラメータ定義用。</li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_foreign_table.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres_fdw.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>postgres_fdw.c</code>: 本モジュールで検証されたオプションを利用して接続を確立するメインロジック。</li>
+<li><code>commands/defrem.h</code>: <code>DefElem</code> 構造体など、オプション定義の操作に関する定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、<code>libpq</code> のオプションと <code>postgres_fdw</code> 固有のオプションを区別なく扱えるように設計されています。</li>
+<li><code>InitPgFdwOptions</code> はバックエンドプロセスごとに一度だけ実行されるため、メモリ管理は比較的単純です。</li>
+<li>新しいオプションを追加する場合は、<code>non_libpq_options</code> 配列への追加と、<code>postgres_fdw_validator</code> 内での検証ロジックの追加が必要です。</li>
+<li><code>process_pgfdw_appname</code> は、リモート接続時のアプリケーション名に動的な情報（プロセスIDやデータベース名）を埋め込むための強力な機能を提供します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__PgFdwOption.html" target="wiki-view"><code>PgFdwOption</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__postgres_fdw_validator.html" target="wiki-view"><code>postgres_fdw_validator</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__InitPgFdwOptions.html" target="wiki-view"><code>InitPgFdwOptions</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__is_valid_option.html" target="wiki-view"><code>is_valid_option</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__is_libpq_option.html" target="wiki-view"><code>is_libpq_option</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__ExtractConnectionOptions.html" target="wiki-view"><code>ExtractConnectionOptions</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__ExtractExtensionList.html" target="wiki-view"><code>ExtractExtensionList</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__option_c__process_pgfdw_appname.html" target="wiki-view"><code>process_pgfdw_appname</code></a></li>
+</ul></body></html>

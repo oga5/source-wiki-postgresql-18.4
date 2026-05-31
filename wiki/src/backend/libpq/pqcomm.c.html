@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/pqcomm.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/pqcomm.c</h1>
+<h2>概要</h2>
+<p><code>pqcomm.c</code> は、PostgreSQL バックエンドにおけるクライアント・サーバー間の低レベルな通信基盤を提供します。ソケットの初期化、接続の受け入れ、およびプロトコルメッセージの送受信を担います。本ファイルは、通信のセマンティクス（メッセージの内容）には関与せず、純粋なバイトストリームの転送とバッファ管理に特化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/libpq</code> サブシステムにおける「物理層」として機能します。上位レイヤー（<code>pqformat.c</code> や認証モジュール）が構築したメッセージをネットワークへ送り出し、逆にネットワークから届いたバイト列をメッセージ単位で切り出して上位レイヤーへ提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: <code>ListenServerPort</code> によるリスニングソケットの作成と、<code>AcceptConnection</code> によるクライアント接続の確立。</li>
+<li>**低レベル I/O**: ソケットに対する読み書きの抽象化。非ブロッキング I/O と <code>WaitEventSet</code> を組み合わせた、割り込み可能な通信制御。</li>
+<li>**バッファ管理**: 送信バッファ（<code>PqSendBuffer</code>）と受信バッファ（<code>PqRecvBuffer</code>）の管理。</li>
+<li>**TCP 設定**: Keepalive や TCP_NODELAY 等のソケットオプションの適用と GUC パラメータとの同期。</li>
+<li>**プロセス終了処理**: バックエンド終了時のソケットクローズとリソース解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>通信状態とバッファ</h3>
+<ul>
+<li><code>PqSendBuffer</code> / <code>PqRecvBuffer</code>: 送受信用の静的バッファ。</li>
+<li><code>PqCommBusy</code>: 送信処理中であることを示すフラグ。再入防止に使用。</li>
+<li><code>PqCommReadingMsg</code>: メッセージ読み込み中であることを示すフラグ。プロトコル同期の維持に使用。</li>
+</ul>
+<h3>インターフェース（公開関数）</h3>
+<ul>
+<li><code>pq_init</code>: バックエンド起動時のソケット初期化と <code>Port</code> 構造体の構築。</li>
+<li><code>ListenServerPort</code>: サーバーポートのバインドとリスン。</li>
+<li><code>AcceptConnection</code>: 新規接続の受け入れ。</li>
+<li><code>pq_getmessage</code>: 受信バッファから1メッセージを読み出し、<code>StringInfo</code> に格納。</li>
+<li><code>pq_putmessage</code>: メッセージを送信バッファへ書き込み。</li>
+</ul>
+<h3>内部制御</h3>
+<ul>
+<li><code>socket_flush</code>: 送信バッファのフラッシュ。</li>
+<li><code>pq_recvbuf</code>: ソケットから受信バッファへデータを補充。</li>
+<li><code>internal_putbytes</code>: 送信バッファへのバイトコピーと必要に応じたフラッシュ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AcceptConnection</code></li>
+<li><code>ListenServerPort</code></li>
+<li><code>Lock_AF_UNIX</code></li>
+<li><code>RemoveSocketFiles</code></li>
+<li><code>Setup_AF_UNIX</code></li>
+<li><code>TouchSocketFiles</code></li>
+<li><code>pq_check_connection</code></li>
+<li><code>pq_init</code></li>
+<li><code>pq_recvbuf</code></li>
+<li><code>socket_close</code></li>
+<li><code>socket_comm_reset</code></li>
+<li><code>socket_set_nonblocking</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **メッセージ送信**: <code>pq_putmessage</code> が呼ばれると、メッセージタイプと長さを付与し、<code>internal_putbytes</code> を経由して <code>PqSendBuffer</code> にコピーされます。バッファが溢れるか、明示的に <code>pq_flush</code> が呼ばれると <code>internal_flush_buffer</code> が <code>secure_write</code> を呼び出し、実際のネットワーク送信が行われます。 2. **メッセージ受信**: <code>pq_getmessage</code> が呼ばれると、まず4バイトの長さワードを読み込み、続いてその長さ分だけ <code>pq_getbytes</code> を使用してバッファからデータを取得します。バッファが空の場合は <code>pq_recvbuf</code> が <code>secure_read</code> を呼び出し、ソケットからデータを補充します。 3. **エラー回復**: <code>socket_comm_reset</code> により <code>PqCommBusy</code> がリセットされ、エラー発生後の通信再開を可能にします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>libpq/libpq.h</code>: <code>Port</code> 構造体や通信メソッドの定義。</li>
+<li><code>storage/ipc.h</code>: プロセス終了フック（<code>on_proc_exit</code>）。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>common/ip.h</code>: IP アドレス操作ユーティリティ。</li>
+<li><code>fcntl.h</code></li>
+<li><code>grp.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>mstcpip.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>poll.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utime.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/libpq/pqcomm.h</code>: 通信に関連するデータ構造（<code>SockAddr</code>, <code>Port</code> 等）の定義。</li>
+<li><code>src/backend/libpq/pqformat.c</code>: メッセージのシリアライズ・デシリアライズ。</li>
+<li><code>src/backend/libpq/be-secure.c</code>: TLS/GSSAPI による暗号化層（<code>secure_read</code>/<code>secure_write</code> の実体）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PqSendBuffer</code> は <code>TopMemoryContext</code> に割り当てられます。<code>Port</code> 構造体は <code>pq_init</code> で <code>palloc0</code> されます。</li>
+<li>**非ブロッキング I/O**: バックエンドは通常、ソケットを非ブロッキングモードで操作し、<code>WaitEventSet</code> を用いて待機します。これにより、シグナルによる割り込みや <code>CHECK_FOR_INTERRUPTS</code> が正しく機能します。</li>
+<li>**再入可能性**: <code>PqCommBusy</code> フラグにより、メッセージ送信中の再帰的な送信を抑制しています。これは <code>ereport</code> がエラーメッセージを送ろうとした際の無限ループを防ぐ重要な機構です。</li>
+<li>**省略された詳細**: 本ファイルは低レベル I/O に特化しているため、認証プロトコルの詳細や、TLS ハンドシェイクの具体的なロジックは <code>auth.c</code> や <code>be-secure.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__pq_init.html" target="wiki-view"><code>pq_init</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__socket_comm_reset.html" target="wiki-view"><code>socket_comm_reset</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__socket_close.html" target="wiki-view"><code>socket_close</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__ListenServerPort.html" target="wiki-view"><code>ListenServerPort</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__Lock_AF_UNIX.html" target="wiki-view"><code>Lock_AF_UNIX</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__Setup_AF_UNIX.html" target="wiki-view"><code>Setup_AF_UNIX</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__AcceptConnection.html" target="wiki-view"><code>AcceptConnection</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__TouchSocketFiles.html" target="wiki-view"><code>TouchSocketFiles</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__RemoveSocketFiles.html" target="wiki-view"><code>RemoveSocketFiles</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__socket_set_nonblocking.html" target="wiki-view"><code>socket_set_nonblocking</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__pq_recvbuf.html" target="wiki-view"><code>pq_recvbuf</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqcomm_c__pq_check_connection.html" target="wiki-view"><code>pq_check_connection</code></a></li>
+</ul></body></html>

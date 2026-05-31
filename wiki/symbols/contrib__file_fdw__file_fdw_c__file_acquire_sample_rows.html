@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__file_fdw__file_fdw_c__file_acquire_sample_rows.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>file_acquire_sample_rows</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/file_fdw/file_fdw.c:1187</code></li>
+</ul>
+<h2>目的</h2>
+<p>外部テーブルからランダムな行サンプルを取得し、統計情報収集（ANALYZE）をサポートする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int file_acquire_sample_rows(Relation onerel, int elevel, HeapTuple *rows, int targrows, double *totalrows, double *totaldeadrows);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>onerel</code>: 対象の外部テーブルリレーション。</li>
+<li><code>elevel</code>: ログ出力レベル。</li>
+<li><code>targrows</code>: 取得するサンプル行数。</li>
+<li>**出力**:</li>
+<li><code>rows</code>: 取得したサンプルの <code>HeapTuple</code> 配列。</li>
+<li><code>totalrows</code>: 読み込んだ総行数（出力パラメータ）。</li>
+<li><code>totaldeadrows</code>: 常に 0 が設定される（出力パラメータ）。</li>
+<li>**戻り値**: 実際に取得されたサンプル行数。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>onerel</code> は有効であること。</li>
+<li><code>targrows &gt; 0</code> であること。</li>
+<li>外部テーブルのオプション（ファイルパス等）が取得可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>BeginCopyFrom</code> を使用して外部ソースからのストリームを開く。 2. <code>reservoir_init_selection_state</code> でリザーバーサンプリングの準備を行う。 3. <code>NextCopyFrom</code> をループで呼び出し、各行を読み込む。</p>
+<ul>
+<li><code>on_error = &#x27;ignore&#x27;</code> が設定されている場合、データ型不一致によるエラーをスキップする。</li>
+<li>Jeff Vitter のアルゴリズムに基づき、最初の <code>targrows</code> 行を無条件に保存し、以降は確率的に既存のサンプルと置き換える。</li>
+<p>4. <code>vacuum_delay_point</code> を呼び出し、ユーザーによる中断要求を監視する。 5. 終了時に <code>EndCopyFrom</code> でリソースを解放し、処理した行数とサンプル数をログ出力する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>file_fdw_handler</code> 内で <code>FdwRoutine</code> の <code>AcquireSampleRows</code> フィールドに登録され、PostgreSQL の <code>ANALYZE</code> 処理から呼び出される。</li>
+<li>**呼び出し先**: <code>fileGetOptions</code>, <code>BeginCopyFrom</code>, <code>NextCopyFrom</code>, <code>EndCopyFrom</code>, <code>reservoir_init_selection_state</code>, <code>reservoir_get_next_S</code>, <code>heap_form_tuple</code>, <code>vacuum_delay_point</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CopyFromState</code>: <code>COPY</code> コマンドの実行状態を保持。</li>
+<li><code>ReservoirStateData</code>: リザーバーサンプリングの統計状態を保持。</li>
+<li><code>TupleDesc</code>, <code>HeapTuple</code>: タプルの定義と実体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>外部ファイルが存在しない、または読み取り権限がない場合は <code>BeginCopyFrom</code> がエラーを発生させる。</li>
+<li><code>targrows</code> が 0 以下の場合、<code>Assert</code> により停止する。</li>
+<li>読み込み中にエラーが発生した場合、<code>CopyFromErrorCallback</code> がエラーコンテキストを補足する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>COPY</code> コマンドのインフラストラクチャに強く依存している。<code>COPY</code> の仕様変更や <code>NextCopyFrom</code> の挙動変更が直接影響するため、修正時は <code>src/backend/commands/copyfrom.c</code> を参照すること。</li>
+<li>サンプリングアルゴリズムの詳細は <code>commands/analyze.c</code> にある Vitter の論文に関する記述を参照すること。</li>
+</ul></body></html>

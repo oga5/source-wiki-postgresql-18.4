@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__bloom__blinsert_c__blinsert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>blinsert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/bloom/blinsert.c:174</code></li>
+</ul>
+<h2>目的</h2>
+<p>Bloom 索引に対して、単一のタプルを挿入する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool blinsert(Relation index, Datum *values, bool *isnull,
+              ItemPointer ht_ctid, Relation heapRel,
+              IndexUniqueCheck checkUnique,
+              bool indexUnchanged,
+              IndexInfo *indexInfo)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>index</code>: 挿入対象の Bloom 索引リレーション。</li>
+<li><code>values</code>, <code>isnull</code>: 挿入するタプルの属性値と NULL 判定配列。</li>
+<li><code>ht_ctid</code>: 挿入対象タプルのヒープ内位置。</li>
+<li>**出力**: 常に <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>挿入処理用に一時的な <code>MemoryContext</code> を作成し、処理終了時に破棄する。</li>
+<li>ページへの変更は <code>GenericXLog</code> を介してアトミックに行われる。</li>
+<li>メタページ（<code>BLOOM_METAPAGE_BLKNO</code>）は、空きページリスト（<code>notFullPage</code>）の管理に使用される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 挿入用メモリコンテキストを作成し、<code>BloomFormTuple</code> でタプルを生成する。 2. **高速パス**: メタページを共有ロックし、<code>notFullPage</code> 配列の先頭ページへの挿入を試みる。成功すれば即座に終了する。 3. **探索**: 先頭ページで失敗した場合、メタページを排他ロックし、<code>notFullPage</code> 配列を順次走査して空きのあるページを探す。 4. **新規割り当て**: 既存のページに空きがない場合、<code>BloomNewBuffer</code> で新規ページを割り当て、メタページを更新する。 5. **コミット**: <code>GenericXLogFinish</code> を呼び出し、変更を確定させてリソースを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>contrib/bloom/blutils.c</code> 内の <code>aminsert</code> ルーチンとして登録されている。</li>
+<li><code>contrib/bloom/blvacuum.c</code> からの参照が示唆されている。</li>
+<li>**呼び出し先**: </li>
+<li><code>initBloomState</code>, <code>BloomFormTuple</code>, <code>BloomPageGetMeta</code>, <code>BloomInitPage</code>, <code>BloomPageAddItem</code>, <code>BloomNewBuffer</code></li>
+<li><code>GenericXLog</code> 系関数 (<code>Start</code>, <code>RegisterBuffer</code>, <code>Finish</code>, <code>Abort</code>)</li>
+<li><code>ReadBuffer</code>, <code>LockBuffer</code>, <code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BloomState</code>: 索引の状態管理。</li>
+<li><code>BloomMetaPageData</code>: メタページ構造。</li>
+<li><code>BloomTuple</code>: 挿入されるタプルデータ。</li>
+<li><code>GenericXLogState</code>: WAL ログ記録用状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>notFullPage</code> 配列内の全ページが満杯の場合、新規ページを割り当てる。</li>
+<li>新規ページ割り当て時に <code>BloomPageAddItem</code> が失敗した場合は <code>elog(ERROR)</code> を発生させる。</li>
+<li>ページが削除済み（<code>BloomPageIsDeleted</code>）または新規（<code>PageIsNew</code>）の場合、<code>BloomInitPage</code> で再初期化される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>GenericXLog</code> を使用しているため、ページ変更時は必ず <code>GenericXLogRegisterBuffer</code> を経由すること。</li>
+<li>メタページのロック昇格（共有から排他へ）は、競合を避けるための最適化として実装されている。</li>
+<li>メモリリークを防ぐため、<code>MemoryContext</code> の切り替えと削除が適切に行われているか注意すること。</li>
+</ul></body></html>

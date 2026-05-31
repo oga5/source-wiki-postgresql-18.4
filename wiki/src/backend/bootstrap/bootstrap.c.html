@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/bootstrap/bootstrap.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/bootstrap/bootstrap.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの初期化プロセス（<code>initdb</code>）において、システムカタログを構築するための「ブートストラップモード」を実装するファイルです。SQLを解釈するのではなく、BKI（Backend Interface）と呼ばれる専用の低レベル言語を解析・実行し、データベースのテンプレートを作成します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/bootstrap</code> モジュールの中心であり、システムカタログの初期スキーマ定義とデータ挿入を担います。通常のバックエンドとは異なり、システムインデックスが未構築の状態でも動作するように設計されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**BKIコマンドの実行**: <code>OPEN</code>, <code>CREATE</code>, <code>INSERT</code> などのBKIコマンドを処理し、システムカタログを構築する。</li>
+<li>**型情報の管理**: <code>pg_type</code> が構築される前後の過渡期において、データ型の属性（サイズ、アライメント等）を解決する。</li>
+<li>**インデックスの遅延構築**: カタログ定義時にインデックスを登録し、全てのカタログ定義完了後に一括で構築する。</li>
+<li>**ブートストラップ環境の初期化**: スタンドアロンプロセスとしてのメモリ管理、信号処理、GUC設定の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BootstrapModeMain</code>: ブートストラップモードのメインエントリポイント。</li>
+<li><code>boot_reldesc</code>: 現在操作中のリレーション記述子。</li>
+<li><code>TypInfo</code>: <code>pg_type</code> 構築前に使用されるハードコードされた基本型定義。</li>
+<li><code>DefineAttr</code>: カタログの属性定義を行う関数。</li>
+<li><code>InsertOneTuple</code>: 構築中のリレーションにタプルを挿入する関数。</li>
+<li><code>index_register</code> / <code>build_indices</code>: インデックス構築の二段階処理（登録と実行）を管理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AllocateAttribute</code></li>
+<li><code>CheckerModeMain</code></li>
+<li><code>IndexList</code></li>
+<li><code>InsertOneNull</code></li>
+<li><code>InsertOneValue</code></li>
+<li><code>boot_openrel</code></li>
+<li><code>bootstrap_signals</code></li>
+<li><code>typinfo</code></li>
+<li><code>typmap</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>BootstrapModeMain</code> が引数を解析し、GUCを設定。<code>InitPostgres</code> を経てブートストラップ環境を構築。 2. **解析**: <code>boot_yyparse</code>（Lex/Yacc）を呼び出し、BKIファイルを読み込む。 3. **カタログ構築**:</p>
+<ul>
+<li><code>DefineAttr</code> で属性を定義。</li>
+<li><code>InsertOneValue</code> / <code>InsertOneTuple</code> でデータを挿入。</li>
+<li><code>gettype</code> が必要に応じて <code>pg_type</code> を読み込み、型情報をキャッシュする。</li>
+<p>4. **終了処理**: 全ての定義完了後、<code>RelationMapFinishBootstrap</code> でリレーションマップを書き出し、<code>cleanup</code> を経て終了。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なバックエンド定義。</li>
+<li><code>access/</code>: <code>heapam.h</code>, <code>tableam.h</code> 等のアクセスメソッド層。</li>
+<li><code>catalog/</code>: <code>pg_type.h</code>, <code>index.h</code> 等のカタログ定義。</li>
+<li><code>bootstrap/bootstrap.h</code>: 共有される型定義や関数プロトタイプ。</li>
+<li><code>utils/</code>: <code>memutils.h</code> (メモリ管理), <code>guc.h</code> (設定管理)。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/toast_compression.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/link-canary.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>pg_getopt.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/bufpage.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/bootstrap/bootparse.y</code>: BKI言語の文法定義。</li>
+<li><code>src/backend/bootstrap/bootscanner.l</code>: BKI言語の字句解析定義。</li>
+<li><code>src/include/catalog/</code>: システムカタログのスキーマ定義（<code>pg_attribute.h</code> 等）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ブートストラップの特殊性**: このファイルは「鶏と卵」の問題を解決するために存在します。システムカタログ自体を構築するために、カタログの定義をハードコードしたり、段階的に読み込んだりする複雑なロジックが含まれています。</li>
+<li>**型情報の解決**: <code>gettype</code> 関数は、<code>pg_type</code> がまだ存在しない初期段階と、存在した後の段階で挙動が変わるため、読み解く際は現在の <code>Typ</code> リストの状態に注意してください。</li>
+<li>**デバッグ**: <code>DEBUG4</code> ログが随所に埋め込まれており、<code>initdb</code> 実行時に詳細な構築過程を追跡可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__typinfo.html" target="wiki-view"><code>typinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__typmap.html" target="wiki-view"><code>typmap</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__IndexList.html" target="wiki-view"><code>IndexList</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__CheckerModeMain.html" target="wiki-view"><code>CheckerModeMain</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__BootstrapModeMain.html" target="wiki-view"><code>BootstrapModeMain</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__bootstrap_signals.html" target="wiki-view"><code>bootstrap_signals</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__boot_openrel.html" target="wiki-view"><code>boot_openrel</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__DefineAttr.html" target="wiki-view"><code>DefineAttr</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__InsertOneTuple.html" target="wiki-view"><code>InsertOneTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__InsertOneValue.html" target="wiki-view"><code>InsertOneValue</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__InsertOneNull.html" target="wiki-view"><code>InsertOneNull</code></a></li>
+<li><a href="../../../symbols/src__backend__bootstrap__bootstrap_c__AllocateAttribute.html" target="wiki-view"><code>AllocateAttribute</code></a></li>
+</ul></body></html>

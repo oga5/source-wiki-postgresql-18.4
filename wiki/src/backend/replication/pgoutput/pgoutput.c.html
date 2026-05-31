@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/pgoutput/pgoutput.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/pgoutput/pgoutput.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの論理レプリケーションにおける標準出力プラグインの実装です。WALからデコードされた変更イベントを、論理レプリケーションプロトコル（バイナリ形式）に変換し、サブスクライバーへ送信します。パブリケーション定義に基づくフィルタリング、パーティションのルート変換、およびストリーミング・2相コミットの制御を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>論理デコーディングフレームワークの出力プラグインとして機能します。<code>src/include/replication/pgoutput.h</code> で定義された構造体を利用し、<code>reorderbuffer</code> から渡されるトランザクション変更を、サブスクライバーが理解できる形式へシリアライズします。</p>
+<h2>責務</h2>
+<ul>
+<li>**コールバック管理**: 論理デコーディングのライフサイクル（開始、終了、トランザクション境界、DML変更）を処理。</li>
+<li>**リレーション同期キャッシュ**: パブリケーション設定、行フィルタ、列リストをキャッシュし、リレーション変更時に整合性を維持。</li>
+<li>**フィルタリングと変換**: パブリケーションの行フィルタ式評価、列リストの適用、およびパーティションルートへのタプル変換。</li>
+<li>**プロトコルシリアライズ**: <code>logicalrep_write_*</code> 関数群を用いたバイナリデータへの変換と送信。</li>
+<li>**トランザクション制御**: ストリーミングトランザクションおよび2相コミットのメタデータ管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><code>RelationSyncCache</code>: リレーションごとの同期状態を保持するハッシュテーブル。</li>
+<li><code>RelationSyncEntry</code>: テーブルごとのパブリケーション設定、行フィルタ（<code>ExprState</code>）、列リスト（<code>Bitmapset</code>）、スキーマ送信状態を保持。</li>
+<li><code>get_rel_sync_entry()</code>: キャッシュからエントリを取得、または必要に応じて再構築する中心的な関数。</li>
+</ul>
+<h3>トランザクション管理</h3>
+<ul>
+<li><code>PGOutputTxnData</code>: トランザクション単位で <code>BEGIN</code> 送信済みフラグを管理。</li>
+<li><code>pgoutput_begin_txn()</code> / <code>pgoutput_commit_txn()</code>: トランザクションの開始・終了処理。空のトランザクションをスキップする最適化を含む。</li>
+</ul>
+<h3>フィルタリングと変換</h3>
+<ul>
+<li><code>pgoutput_row_filter()</code>: 行フィルタの評価と、UPDATEからINSERT/DELETEへの変換ロジック。</li>
+<li><code>create_estate_for_relation()</code>: 行フィルタ評価用のエグゼキュータ状態（<code>EState</code>）を作成。</li>
+<li><code>maybe_send_schema()</code>: スキーマ情報が未送信の場合に送信を実行。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LoadPublications</code></li>
+<li><code>PGOutputTxnData</code></li>
+<li><code>RelationSyncEntry</code></li>
+<li><code>RowFilterPubAction</code></li>
+<li><code>parse_output_parameters</code></li>
+<li><code>pgoutput_begin_prepare_txn</code></li>
+<li><code>pgoutput_begin_txn</code></li>
+<li><code>pgoutput_commit_txn</code></li>
+<li><code>pgoutput_memory_context_reset</code></li>
+<li><code>pgoutput_prepare_txn</code></li>
+<li><code>pgoutput_send_begin</code></li>
+<li><code>pgoutput_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_output_plugin_init</code> でコールバックを登録。<code>pgoutput_startup</code> でメモリコンテキストとキャッシュを初期化。 2. **変更処理**: <code>pgoutput_change</code> が呼び出されると、<code>get_rel_sync_entry</code> で対象テーブルのパブリケーション設定を取得。 3. **フィルタ評価**: <code>pgoutput_row_filter</code> で行フィルタを評価。UPDATEの場合、旧/新タプルのマッチング結果に基づき、アクションを <code>INSERT</code> や <code>DELETE</code> に書き換える。 4. **シリアライズ**: <code>maybe_send_schema</code> で必要に応じてスキーマを送信後、<code>logicalrep_write_*</code> を呼び出し、<code>OutputPluginWrite</code> でネットワークへ出力。 5. **クリーンアップ**: <code>pgoutput_memory_context_reset</code> により、セッション終了時やエラー時にキャッシュを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/logical.h</code>, <code>replication/logicalproto.h</code>: 論理デコーディングの基盤。</li>
+<li><code>catalog/pg_publication.h</code>, <code>catalog/pg_subscription.h</code>: パブリケーション・サブスクリプション情報の取得。</li>
+<li><code>executor/executor.h</code>: 行フィルタ評価のためのエグゼキュータ機能。</li>
+<li><code>access/tupconvert.h</code>: パーティションとルートテーブル間のタプル変換。</li>
+<li><code>catalog/partition.h</code></li>
+<li><code>catalog/pg_publication_rel.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/subscriptioncmds.h</code></li>
+<li><code>fmgr.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/pgoutput.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/replication/pgoutput.h</code>: 本ファイルのデータ構造定義。</li>
+<li><code>src/backend/replication/logical/</code>: 論理デコーディングのコアエンジン。</li>
+<li><code>src/backend/replication/logical/proto.c</code>: 論理レプリケーションプロトコルのシリアライズ実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PGOutputData</code> 内の各コンテキスト（<code>context</code>, <code>cachectx</code>, <code>pubctx</code>）は、論理デコーディングのライフサイクルに紐付いています。<code>RelationSyncEntry</code> 内の <code>entry_cxt</code> は、個別のフィルタ式や列リストの生存期間を管理します。</li>
+<li>**キャッシュの整合性**: <code>rel_sync_cache_relation_cb</code> 等のコールバックにより、カタログ変更時に <code>replicate_valid</code> フラグを落とすことで、次回の <code>get_rel_sync_entry</code> で再構築を強制します。</li>
+<li>**空トランザクションのスキップ**: <code>pgoutput_change</code> 内で <code>BEGIN</code> を遅延送信することで、パブリケーション対象外の変更のみを含むトランザクションのネットワーク負荷を削減しています。</li>
+<li>**省略された詳細**: 本ファイルは非常に大規模であるため、個別の <code>logicalrep_write_*</code> 関数の詳細なバイナリレイアウトについては、<code>logicalproto.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__RowFilterPubAction.html" target="wiki-view"><code>RowFilterPubAction</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__RelationSyncEntry.html" target="wiki-view"><code>RelationSyncEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__PGOutputTxnData.html" target="wiki-view"><code>PGOutputTxnData</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__parse_output_parameters.html" target="wiki-view"><code>parse_output_parameters</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_memory_context_reset.html" target="wiki-view"><code>pgoutput_memory_context_reset</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_startup.html" target="wiki-view"><code>pgoutput_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_begin_txn.html" target="wiki-view"><code>pgoutput_begin_txn</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_send_begin.html" target="wiki-view"><code>pgoutput_send_begin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_commit_txn.html" target="wiki-view"><code>pgoutput_commit_txn</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_begin_prepare_txn.html" target="wiki-view"><code>pgoutput_begin_prepare_txn</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__pgoutput_prepare_txn.html" target="wiki-view"><code>pgoutput_prepare_txn</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__pgoutput__pgoutput_c__LoadPublications.html" target="wiki-view"><code>LoadPublications</code></a></li>
+</ul></body></html>

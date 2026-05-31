@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pgstattuple__pgstatapprox_c__statapprox_heap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>statapprox_heap</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pgstattuple/pgstatapprox.c:58</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープテーブルの統計情報（タプル数、デッドタプル数、空き容量など）を、可視性マップを活用して高速に推定する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void statapprox_heap(Relation rel, output_type *stat)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 統計対象のヒープリレーション。</li>
+<li><code>stat</code>: 推定結果を格納する <code>output_type</code> 構造体へのポインタ。</li>
+<li>**出力**:</li>
+<li>なし（<code>stat</code> 構造体の各フィールドが更新される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>rel</code> はヒープテーブルであること。</li>
+<li>一時テーブル（<code>RELATION_IS_OTHER_TEMP</code>）は、セッションローカルなバッファ制約によりアクセス不可。</li>
+<li><code>VM_ALL_VISIBLE</code> ビットが立っているページは、実際にはタプルが更新されていてもスキャン対象外となるため、統計に誤差が生じる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>GetOldestNonRemovableTransactionId</code> でトランザクションの境界を取得し、バルク読み込み用のバッファ戦略を準備する。 2. **ページ走査**: 全ページをループし、以下のいずれかの処理を行う。</p>
+<ul>
+<li>**可視性マップ判定**: <code>VM_ALL_VISIBLE</code> が真の場合、FSMから空き容量を取得し、タプル長を近似してスキップする。</li>
+<li>**詳細スキャン**: それ以外の場合、ページを読み込み、<code>HeapTupleSatisfiesVacuum</code> を用いて各タプルをライブ/デッドに分類して集計する。</li>
+<p>3. **外挿**: 未スキャンページ分を <code>vac_estimate_reltuples</code> で推定し、全体のタプル数を算出する。 4. **統計算出**: 全体長に対する各統計値の割合（パーセンテージ）を計算する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/pgstattuple/pgstatapprox.c</code> 内の関数（<code>pgstattuple_approx_internal</code> 等から呼び出される）。</li>
+<li>**呼び出し先**: <code>GetOldestNonRemovableTransactionId</code>, <code>GetAccessStrategy</code>, <code>RelationGetNumberOfBlocks</code>, <code>VM_ALL_VISIBLE</code>, <code>GetRecordedFreeSpace</code>, <code>ReadBufferExtended</code>, <code>PageGetExactFreeSpace</code>, <code>HeapTupleSatisfiesVacuum</code>, <code>vac_estimate_reltuples</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>output_type</code>: 推定結果を保持する構造体。</li>
+<li><code>Relation</code>: 対象テーブルのメタデータ。</li>
+<li><code>Buffer</code>: ページ読み込み用バッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nblocks == 0</code> の場合、パーセンテージ計算をスキップする。</li>
+<li><code>HeapTupleSatisfiesVacuum</code> が予期しない結果を返した場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li><code>stat-&gt;tuple_count</code> が負にならないよう <code>Max(stat-&gt;tuple_count, 0)</code> で保護している。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は近似値を提供するため、正確な値が必要な場合は <code>pgstattuple</code> を使用すること。</li>
+<li><code>lazy_scan_heap</code> と異なり、特殊なケースやエラーを無視して高速化を優先している。</li>
+</ul></body></html>

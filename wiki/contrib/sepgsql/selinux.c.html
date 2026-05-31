@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/selinux.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/selinux.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL の SE-PostgreSQL 拡張機能とカーネル空間の SELinux API（<code>libselinux</code>）との間の仲介役を担います。PostgreSQL 内部のオブジェクトクラスや権限コードと、SELinux ポリシー上の外部コードとの変換、およびアクセス制御判定の要求を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> モジュールにおける「低レイヤーのインターフェース」です。他のファイル（<code>hooks.c</code> や <code>dml.c</code> など）が PostgreSQL のフックから呼び出される際、最終的なセキュリティ判定やラベル計算を本ファイル経由で SELinux に委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**マッピング管理**: PostgreSQL 内部のオブジェクトクラス（<code>db_table</code> 等）と SELinux 外部コードの対応表（<code>selinux_catalog</code>）の保持。</li>
+<li>**アクセス判定**: <code>security_compute_av</code> を利用した権限チェックの実行と、結果の内部形式への変換。</li>
+<li>**ラベル計算**: 新規オブジェクト作成時のデフォルトセキュリティコンテキストの取得。</li>
+<li>**監査ログ**: 判定結果に基づいた PostgreSQL ログへの出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>selinux_catalog</code>: オブジェクトクラスと権限の変換テーブル。</li>
+<li><code>sepgsql_compute_avd()</code>: 指定されたコンテキストペアに対するアクセス権限の判定。</li>
+<li><code>sepgsql_compute_create()</code>: 新規オブジェクト作成時のデフォルトコンテキストの計算。</li>
+<li><code>sepgsql_audit_log()</code>: SELinux 判定結果のログ出力。</li>
+<li><code>sepgsql_mode</code>: 動作モード（Disabled, Default, Permissive, Internal）を保持する変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>sepgsql_audit_log</code></li>
+<li><code>sepgsql_compute_avd</code></li>
+<li><code>sepgsql_compute_create</code></li>
+<li><code>sepgsql_get_mode</code></li>
+<li><code>sepgsql_getenforce</code></li>
+<li><code>sepgsql_is_enabled</code></li>
+<li><code>sepgsql_set_mode</code></li>
+<li><code>uint16</code></li>
+<li><code>uint32</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **変換**: <code>sepgsql_compute_avd</code> は、PostgreSQL の内部クラスコードを <code>string_to_security_class</code> で SELinux 外部コードに変換します。 2. **判定**: <code>security_compute_av_flags_raw</code> を呼び出し、カーネルから <code>av_decision</code> を取得します。 3. **再変換**: 取得した外部ビットマスクを、<code>selinux_catalog</code> を参照して PostgreSQL 内部の権限ビットに再マッピングし、呼び出し元へ返します。 4. **ログ**: 判定結果が拒否された場合や監査設定に従い、<code>sepgsql_audit_log</code> が <code>ereport(LOG, ...)</code> を通じてログを生成します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>lib/stringinfo.h</code>: 監査ログ生成時の文字列バッファ操作。</li>
+<li><code>sepgsql.h</code>: モジュール共通の定数、型定義、および関数宣言。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>sepgsql.h</code>: 本ファイルで使用される <code>SEPG_CLASS_*</code> や <code>SEPG_DB_*</code> 定数の定義元。</li>
+<li><code>uavc.c</code>: 本ファイルで計算された判定結果をキャッシュするユーザー空間 AVC（Access Vector Cache）の実装。</li>
+<li><code>hooks.c</code>: PostgreSQL の各フックから本ファイルの関数を呼び出す起点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**実行時変換**: SELinux のクラスや権限コードはビルド時ではなく実行時のポリシーに依存するため、<code>selinux_catalog</code> を介した動的な変換が必須です。</li>
+<li>**メモリ管理**: <code>security_compute_create_name_raw</code> 等の <code>libselinux</code> 関数は <code>malloc</code> でメモリを確保するため、<code>PG_TRY/PG_FINALLY</code> ブロックを使用して確実に <code>freecon</code> を呼び出し、メモリリークを防いでいます。</li>
+<li>**未知の権限**: ポリシーに存在しない権限に遭遇した場合、<code>security_deny_unknown()</code> の設定に従い、デフォルトで拒否または許可する安全策が講じられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__uint16.html" target="wiki-view"><code>uint16</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__uint32.html" target="wiki-view"><code>uint32</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_is_enabled.html" target="wiki-view"><code>sepgsql_is_enabled</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_get_mode.html" target="wiki-view"><code>sepgsql_get_mode</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_set_mode.html" target="wiki-view"><code>sepgsql_set_mode</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_getenforce.html" target="wiki-view"><code>sepgsql_getenforce</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_audit_log.html" target="wiki-view"><code>sepgsql_audit_log</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_compute_avd.html" target="wiki-view"><code>sepgsql_compute_avd</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__selinux_c__sepgsql_compute_create.html" target="wiki-view"><code>sepgsql_compute_create</code></a></li>
+</ul></body></html>

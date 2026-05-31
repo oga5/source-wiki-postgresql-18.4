@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistxlog_c__gistRedoPageSplitRecord.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistRedoPageSplitRecord</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistxlog.c:246</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスのページ分割操作をWALリプレイ時に再実行し、インデックスページの整合性を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gistRedoPageSplitRecord(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファへの書き込みとロック解除を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>最初のページ（<code>i=0</code>）のロックは、処理全体を通じて保持され、最後に解除される。</li>
+<li>2番目以降のページは、書き込み完了後に順次ロックが解除される。</li>
+<li>ルートページ分割時は <code>isrootsplit</code> フラグが真となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>gistxlogPageSplit</code> データを取得し、分割対象の全ページをループ処理する。 2. <code>XLogInitBufferForRedo</code> で各ページを初期化し、<code>decodePageSplitRecord</code> でタプルを復元して <code>gistfillbuffer</code> でページを再構築する。 3. ページの種類に応じて以下のメタデータを設定する:</p>
+<ul>
+<li>**ルートページ**: <code>rightlink</code> を <code>InvalidBlockNumber</code> に設定し、NSNを更新、FollowRightフラグをクリアする。</li>
+<li>**非ルートページ**: <code>rightlink</code> に次のページ番号（または元の右リンク）を設定し、NSNを更新。条件に応じてFollowRightフラグを制御する。</li>
+<p>4. ページにLSNを書き込み、<code>MarkBufferDirty</code> を呼び出す。 5. 最初のページ以外は <code>UnlockReleaseBuffer</code> でロックを解放する。 6. 必要に応じて <code>gistRedoClearFollowRight</code> を呼び出し、左側の子ページのFollowRightデータを修正する。 7. 最後に最初のページのロックを解除する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gist_redo</code>（<code>src/backend/access/gist/gistxlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogRecGetBlockTag</code>, <code>XLogInitBufferForRedo</code>, <code>decodePageSplitRecord</code>, <code>GISTInitBuffer</code>, <code>gistfillbuffer</code>, <code>GistPageGetOpaque</code>, <code>GistPageSetNSN</code>, <code>GistClearFollowRight</code>, <code>GistMarkFollowRight</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>, <code>XLogRecHasBlockRef</code>, <code>gistRedoClearFollowRight</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>gistxlogPageSplit</code>: WALレコード内の分割情報構造体。</li>
+<li><code>XLogReaderState</code>: WAL読み取り状態。</li>
+<li><code>Buffer</code>, <code>Page</code>: バッファ管理およびページ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>blkno == GIST_ROOT_BLKNO</code> の場合、必ず <code>i == 0</code> である必要がある（アサーションで検証）。</li>
+<li>ページ分割の順序やFollowRightフラグの制御は、同時実行クエリが最初のページを経由せずに分割後のページへ到達しないよう設計されている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はGiSTのページ分割という複雑な操作をリプレイするため、<code>rightlink</code> や <code>NSN</code> の更新ロジックを変更する際は、インデックスの検索パスへの影響を慎重に評価すること。</li>
+<li><code>gistRedoClearFollowRight</code> による後処理が、分割された全ページに対して正しく整合性を保っているか確認が必要。</li>
+</ul></body></html>

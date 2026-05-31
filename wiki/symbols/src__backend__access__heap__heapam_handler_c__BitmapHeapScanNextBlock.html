@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_handler_c__BitmapHeapScanNextBlock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BitmapHeapScanNextBlock</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_handler.c:2459</code></li>
+</ul>
+<h2>目的</h2>
+<p>ビットマップスキャンにおいて、次に処理すべきヒープブロックを読み込み、そのブロック内の可視タプルを特定してスキャン状態を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool BitmapHeapScanNextBlock(TableScanDesc scan,
+                                    bool *recheck,
+                                    uint64 *lossy_pages,
+                                    uint64 *exact_pages)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>scan</code>: テーブルスキャン記述子。<code>SO_TYPE_BITMAPSCAN</code> フラグが必要。</li>
+<li><code>recheck</code>: ビットマップの再チェックが必要かを示すフラグの出力先。</li>
+<li><code>lossy_pages</code>, <code>exact_pages</code>: 処理したページ数のカウンタ（ポインタ）。</li>
+<li>**出力**:</li>
+<li>戻り値: ブロックが正常に読み込まれた場合は <code>true</code>、ビットマップが枯渇した場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>scan</code> は <code>BitmapHeapScanDesc</code> としてキャスト可能であること。</li>
+<li><code>hscan-&gt;rs_read_stream</code> が初期化されていること。</li>
+<li>処理対象のブロック番号が有効であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 現在のバッファを解放し、<code>read_stream_next_buffer</code> を用いて次のブロックを読み込む。 2. ページに対して <code>heap_page_prune_opt</code> を実行し、断片化を解消する。 3. バッファを共有ロック（<code>BUFFER_LOCK_SHARE</code>）し、ビットマップの性質に応じて以下の処理を行う。</p>
+<ul>
+<li>**非損失（Exact）**: <code>tbm_extract_page_tuple</code> で抽出されたオフセットに基づき、<code>heap_hot_search_buffer</code> を用いてHOTチェーンを辿り、可視タプルを特定する。</li>
+<li>**損失（Lossy）**: ページ内の全タプルを走査し、<code>HeapTupleSatisfiesVisibility</code> で可視性を判定する。</li>
+<p>4. 特定された可視タプルのオフセットを <code>hscan-&gt;rs_vistuples</code> に格納し、カウンタを更新する。 5. 最後にロックを解除し、<code>true</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/heapam_handler.c</code> 内のビットマップスキャン処理（行2144付近）。</li>
+<li>**呼び出し先**: <code>read_stream_next_buffer</code>, <code>heap_page_prune_opt</code>, <code>LockBuffer</code>, <code>tbm_extract_page_tuple</code>, <code>heap_hot_search_buffer</code>, <code>HeapTupleSatisfiesVisibility</code>, <code>PredicateLockTID</code>, <code>HeapCheckForSerializableConflictOut</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TableScanDesc</code> / <code>BitmapHeapScanDesc</code> / <code>HeapScanDesc</code>: スキャン状態を保持する構造体。</li>
+<li><code>TBMIterateResult</code>: ビットマップの反復結果。</li>
+<li><code>Buffer</code>: ヒープページを保持するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ビットマップが枯渇した場合、<code>read_stream_next_buffer</code> が無効なバッファを返し、関数は <code>false</code> を返す。</li>
+<li>ページ内に可視タプルが存在しない場合、<code>rs_ntuples</code> が 0 となり、呼び出し元で次のブロックへ進む制御が行われる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>heapam_handler.c</code> 内のブリッジ関数であり、実際のタプル可視性判定やHOTチェーンの走査ロジックは <code>heapam.c</code> および <code>heapam_visibility.c</code> に依存している。</li>
+<li>損失ビットマップと非損失ビットマップで走査戦略が異なるため、修正時は両方のパスに注意すること。</li>
+</ul></body></html>

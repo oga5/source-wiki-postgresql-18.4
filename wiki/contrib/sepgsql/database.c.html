@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/database.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/database.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのデータベースオブジェクトに対するSELinuxセキュリティラベルの管理およびアクセス制御を行うためのルーチン群を提供します。データベースの作成、削除、属性変更、ラベル付け替えといったライフサイクルイベントにおいて、SELinuxの権限チェックをフックします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> モジュールの一部として、データベースオブジェクト（<code>pg_database</code>）に特化したセキュリティポリシーの適用を担当します。他のオブジェクト（テーブルやスキーマなど）を扱うファイルと同様に、SELinuxのAVC（Access Vector Cache）を介した権限検証のインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**新規データベースのラベル付け**: データベース作成時に、テンプレートDBのラベルとクライアントのラベルに基づき、デフォルトのセキュリティラベルを計算・適用する。</li>
+<li>**権限検証**: データベースに対する <code>CREATE</code>, <code>DROP</code>, <code>SETATTR</code>, <code>RELABEL</code> 操作が、現在のセキュリティコンテキストで許可されているかを検証する。</li>
+<li>**監査ログの生成**: 権限チェック失敗時に、対象オブジェクトの識別子を用いた監査メッセージを生成する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_database_post_create</code>: データベース作成後に呼び出され、デフォルトラベルの計算と <code>db_database:{create}</code> 権限のチェックを行う。</li>
+<li><code>sepgsql_database_drop</code>: データベース削除時に <code>db_database:{drop}</code> 権限をチェックする。</li>
+<li><code>sepgsql_database_setattr</code>: データベースの属性変更時に <code>db_database:{setattr}</code> 権限をチェックする。</li>
+<li><code>sepgsql_database_relabel</code>: データベースのセキュリティラベル変更時に <code>relabelfrom</code>/<code>relabelto</code> 権限を検証する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成時**: <code>sepgsql_database_post_create</code> がテンプレートDBのラベルを取得し、<code>sepgsql_compute_create</code> で新しいラベルを生成します。その後、<code>SetSecurityLabel</code> を呼び出してカタログにラベルを永続化します。 2. **変更・削除時**: 各関数は <code>ObjectAddress</code> を構築し、<code>sepgsql_avc_check_perms</code> を呼び出します。これにより、カーネルまたはAVCが現在の操作を許可するかを判定します。 3. **ラベル付け替え時**: <code>sepgsql_database_relabel</code> は、現在のラベルに対する <code>RELABELFROM</code> と、新しいラベルに対する <code>RELABELTO</code> の両方を検証する二段階のチェックを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>sepgsql.h</code>: SE-PostgreSQLの共通定義およびAVCインターフェース。</li>
+<li><code>catalog/pg_database.h</code>: データベースカタログの構造定義。</li>
+<li><code>commands/seclabel.h</code>: セキュリティラベル操作の共通関数。</li>
+<li><code>access/table.h</code> / <code>access/genam.h</code>: システムカタログ（<code>pg_database</code>）へのアクセス用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/sepgsql/label.c</code>: ラベルの計算や取得ロジックの基盤。</li>
+<li><code>contrib/sepgsql/uavc.c</code>: AVC（Access Vector Cache）の管理と権限チェックの実装。</li>
+<li><code>contrib/sepgsql/hooks.c</code>: PostgreSQLのフックポイントと本ファイルの各関数を接続する箇所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは主に <code>sepgsql_avc_check_perms</code> を呼び出すラッパーとして機能します。</li>
+<li>データベースの作成時、テンプレートDBのラベルが不明な場合はデフォルトで &quot;template1&quot; が参照されます。</li>
+<li><code>sepgsql_compute_create</code> は、SELinuxのポリシーに基づいて新しいオブジェクトのコンテキストを決定する重要な関数であり、ここでの計算結果がデータベースの初期セキュリティ状態を決定します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__database_c__sepgsql_database_post_create.html" target="wiki-view"><code>sepgsql_database_post_create</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__database_c__sepgsql_database_drop.html" target="wiki-view"><code>sepgsql_database_drop</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__database_c__sepgsql_database_setattr.html" target="wiki-view"><code>sepgsql_database_setattr</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__database_c__sepgsql_database_relabel.html" target="wiki-view"><code>sepgsql_database_relabel</code></a></li>
+</ul></body></html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__proc_h__PROC_HDR.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PROC_HDR</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/proc.h:383</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの全バックエンドプロセスを管理するためのグローバルなヘッダー構造体です。共有メモリ上に配置され、各プロセスの状態（<code>PGPROC</code>）の集約、空きリストの管理、およびプロセス間での高速な状態共有を提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct PROC_HDR {
+    PGPROC         *allProcs;
+    TransactionId  *xids;
+    XidCacheStatus *subxidStates;
+    uint8          *statusFlags;
+    uint32          allProcCount;
+    dlist_head      freeProcs;
+    dlist_head      autovacFreeProcs;
+    dlist_head      bgworkerFreeProcs;
+    dlist_head      walsenderFreeProcs;
+    pg_atomic_uint32 procArrayGroupFirst;
+    pg_atomic_uint32 clogGroupFirst;
+    ProcNumber      walwriterProc;
+    ProcNumber      checkpointerProc;
+    int             spins_per_delay;
+    int             startupBufferPinWaitBufId;
+} PROC_HDR;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ初期化時に <code>ShmemInitStruct</code> を通じて割り当てられます。</li>
+<li>**出力**: システム内の各バックエンドプロセスが、自身の状態更新や他プロセスのトランザクション状態参照のために本構造体を参照します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>allProcs</code> 配列は、準備済みトランザクション（prepared transactions）用のダミーを除いた全 <code>PGPROC</code> を保持します。</li>
+<li><code>xids</code>, <code>subxidStates</code>, <code>statusFlags</code> は、<code>procarray</code> 内の各 <code>PGPROC</code> の状態をミラーリングしており、整合性が保たれる必要があります。</li>
+<li><code>walwriterProc</code> や <code>checkpointerProc</code> などの補助プロセスは、システム内で同時に1つのみ存在することが前提です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**プロセス管理**: <code>freeProcs</code> 等のリストを用いて、新しいバックエンドプロセスに <code>PGPROC</code> スロットを割り当てます。</li>
+<li>**状態共有**: 各 <code>PGPROC</code> の主要フィールドをミラー配列（<code>xids</code> 等）に保持することで、<code>ProcArray</code> スキャン等の処理においてキャッシュ効率を高めた高速な参照を可能にします。</li>
+<li>**同期**: <code>procArrayGroupFirst</code> および <code>clogGroupFirst</code> を用いて、グループ単位でのトランザクション状態更新や待機制御を行います。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/lmgr/proc.c</code> にて初期化および管理されます。<code>clog.c</code>, <code>xlog.c</code>, <code>checkpointer.c</code>, <code>procarray.c</code> 等の各サブシステムからグローバル変数 <code>ProcGlobal</code> を介して参照されます。</li>
+<li>**呼び出し先**: 本構造体自体はデータ構造であり、関数を直接呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: 各バックエンドの個別状態を保持する構造体。</li>
+<li><code>dlist_head</code>: プロセスリスト管理に使用される双方向リスト。</li>
+<li><code>ProcNumber</code>: プロセス識別番号。</li>
+<li><code>TransactionId</code>, <code>XidCacheStatus</code>: トランザクション状態の管理に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリの割り当て失敗時、システム起動時に致命的なエラーが発生します。</li>
+<li><code>allProcCount</code> を超えるプロセスが要求された場合、スロット不足によりプロセス生成が失敗します。</li>
+<li>ミラー配列と <code>PGPROC</code> 本体の状態に不整合が生じた場合、デッドロック検出やトランザクション可視性判定に誤りが生じる可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>PGPROC</code> のフィールドにはロックなしでアクセス可能なものと、<code>ProcArrayLock</code> 等の保持が必須なものが混在しています。変更時は <code>ProcArray</code> 周りの設計ドキュメントを併読してください。</li>
+<li><code>pgxactoff</code> を用いたインデックスアクセスはキャッシュ効率を最適化するための設計です。複雑な並行制御が絡むため、慎重な変更が求められます。</li>
+</ul></body></html>

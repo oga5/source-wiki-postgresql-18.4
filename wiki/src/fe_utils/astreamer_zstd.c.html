@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/fe_utils/astreamer_zstd.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/fe_utils/astreamer_zstd.c</h1>
+<h2>概要</h2>
+<p>Zstandard (zstd) アルゴリズムを用いたデータ圧縮および伸長を行うストリーミング処理の実装です。PostgreSQLのバックアップストリーム処理において、パイプラインの一部として透過的に圧縮・伸長を適用するために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>fe_utils</code> モジュール内の <code>astreamer</code> インフラストラクチャの一部です。<code>astreamer</code> は、アーカイブ（tarなど）の生成・展開プロセスにおいて、複数の処理ステップを連結するパイプライン構造を提供します。本ファイルは、そのパイプライン上で「zstdによる変換」を担うコンポーネントです。</p>
+<h2>責務</h2>
+<ul>
+<li>**圧縮**: <code>astreamer_zstd_compressor</code> を通じて、入力データを zstd 形式で圧縮し、後続のストリーマーへ渡す。</li>
+<li>**伸長**: <code>astreamer_zstd_decompressor</code> を通じて、zstd 圧縮されたデータを元の形式に復元する。</li>
+<li>**リソース管理**: zstd のコンテキスト（<code>ZSTD_CCtx</code>, <code>ZSTD_DCtx</code>）の生成・破棄、およびバッファの管理。</li>
+<li>**エラーハンドリング**: libzstd のエラーコードを検出し、<code>pg_fatal</code> を用いて適切に終了させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>astreamer_zstd_frame</code>: 圧縮・伸長コンテキストとバッファを保持する内部構造体。</li>
+<li><code>astreamer_zstd_compressor_new</code>: 圧縮用ストリーマーのインスタンス生成。圧縮レベルやワーカースレッド数の設定を行う。</li>
+<li><code>astreamer_zstd_decompressor_new</code>: 伸長用ストリーマーのインスタンス生成。</li>
+<li><code>astreamer_zstd_compressor_content</code> / <code>_decompressor_content</code>: ストリームの各チャンクを処理するメインロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>astreamer_zstd_compressor_finalize</code></li>
+<li><code>astreamer_zstd_compressor_free</code></li>
+<li><code>astreamer_zstd_decompressor_content</code></li>
+<li><code>astreamer_zstd_decompressor_finalize</code></li>
+<li><code>astreamer_zstd_decompressor_free</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_new</code> 関数で <code>astreamer</code> 構造体を割り当て、zstd コンテキストを初期化します。 2. **データ処理**: <code>_content</code> 関数が呼ばれると、入力データを zstd のバッファへ流し込みます。</p>
+<ul>
+<li>圧縮時は、出力バッファが満杯になる前に <code>ZSTD_compressStream2</code> を呼び出し、溢れたデータを <code>bbs_next</code>（後続のストリーマー）へ転送します。</li>
+<li>伸長時は、<code>ZSTD_decompressStream</code> を使用して同様に処理します。</li>
+<p>3. **終了処理**: <code>_finalize</code> 関数でストリームの終端処理（フラッシュ）を行い、後続のストリーマーの <code>finalize</code> を呼び出します。 4. **解放**: <code>_free</code> 関数で zstd コンテキストとメモリを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>zstd.h</code>: zstd ライブラリ（<code>USE_ZSTD</code> 定義時）。</li>
+<li><code>fe_utils/astreamer.h</code>: ストリーマーの基底インターフェース定義。</li>
+<li><code>common/logging.h</code>: エラー報告用。</li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/fe_utils/astreamer.c</code>: ストリーマーの基盤となる抽象化レイヤー。</li>
+<li><code>src/fe_utils/astreamer_gzip.c</code> / <code>astreamer_lz4.c</code>: 他の圧縮アルゴリズムによる同等の実装。これらと比較することで、ストリーマーの設計パターンを理解できます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>USE_ZSTD</code> が定義されている環境でのみ有効です。ビルド時に zstd ライブラリがリンクされていない場合、これらの関数はエラーを発生させるか、機能しません。</li>
+<li><code>ZSTD_compressBound</code> を使用して出力バッファの溢れを予測するロジックが重要です。バッファ管理の挙動を理解する際は、<code>bbs_buffer</code> のサイズと <code>zstd_outBuf</code> の関係に注目してください。</li>
+<li>圧縮レベルやスレッド数などの設定は、<code>pg_compress_specification</code> 構造体を通じて外部から注入されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_frame.html" target="wiki-view"><code>astreamer_zstd_frame</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_compressor_new.html" target="wiki-view"><code>astreamer_zstd_compressor_new</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_compressor_content.html" target="wiki-view"><code>astreamer_zstd_compressor_content</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_compressor_finalize.html" target="wiki-view"><code>astreamer_zstd_compressor_finalize</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_compressor_free.html" target="wiki-view"><code>astreamer_zstd_compressor_free</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_decompressor_new.html" target="wiki-view"><code>astreamer_zstd_decompressor_new</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_decompressor_content.html" target="wiki-view"><code>astreamer_zstd_decompressor_content</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_decompressor_finalize.html" target="wiki-view"><code>astreamer_zstd_decompressor_finalize</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_zstd_c__astreamer_zstd_decompressor_free.html" target="wiki-view"><code>astreamer_zstd_decompressor_free</code></a></li>
+</ul></body></html>

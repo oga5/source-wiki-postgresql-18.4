@@ -1,0 +1,119 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/varlena.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/varlena.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の可変長データ型（<code>text</code>, <code>bytea</code>, <code>unknown</code> 等）に対する基本的な操作、変換、および集約関数を実装する中心的なファイルです。文字列の連結、部分文字列抽出、検索、置換、およびバイナリデータの入出力処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、可変長データ型の「標準的な振る舞い」を定義する基盤です。他のデータ型実装（<code>numeric.c</code> や <code>arrayfuncs.c</code> など）が文字列操作を必要とする際に呼び出されるユーティリティ群を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ変換**: C 文字列と <code>text</code> 型の相互変換、および <code>bytea</code> の入出力（エスケープ/HEX）。</li>
+<li>**文字列操作**: 連結、部分文字列抽出、置換、検索（Boyer-Moore-Horspool アルゴリズム等）。</li>
+<li>**比較・ソート**: ロケールを考慮した文字列比較および <code>SortSupport</code> インターフェースの提供。</li>
+<li>**集約関数**: <code>string_agg</code> の状態遷移、シリアライズ、および最終化処理。</li>
+<li>**Unicode 処理**: 正規化、コードポイント変換、エスケープシーケンスのデコード。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>TextPositionState</code>: <code>text_position</code> 関連関数の検索状態を保持。BMH アルゴリズム用のスキップテーブルを含む。</li>
+<li><code>VarStringSortSupport</code>: ソート時の比較キャッシュや <code>HyperLogLog</code> 状態を保持する構造体。</li>
+<li><code>SplitTextOutputData</code>: <code>split_text</code> の結果を配列またはテーブルへ出力するためのコンテキスト。</li>
+</ul>
+<h3>型変換・I/O</h3>
+<ul>
+<li><code>cstring_to_text</code>, <code>text_to_cstring</code>: C 文字列と <code>text</code> 型の変換。</li>
+<li><code>byteain</code>, <code>byteaout</code>: <code>bytea</code> 型の入出力（HEX/エスケープ形式）。</li>
+<li><code>textin</code>, <code>textout</code>: <code>text</code> 型の入出力。</li>
+</ul>
+<h3>文字列操作・検索</h3>
+<ul>
+<li><code>text_substring</code>, <code>bytea_substring</code>: 部分文字列の抽出。</li>
+<li><code>text_position</code>: 文字列内のパターン検索。</li>
+<li><code>replace_text</code>, <code>replace_text_regexp</code>: 文字列の置換。</li>
+</ul>
+<h3>ソートサポート</h3>
+<ul>
+<li><code>varstr_sortsupport</code>: ソート最適化のための初期化関数。</li>
+<li><code>varstrfastcmp_c</code>, <code>varlenafastcmp_locale</code>: ロケールに応じた高速比較関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SplitDirectoriesString</code></li>
+<li><code>SplitGUCList</code></li>
+<li><code>SplitIdentifierString</code></li>
+<li><code>SplitTextOutputData</code></li>
+<li><code>TextPositionState</code></li>
+<li><code>VarString</code></li>
+<li><code>VarStringSortSupport</code></li>
+<li><code>cstring_to_text</code></li>
+<li><code>cstring_to_text_with_len</code></li>
+<li><code>getClosestMatch</code></li>
+<li><code>text_to_cstring</code></li>
+<li><code>text_to_cstring_buffer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**検索フロー**: <code>text_position</code> は <code>text_position_setup</code> でスキップテーブルを構築し、<code>text_position_next</code> が内部の <code>text_position_next_internal</code> を呼び出してマッチングを行います。</li>
+<li>**ソートフロー**: <code>varstr_sortsupport</code> が <code>SortSupport</code> オブジェクトを初期化し、比較時に <code>varlenafastcmp_locale</code> 等が呼ばれます。Abbreviated Key（省略キー）が有効な場合、<code>varstr_abbrev_convert</code> で変換が行われ、<code>varstr_abbrev_abort</code> で統計に基づき最適化の継続可否が判断されます。</li>
+<li>**集約フロー**: <code>string_agg</code> は <code>string_agg_transfn</code> で <code>StringInfo</code> にデータを蓄積し、<code>string_agg_finalfn</code> で最終的な <code>text</code> 型に変換します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/detoast.h</code>, <code>access/toast_compression.h</code>: TOAST されたデータの展開・圧縮処理。</li>
+<li><code>utils/varlena.h</code>: 公開インターフェース定義。</li>
+<li><code>regex/regex.h</code>: 正規表現置換用。</li>
+<li><code>common/unicode_*.h</code>: Unicode 正規化およびカテゴリ判定。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/unicode_category.h</code></li>
+<li><code>common/unicode_norm.h</code></li>
+<li><code>common/unicode_version.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>levenshtein.c</code></li>
+<li><code>lib/hyperloglog.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/bytea.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_locale.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/varlena.h</code>: 本ファイルの公開関数定義。</li>
+<li><code>levenshtein.c</code>: 本ファイルから <code>#include</code> されるレーベンシュタイン距離計算の実装。</li>
+<li><code>src/backend/utils/adt/like.c</code>: <code>LIKE</code> 演算子の実装（パターンマッチングの別アプローチ）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本ファイル内の関数は <code>palloc</code> を多用します。特にソートサポートや集約関数では、<code>MemoryContext</code> の切り替えに注意が必要です。</li>
+<li>**TOAST**: <code>DatumGetVarStringPP</code> 等のマクロは、TOAST されたデータを必要に応じて展開（detoast）します。パフォーマンス向上のため、可能な限り detoast を避ける実装（<code>toast_raw_datum_size</code> の利用など）が随所に見られます。</li>
+<li>**ロケール**: 文字列比較は <code>pg_locale_t</code> を介して行われます。<code>C</code> ロケールの場合、<code>memcmp</code> を用いた高速パスが選択されます。</li>
+<li>**省略**: <code>levenshtein.c</code> の詳細なアルゴリズム実装は、本ファイルからインクルードされる別ファイルであるため、本ファイル内では展開されていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__VarString.html" target="wiki-view"><code>VarString</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__TextPositionState.html" target="wiki-view"><code>TextPositionState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__VarStringSortSupport.html" target="wiki-view"><code>VarStringSortSupport</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__SplitTextOutputData.html" target="wiki-view"><code>SplitTextOutputData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__cstring_to_text.html" target="wiki-view"><code>cstring_to_text</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__cstring_to_text_with_len.html" target="wiki-view"><code>cstring_to_text_with_len</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__text_to_cstring.html" target="wiki-view"><code>text_to_cstring</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__text_to_cstring_buffer.html" target="wiki-view"><code>text_to_cstring_buffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__SplitIdentifierString.html" target="wiki-view"><code>SplitIdentifierString</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__SplitDirectoriesString.html" target="wiki-view"><code>SplitDirectoriesString</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__SplitGUCList.html" target="wiki-view"><code>SplitGUCList</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varlena_c__getClosestMatch.html" target="wiki-view"><code>getClosestMatch</code></a></li>
+</ul></body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__activity__pgstat_io_c__pgstat_io_flush_cb.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_io_flush_cb</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/activity/pgstat_io.c:188</code></li>
+</ul>
+<h2>目的</h2>
+<p>バックエンドプロセス内で一時的に蓄積されたI/O統計（<code>PendingIOStats</code>）を、共有メモリ上のグローバルな統計領域へ同期（フラッシュ）します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool pgstat_io_flush_cb(bool nowait)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>nowait</code> (bool): <code>true</code> の場合、共有メモリのロック取得に失敗した際に待機せず即座に制御を戻します。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: ロック取得に失敗してフラッシュをスキップした場合は <code>true</code> を返し、それ以外（フラッシュ完了または統計が空）の場合は <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>have_iostats</code> が <code>false</code> の場合、処理は即座に終了します。</li>
+<li>共有メモリへの書き込み時には、<code>MyBackendType</code> に対応する <code>LWLock</code> を排他モードで取得する必要があります。</li>
+<li>処理完了後、ローカルの <code>PendingIOStats</code> はゼロクリアされ、<code>have_iostats</code> は <code>false</code> に設定されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>have_iostats</code> を確認し、統計が存在しない場合は <code>false</code> を返します。 2. <code>MyBackendType</code> に基づき、共有メモリ上の対象統計領域とロックを取得します。 3. <code>nowait</code> が <code>true</code> でロック取得に失敗した場合は <code>true</code> を返します。それ以外は <code>LWLockAcquire</code> でロックを確保します。 4. 全てのI/Oオブジェクト、コンテキスト、操作の組み合わせについて、ローカルの <code>PendingIOStats</code> の値を共有メモリ上の <code>bktype_shstats</code> に加算します。 5. <code>pgstat_bktype_io_stats_valid</code> を用いて、更新後の統計が妥当であることを検証します。 6. ロックを解放し、ローカルの <code>PendingIOStats</code> を <code>memset</code> で初期化し、<code>have_iostats</code> を <code>false</code> に更新して終了します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/utils/activity/pgstat.c:443</code> (統計サブシステムのコールバック登録)</li>
+<li><code>src/backend/utils/activity/pgstat_io.c:177</code> (ラッパー関数経由)</li>
+<li>**呼び出し先**:</li>
+<li><code>LWLockAcquire</code> / <code>LWLockConditionalAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>pgstat_bktype_io_stats_valid</code></li>
+<li><code>INSTR_TIME_GET_MICROSEC</code> (マクロ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PendingIOStats</code>: ローカルの統計蓄積用変数。</li>
+<li><code>PgStat_BktypeIO</code>: 共有メモリ上のバックエンドタイプ別I/O統計構造体。</li>
+<li><code>pgStatLocal.shmem</code>: 統計サブシステムの共有メモリ領域。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nowait</code> が <code>true</code> の場合、ロック競合が発生すると統計のフラッシュがスキップされます。</li>
+<li><code>pgstat_bktype_io_stats_valid</code> による検証で不正な状態が検出された場合、<code>Assert</code> により停止する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pgstat</code> サブシステムのコールバックとして登録されており、統計の永続化において重要な役割を果たします。</li>
+<li><code>PendingIOStats</code> のリセット処理はロック解放後に行われるため、この間は統計の不整合が発生しないよう注意が必要です。</li>
+</ul></body></html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/commit_ts.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/commit_ts.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの各トランザクションのコミット時刻（Commit Timestamp）を永続化・管理するモジュールです。<code>pg_xact</code>（CLOG）と同様のSLRU（Simple Least Recently Used）キャッシュ機構を利用し、トランザクションID（XID）とコミット時刻の対応を保持します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> サブシステムの一部として、トランザクションのコミット情報を追跡します。<code>track_commit_timestamp</code> GUCパラメータにより有効/無効が切り替え可能であり、レプリケーション環境ではプライマリからスタンバイへ設定変更がWALを通じて伝播されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**コミット時刻の記録**: トランザクションおよびサブトランザクションのコミット時刻とレプリケーション元ノードIDをSLRUページに書き込む。</li>
+<li>**データ検索**: 指定されたXIDに対応するコミット時刻をSLRUから取得する。</li>
+<li>**ライフサイクル管理**: SLRUの初期化、チェックポイント時のフラッシュ、不要になった古いページの切り捨て（Truncate）。</li>
+<li>**WAL連携**: ページの初期化や切り捨て操作をWALに記録し、クラッシュリカバリ時の整合性を保証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CommitTimestampEntry</code>: SLRUページ内に格納される、時刻とノードIDのデータ構造。</li>
+<li><code>CommitTsCtl</code>: SLRU管理用の制御構造体。</li>
+<li><code>track_commit_timestamp</code>: 本機能を有効化するためのGUC変数。</li>
+<li><code>TransactionTreeSetCommitTsData</code>: トランザクションツリー全体のコミット情報を一括記録する主要関数。</li>
+<li><code>TransactionIdGetCommitTsData</code>: 特定XIDのコミット情報を検索する公開API。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CommitTimestampShared</code></li>
+<li><code>CommitTsShmemBuffers</code></li>
+<li><code>CommitTsShmemInit</code></li>
+<li><code>CommitTsShmemSize</code></li>
+<li><code>CompleteCommitTsInitialization</code></li>
+<li><code>GetLatestCommitTsData</code></li>
+<li><code>SetXidCommitTsInPage</code></li>
+<li><code>TransactionIdSetCommitTs</code></li>
+<li><code>TransactionIdToCTsPage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **記録**: <code>TransactionTreeSetCommitTsData</code> が呼び出されると、XID範囲をSLRUページ単位に分割し、<code>SetXidCommitTsInPage</code> を経由してSLRUバッファを更新します。 2.  **検索**: <code>TransactionIdGetCommitTsData</code> は、まず共有メモリ上のキャッシュを確認し、ヒットしなければSLRUからページを読み込みます。 3.  **リカバリ**: <code>commit_ts_redo</code> がWALレコードを解析し、<code>ZEROPAGE</code>（ページ初期化）や <code>TRUNCATE</code>（古いデータの削除）を再実行して状態を同期します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/slru.h</code>: SLRUキャッシュ管理機能。</li>
+<li><code>access/transam.h</code>: トランザクションID管理。</li>
+<li><code>access/xloginsert.h</code>, <code>access/xlogutils.h</code>: WAL書き込みおよびリカバリ用ユーティリティ。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ管理。</li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/commit_ts.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションコミットのメイン処理（ここから本モジュールが呼び出される）。</li>
+<li><code>src/backend/access/transam/slru.c</code>: SLRUの汎用実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**SLRUの特性**: 本モジュールは他のSLRU（CLOG等）と同様、ページ境界でのロック制御を行います。<code>CommitTsPagePrecedes</code> はページ切り捨て時の順序判定に使用されます。</li>
+<li>**動的有効化**: 本機能は実行中に <code>track_commit_timestamp</code> を変更可能です。スタンバイ側では、プライマリからのWALパラメータ変更レコードを受信して自動的に <code>ActivateCommitTs</code> / <code>DeactivateCommitTs</code> が実行されます。</li>
+<li>**パフォーマンス**: 頻繁な更新が発生するため、<code>commit_timestamp_buffers</code> の設定値が性能に直結します。デフォルトでは自動チューニングが働きます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CommitTimestampEntry.html" target="wiki-view"><code>CommitTimestampEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__TransactionIdToCTsPage.html" target="wiki-view"><code>TransactionIdToCTsPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CommitTimestampShared.html" target="wiki-view"><code>CommitTimestampShared</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__TransactionTreeSetCommitTsData.html" target="wiki-view"><code>TransactionTreeSetCommitTsData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__SetXidCommitTsInPage.html" target="wiki-view"><code>SetXidCommitTsInPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__TransactionIdSetCommitTs.html" target="wiki-view"><code>TransactionIdSetCommitTs</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__TransactionIdGetCommitTsData.html" target="wiki-view"><code>TransactionIdGetCommitTsData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__GetLatestCommitTsData.html" target="wiki-view"><code>GetLatestCommitTsData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CommitTsShmemBuffers.html" target="wiki-view"><code>CommitTsShmemBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CommitTsShmemSize.html" target="wiki-view"><code>CommitTsShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CommitTsShmemInit.html" target="wiki-view"><code>CommitTsShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__commit_ts_c__CompleteCommitTsInitialization.html" target="wiki-view"><code>CompleteCommitTsInitialization</code></a></li>
+</ul></body></html>

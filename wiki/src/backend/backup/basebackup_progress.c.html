@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/backup/basebackup_progress.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/backup/basebackup_progress.c</h1>
+<h2>概要</h2>
+<p>ベースバックアップ実行中の進捗状況を <code>pg_stat_progress_basebackup</code> ビューに反映させるための <code>bbsink</code> 実装です。バックアップの各フェーズ（チェックポイント待機、サイズ見積もり、データ転送、WAL転送）における進捗を追跡・報告します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>basebackup_sink</code> インターフェースを実装するデコレータの一種です。データ転送のパイプライン（<code>bbsink</code> チェーン）に挿入され、データの通過を監視しながら統計情報を更新します。</p>
+<h2>責務</h2>
+<ul>
+<li>**進捗の可視化**: <code>pgstat</code> を介して、バックアップの現在のフェーズや転送済みバイト数をシステムビューに公開する。</li>
+<li>**状態管理**: <code>bbsink_state</code> 内の転送済みバイト数やテーブルスペース番号を更新し、バックアップ全体の整合性を保つ。</li>
+<li>**フェーズ遷移の通知**: バックアップの開始から終了までの各段階（チェックポイント待機、WALアーカイブ待機など）を明示的に通知する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>bbsink_progress_new</code>: 進捗追跡用シンクを生成し、<code>pgstat</code> の進捗追跡を開始する。</li>
+<li><code>bbsink_progress_ops</code>: <code>bbsink</code> インターフェースのコールバックテーブル。データ転送のフックを提供する。</li>
+<li><code>basebackup_progress_*</code> 系関数: <code>basebackup.c</code> から呼び出され、特定のバックアップフェーズへの遷移を通知する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>basebackup_progress_done</code></li>
+<li><code>basebackup_progress_estimate_backup_size</code></li>
+<li><code>basebackup_progress_transfer_wal</code></li>
+<li><code>basebackup_progress_wait_checkpoint</code></li>
+<li><code>basebackup_progress_wait_wal_archive</code></li>
+<li><code>bbsink_progress_archive_contents</code></li>
+<li><code>bbsink_progress_begin_backup</code></li>
+<li><code>bbsink_progress_end_archive</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>bbsink_progress_new</code> で <code>pgstat_progress_start_command</code> を呼び出し、追跡を開始。 2. **データ転送**: <code>bbsink_progress_archive_contents</code> が呼び出されるたびに、<code>bbsink_state</code> の <code>bytes_done</code> を加算し、<code>pgstat_progress_update_multi_param</code> で統計を更新してから、後続のシンクへデータを転送する。 3. **アーカイブ終了**: <code>bbsink_progress_end_archive</code> でテーブルスペースの進捗を更新し、<code>bbsink_state</code> のカウンタをインクリメントする。 4. **フェーズ更新**: <code>basebackup.c</code> 等の外部から、バックアップの進行に合わせて <code>basebackup_progress_wait_checkpoint</code> などの関数が呼び出され、現在のフェーズが更新される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>backup/basebackup_sink.h</code>: <code>bbsink</code> インターフェースの定義。</li>
+<li><code>commands/progress.h</code>: <code>pg_stat_progress_*</code> ビュー用の定数定義。</li>
+<li><code>pgstat.h</code>: 進捗統計を記録するための統計サブシステム。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/backup/basebackup.c</code>: このモジュールの主要な呼び出し元。バックアップのメインロジックを保持。</li>
+<li><code>src/backend/backup/basebackup_sink.c</code>: <code>bbsink</code> の基盤ロジックと転送用ヘルパー関数群。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは単なる統計報告だけでなく、<code>bbsink_state</code> の一部（<code>tablespace_num</code> 等）を更新する副作用を持っています。</li>
+<li><code>bbsink_progress_archive_contents</code> 内で <code>bytes_total</code> を超える転送が発生した場合、進捗率が不自然にならないよう <code>bytes_total</code> を動的に補正するロジックが含まれています。</li>
+<li><code>bbsink</code> チェーンの先頭付近に配置されることを想定しており、他のシンクへ透過的にデータを転送する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__bbsink_progress_new.html" target="wiki-view"><code>bbsink_progress_new</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__bbsink_progress_begin_backup.html" target="wiki-view"><code>bbsink_progress_begin_backup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__bbsink_progress_end_archive.html" target="wiki-view"><code>bbsink_progress_end_archive</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__bbsink_progress_archive_contents.html" target="wiki-view"><code>bbsink_progress_archive_contents</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__basebackup_progress_wait_checkpoint.html" target="wiki-view"><code>basebackup_progress_wait_checkpoint</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__basebackup_progress_estimate_backup_size.html" target="wiki-view"><code>basebackup_progress_estimate_backup_size</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__basebackup_progress_wait_wal_archive.html" target="wiki-view"><code>basebackup_progress_wait_wal_archive</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__basebackup_progress_transfer_wal.html" target="wiki-view"><code>basebackup_progress_transfer_wal</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_progress_c__basebackup_progress_done.html" target="wiki-view"><code>basebackup_progress_done</code></a></li>
+</ul></body></html>

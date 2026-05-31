@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__multixact_c__MultiXactStateData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MultiXactStateData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/transam/multixact.c:242</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL における共有行ロック（MultiXact）の生成、管理、および周回防止（Anti-Wraparound）のための共有メモリ状態を保持する構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct MultiXactStateData {
+    MultiXactId nextMXact;
+    MultiXactOffset nextOffset;
+    bool finishedStartup;
+    MultiXactId oldestMultiXactId;
+    Oid oldestMultiXactDB;
+    MultiXactOffset oldestOffset;
+    bool oldestOffsetKnown;
+    MultiXactId multiVacLimit;
+    MultiXactId multiWarnLimit;
+    MultiXactId multiStopLimit;
+    MultiXactId multiWrapLimit;
+    MultiXactOffset offsetStopLimit;
+    MultiXactId perBackendXactIds[FLEXIBLE_ARRAY_MEMBER];
+} MultiXactStateData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 構造体末尾の <code>perBackendXactIds</code> 配列は、各バックエンドのトランザクション状態（<code>OldestMemberMXactId</code> および <code>OldestVisibleMXactId</code>）を格納します。</li>
+<li>**出力**: <code>nextMXact</code> および <code>nextOffset</code> は、次に割り当てられる MultiXactId とオフセットを追跡します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>perBackendXactIds</code> は、全バックエンド（<code>MaxBackends</code>）および準備済みトランザクション（<code>max_prepared_xacts</code>）の情報を保持する可変長領域として機能します。</li>
+<li>各バックエンドは、自身の <code>OldestVisibleMXactId</code> より古い MultiXactId の SLRU データにアクセスしてはなりません（同時実行される VACUUM による切り捨てを防ぐため）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**周回防止**: <code>multiVacLimit</code> 等の閾値に基づき、VACUUM が古い MultiXactId を削除・凍結する際の判断基準を提供します。</li>
+<li>**メンバー管理**: 各バックエンドは共有ロック取得時に <code>OldestMemberMXactId</code> を更新し、トランザクション終了時にクリアします。</li>
+<li>**可視性計算**: <code>OldestVisibleMXactId</code> は、全バックエンドの <code>OldestMemberMXactId</code> の最小値として算出され、VACUUM が安全に削除可能な範囲を決定します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>MultiXactShmemInit</code> 等の初期化処理や、<code>MultiXactIdCreate</code> 関連の生成処理から参照されます。</li>
+<li>**呼び出し先**: 構造体自体はデータ保持用であり、直接的な関数呼び出しは行いません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MultiXactId</code>: MultiXact を識別する 32 ビット ID。</li>
+<li><code>MultiXactOffset</code>: SLRU 内のオフセット。</li>
+<li><code>MultiXactMember</code>: トランザクション ID とロック状態のペア。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**周回**: <code>multiWrapLimit</code> に達すると、システムは新しい MultiXactId の割り当てを停止し、データ破損を防ぐためにシャットダウンまたは警告を発する必要があります。</li>
+<li>**メモリ不足**: <code>perBackendXactIds</code> のサイズは <code>MaxBackends</code> に依存するため、設定値の変更時には共有メモリの再計算が必要です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、メモリ確保時には <code>offsetof(MultiXactStateData, perBackendXactIds)</code> を用いてサイズを算出してください。</li>
+<li><code>perBackendXactIds</code> 配列のインデックス構造（通常バックエンドと準備済みトランザクションの分離）に注意してください。</li>
+</ul></body></html>

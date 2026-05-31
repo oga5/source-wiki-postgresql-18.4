@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeTidscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeTidscan.c</h1>
+<h2>概要</h2>
+<p><code>nodeTidscan.c</code> は、PostgreSQL において <code>TID</code>（Tuple Identifier）を直接指定してリレーションをスキャンする <code>TidScan</code> ノードの実装です。主に <code>WHERE ctid = ...</code> や <code>WHERE CURRENT OF ...</code> といったクエリを処理するために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、プランナーが生成した <code>TidScan</code> プランを実行時に評価する役割を担います。インデックスを介さず、物理的なタプル位置を直接参照する効率的なスキャンを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**TID 抽出**: クエリ内の <code>ctid</code> 関連の式（<code>OpExpr</code>, <code>ScalarArrayOpExpr</code>, <code>CurrentOfExpr</code>）を解析し、スキャン対象の TID リストを生成する。</li>
+<li>**スキャン実行**: 抽出された TID リストに基づき、テーブルからタプルをフェッチする。</li>
+<li>**重複排除とソート**: 効率的なアクセスと OR 条件の正当性を保証するため、TID リストをソートし重複を除去する。</li>
+<li>**再スキャン対応**: <code>ExecReScanTidScan</code> を通じて、パラメータ変更後の再実行をサポートする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitTidScan</code>: ノードの初期化と式コンテキストの構築を行う。</li>
+<li><code>TidNext</code>: スキャン実行のメインループ。TID リストを順次辿り、タプルをフェッチする。</li>
+<li><code>TidListEval</code>: クエリ内の式を評価し、物理的な TID の配列を構築する。</li>
+<li><code>IsCTIDVar</code>: <code>ctid</code> 属性を参照しているか判定するマクロ。</li>
+<li><code>TidRecheck</code>: <code>EvalPlanQual</code>（同時実行制御）において、タプルが対象 TID に一致するか再検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndTidScan</code></li>
+<li><code>ExecReScanTidScan</code></li>
+<li><code>ExecTidScan</code></li>
+<li><code>TidExpr</code></li>
+<li><code>TidExprListCreate</code></li>
+<li><code>itemptr_comparator</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitTidScan</code> が呼ばれ、<code>TidExprListCreate</code> でクエリ内の TID 抽出式をコンパイルする。 2. **初回実行**: <code>TidNext</code> が最初に呼ばれた際、<code>TidListEval</code> が起動し、式を評価して <code>ItemPointerData</code> の配列を生成・ソートする。 3. **反復**: <code>TidNext</code> は <code>tss_TidPtr</code> をインクリメントしながら、<code>table_tuple_fetch_row_version</code> を呼び出し、該当するタプルをスロットに格納する。 4. **終了**: <code>ExecEndTidScan</code> により、スキャン記述子が解放される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッド（AM）の抽象化レイヤー。</li>
+<li><code>executor/executor.h</code>: エグゼキュータの基本機能。</li>
+<li><code>nodes/nodeFuncs.h</code>: ノードツリー操作用。</li>
+<li><code>utils/array.h</code>: <code>ScalarArrayOpExpr</code> 処理用。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/nodeTidscan.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeTidscan.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/executor/nodeTidrangescan.c</code>: TID の範囲指定スキャンを行う関連ノード。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: 実際のタプルフェッチ処理の背後にある AM 実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**CURRENT OF の扱い**: <code>WHERE CURRENT OF</code> はカーソルに関連付けられた TID を動的に解決するため、通常の <code>ctid</code> 比較とは異なるコードパスを通ります。</li>
+<li>**遅延評価**: <code>TidListEval</code> はノードが実際に実行されるまで呼び出されません。これは不要なスキャン初期化コストを避けるための最適化です。</li>
+<li>**ソートの重要性**: TID リストのソートは、物理的なブロック順序に近いアクセスを促し、I/O 効率を向上させるために不可欠です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__TidExpr.html" target="wiki-view"><code>TidExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__TidExprListCreate.html" target="wiki-view"><code>TidExprListCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__TidListEval.html" target="wiki-view"><code>TidListEval</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__itemptr_comparator.html" target="wiki-view"><code>itemptr_comparator</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__TidNext.html" target="wiki-view"><code>TidNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__TidRecheck.html" target="wiki-view"><code>TidRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__ExecTidScan.html" target="wiki-view"><code>ExecTidScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__ExecReScanTidScan.html" target="wiki-view"><code>ExecReScanTidScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__ExecEndTidScan.html" target="wiki-view"><code>ExecEndTidScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidscan_c__ExecInitTidScan.html" target="wiki-view"><code>ExecInitTidScan</code></a></li>
+</ul></body></html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pushval-asis.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pushval_asis</h1>
+<h2>概念</h2>
+<p><code>pushval_asis</code> は、PostgreSQLの特定のクエリ解析処理（<code>ltree</code> モジュールの <code>ltxtquery</code> や、<code>tsquery</code> など）において、解析中のクエリから抽出されたオペランド（値）の文字列を、解析状態を管理する内部バッファへそのまま（&quot;as is&quot;）追加し、対応するクエリツリーの要素（<code>ITEM</code> 構造体など）を登録するための静的関数です。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ文字列をパースして内部表現（ツリー構造や配列）に変換する際、オペランドの文字列データをメモリ上に効率的かつ安全に配置する必要があります。<code>pushval_asis</code> は、バッファの動的な拡張（<code>repalloc</code>）やヌル終端の保証、長さの検証などを一元的に行うことで、クエリ解析処理の堅牢性とメモリ効率を担保する役割を果たしています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/ltree/ltxtquery_io.c#pushval_asis</code>: <code>ltxtquery</code> の解析中にオペランドを <code>QPRS_STATE</code> のバッファに追加する関数。</li>
+<li><code>symbol:src/backend/utils/adt/tsquery.c#pushval_asis</code>: <code>tsquery</code> の解析処理に関連する同名の関数（詳細な実装は本コンテキストでは未定義）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>contrib/ltree</code> における処理の流れは以下の通りです：</p>
+<p>1. クエリ解析ロジック（例: <code>ltxtq_in</code> 関連の処理）が、入力クエリ文字列からオペランドを検出します。 2. <code>pushval_asis</code> が呼び出され、解析状態を保持する <code>QPRS_STATE</code> 構造体、オペランドの型、文字列、長さ、およびフラグが渡されます。 3. <code>pushval_asis</code> 内部で <code>pushquery</code> を呼び出し、クエリの <code>ITEM</code> 配列に新しい要素を登録します。 4. <code>QPRS_STATE</code> の <code>op</code> バッファの残容量を確認し、不足している場合は <code>repalloc</code> によりバッファサイズを拡張します。 5. オペランド文字列を <code>state-&gt;curop</code> が指す位置にコピーしてヌル終端し、書き込みポインタ（<code>state-&gt;curop</code>）と累積長（<code>state-&gt;sumlen</code>）を更新します。</p>
+<p>なお、<code>src/backend/utils/adt/tsquery.c</code> における <code>pushval_asis</code> を含んだエンドツーエンドの具体的な処理フローや、両モジュール間での共通の呼び出しフローの有無については、現時点では詳細が判明していません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**オペランドの最大長制限**: 入力される文字列の長さ <code>lenval</code> は <code>0xffff</code>（65535バイト）以下でなければなりません。これを超える場合はエラー（<code>ERRCODE_INVALID_PARAMETER_VALUE</code>）となります。</li>
+<li>**バッファの整合性**: <code>state-&gt;op</code> バッファが <code>repalloc</code> によって再割り当てされた後、書き込みポインタ <code>state-&gt;curop</code> は新しいバッファのアドレスを基に正しく再計算され、一貫性が維持される必要があります。</li>
+<li>**ヌル終端**: バッファに格納されるオペランド文字列は、必ずヌル終端されていなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バッファ再割り当て後のポインタ無効化**: <code>repalloc</code> によるメモリ再割り当てが発生すると、古いバッファを指していたポインタが無効になります。<code>state-&gt;curop</code> の再計算ロジックに誤りがあると、不正なメモリ空間へのアクセス（セグメンテーションフォールトなど）を引き起こす危険性があります。</li>
+<li>**長さのオーバーフロー**: <code>lenval</code> が <code>0xffff</code> を超える場合の境界値チェックをバイパスすると、バッファオーバーフローやデータ破損につながる可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/ltree/ltxtquery_io.c</code>（<code>pushval_asis</code> の具体的なバッファ操作および <code>QPRS_STATE</code> の管理ロジック）</li>
+<li><code>src/backend/utils/adt/tsquery.c</code>（<code>tsquery</code> 側での同名関数の実装と、<code>ltree</code> 側との設計上の共通点の確認）</li>
+</ul></body></html>

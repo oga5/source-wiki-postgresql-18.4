@@ -1,0 +1,96 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeHashjoin.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeHashjoin.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL のハッシュ結合（Hash Join）実行ノードの実装です。メモリ内に収まらない大規模な結合を処理するため、ハイブリッドハッシュ結合アルゴリズムを採用し、必要に応じてデータを一時ファイルへ退避（スピル）させるマルチバッチ処理をサポートします。また、並列クエリ実行における「並列対応（Parallel-aware）」ハッシュ結合の制御ロジックも内包しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、プランナが生成した <code>HashJoin</code> ノードを実行します。<code>nodeHash.c</code> と密接に連携し、内側（Inner）プランからハッシュテーブルを構築し、外側（Outer）プランからのタプルをプローブする役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ハイブリッドハッシュ結合の実行**: メモリ制限（<code>work_mem</code>）に基づき、単一バッチまたは複数バッチへの分割・再帰的処理。</li>
+<li>**並列実行制御**: <code>Barrier</code> IPC を用いた複数バックエンド間でのハッシュテーブル構築およびバッチ処理の同期。</li>
+<li>**結合品質の管理**: 内部結合、外部結合（Left/Right/Full）、セミ結合、アンチ結合の各セマンティクスに応じたタプル生成とフィルタリング。</li>
+<li>**リソース管理**: 実行時のメモリコンテキスト管理、一時ファイル（<code>BufFile</code>）の作成・解放、および並列クエリ時の DSM（動的共有メモリ）の初期化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理（ステートマシン）</h3>
+<ul>
+<li><code>HJ_BUILD_HASHTABLE</code>: ハッシュテーブル構築フェーズ。</li>
+<li><code>HJ_NEED_NEW_OUTER</code>: 外側リレーションからのタプル取得フェーズ。</li>
+<li><code>HJ_SCAN_BUCKET</code>: ハッシュバケット内のタプル走査フェーズ。</li>
+<li><code>HJ_FILL_OUTER_TUPLE</code> / <code>HJ_FILL_INNER_TUPLES</code>: 外部結合における不一致タプルの補完フェーズ。</li>
+<li><code>HJ_NEED_NEW_BATCH</code>: 次のバッチへの切り替えフェーズ。</li>
+</ul>
+<h3>実行関数</h3>
+<ul>
+<li><code>ExecHashJoinImpl</code>: 結合のコアロジック。<code>inline</code> 化され、並列/直列の両方で利用される。</li>
+<li><code>ExecHashJoin</code> / <code>ExecParallelHashJoin</code>: それぞれ直列・並列用のエントリポイント。</li>
+<li><code>ExecInitHashJoin</code> / <code>ExecEndHashJoin</code>: ノードのライフサイクル管理。</li>
+</ul>
+<h3>並列同期用シンボル</h3>
+<ul>
+<li><code>ParallelHashJoinState</code>: 並列実行時の共有状態（バリア、バッチ管理、ファイルセット）。</li>
+<li><code>ExecParallelHashJoinNewBatch</code>: 並列ワーカーが次に処理すべきバッチを決定・同期する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndHashJoin</code></li>
+<li><code>ExecHashJoin</code></li>
+<li><code>ExecHashJoinImpl</code></li>
+<li><code>ExecHashJoinInitializeDSM</code></li>
+<li><code>ExecHashJoinInitializeWorker</code></li>
+<li><code>ExecHashJoinNewBatch</code></li>
+<li><code>ExecHashJoinOuterGetTuple</code></li>
+<li><code>ExecHashJoinReInitializeDSM</code></li>
+<li><code>ExecInitHashJoin</code></li>
+<li><code>ExecParallelHashJoin</code></li>
+<li><code>ExecParallelHashJoinNewBatch</code></li>
+<li><code>ExecParallelHashJoinOuterGetTuple</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitHashJoin</code> が式評価用コンテキストとハッシュ関数を準備。 2. **構築**: <code>HJ_BUILD_HASHTABLE</code> で <code>ExecHashTableCreate</code> を呼び出し、内側プランからハッシュテーブルを構築。 3. **プローブ**: <code>ExecHashJoinImpl</code> 内のループで、外側タプルを取得し、ハッシュ値に基づいてバケットを特定。</p>
+<ul>
+<li>バッチ不一致時は <code>ExecHashJoinSaveTuple</code> で一時ファイルへ退避。</li>
+<li>一致時は <code>ExecQual</code> で結合条件を評価し、<code>ExecProject</code> で結果を生成。</li>
+<p>4. **バッチ切り替え**: <code>ExecHashJoinNewBatch</code> により、次のバッチのハッシュテーブルを再構築し、一時ファイルからデータを読み込む。 5. **終了**: <code>ExecEndHashJoin</code> でハッシュテーブルと一時ファイルを破棄。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/hashjoin.h</code>, <code>executor/nodeHash.h</code>: ハッシュテーブル管理と内側ノードの定義。</li>
+<li><code>storage/buffile.h</code>: メモリ溢れ時のディスク退避用。</li>
+<li><code>access/parallel.h</code>: 並列クエリ実行のためのバリア同期と DSM 管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeHashjoin.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/sharedtuplestore.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeHash.c</code>: ハッシュテーブルの物理的な構築・管理ロジック。</li>
+<li><code>src/backend/executor/execParallel.c</code>: 並列クエリの基盤機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: ハッシュテーブルおよび一時ファイルは、<code>HashJoinState</code> が管理するメモリコンテキスト（<code>spillCxt</code> 等）に紐付きます。<code>ExecEndHashJoin</code> で確実に解放される必要があります。</li>
+<li>**並列実行の複雑性**: 並列対応ハッシュ結合は、<code>Barrier</code> を用いてフェーズを同期します。デッドロックを避けるため、バリア待機中のタプル出力は厳格に制限されています。</li>
+<li>**最適化**: <code>ExecHashJoinImpl</code> は <code>pg_attribute_always_inline</code> を使用しており、コンパイル時に並列/直列の分岐が最適化されることを期待しています。</li>
+<li>**省略された詳細**: 本ファイルはハッシュテーブルの具体的な衝突解決アルゴリズム（<code>nodeHash.c</code> 側）や、式評価の低レイヤー実装（<code>execExprInterp.c</code>）には立ち入りません。これらは実行エンジンの別層として分離されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinImpl.html" target="wiki-view"><code>ExecHashJoinImpl</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoin.html" target="wiki-view"><code>ExecHashJoin</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecParallelHashJoin.html" target="wiki-view"><code>ExecParallelHashJoin</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecInitHashJoin.html" target="wiki-view"><code>ExecInitHashJoin</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecEndHashJoin.html" target="wiki-view"><code>ExecEndHashJoin</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinOuterGetTuple.html" target="wiki-view"><code>ExecHashJoinOuterGetTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecParallelHashJoinOuterGetTuple.html" target="wiki-view"><code>ExecParallelHashJoinOuterGetTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinNewBatch.html" target="wiki-view"><code>ExecHashJoinNewBatch</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecParallelHashJoinNewBatch.html" target="wiki-view"><code>ExecParallelHashJoinNewBatch</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinInitializeDSM.html" target="wiki-view"><code>ExecHashJoinInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinReInitializeDSM.html" target="wiki-view"><code>ExecHashJoinReInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinInitializeWorker.html" target="wiki-view"><code>ExecHashJoinInitializeWorker</code></a></li>
+</ul></body></html>

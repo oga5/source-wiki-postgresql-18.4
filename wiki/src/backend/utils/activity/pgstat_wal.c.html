@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_wal.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_wal.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおけるWAL（Write-Ahead Logging）関連の統計情報を管理・集計するための実装を提供します。統計情報の収集ロジックをメインの <code>pgstat.c</code> から分離し、WAL特有のカウンタ処理をカプセル化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> サブシステムの一部として、WAL統計のライフサイクル（初期化、更新、共有メモリへのフラッシュ、スナップショット取得）を制御します。他の統計種別と同様に、コールバックベースのインターフェースを通じて <code>pgstat</code> モジュールと統合されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**差分計算**: プロセスごとの <code>pgWalUsage</code> を監視し、前回の報告時からの増分を計算して共有メモリへ反映する。</li>
+<li>**共有メモリ管理**: WAL統計用共有メモリ領域の初期化および排他制御（LWLock）の実施。</li>
+<li>**統計の公開**: SQLインターフェース等から参照可能なスナップショットへのデータコピー。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>prevWalUsage</code>: プロセスローカルな静的変数。前回の報告時点でのWAL使用量を保持し、増分計算の基準点となります。</li>
+<li><code>pgstat_report_wal()</code>: WAL生成プロセスが呼び出すメインのエントリポイント。統計のフラッシュをトリガーします。</li>
+<li><code>pgstat_wal_flush_cb()</code>: 統計の差分を計算し、共有メモリへ加算するコアロジック。</li>
+<li><code>WALSTAT_ACC</code>: 共有メモリ上のカウンタを更新するためのマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgstat_fetch_stat_wal</code></li>
+<li><code>pgstat_report_wal</code></li>
+<li><code>pgstat_wal_flush_cb</code></li>
+<li><code>pgstat_wal_have_pending</code></li>
+<li><code>pgstat_wal_init_backend_cb</code></li>
+<li><code>pgstat_wal_init_shmem_cb</code></li>
+<li><code>pgstat_wal_reset_all_cb</code></li>
+<li><code>pgstat_wal_snapshot_cb</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **更新**: <code>pgstat_report_wal</code> が呼ばれると、<code>pgstat_wal_flush_cb</code> が実行されます。 2.  **差分抽出**: <code>pgstat_wal_have_pending</code> で変更の有無を確認後、<code>WalUsageAccumDiff</code> を用いて現在の <code>pgWalUsage</code> と <code>prevWalUsage</code> の差分を算出します。 3.  **同期**: <code>LWLock</code> を取得し、共有メモリ上の統計構造体に差分を加算します。 4.  **状態更新**: <code>prevWalUsage</code> を現在の値で更新し、次回の計算に備えます。 5.  **スナップショット**: <code>pgstat_wal_snapshot_cb</code> が呼ばれると、共有メモリからローカルスナップショットへデータがコピーされます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/instrument.h</code>: <code>WalUsage</code> 構造体の定義。</li>
+<li><code>utils/pgstat_internal.h</code>: 統計サブシステムの内部構造体およびコールバック定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計システム全体の中心。本ファイルのコールバックが登録・管理されます。</li>
+<li><code>src/include/pgstat.h</code>: 統計情報の公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: <code>pgWalUsage</code> が実際に更新されるWAL生成の現場。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの挙動**: <code>pgstat_report_wal</code> に <code>force=false</code> を渡すと、ロック取得に失敗した際に待機せず即座に処理を中断します。これはパフォーマンスへの影響を最小限にするための設計です。</li>
+<li>**コールバック設計**: 本ファイル内の <code>_cb</code> 接尾辞を持つ関数は、<code>pgstat</code> モジュールから動的に呼び出されることを前提としています。</li>
+<li>**更新頻度**: WAL統計は高頻度で更新される可能性があるため、変更がない場合はロック取得をスキップする最適化が行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_report_wal.html" target="wiki-view"><code>pgstat_report_wal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_fetch_stat_wal.html" target="wiki-view"><code>pgstat_fetch_stat_wal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_have_pending.html" target="wiki-view"><code>pgstat_wal_have_pending</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_flush_cb.html" target="wiki-view"><code>pgstat_wal_flush_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_init_backend_cb.html" target="wiki-view"><code>pgstat_wal_init_backend_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_init_shmem_cb.html" target="wiki-view"><code>pgstat_wal_init_shmem_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_reset_all_cb.html" target="wiki-view"><code>pgstat_wal_reset_all_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_wal_c__pgstat_wal_snapshot_cb.html" target="wiki-view"><code>pgstat_wal_snapshot_cb</code></a></li>
+</ul></body></html>

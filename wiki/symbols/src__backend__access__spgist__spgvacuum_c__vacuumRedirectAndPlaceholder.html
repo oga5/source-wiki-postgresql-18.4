@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgvacuum_c__vacuumRedirectAndPlaceholder.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>vacuumRedirectAndPlaceholder</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/spgist/spgvacuum.c:493</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスページ内の不要な <code>REDIRECT</code> タプルを <code>PLACEHOLDER</code> に変換し、ページ末尾に連続する <code>PLACEHOLDER</code> を削除して領域を解放する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void vacuumRedirectAndPlaceholder(Relation index, Relation heaprel, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>index</code>: 対象の SP-GiST インデックスリレーション。</li>
+<li><code>heaprel</code>: 対応するヒープリレーション。</li>
+<li><code>buffer</code>: 処理対象のインデックスページを含むバッファ。</li>
+<li>**出力**: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>buffer</code> はピン留めされ、ロックされている必要がある。</li>
+<li><code>REDIRECT</code> タプルの変換は、その XID が現在実行中のどのインデックススキャンからも参照されていない（<code>GlobalVisTestIsRemovableXid</code> が真）場合にのみ行われる。</li>
+<li>非 <code>PLACEHOLDER</code> タプルのオフセット番号は変更できないため、ページ末尾の <code>PLACEHOLDER</code> のみ削除可能。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. ページ内のタプルを末尾から逆順に走査する。 2. <code>REDIRECT</code> タプルに対し、<code>GlobalVisTest</code> を用いて削除可能か判定し、可能であれば <code>SPGIST_PLACEHOLDER</code> に変換する。 3. 変換した <code>REDIRECT</code> の XID を追跡し、<code>xlrec.snapshotConflictHorizon</code> を更新する。 4. ページ末尾から連続する <code>PLACEHOLDER</code> を特定し、<code>PageIndexMultiDelete</code> を用いて一括削除する。 5. 変更が発生した場合、バッファをダーティにし、必要に応じて WAL (<code>XLOG_SPGIST_VACUUM_REDIRECT</code>) を記録する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/spgist/spgvacuum.c</code> 内の <code>spgvacuumpage</code> 等から複数回呼び出される。</li>
+<li>**呼び出し先**: <code>GlobalVisTestFor</code>, <code>GlobalVisTestIsRemovableXid</code>, <code>PageGetItem</code>, <code>PageIndexMultiDelete</code>, <code>XLogInsert</code> 等の内部関数およびマクロ。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SpGistPageOpaque</code>: ページ内の <code>REDIRECT</code> および <code>PLACEHOLDER</code> の数を保持。</li>
+<li><code>spgxlogVacuumRedirect</code>: WAL 記録用の構造体。</li>
+<li><code>SpGistDeadTuple</code>: ページ内のタプル状態（<code>tupstate</code>）を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ページ内に <code>REDIRECT</code> や <code>PLACEHOLDER</code> が存在しない場合、処理は何も行わない。</li>
+<li>ページ末尾に <code>PLACEHOLDER</code> が存在しない場合、削除処理はスキップされる。</li>
+<li>実行中のインデックススキャンが存在する場合、<code>REDIRECT</code> は削除されず保持される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>CRIT_SECTION</code> 内で実行されるため、メモリ割り当てやエラー発生には注意が必要。</li>
+<li>WAL 記録時に <code>itemToPlaceholder</code> 配列を登録しているが、<code>firstPlaceholder</code> 以降の削除対象タプルは再構築可能なため WAL には含めていない。</li>
+</ul></body></html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/readstream.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReadStream</h1>
+<h2>概念</h2>
+<p><code>ReadStream</code> は、PostgreSQLにおけるリレーションデータの読み込みにおいて、適応的な先読み（Look-ahead）とバッチ処理を行うための状態管理構造体です。</p>
+<p>ヘッダファイル（<code>src/include/storage/read_stream.h</code>）では外部モジュールに対して内部を隠蔽した不透明な構造体（opaque struct）として定義されており、実装ファイル（<code>src/backend/storage/aio/read_stream.c</code>）において具体的なメンバが定義されています。呼び出し元から提供されるコールバック関数を介して次に読み込むべきブロック番号を取得し、内部の循環キューを用いてピン留めされたバッファを消費者に提供します。</p>
+<h2>なぜ重要か</h2>
+<p>ディスクI/O待ちによるプロセスのストール（遅延）を最小限に抑え、I/O効率を最大化するために極めて重要です。 キャッシュヒット率や過去のI/O履歴に基づいて先読み距離を動的に調整し、連続するブロックの読み込み要求をまとめて一括I/O（<code>StartReadBuffers</code>）を発行することで、非同期I/O（AIO）やバッチ処理の能力を最大限に引き出します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/aio</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/storage/read_stream.h#ReadStream</code>**</li>
+<p>外部モジュール（<code>heapam.c</code> や <code>autoprewarm.c</code> など）に公開される不透明な構造体宣言。</p>
+<li>**<code>symbol:src/backend/storage/aio/read_stream.c#ReadStream</code>**</li>
+<p>先読み制御、バッチI/O、循環キュー（<code>buffers</code>）、およびキャッシュヒット率が高い場合にキュー管理をスキップする「Fast Path」制御のための詳細な状態メンバを保持する具体的な構造体定義。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元が <code>read_stream_begin_relation</code> を呼び出し、コールバック関数（<code>ReadStreamBlockNumberCB</code>）やフラグを渡してストリームを初期化します。 2. **ブロック番号の取得**: ストリームは登録されたコールバック関数を呼び出し、次に読み込むべきブロック番号を取得します。 3. **先読みとバッチI/Oの発行**:</p>
+<ul>
+<li>キャッシュヒット時は先読み距離を <code>1</code> に縮小し、I/O発生時は指数関数的に増加させます。</li>
+<li>連続するブロックは <code>pending_read</code> に蓄積され、一定量または制限に達した時点で <code>StartReadBuffers</code> を用いて一括でI/Oを発行します。</li>
+<p>4. **バッファの返却**: 呼び出し元が <code>read_stream_next_buffer</code> を呼び出すと、ストリームは必要に応じてI/Oの完了を待ち（<code>WaitReadBuffers</code>）、ピン留めされたバッファを返却します。キャッシュヒット率が高い場合は、キュー管理をスキップする「Fast Path」が適用されます。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**カプセル化の維持**: <code>ReadStream</code> は不透明型であるため、外部モジュールから内部メンバへ直接アクセスすることは禁止されており、必ず提供されているAPI（<code>read_stream_next_buffer</code> 等）を経由する必要があります。</li>
+<li>**コールバックの正確性**: 呼び出し元は、登録したコールバック関数を通じて、次に読み込むべきブロック番号を正確に提供しなければなりません。</li>
+<li>**バッチモード時の制約**: <code>READ_STREAM_USE_BATCHING</code> フラグを使用する場合、コールバック関数は <code>pgaio_enter_batchmode()</code> の制約を遵守する必要があり、コールバック内でのブロッキング操作は厳しく制限されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**コールバック内でのブロッキング**: 非同期I/Oのバッチ処理モードにおいて、コールバック関数内で制約に違反するブロッキング操作を行うと、システム全体のストールやデッドロックを招く危険性があります。</li>
+<li>**不正なブロック番号の返却**: コールバック関数が不正なブロック番号を返した場合の挙動は呼び出し元の実装に依存するため、呼び出し側での適切なハンドリングが必要です。</li>
+<li>**構造体割り当て時のサイズ計算**: 実装側の <code>ReadStream</code> 構造体は末尾に可変長配列メンバ（<code>Buffer buffers[FLEXIBLE_ARRAY_MEMBER]</code>）を保持しているため、メモリ割り当て時のサイズ計算に注意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/storage/read_stream.h</code>**: 外部向けAPI、コールバック関数型 <code>ReadStreamBlockNumberCB</code>、および各種制御フラグの定義。</li>
+<li>**<code>src/backend/storage/aio/read_stream.c</code>**: <code>ReadStream</code> の具体的な構造体メンバ定義、適応型先読みアルゴリズム、およびバッチI/O制御の実装。</li>
+</ul></body></html>

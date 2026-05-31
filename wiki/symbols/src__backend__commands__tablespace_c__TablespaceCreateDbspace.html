@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__tablespace_c__TablespaceCreateDbspace.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TablespaceCreateDbspace</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/tablespace.c:111</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたテーブルスペース内に、特定のデータベース用のサブディレクトリを作成します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void TablespaceCreateDbspace(Oid spcOid, Oid dbOid, bool isRedo)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>spcOid</code>: 対象テーブルスペースの OID。</li>
+<li><code>dbOid</code>: 作成対象データベースの OID。</li>
+<li><code>isRedo</code>: WAL リプレイ中かどうかを示すフラグ。</li>
+<li>**出力**: なし（成功時はディレクトリを作成し、失敗時はエラーを報告）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>spcOid</code> および <code>dbOid</code> は有効な OID である必要があります。</li>
+<li><code>GLOBALTABLESPACE_OID</code> が指定された場合、本関数は何も行わず即座に復帰します（グローバルテーブルスペースにはデータベース別サブディレクトリが存在しないため）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>GetDatabasePath</code> を使用して、対象データベースのパス文字列を取得します。 2. <code>stat</code> でディレクトリの存在を確認します。 3. ディレクトリが存在しない場合:</p>
+<ul>
+<li><code>TablespaceCreateLock</code> を排他モードで取得します。</li>
+<li>ロック取得後に再確認を行い、他プロセスによって作成されていないことを確認します。</li>
+<li><code>MakePGDirectory</code> でディレクトリ作成を試みます。失敗時、<code>isRedo</code> が真であれば <code>pg_mkdir_p</code> を用いて再試行します。</li>
+<p>4. ディレクトリが既に存在する場合、それがディレクトリであることを確認します（ディレクトリでない場合はエラー）。 5. 最後に取得したパス文字列を解放します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/storage/smgr/md.c</code> 内のコードから呼び出されることが確認されています。</li>
+<li>**呼び出し先**:</li>
+<li><code>GetDatabasePath</code>, <code>LWLockAcquire</code>, <code>LWLockRelease</code>, <code>MakePGDirectory</code>, <code>pg_mkdir_p</code>, <code>stat</code>, <code>pfree</code>, <code>ereport</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Oid</code>: データベースおよびテーブルスペースの識別子。</li>
+<li><code>struct stat</code>: ファイルシステム上の属性確認に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ディレクトリ作成失敗**: <code>MakePGDirectory</code> または <code>pg_mkdir_p</code> が失敗した場合、エラーが発生します。ただし、<code>isRedo</code> が真かつ <code>errno == ENOENT</code> の場合は、WAL リプレイ時のディレクトリ欠損とみなして処理を継続します。</li>
+<li>**型不一致**: 指定されたパスが既に存在し、かつディレクトリではない場合、<code>ERRCODE_WRONG_OBJECT_TYPE</code> でエラーとなります。</li>
+<li>**競合**: <code>TablespaceCreateLock</code> により、<code>DROP TABLESPACE</code> 等との同時実行が制御されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、データベース作成時に物理的なディレクトリ構造を保証する役割を担います。</li>
+<li>WAL リプレイ時の挙動（<code>isRedo</code>）は、スタンバイ側でのディレクトリ同期を考慮した設計となっています。</li>
+</ul></body></html>

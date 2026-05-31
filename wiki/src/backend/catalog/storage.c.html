@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/storage.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/storage.c</h1>
+<h2>概要</h2>
+<p>リレーション（テーブルやインデックス）の物理的なストレージ作成、削除、および切り詰め（Truncate）を管理するモジュールです。トランザクションのコミット/アボートに連動した物理ファイルの遅延削除や、WALログへの記録、およびチェックポイントとの整合性維持を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> の一部として、カタログ層から要求される物理ストレージ操作を <code>storage/smgr</code>（ストレージマネージャ）層へ橋渡しします。リレーションのライフサイクル管理における「物理的な実体」の整合性を保証する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**物理ストレージのライフサイクル管理**: リレーション作成時の物理ファイル生成と、トランザクション終了時の削除予約（<code>PendingRelDelete</code>）。</li>
+<li>**トランザクション整合性**: サブトランザクションのコミット/アボートに応じた削除予約の再割り当てや即時実行。</li>
+<li>**WAL 記録**: <code>CREATE</code> や <code>TRUNCATE</code> 操作の WAL ログ出力によるクラッシュリカバリのサポート。</li>
+<li>**チェックポイントとの協調**: <code>TRUNCATE</code> 実行時のチェックポイント遅延制御（<code>DELAY_CHKPT</code> フラグ）による、データファイルと WAL の整合性保護。</li>
+<li>**同期管理**: コミット時の <code>fsync</code> 予約（<code>PendingRelSync</code>）と、必要に応じた WAL へのページ書き出し（<code>wal_skip_threshold</code> に基づく最適化）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationCreateStorage</code>: リレーションの物理ファイルを作成し、必要に応じて削除予約を行う。</li>
+<li><code>RelationTruncate</code>: リレーションを物理的に切り詰め、関連する FSM/VM を更新し、WAL に記録する。</li>
+<li><code>smgrDoPendingDeletes</code>: トランザクション終了時に、予約されていた物理ファイルの削除を実行する。</li>
+<li><code>smgrDoPendingSyncs</code>: トランザクション終了時に、必要なファイルの <code>fsync</code> または WAL への書き出しを行う。</li>
+<li><code>pendingDeletes</code>: 現在のトランザクションで削除待ちのリレーションを保持するリスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AddPendingSync</code></li>
+<li><code>AtSubAbort_smgr</code></li>
+<li><code>AtSubCommit_smgr</code></li>
+<li><code>PendingRelDelete</code></li>
+<li><code>PendingRelSync</code></li>
+<li><code>PostPrepare_smgr</code></li>
+<li><code>RelationCopyStorage</code></li>
+<li><code>RelationDropStorage</code></li>
+<li><code>RelationPreTruncate</code></li>
+<li><code>RelationPreserveStorage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成**: <code>RelationCreateStorage</code> が呼ばれると、<code>smgrcreate</code> でファイルを作成し、アボート時に備えて <code>pendingDeletes</code> リストに登録します。 2. **削除**: <code>RelationDropStorage</code> は即座にファイルを消さず、<code>pendingDeletes</code> に登録します。 3. **コミット/アボート**: <code>smgrDoPendingDeletes</code> がトランザクション終了時に呼び出され、<code>atCommit</code> フラグに従って物理的な <code>unlink</code> を実行します。 4. **切り詰め**: <code>RelationTruncate</code> は、<code>START_CRIT_SECTION</code> を用いてアトミックに処理し、WAL 記録後に <code>smgrtruncate</code> を実行します。この際、チェックポイントの進行を一時的にブロックし、整合性を保護します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/smgr.h</code>: 低レベルなストレージ操作（<code>smgrcreate</code>, <code>smgrtruncate</code> 等）。</li>
+<li><code>access/xlog.h</code>, <code>access/xloginsert.h</code>: WAL ログの生成とフラッシュ。</li>
+<li><code>utils/hsearch.h</code>: <code>pendingSyncHash</code> の管理。</li>
+<li><code>access/xact.h</code>: トランザクション状態とネストレベルの取得。</li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bulk_write.h</code></li>
+<li><code>storage/freespace.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/storage.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/storage/smgr/smgr.c</code>: ストレージマネージャの本体。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: WAL の書き込みとリカバリ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは歴史的経緯から <code>smgr</code> という接頭辞を持つ関数が多いですが、現在はカタログ層のストレージ管理として機能しています。</li>
+<li><code>pendingDeletes</code> リストは <code>TopMemoryContext</code> に保持されており、トランザクション終了後も安全にアクセスできるよう設計されています。</li>
+<li><code>TRUNCATE</code> 処理中のチェックポイント制御は非常に重要です。WAL ログと物理ファイルの同期順序が崩れると、クラッシュリカバリ時にデータ破損を招くため、慎重に実装されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__PendingRelDelete.html" target="wiki-view"><code>PendingRelDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__PendingRelSync.html" target="wiki-view"><code>PendingRelSync</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__AddPendingSync.html" target="wiki-view"><code>AddPendingSync</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationCreateStorage.html" target="wiki-view"><code>RelationCreateStorage</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationDropStorage.html" target="wiki-view"><code>RelationDropStorage</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationPreserveStorage.html" target="wiki-view"><code>RelationPreserveStorage</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationTruncate.html" target="wiki-view"><code>RelationTruncate</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationPreTruncate.html" target="wiki-view"><code>RelationPreTruncate</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__RelationCopyStorage.html" target="wiki-view"><code>RelationCopyStorage</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__PostPrepare_smgr.html" target="wiki-view"><code>PostPrepare_smgr</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__AtSubCommit_smgr.html" target="wiki-view"><code>AtSubCommit_smgr</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__storage_c__AtSubAbort_smgr.html" target="wiki-view"><code>AtSubAbort_smgr</code></a></li>
+</ul></body></html>

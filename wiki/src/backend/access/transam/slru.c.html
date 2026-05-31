@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/slru.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/slru.c</h1>
+<h2>概要</h2>
+<p><code>slru.c</code> は、PostgreSQLにおける「Simple LRU (SLRU)」キャッシュ機構を実装する汎用モジュールです。トランザクション状態（CLOG）、サブトランザクション（SUBTRANS）、マルチトランザクション（MultiXact）、コミット時刻（CommitTS）など、トランザクションIDに関連する永続的なメタデータをディスク上のファイルと共有メモリバッファ間で管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュール内のメタデータ永続化層の基盤です。各メタデータ管理ファイル（<code>clog.c</code> 等）は、このモジュールを初期化し、ページ単位の読み書きを委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファ管理**: 共有メモリ上の固定長スロットを用いたLRUキャッシュの制御。</li>
+<li>**I/O 抽象化**: ページ単位の物理ファイル読み書きと、エラーハンドリング。</li>
+<li>**並行制御**: バンク単位のロック（<code>bank_locks</code>）とスロット単位のロック（<code>buffer_locks</code>）による細粒度な排他制御。</li>
+<li>**ライフサイクル管理**: ページの初期化（Zeroing）、フラッシュ（WriteAll）、および不要になったセグメントファイルの削除（Truncate）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>初期化・制御</h3>
+<ul>
+<li><code>SimpleLruInit</code>: 共有メモリ構造の初期化と、SLRU制御構造体（<code>SlruCtl</code>）の設定。</li>
+<li><code>SimpleLruShmemSize</code>: 必要な共有メモリサイズの計算。</li>
+<li><code>SimpleLruAutotuneBuffers</code>: システムの <code>shared_buffers</code> に基づくバッファ数の自動調整。</li>
+</ul>
+<h3>ページアクセス</h3>
+<ul>
+<li><code>SimpleLruReadPage</code>: ページを読み込み、必要に応じてLRUアルゴリズムでスロットを確保。</li>
+<li><code>SimpleLruReadPage_ReadOnly</code>: 読み取り専用の高速パス。</li>
+<li><code>SimpleLruZeroPage</code>: 新規ページをゼロクリアして初期化。</li>
+</ul>
+<h3>永続化・保守</h3>
+<ul>
+<li><code>SimpleLruWritePage</code>: 特定の dirty ページをフラッシュ。</li>
+<li><code>SimpleLruWriteAll</code>: チェックポイント時などに全 dirty ページをフラッシュ。</li>
+<li><code>SimpleLruTruncate</code>: 指定したページより古いセグメントファイルを削除。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SimpleLruAutotuneBuffers</code></li>
+<li><code>SimpleLruInit</code></li>
+<li><code>SimpleLruShmemSize</code></li>
+<li><code>SlruDeleteSegment</code></li>
+<li><code>SlruErrorCause</code></li>
+<li><code>SlruFileName</code></li>
+<li><code>SlruInternalDeleteSegment</code></li>
+<li><code>SlruMayDeleteSegment</code></li>
+<li><code>SlruScanDirCbDeleteAll</code></li>
+<li><code>SlruScanDirCbDeleteCutoff</code></li>
+<li><code>SlruWriteAll</code></li>
+<li><code>SlruWriteAllData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ページ要求**: <code>SimpleLruReadPage</code> が呼ばれると、まず <code>SlruSelectLRUPage</code> で対象ページがメモリにあるか確認。 2. **スロット確保**: メモリにない場合、<code>SlruSelectLRUPage</code> がバンク内のLRUカウンタに基づき victim スロットを決定。必要なら <code>SlruInternalWritePage</code> で既存の dirty ページを追い出す。 3. **I/O 実行**: <code>SlruPhysicalReadPage</code> / <code>SlruPhysicalWritePage</code> が <code>storage/fd.h</code> を介して物理ファイル操作を行う。 4. **ロック階層**:</p>
+<ul>
+<li><code>bank_locks</code>: バンク内の状態（LRUカウンタ等）を保護。</li>
+<li><code>buffer_locks</code>: 個別のスロットのI/O状態を保護。</li>
+<li>読み書き時はバンクロックを解放してI/Oを行い、完了後に再取得して状態を更新する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: 物理ファイルI/O。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ割り当て。</li>
+<li><code>access/xlog.h</code>: WALフラッシュ（<code>XLogFlush</code>）のトリガー。</li>
+<li><code>pgstat.h</code>: SLRU統計情報の更新。</li>
+<li><code>access/slru.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/slru.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>clog.c</code>, <code>subtrans.c</code>, <code>multixact.c</code>: 本モジュールの主要な利用者。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>SlruSharedData</code> は共有メモリ上に配置され、全バックエンドで共有されます。<code>SlruCtl</code> は各バックエンドのローカルメモリに存在し、共有メモリへのポインタを保持します。</li>
+<li>**レイアウト**: ページ番号は <code>SLRU_PAGES_PER_SEGMENT</code> (デフォルト32) ごとにファイルセグメントに分割されます。</li>
+<li>**エッジケース**: </li>
+<li><code>latest_page_number</code> はアトミックに管理され、LRUの追い出し対象から除外されます。</li>
+<li>クラッシュリカバリ中、存在しないセグメントへのアクセスはゼロクリアされたページとして扱われます。</li>
+<li>**浅い領域**: <code>SlruScanDirectory</code> はディレクトリ走査を行う汎用関数ですが、ロックを保持しないため、呼び出し側で適切な排他制御（チェックポイント中など）が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruFileName.html" target="wiki-view"><code>SlruFileName</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruWriteAllData.html" target="wiki-view"><code>SlruWriteAllData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruWriteAll.html" target="wiki-view"><code>SlruWriteAll</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruErrorCause.html" target="wiki-view"><code>SlruErrorCause</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruShmemSize.html" target="wiki-view"><code>SimpleLruShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruAutotuneBuffers.html" target="wiki-view"><code>SimpleLruAutotuneBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruInit.html" target="wiki-view"><code>SimpleLruInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruInternalDeleteSegment.html" target="wiki-view"><code>SlruInternalDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruDeleteSegment.html" target="wiki-view"><code>SlruDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruMayDeleteSegment.html" target="wiki-view"><code>SlruMayDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteCutoff.html" target="wiki-view"><code>SlruScanDirCbDeleteCutoff</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteAll.html" target="wiki-view"><code>SlruScanDirCbDeleteAll</code></a></li>
+</ul></body></html>

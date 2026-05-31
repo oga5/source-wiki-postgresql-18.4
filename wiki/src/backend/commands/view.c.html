@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/view.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/view.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるビュー（<code>CREATE VIEW</code> / <code>CREATE OR REPLACE VIEW</code>）の定義および更新を管理するモジュールです。ビューの実体であるリレーションの作成と、そのビューを定義するクエリをルールシステム（<code>ON SELECT</code>ルール）として登録する処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、DDLコマンドの実行を担います。パーサーが生成した <code>ViewStmt</code> を受け取り、カタログ操作やリライトルールの生成を通じて、ビューをシステムカタログに永続化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ビューの作成と更新**: <code>DefineView</code> を起点として、ビューのメタデータ作成とクエリの保存を行います。</li>
+<li>**整合性チェック**: <code>CREATE OR REPLACE VIEW</code> において、既存のビュー定義と新しい定義の列構成（型、名前、照合順序）に互換性があるかを検証します。</li>
+<li>**ルール登録**: ビューの定義クエリを <code>ON SELECT</code> ルールとしてルールシステムに登録します。</li>
+<li>**バリデーション**: <code>WITH CHECK OPTION</code> の妥当性確認や、サポートされていない構文（<code>SELECT INTO</code>など）の排除を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DefineView</code>: ビュー作成コマンドのメインエントリーポイント。</li>
+<li><code>DefineVirtualRelation</code>: ビューのリレーションを作成し、必要に応じて既存ビューの置換処理を行う内部関数。</li>
+<li><code>StoreViewQuery</code>: ビューの定義クエリをルールとして保存するラッパー。</li>
+<li><code>checkViewColumns</code>: 既存ビューと新定義の列定義を比較し、変更不可な属性（型や名前）の変更を阻止する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DefineViewRules</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **解析**: <code>DefineView</code> が <code>parse_analyze_fixedparams</code> を呼び出し、生のSQLを <code>Query</code> 構造体に変換します。 2.  **検証**: <code>WITH CHECK OPTION</code> の整合性や、エイリアスの適用、永続性のチェックを行います。 3.  **リレーション作成**: <code>DefineVirtualRelation</code> が呼び出されます。</p>
+<ul>
+<li><code>replace</code> が真の場合、既存のビューをロックし、<code>checkViewColumns</code> で互換性を確認します。</li>
+<li>列が増える場合は <code>AlterTableInternal</code> を使用して列を追加します。</li>
+<li><code>replace</code> が偽の場合、<code>DefineRelation</code> で新規リレーションを作成します。</li>
+<p>4.  **ルール保存**: <code>StoreViewQuery</code> を経由して <code>DefineQueryRewrite</code> が呼び出され、<code>ON SELECT</code> ルールとしてクエリが登録されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/relation.h</code>, <code>access/xact.h</code>: リレーション操作とトランザクション管理。</li>
+<li><code>parser/analyze.h</code>: SQLの解析とクエリ変換。</li>
+<li><code>rewrite/rewriteHandler.h</code>, <code>rewrite/rewriteDefine.h</code>: ビューの核となるルールシステムの操作。</li>
+<li><code>catalog/namespace.h</code>: 名前空間（スキーマ）の解決。</li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/view.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteSupport.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/view.h</code>: 本モジュールの公開インターフェース。</li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: ビューのクエリが実行時にどのようにリライトされるかの実装。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: <code>ALTER TABLE</code> 関連のインフラを提供し、ビューの列追加等で利用されます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>ビューは実体を持たないため、<code>RELKIND_VIEW</code> として作成されます。</li>
+<li><code>CREATE OR REPLACE VIEW</code> は、既存のビューを完全に作り直すのではなく、列の追加やルールの更新を行うことで「置換」を実現しています。</li>
+<li>ビューの列定義（型や照合順序）の変更は、他のビューやルールとの依存関係を壊す可能性があるため、厳格に禁止されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__view_c__DefineVirtualRelation.html" target="wiki-view"><code>DefineVirtualRelation</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__view_c__checkViewColumns.html" target="wiki-view"><code>checkViewColumns</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__view_c__DefineViewRules.html" target="wiki-view"><code>DefineViewRules</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__view_c__DefineView.html" target="wiki-view"><code>DefineView</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__view_c__StoreViewQuery.html" target="wiki-view"><code>StoreViewQuery</code></a></li>
+</ul></body></html>

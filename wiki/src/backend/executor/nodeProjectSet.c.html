@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeProjectSet.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeProjectSet.c</h1>
+<h2>概要</h2>
+<p><code>nodeProjectSet.c</code> は、ターゲットリスト内に「集合を返す関数（SRF: Set-Returning Functions）」が含まれるクエリを処理するための実行ノードです。SQLの <code>SELECT func()</code> のように、1行の入力から複数の行を生成する関数を評価し、結果をフラットなタプルとして出力します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、プランナが生成した <code>ProjectSet</code> ノードを実行時に具体化します。通常の <code>Projection</code>（<code>ExecProject</code>）では扱えない、SRF 特有の「1入力対多出力」という反復的な評価サイクルを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SRF の反復評価**: 1つの入力タプルに対して複数の出力行が生成される場合、すべての行が消費されるまで状態を保持し、再帰的に評価を継続する。</li>
+<li>**メモリ管理**: SRF の引数評価用メモリコンテキスト（<code>argcontext</code>）を管理し、タプルサイクル間でのメモリリークを防ぐ。</li>
+<li>**タプル構築**: SRF の結果と通常の式評価結果を統合し、<code>TupleTableSlot</code> に格納する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecProjectSet</code>: ノードのメイン実行関数。入力タプルを取得し、SRF の評価ループを制御する。</li>
+<li><code>ExecProjectSRF</code>: ターゲットリスト内の各要素を評価する内部関数。SRF の状態（<code>ExprDoneCond</code>）を追跡する。</li>
+<li><code>ProjectSetState</code>: このノードの実行時状態を保持する構造体。<code>pending_srf_tuples</code> フラグで継続中か否かを判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndProjectSet</code></li>
+<li><code>ExecInitProjectSet</code></li>
+<li><code>ExecReScanProjectSet</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化 (<code>ExecInitProjectSet</code>)**: SRF を含む式をコンパイルし、引数評価用の専用メモリコンテキストを作成する。 2.  **実行 (<code>ExecProjectSet</code>)**:</p>
+<ul>
+<li><code>pending_srf_tuples</code> が真であれば、前回の入力タプルの残り行を <code>ExecProjectSRF</code> で生成する。</li>
+<li>偽であれば、子ノードから新しいタプルを取得し、<code>argcontext</code> をリセットしてから <code>ExecProjectSRF</code> を呼び出す。</li>
+<p>3.  **評価 (<code>ExecProjectSRF</code>)**:</p>
+<li>各ターゲットリスト要素を評価。SRF であれば <code>ExecMakeFunctionResultSet</code> を呼び出し、結果が <code>ExprMultipleResult</code> なら <code>pending_srf_tuples</code> を立てる。</li>
+<li>すべての SRF が <code>ExprEndResult</code> を返すと、その入力タプルに対する処理を終了する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/executor.h</code>: 実行エンジン共通のインターフェース。</li>
+<li><code>executor/nodeProjectSet.h</code>: <code>ProjectSetState</code> 等の定義。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式評価および SRF 関連のヘルパー関数。</li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execSRF.c</code>: SRF 評価の基盤となる関数群。</li>
+<li><code>src/backend/executor/execExprInterp.c</code>: 式評価の実行エンジン。</li>
+<li><code>src/include/nodes/execnodes.h</code>: <code>ProjectSetState</code> 構造体の定義元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**SRF の制約**: 本ノードは、SRF がターゲットリストのトップレベルにあることを前提としています。複雑な式の中に SRF が埋め込まれている場合、プランナは複数の <code>ProjectSet</code> ノードを重ねて生成します。</li>
+<li>**メモリ管理の注意**: <code>argcontext</code> は、SRF が引数を参照する際に使用されます。通常の <code>ExprContext</code> とはライフサイクルが異なるため、リセットのタイミングに注意してください。</li>
+<li>**デバッグ**: <code>pending_srf_tuples</code> フラグの状態を追うことで、SRF がどの段階で停止・再開しているかを把握できます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeProjectSet_c__ExecProjectSet.html" target="wiki-view"><code>ExecProjectSet</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeProjectSet_c__ExecProjectSRF.html" target="wiki-view"><code>ExecProjectSRF</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeProjectSet_c__ExecInitProjectSet.html" target="wiki-view"><code>ExecInitProjectSet</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeProjectSet_c__ExecEndProjectSet.html" target="wiki-view"><code>ExecEndProjectSet</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeProjectSet_c__ExecReScanProjectSet.html" target="wiki-view"><code>ExecReScanProjectSet</code></a></li>
+</ul></body></html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/gzip-palloc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gzip_palloc</h1>
+<h2>概念</h2>
+<p><code>gzip_palloc</code> は、<code>zlib</code> ライブラリが内部メモリ割り当てを行う際に、PostgreSQL独自のメモリ管理システム（<code>palloc</code>）を介してメモリを確保できるようにするためのカスタムアロケータ（ラッパー関数）です。</p>
+<h2>なぜ重要か</h2>
+<p><code>zlib</code> のデフォルトのメモリ割り当て機構の代わりに PostgreSQL の <code>palloc</code> を使用することで、圧縮・伸長処理中のメモリ割り当てを PostgreSQL のメモリコンテキスト管理下に置くことができます。これにより、メモリリークの防止や、メモリ不足が発生した際に PostgreSQL 標準のエラーハンドリング（<code>elog(ERROR)</code> などによる安全な処理中断）と統合することが可能になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/backup</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/backup/basebackup_gzip.c#gzip_palloc</code></li>
+<li><code>symbol:src/fe_utils/astreamer_gzip.c#gzip_palloc</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>basebackup_gzip.c</code> または <code>astreamer_gzip.c</code> において、<code>zlib</code> の圧縮状態を管理する <code>z_stream</code> 構造体の <code>zalloc</code> フィールドに <code>gzip_palloc</code> の関数ポインタが設定されます。 2. **メモリ確保の要求**: <code>zlib</code> 内部（<code>deflateInit2</code> など）でメモリ確保が必要になると、登録された <code>gzip_palloc</code> が呼び出されます。 3. **割り当ての実行**: <code>gzip_palloc</code> は、引数で渡された要素数（<code>items</code>）と各要素のサイズ（<code>size</code>）を乗算して必要な合計バイト数を算出し、PostgreSQL の <code>palloc</code> を呼び出してメモリを確保し、そのポインタを <code>zlib</code> に返します。</p>
+<p>※なお、<code>zlib</code> を用いた圧縮・伸長処理全体の詳細なライフサイクルや、呼び出し元から呼び出し先への完全なデータフローの全容は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリコンテキストの有効性**: <code>gzip_palloc</code> が呼び出される際、PostgreSQL の有効なメモリコンテキストが存在していなければなりません（<code>palloc</code> が正常に動作するための前提条件）。</li>
+<li>**計算の安全性**: <code>items * size</code> の計算結果が、メモリ確保の制限を超えない範囲である必要があります。</li>
+<li>**インターフェースの適合**: <code>zlib</code> のアロケータ仕様に適合させるため、シグネチャには <code>void *opaque</code> 引数が含まれますが、本実装では使用されず無視されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**エラー時の大域脱出**: <code>palloc</code> がメモリ不足を検知した場合、関数はエラーポインタを返すのではなく、PostgreSQL の標準的なエラーハンドリング（<code>elog(ERROR)</code> 等）により処理を直接中断（ロングジャンプ）します。<code>zlib</code> 側がこの例外的な中断を想定していない場合、リソースのクリーンアップ経路に注意する必要があります。</li>
+<li>**コードの重複**: 同名の <code>gzip_palloc</code> 関数が <code>src/backend/backup/basebackup_gzip.c</code> と <code>src/fe_utils/astreamer_gzip.c</code> の2箇所に独立して定義されています。一方の挙動を修正・変更する際は、もう一方の実装にも同様の修正が必要か確認する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/backup/basebackup_gzip.c</code></li>
+<li><code>src/fe_utils/astreamer_gzip.c</code></li>
+</ul></body></html>

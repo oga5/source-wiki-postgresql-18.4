@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__buf_internals_h__BufferDesc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BufferDesc</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/buf_internals.h:258</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上の各バッファのメタデータを保持し、バッファマネージャによるページキャッシュの状態管理とアクセス制御を行うための構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct BufferDesc
+{
+    BufferTag    tag;            /* バッファ内のページID */
+    int          buf_id;         /* バッファのインデックス番号 (0から開始) */
+    pg_atomic_uint32 state;      /* フラグ、参照カウント、使用カウントを含む状態 */
+    int          wait_backend_pgprocno; /* ピンカウント待機中のバックエンド */
+    int          freeNext;       /* フリーリストのリンク */
+    PgAioWaitRef io_wref;        /* AIO進行中のみ設定 */
+    LWLock       content_lock;   /* バッファ内容へのアクセスを制御するロック */
+} BufferDesc;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>本構造体は関数ではなくデータ構造です。</li>
+<li><code>state</code> フィールドは、アトミック操作を通じてバッファのフラグ（<code>BM_DIRTY</code>, <code>BM_VALID</code> 等）やカウント情報の読み書きに使用されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>キャッシュライン境界（64バイト）を意識した設計となっており、構造体のサイズ変更には注意が必要です。</li>
+<li><code>state</code> フィールドの更新は、<code>BM_LOCKED</code> フラグの状態に依存するため、<code>LockBufHdr</code> / <code>UnlockBufHdr</code> を介した操作が推奨されます。</li>
+<li><code>content_lock</code> はバッファ内のデータアクセスを保護するものであり、ヘッダのメタデータ保護用ではありません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>バッファの状態管理において、<code>state</code> 変数を用いたアトミック操作によるロックフリーな更新と、<code>BM_LOCKED</code> フラグを用いたヘッダロックの2パターンで制御されます。</li>
+<li>非同期I/O（AIO）が進行中の場合、<code>io_wref</code> および <code>BM_IO_IN_PROGRESS</code> フラグによって管理されます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元（参照元）**:</li>
+<li><code>contrib/pg_buffercache/pg_buffercache_pages.c</code></li>
+<li><code>contrib/pg_prewarm/autoprewarm.c</code></li>
+<li><code>src/backend/storage/buffer/buf_init.c</code></li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>（<code>PinBuffer</code>, <code>UnpinBuffer</code>, <code>WaitBufHdrUnlocked</code> 等）</li>
+<li>**呼び出し先**:</li>
+<li>構造体定義のため、特定の関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BufferTag</code>: ページ識別子。</li>
+<li><code>PgAioWaitRef</code>: 非同期I/Oの管理用。</li>
+<li><code>LWLock</code>: コンテンツロック用。</li>
+<li><code>pg_atomic_uint32</code>: 状態管理用アトミック変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>state</code> フィールドの不適切な同時更新は、競合やデータ不整合を招く可能性があります。</li>
+<li>構造体のサイズがキャッシュライン境界を超過すると、パフォーマンス低下を招く恐れがあります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>BufferDesc</code> は共有メモリ上に配置されるため、構造体の変更は共有メモリレイアウトに影響を与えます。</li>
+<li><code>BM_LOCKED</code> はメタデータ保護用であり、データそのものの保護には <code>content_lock</code> を使用してください。</li>
+</ul></body></html>

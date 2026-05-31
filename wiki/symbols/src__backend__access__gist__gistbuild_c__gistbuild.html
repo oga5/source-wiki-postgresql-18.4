@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistbuild_c__gistbuild.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistbuild</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistbuild.c:178</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスの初期構築（<code>CREATE INDEX</code>）を実行するメインエントリーポイント。ヒープからタプルを読み込み、インデックス構造を構築して統計情報を返す。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>IndexBuildResult *gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力:**</li>
+<li><code>heap</code>: 対象のヒープリレーション。</li>
+<li><code>index</code>: 構築対象の空のGiSTインデックスリレーション。</li>
+<li><code>indexInfo</code>: インデックスの定義情報。</li>
+<li>**出力:**</li>
+<li><code>IndexBuildResult*</code>: 処理されたヒープタプル数およびインデックスタプル数を含む統計情報。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象のインデックスリレーションは空（ブロック数0）でなければならない。</li>
+<li>インデックスごとに一度だけ呼び出されることを想定している。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化:** <code>GISTBuildState</code> を作成し、メモリコンテキストを準備する。 2. **戦略決定:** インデックスオプションおよび <code>sortsupport</code> 関数の有無に基づき、以下のいずれかを選択する。</p>
+<ul>
+<li><code>GIST_SORTED_BUILD</code>: ソート済み構築。</li>
+<li><code>GIST_BUFFERING_AUTO</code> / <code>GIST_BUFFERING_DISABLED</code>: バッファリング構築。</li>
+<p>3. **構築実行:**</p>
+<li>**ソート済み構築:** <code>tuplesort</code> で全タプルをソート後、<code>gist_indexsortbuild</code> を呼び出しボトムアップでページを生成する。</li>
+<li>**バッファリング構築:** ルートページを初期化し、<code>table_index_build_scan</code> を通じてタプルを挿入する。必要に応じてバッファリングを行い、最後に <code>gistEmptyAllBuffers</code> でフラッシュする。</li>
+<p>4. **終了処理:** 一時メモリコンテキストの解放、GIST状態の破棄、およびWALが必要な場合のログ書き込みを行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元:** <code>src/backend/access/gist/gist.c</code> 内で <code>amroutine-&gt;ambuild</code> に割り当てられている。</li>
+<li>**呼び出し先:** <code>initGISTstate</code>, <code>tuplesort_begin_index_gist</code>, <code>table_index_build_scan</code>, <code>gist_indexsortbuild</code>, <code>gistNewBuffer</code>, <code>gistEmptyAllBuffers</code>, <code>log_newpage_range</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GISTBuildState</code>: 構築中の状態を保持する構造体。</li>
+<li><code>IndexBuildResult</code>: 構築結果の統計情報。</li>
+<li><code>GiSTOptions</code>: インデックスのオプション設定。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>インデックスが既にデータを含んでいる場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>バッファリング構築において、インデックスがメモリに収まらない場合は自動的にバッファリングモードへ移行する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は「ソート済み構築」と「バッファリング構築」という2つの異なるパスを持つ。デバッグ時は <code>buildstate.buildMode</code> を確認すること。</li>
+<li>バッファリング構築は <code>effective_cache_size</code> を超える大規模なインデックス構築時にI/Oを削減するために重要である。</li>
+</ul></body></html>

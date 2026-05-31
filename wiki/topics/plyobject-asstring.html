@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/plyobject-asstring.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PLyObject_AsString</h1>
+<h2>概念</h2>
+<p><code>PLyObject_AsString</code> は、PL/PythonにおいてPythonオブジェクト（<code>PyObject*</code>）をPostgreSQLで利用可能なC文字列（<code>char*</code>）に変換するための共通ユーティリティ関数です。</p>
+<h2>なぜ重要か</h2>
+<p>PL/Pythonを介してPythonとPostgreSQLの間でデータをやり取りする際、Pythonの多様なデータ型をPostgreSQLが理解できる文字列形式に安全かつ正確に変換する必要があります。特に、<code>float</code> 型の精度損失を防ぐための特別なハンドリング（<code>PyObject_Repr</code> の使用）や、不正なマルチバイト文字・NULLバイトの混入を防ぐ検証処理を統合的に行う役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/hstore_plpython</code></li>
+<li><code>module:contrib/jsonb_plpython</code></li>
+<li><code>module:src/pl/plpython</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/pl/plpython/plpy_typeio.c#PLyObject_AsString</code>（定義元）</li>
+<li><code>symbol:contrib/hstore_plpython/hstore_plpython.c#PLyObject_AsString</code>（呼び出し元）</li>
+<li><code>symbol:contrib/jsonb_plpython/jsonb_plpython.c#PLyObject_AsString</code>（呼び出し元）</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **入力**: 呼び出し元（<code>hstore_plpython</code>、<code>jsonb_plpython</code>、または <code>plpy_typeio</code> 内部）から <code>PyObject *plrv</code> が渡されます。 2. **型判定と文字列化**:</p>
+<ul>
+<li><code>PyUnicode</code> の場合はそのままバイト列へ変換します。</li>
+<li><code>float</code> の場合は、精度損失を防ぐために <code>PyObject_Repr</code> を使用して文字列化します。</li>
+<li>それ以外の型は <code>PyObject_Str</code> を使用して文字列化します。</li>
+<p>3. **メモリ確保とコピー**: <code>pstrdup</code> を使用して、Pythonのバイト列からPostgreSQLのメモリコンテキスト上にコピーを作成します。 4. **検証**:</p>
+<li>変換後の文字列長と元のバイト列のサイズを比較し、NULLバイトの混入がないか、および長さの不整合がないかをチェックします。</li>
+<li><code>pg_verifymbstr</code> を呼び出し、PostgreSQLの現在のエンコーディングとして妥当かを確認します。</li>
+<p>5. **出力**: 変換・検証された <code>char*</code> を返します。</p>
+</ul>
+<p>※なお、呼び出し元モジュール（<code>hstore_plpython</code> や <code>jsonb_plpython</code>）における具体的なデータ変換パイプライン全体（エンドツーエンドの完全なデータフロー）の詳細は、提供されたコンテキストからは未詳です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**NULLバイトの禁止**: 変換後の文字列にNULLバイト（<code>\0</code>）が含まれていてはなりません。含まれている場合は <code>ERRCODE_DATATYPE_MISMATCH</code> でエラーとなります。</li>
+<li>**長さの整合性**: Python側が報告するバイト列のサイズと、C文字列としての実際の長さ（<code>strlen</code>）が一致しなければなりません。一致しない場合は <code>elog(ERROR, ...)</code> でエラー終了します。</li>
+<li>**エンコーディングの妥当性**: 変換された文字列は、PostgreSQLの現在のデータベースエンコーディングとして妥当でなければなりません（<code>pg_verifymbstr</code> による検証を通過すること）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ管理の責任**: 本関数は <code>pstrdup</code> を使用してPostgreSQLのメモリコンテキスト上に文字列を確保するため、返された <code>char*</code> のメモリ管理（解放など）は呼び出し側の責任となります。</li>
+<li>**float型の精度**: <code>float</code> 型に対して <code>str()</code> ではなく <code>repr()</code> を使用しているのは、<code>str()</code> が精度を落とす可能性があるためです。この挙動を変更すると、浮動小数点数の精度損失が発生するリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/pl/plpython/plpy_typeio.c</code>（関数の実装詳細）</li>
+<li><code>contrib/hstore_plpython/hstore_plpython.c</code>（hstoreにおける利用例）</li>
+<li><code>contrib/jsonb_plpython/jsonb_plpython.c</code>（jsonbにおける利用例）</li>
+</ul></body></html>

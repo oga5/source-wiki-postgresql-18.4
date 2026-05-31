@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execExpr_c__ExecInitExprRec.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecInitExprRec</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execExpr.c:918</code></li>
+</ul>
+<h2>目的</h2>
+<p>解析・計画された式ツリー（<code>Expr</code>）を再帰的に走査し、実行時に評価可能な命令ステップ（<code>ExprEvalStep</code>）のリストを構築して <code>ExprState</code> に追加します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ExecInitExprRec(Expr *node, ExprState *state, Datum *resv, bool *resnull)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>node</code>: 処理対象の式ツリーノード。</li>
+<li><code>state</code>: 式評価の状態を保持する <code>ExprState</code> 構造体。</li>
+<li><code>resv</code>: 評価結果を格納する <code>Datum</code> へのポインタ。</li>
+<li><code>resnull</code>: 評価結果が NULL かどうかを示すフラグへのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>resv</code> および <code>resnull</code> は NULL であってはならない。</li>
+<li>複雑な式によるスタックオーバーフローを防ぐため、内部で <code>check_stack_depth()</code> を呼び出す。</li>
+<li><code>ExprEvalStep</code> の出力先（<code>resvalue</code>, <code>resnull</code>）は、呼び出し元から指定されたアドレスに固定される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ExprEvalStep</code> の初期化を行い、呼び出し元から指定された結果格納先をセットする。 2. <code>nodeTag(node)</code> に基づき、ノードの種類に応じた処理を行う：</p>
+<ul>
+<li><code>T_Var</code>: 変数参照。システム列、ユーザー列、または行全体（<code>ExecInitWholeRowVar</code>）を判別し、適切な <code>EEOP_*</code> 命令コードを割り当てる。</li>
+<li><code>T_Const</code>: 定数。<code>EEOP_CONST</code> 命令を生成する。</li>
+<li><code>T_Param</code>: パラメータ。<code>PARAM_EXEC</code> または <code>PARAM_EXTERN</code> を判別し、必要に応じて <code>paramCompile</code> フックを利用する。</li>
+<li><code>T_Aggref</code>: 集約関数。<code>EEOP_AGGREF</code> 命令を生成し、親ノードが <code>AggState</code> であることを検証した上で <code>aggstate-&gt;aggs</code> リストに追加する。</li>
+<p>3. 生成されたステップを <code>ExprEvalPushStep</code> を介して <code>ExprState</code> の命令配列に追加する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecInitExpr</code> およびその関連関数（<code>ExecInitExprList</code> 等）から再帰的に呼び出される。</li>
+<li>**呼び出し先**: <code>ExecInitWholeRowVar</code>, <code>ExprEvalPushStep</code>, <code>check_stack_depth</code>, <code>elog</code>。また、<code>Param</code> ノードの処理において <code>params-&gt;paramCompile</code> が定義されていればそれを呼び出す。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ExprState</code>: 式評価の実行状態と命令リストを保持。</li>
+<li><code>ExprEvalStep</code>: 実行時の命令単位。</li>
+<li><code>Expr</code>: 計画段階の式ツリーノード。</li>
+<li><code>AggState</code>: <code>T_Aggref</code> 処理時に参照される親ノードの状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>check_stack_depth()</code> により、過度に深い式ツリーに対してエラーを発生させる。</li>
+<li>未知の <code>paramkind</code> が渡された場合、<code>elog(ERROR)</code> を送出する。</li>
+<li><code>Aggref</code> が <code>AggState</code> 以外のプランノードで見つかった場合、プランナーの不整合としてエラーを発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は再帰的に動作するため、新しいノードタイプを追加する際はスタック消費量に注意すること。</li>
+<li><code>ExprEvalStep</code> の順序は <code>execExprInterp.c</code> のインタプリタと密接に関連しているため、命令コードの追加や変更時は整合性を確認すること。</li>
+<li><code>T_Var</code> の処理において、<code>varreturningtype</code> に応じた <code>EEO_FLAG_HAS_OLD</code> / <code>HAS_NEW</code> フラグの更新が適切に行われているか確認が必要。</li>
+</ul></body></html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeBitmapIndexscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeBitmapIndexscan.c</h1>
+<h2>概要</h2>
+<p><code>nodeBitmapIndexscan.c</code> は、PostgreSQLの実行エンジンにおいて、インデックスからタプルID（TID）のビットマップを生成する <code>BitmapIndexScan</code> ノードを実装するファイルです。このノードは単体でタプルを返すのではなく、インデックス検索結果をビットマップとして出力し、上位の <code>BitmapHeapScan</code> ノードに渡す役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> 内の他のスキャンノード（<code>nodeIndexscan.c</code> など）と同様、プランツリーの実行ノードの一つです。ビットマップインデックススキャンは、複数のインデックス条件を組み合わせて効率的にテーブルをスキャンするための「ビットマップ・プラン」の基点となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**ビットマップ生成**: インデックスから条件に合致するTIDを抽出し、<code>TIDBitmap</code> を構築する。</li>
+<li>**ランタイムキー処理**: クエリ実行時に評価されるインデックス条件（ランタイムキーや配列キー）の計算と再スキャン。</li>
+<li>**並列クエリ対応**: 並列ワーカー間での統計情報（Instrumentation）の共有と集約。</li>
+<li>**リソース管理**: インデックスのオープン・クローズおよびメモリ上のビットマップの管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>MultiExecBitmapIndexScan</code>: このノードのメイン処理。インデックスをスキャンし、ビットマップを返却する。</li>
+<li><code>ExecInitBitmapIndexScan</code>: ノードの初期化。インデックスのオープンやスキャンキーの構築を行う。</li>
+<li><code>ExecReScanBitmapIndexScan</code>: ランタイムキーを再評価し、インデックススキャンをリセットする。</li>
+<li><code>ExecEndBitmapIndexScan</code>: インデックスのクローズとリソース解放。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecBitmapIndexScan</code></li>
+<li><code>ExecBitmapIndexScanEstimate</code></li>
+<li><code>ExecBitmapIndexScanInitializeDSM</code></li>
+<li><code>ExecBitmapIndexScanInitializeWorker</code></li>
+<li><code>ExecBitmapIndexScanRetrieveInstrumentation</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitBitmapIndexScan</code> が呼ばれ、インデックスをオープンし、<code>index_beginscan_bitmap</code> でスキャン記述子を準備します。 2. **実行**: <code>MultiExecBitmapIndexScan</code> が呼び出されると、<code>index_getbitmap</code> を用いてインデックスからTIDをビットマップに書き込みます。 3. **反復**: 配列キー（<code>ArrayKeys</code>）が存在する場合、<code>ExecIndexAdvanceArrayKeys</code> を用いてキーを更新しながら、すべての条件を満たすまでスキャンを繰り返します。 4. **終了**: <code>ExecEndBitmapIndexScan</code> により、インデックススキャンを終了し、並列クエリの場合は統計情報を共有メモリへ書き戻します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/genam.h</code>: インデックスアクセスメソッドのインターフェース。</li>
+<li><code>executor/nodeBitmapIndexscan.h</code>: 公開ヘッダー。</li>
+<li><code>executor/nodeIndexscan.h</code>: インデックススキャン共通のユーティリティ関数。</li>
+<li><code>miscadmin.h</code>: <code>CHECK_FOR_INTERRUPTS()</code> 等のシステム管理用。</li>
+<li><code>executor/executor.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeBitmapHeapscan.c</code>: このノードが生成したビットマップを受け取り、実際のテーブルタプルをフェッチするノード。</li>
+<li><code>src/backend/executor/nodeBitmapAnd.c</code> / <code>nodeBitmapOr.c</code>: ビットマップ同士の論理演算を行うノード。</li>
+<li><code>src/backend/access/index/indexam.c</code>: <code>index_getbitmap</code> 等のインデックスAMの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ExecProcNode非対応**: このノードは <code>ExecProcNode</code> インターフェースを実装していません。<code>ExecBitmapIndexScan</code> を呼び出すとエラーになります。必ず <code>MultiExecBitmapIndexScan</code> を使用してください。</li>
+<li>**メモリ管理**: <code>tbm_create</code> で作成されるビットマップは <code>work_mem</code> の制限を受けます。</li>
+<li>**並列処理**: 並列クエリ実行時、このノードはタプルそのものではなく、統計情報（<code>SharedIndexScanInstrumentation</code>）をDSM（動的共有メモリ）経由でやり取りすることに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecBitmapIndexScan.html" target="wiki-view"><code>ExecBitmapIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__MultiExecBitmapIndexScan.html" target="wiki-view"><code>MultiExecBitmapIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecReScanBitmapIndexScan.html" target="wiki-view"><code>ExecReScanBitmapIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecEndBitmapIndexScan.html" target="wiki-view"><code>ExecEndBitmapIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecInitBitmapIndexScan.html" target="wiki-view"><code>ExecInitBitmapIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecBitmapIndexScanEstimate.html" target="wiki-view"><code>ExecBitmapIndexScanEstimate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecBitmapIndexScanInitializeDSM.html" target="wiki-view"><code>ExecBitmapIndexScanInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecBitmapIndexScanInitializeWorker.html" target="wiki-view"><code>ExecBitmapIndexScanInitializeWorker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeBitmapIndexscan_c__ExecBitmapIndexScanRetrieveInstrumentation.html" target="wiki-view"><code>ExecBitmapIndexScanRetrieveInstrumentation</code></a></li>
+</ul></body></html>

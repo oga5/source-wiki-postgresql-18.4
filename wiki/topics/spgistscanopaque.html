@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/spgistscanopaque.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SpGistScanOpaque</h1>
+<h2>概念</h2>
+<p><code>SpGistScanOpaque</code> は、PostgreSQLのSP-GiST（Space-Partitioned GiST）インデックススキャン実行時において、動的なスキャン状態を管理するための構造体ポインタ型（<code>SpGistScanOpaqueData *</code> のエイリアス）です。インデックススキャンのライフサイクル全体にわたり、検索キュー、メモリコンテキスト、演算子情報などの動的な状態を保持する役割を担います。</p>
+<h2>なぜ重要か</h2>
+<p>SP-GiSTインデックススキャンは、探索の進行状況やKNN（最近傍探索）のための優先度付きキュー（<code>pairingheap</code>）など、複雑な動的状態を維持する必要があります。<code>SpGistScanOpaque</code> は、これらの状態をカプセル化してスキャン処理全体（<code>scan-&gt;opaque</code>）で受け渡すための中心的なデータ構造であり、スキャンの再初期化（リキャン）やメモリ管理を効率的かつ安全に行うために不可欠です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/spgist</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/access/spgist_private.h#SpGistScanOpaque</code> : スキャン状態を保持する <code>SpGistScanOpaqueData</code> 構造体へのポインタ型定義。</li>
+<li><code>symbol:src/backend/access/spgist/spgscan.c#resetSpGistScanOpaque</code> : スキャン状態をリセットし、メモリコンテキストやキューを再初期化して次回のスキャン実行に備える静的関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、スキャンの開始から終了に至る完全なエンドツーエンドの流れは完全には明らかになっていません。しかし、部分的な流れとして以下の挙動が判明しています。</p>
+<p>1. **初期化**: スキャン開始時に <code>palloc0</code> を用いて <code>SpGistScanOpaqueData</code> のサイズでメモリが確保され、<code>scan-&gt;opaque</code> に格納されます。 2. **状態の利用**: <code>spgscan.c</code> 内の各関数（<code>spgAddSearchItemToQueue</code>, <code>spgAllocSearchItem</code> など）において、スキャン状態の受け渡しや探索項目の管理に利用されます。 3. **リセット（再スキャン時）**: <code>spgrescan</code> 等の呼び出しに伴い <code>resetSpGistScanOpaque</code> が呼び出されます。</p>
+<ul>
+<li><code>so-&gt;traversalCxt</code> メモリコンテキストをリセットします。</li>
+<li><code>pairingheap</code> を再割り当てします。</li>
+<li><code>searchNulls</code> / <code>searchNonNulls</code> フラグに基づき、<code>spgAddStartItem</code> を呼び出して初期探索項目をキューに追加します。</li>
+<li>既存の <code>distances</code> 配列や <code>reconTups</code> 配列の要素を <code>pfree</code> により解放します。</li>
+<li>ポインタインデックス（<code>so-&gt;iPtr</code>, <code>so-&gt;nPtrs</code>）を 0 にリセットします。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>SpGistScanOpaque</code> は、有効な <code>SpGistScanOpaqueData</code> 構造体を指していなければなりません。</li>
+<li><code>resetSpGistScanOpaque</code> を呼び出す際、<code>so-&gt;traversalCxt</code> は有効なメモリコンテキストとして存在している必要があります。</li>
+<li>メモリリークを防ぐため、<code>distances</code>（<code>numberOfOrderBys &gt; 0</code> の場合）および <code>reconTups</code>（<code>want_itup</code> が真の場合）に保持されているポインタ配列は、リセット時に適切に解放されなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li><code>so</code> が NULL の場合、または <code>scan-&gt;opaque</code> が正しく初期化されていない状態でキャストしてアクセスした場合、メモリ参照エラーや未定義動作を引き起こします。</li>
+<li><code>traversalCxt</code> が既に破棄されている状態で <code>resetSpGistScanOpaque</code> を実行すると、<code>MemoryContextReset</code> でエラーが発生します。</li>
+<li><code>SpGistScanOpaque</code> に新しいフィールドを追加した際、<code>resetSpGistScanOpaque</code> での適切な解放処理（<code>pfree</code> など）を怠ると、メモリリークの原因となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/access/spgist_private.h</code> : <code>SpGistScanOpaque</code> の型定義および <code>SpGistScanOpaqueData</code> 構造体の詳細なフィールド定義。</li>
+<li><code>src/backend/access/spgist/spgscan.c</code> : <code>resetSpGistScanOpaque</code> の実装、および <code>SpGistScanOpaque</code> を操作する各種スキャン関連関数。</li>
+</ul></body></html>

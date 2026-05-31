@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heaptoast_c__heap_fetch_toast_slice.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_fetch_toast_slice</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heaptoast.c:625</code></li>
+</ul>
+<h2>目的</h2>
+<p>TOASTテーブルから、指定された <code>valueid</code> に対応するデータの特定範囲（スライス）を読み出し、メモリ上の <code>result</code> バッファにコピーする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
+                            int32 sliceoffset, int32 slicelength,
+                            struct varlena *result)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>toastrel</code>: 対象のTOASTリレーション。</li>
+<li><code>valueid</code>: 取得対象データのOID。</li>
+<li><code>attrsize</code>: データの総サイズ。</li>
+<li><code>sliceoffset</code>: 読み出し開始位置。</li>
+<li><code>slicelength</code>: 読み出す長さ。</li>
+<li><code>result</code>: データを格納する <code>varlena</code> 構造体（呼び出し元で十分な領域が確保されている必要がある）。</li>
+<li>**出力**: なし（<code>result</code> にデータが書き込まれる）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>toastrel</code> は有効なTOASTリレーションであること。</li>
+<li><code>endchunk &lt;= totalchunks</code> であること。</li>
+<li>取得される各チャンクは、TOASTテーブルのインデックス順（<code>valueid</code>, <code>chunkidx</code>）に従って順次処理される。</li>
+<li>取得したチャンクデータは <code>VARATT_IS_EXTENDED</code> でない（インライン化されている）必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>toast_open_indexes</code> を呼び出し、TOASTテーブルのインデックスを取得する。 2. <code>sliceoffset</code> と <code>slicelength</code> から、読み出すべきチャンクの範囲（<code>startchunk</code> から <code>endchunk</code>）を計算する。 3. <code>systable_beginscan_ordered</code> を用いて、指定された <code>valueid</code> とチャンク範囲を条件とするインデックススキャンを開始する。 4. <code>systable_getnext_ordered</code> でチャンクを順次取得し、以下の検証を行う:</p>
+<ul>
+<li>チャンク番号が期待値と一致するか。</li>
+<li>チャンクサイズが期待値と一致するか。</li>
+<p>5. 取得したチャンクデータを <code>memcpy</code> で <code>result</code> の適切なオフセット位置へコピーする。 6. 全てのチャンクが取得できたことを確認し、<code>systable_endscan_ordered</code> および <code>toast_close_indexes</code> でリソースを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam_handler.c</code> (テーブルアクセスメソッドのインターフェースとして参照)</li>
+<li>**呼び出し先**:</li>
+<li><code>toast_open_indexes</code> / <code>toast_close_indexes</code></li>
+<li><code>systable_beginscan_ordered</code> / <code>systable_getnext_ordered</code> / <code>systable_endscan_ordered</code></li>
+<li><code>get_toast_snapshot</code></li>
+<li><code>fastgetattr</code></li>
+<li><code>elog</code> / <code>ereport</code> (エラーハンドリング)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: TOASTリレーションのメタデータ。</li>
+<li><code>ScanKeyData</code>: インデックススキャンの条件設定に使用。</li>
+<li><code>HeapTuple</code>: TOASTテーブルから取得されるタプル。</li>
+<li><code>varlena</code>: 可変長データの格納構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**データ破損**: チャンク番号の不一致、範囲外のチャンク、または期待されるサイズと実際のチャンクサイズが異なる場合に <code>ERRCODE_DATA_CORRUPTED</code> を発生させる。</li>
+<li>**欠損**: 期待される全てのチャンクが取得できなかった場合、エラーを発生させる。</li>
+<li>**不正なチャンク**: チャンクデータが <code>VARATT_IS_EXTENDED</code> である場合、エラーを発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はTOASTテーブルの物理的なチャンク構造に強く依存している。TOASTのチャンクサイズ（<code>TOAST_MAX_CHUNK_SIZE</code>）や格納形式に変更がある場合は注意が必要。</li>
+<li><code>result</code> バッファのメモリ管理は呼び出し元に委ねられているため、バッファオーバーランを防ぐために <code>slicelength</code> の妥当性検証が呼び出し元で適切に行われていることを前提としている。</li>
+</ul></body></html>

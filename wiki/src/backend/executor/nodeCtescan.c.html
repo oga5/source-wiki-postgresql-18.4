@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeCtescan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeCtescan.c</h1>
+<h2>概要</h2>
+<p><code>nodeCtescan.c</code> は、PostgreSQL のクエリ実行エンジンにおいて、<code>WITH</code> 句で定義された共通テーブル式（CTE）の結果をスキャンするための実行ノードを実装しています。CTE の結果を <code>Tuplestore</code> に蓄積し、複数のスキャンノード間で共有・再利用する仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> 内の他のスキャンノードと同様に、プランツリーの実行フェーズを担います。特に、CTE の評価結果を保持する <code>Tuplestore</code> を管理し、CTE を参照する各ノードに対して、独立した読み取りポインタを提供することで、同一 CTE の複数回参照を効率化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**CTE 実行の管理**: CTE のサブプランを実行し、結果を <code>Tuplestore</code> に書き込む。</li>
+<li>**共有状態の制御**: 最初に初期化されたノードを「リーダー」とし、<code>Tuplestore</code> の所有権と共有読み取りポインタを管理する。</li>
+<li>**スキャン実行**: <code>ExecScan</code> を介して、<code>Tuplestore</code> からのタプル取得と、必要に応じたサブプランの実行を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitCteScan</code>: ノードの初期化。リーダーの選定と <code>Tuplestore</code> の準備を行う。</li>
+<li><code>CteScanNext</code>: <code>Tuplestore</code> からの読み取り、または不足時のサブプラン実行を制御するメインループ。</li>
+<li><code>ExecCteScan</code>: <code>ExecScan</code> を呼び出すためのラッパー関数。</li>
+<li><code>CteScanState</code>: CTE スキャンノードの実行時状態を保持する構造体。<code>leader</code> や <code>readptr</code> を含む。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CteScanRecheck</code></li>
+<li><code>ExecEndCteScan</code></li>
+<li><code>ExecReScanCteScan</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitCteScan</code> が呼ばれると、<code>Param</code> を通じてリーダーノードを確認します。リーダーであれば <code>Tuplestore</code> を作成し、そうでなければ既存の <code>Tuplestore</code> に新しい読み取りポインタを割り当てます。 2. **データ取得**: <code>CteScanNext</code> が呼ばれると、現在の読み取りポインタからタプルを取得します。 3. **遅延評価**: <code>Tuplestore</code> が EOF に達している場合、サブプラン（<code>cteplanstate</code>）を <code>ExecProcNode</code> で実行し、結果を <code>Tuplestore</code> に追加してから返します。 4. **終了**: <code>ExecEndCteScan</code> でリーダーノードが <code>Tuplestore</code> を解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/executor.h</code>: 実行エンジン共通のインターフェース。</li>
+<li><code>executor/nodeCtescan.h</code>: <code>CteScanState</code> 等の定義。</li>
+<li><code>miscadmin.h</code>: <code>work_mem</code> 等のグローバル設定。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execScan.c</code>: スキャンノードの共通基盤。</li>
+<li><code>src/backend/executor/nodeWorktablescan.c</code>: 再帰的 CTE（<code>WITH RECURSIVE</code>）を扱うための関連ノード。</li>
+<li><code>src/backend/utils/sort/tuplestore.c</code>: CTE の結果を保持するストレージの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**リーダーの概念**: 複数の <code>CteScan</code> ノードが同じ CTE を参照する場合、最初のノードがリーダーとなり、以降のノードは同じ <code>Tuplestore</code> を共有します。</li>
+<li>**メモリ管理**: <code>Tuplestore</code> は <code>work_mem</code> を使用します。CTE が巨大な場合、ディスクへのスピルが発生する可能性があります。</li>
+<li>**読み取りポインタ**: 各ノードは独立した <code>readptr</code> を持つため、同じ CTE を異なるタイミングや順序でスキャンしても互いに干渉しません。</li>
+<li>**注意点**: <code>ExecInitCteScan</code> 内の <code>FIXME</code> にある通り、現状では <code>REWIND</code> フラグが強制的に付与されており、メモリ効率の観点で改善の余地が残されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__CteScanNext.html" target="wiki-view"><code>CteScanNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__CteScanRecheck.html" target="wiki-view"><code>CteScanRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__ExecCteScan.html" target="wiki-view"><code>ExecCteScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__ExecInitCteScan.html" target="wiki-view"><code>ExecInitCteScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__ExecEndCteScan.html" target="wiki-view"><code>ExecEndCteScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeCtescan_c__ExecReScanCteScan.html" target="wiki-view"><code>ExecReScanCteScan</code></a></li>
+</ul></body></html>

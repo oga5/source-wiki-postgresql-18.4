@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pgstattuple__pgstattuple_c__pgstat_hash_page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_hash_page</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pgstattuple/pgstattuple.c:454</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスの特定のページを走査し、統計情報（空き容量やタプル数）を収集する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno, BufferAccessStrategy bstrategy)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>stat</code>: 統計情報を格納する <code>pgstattuple_type</code> 構造体へのポインタ。</li>
+<li><code>rel</code>: 対象のハッシュインデックスリレーション。</li>
+<li><code>blkno</code>: 走査対象のブロック番号。</li>
+<li><code>bstrategy</code>: バッファアクセスのための戦略オブジェクト。</li>
+<li>**出力**: なし（<code>stat</code> 構造体のフィールドを直接更新する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>rel</code> はハッシュインデックスである必要がある。</li>
+<li>呼び出し側で適切なロック（<code>AccessShareLock</code> 等）が保持されていること。</li>
+<li>内部で <code>ReadBufferExtended</code> を使用するため、バッファマネージャが利用可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ReadBufferExtended</code> を使用して指定されたブロックを読み込み、<code>HASH_READ</code> モードでロックする。 2. <code>PageIsNew</code> の場合、ページは完全に空とみなし、<code>stat-&gt;free_space</code> に <code>BLCKSZ</code> を加算する。 3. ページがハッシュインデックスの形式（<code>HashPageOpaqueData</code>）であることを確認する。 4. ページのタイプ（<code>hasho_flag</code>）に応じて分岐する:</p>
+<ul>
+<li><code>LH_UNUSED_PAGE</code>: 空きページとして <code>stat-&gt;free_space</code> に <code>BLCKSZ</code> を加算。</li>
+<li><code>LH_BUCKET_PAGE</code> または <code>LH_OVERFLOW_PAGE</code>: <code>pgstat_index_page</code> を呼び出し、ページ内のタプルを走査して統計を更新。</li>
+<li>その他（<code>LH_BITMAP_PAGE</code>, <code>LH_META_PAGE</code> 等）: 何も行わない。</li>
+<p>5. 最後に <code>_hash_relbuf</code> を呼び出し、バッファのロック解除と解放を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/pgstattuple/pgstattuple.c</code> 内のインデックス走査ロジックから参照されている。</li>
+<li>**呼び出し先**:</li>
+<li><code>ReadBufferExtended</code>, <code>LockBuffer</code>, <code>BufferGetPage</code>, <code>PageIsNew</code>, <code>PageGetSpecialSize</code>, <code>HashPageGetOpaque</code>, <code>PageGetMaxOffsetNumber</code>, <code>_hash_relbuf</code></li>
+<li><code>pgstat_index_page</code>（タプル走査時）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgstattuple_type</code>: 統計情報の集計先。</li>
+<li><code>HashPageOpaqueData</code>: ハッシュインデックスページのメタデータ構造。</li>
+<li><code>BufferAccessStrategy</code>: バッファ読み込みの最適化戦略。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ページが破損している場合、<code>PageGetSpecialSize</code> のチェックで弾かれ、何も処理されない（コメントに「maybe corrupted」と記載）。</li>
+<li><code>PageIsNew</code> の判定により、初期化されていないページは空き容量として正しく計上される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はハッシュインデックス特有のページレイアウトに依存している。ハッシュインデックスの内部構造に変更があった場合は、<code>hasho_flag</code> の判定ロジックを更新する必要がある。</li>
+<li><code>_hash_relbuf</code> は <code>access/hash.h</code> で定義されている内部関数であるため、依存関係の変更に注意すること。</li>
+</ul></body></html>

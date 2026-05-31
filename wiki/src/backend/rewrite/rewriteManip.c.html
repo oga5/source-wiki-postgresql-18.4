@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/rewrite/rewriteManip.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/rewrite/rewriteManip.c</h1>
+<h2>概要</h2>
+<p><code>rewriteManip.c</code> は、PostgreSQL のクエリ書き換え（Query Rewriting）プロセスにおいて、クエリツリー（<code>Query</code> ノード）や式ツリーを操作・探索するための低レベルユーティリティ群を提供します。主に、ルール適用時の変数置換、範囲テーブル（Range Table）の統合、およびクエリ内の特定のノード（集約関数、ウィンドウ関数、SubLink 等）の検出を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/rewrite</code> モジュールにおける「操作レイヤー」として機能します。<code>rewriteHandler.c</code> が書き換えの全体的な制御を行うのに対し、本ファイルはツリー構造に対する具体的な変更や検索を抽象化し、他の書き換えロジックが複雑なツリー走査を直接記述しなくて済むように設計されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ツリー探索**: 特定のクエリレベルにおける集約関数、ウィンドウ関数、SubLink の有無や位置の特定。</li>
+<li>**変数・ノード調整**: 範囲テーブルのインデックス変更（<code>varno</code> のオフセット調整）や、ネストレベルの更新。</li>
+<li>**クエリ変換**: <code>INSERT ... SELECT</code> 構造の分解、<code>WHERE</code> 句への条件追加、<code>NULL</code> 許容リレーションの管理。</li>
+<li>**変数置換**: ターゲットリストや特定の RTE に基づく変数置換および属性マッピング。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>探索・検証系</h3>
+<ul>
+<li><code>contain_aggs_of_level</code> / <code>locate_agg_of_level</code>: 指定レベルの集約関数の存在確認および位置特定。</li>
+<li><code>contain_windowfuncs</code> / <code>locate_windowfunc</code>: ウィンドウ関数の存在確認および位置特定。</li>
+<li><code>checkExprHasSubLink</code>: 式ツリー内に <code>SubLink</code> が存在するかを判定。</li>
+<li><code>rangeTableEntry_used</code>: 特定の RTE がクエリ内で参照されているかを判定。</li>
+</ul>
+<h3>変換・操作系</h3>
+<ul>
+<li><code>OffsetVarNodes</code>: クエリツリー内の <code>varno</code> をオフセット分だけ加算（範囲テーブル統合時に使用）。</li>
+<li><code>ChangeVarNodes</code> / <code>ChangeVarNodesExtended</code>: 特定の <code>rt_index</code> を別のインデックスに置換。</li>
+<li><code>IncrementVarSublevelsUp</code>: 式をサブクエリへプッシュダウンする際に、ネストレベルを調整。</li>
+<li><code>replace_rte_variables</code>: 特定の RTE を参照する変数を、コールバック関数で生成された式に置換。</li>
+<li><code>map_variable_attnos</code>: 属性番号のマッピング（列の削除や型変換に対応）。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>CombineRangeTables</code>: 複数の範囲テーブルとパーミッション情報を統合。</li>
+<li><code>AddQual</code> / <code>AddInvertedQual</code>: クエリの <code>WHERE</code> 句に条件式を追加。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>IncrementVarSublevelsUp_context</code></li>
+<li><code>OffsetVarNodes_context</code></li>
+<li><code>OffsetVarNodes_walker</code></li>
+<li><code>ReplaceVarsFromTargetList_context</code></li>
+<li><code>SetVarReturningType_context</code></li>
+<li><code>add_nulling_relids_context</code></li>
+<li><code>contain_aggs_of_level_context</code></li>
+<li><code>locate_agg_of_level_context</code></li>
+<li><code>locate_windowfunc_context</code></li>
+<li><code>map_variable_attnos_context</code></li>
+<li><code>rangeTableEntry_used_context</code></li>
+<li><code>remove_nulling_relids_context</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**Walker パターン**: ほとんどの関数が <code>expression_tree_walker</code> または <code>query_tree_walker</code> を利用してツリーを再帰的に走査します。</li>
+<li>**Mutator パターン**: ツリーを破壊的に変更する場合（<code>OffsetVarNodes</code> 等）や、ノードを置換する場合（<code>replace_rte_variables</code> 等）は <code>mutator</code> 系関数を使用します。</li>
+<li>**コンテキスト構造体**: 走査中の状態（<code>sublevels_up</code>、<code>rt_index</code>、<code>target_relids</code> 等）は、各関数専用の <code>_context</code> 構造体に保持され、再帰呼び出し間で引き継がれます。</li>
+<li>**エラーパス**: <code>AddQual</code> は <code>UTILITY</code> 文や <code>setOperations</code> を持つクエリに対しては条件追加ができないため、エラーを発生させます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: ノードの走査・操作基盤（<code>nodeFuncs.h</code>）、ノード作成（<code>makefuncs.h</code>）。</li>
+<li><code>parser/</code>: パーサツリーの定義（<code>parsetree.h</code>）、型変換（<code>parse_coerce.h</code>）。</li>
+<li><code>utils/</code>: システムキャッシュ（<code>lsyscache.h</code>）、ビットマップセット操作。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/pathnodes.h</code></li>
+<li><code>nodes/plannodes.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>rewriteHandler.c</code>: 本ファイルのユーティリティを呼び出し、ルール適用を実行するメインモジュール。</li>
+<li><code>rewriteManip.h</code>: 本ファイルで定義された関数のプロトタイプ宣言と、コンテキスト構造体の定義。</li>
+<li><code>src/backend/nodes/nodeFuncs.c</code>: ツリー走査の基盤となる <code>walker</code>/<code>mutator</code> の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**破壊的変更**: <code>OffsetVarNodes</code> や <code>ChangeVarNodes</code> は、ツリーを「その場で（in-place）」変更します。呼び出し側は、副作用を防ぐために事前に <code>copyObject()</code> でツリーをコピーしておく必要があります。</li>
+<li>**メモリ管理**: 多くの関数は <code>palloc</code> を使用して新しいノードを生成します。メモリリークを防ぐため、呼び出し側のメモリコンテキスト管理に注意してください。</li>
+<li>**サブクエリの扱い**: <code>sublevels_up</code> の管理は非常に重要です。<code>Query</code> ノードに遭遇した際、適切にレベルをインクリメント/デクリメントしないと、外側のクエリと内側のクエリの変数が混同されます。</li>
+<li>**省略された詳細**: 本ファイルは汎用的な操作に特化しているため、特定のルール（RLS等）のビジネスロジックは含まれていません。それらは <code>rowsecurity.c</code> 等の専門モジュールに分離されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__contain_aggs_of_level_context.html" target="wiki-view"><code>contain_aggs_of_level_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__locate_agg_of_level_context.html" target="wiki-view"><code>locate_agg_of_level_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__locate_windowfunc_context.html" target="wiki-view"><code>locate_windowfunc_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__add_nulling_relids_context.html" target="wiki-view"><code>add_nulling_relids_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__remove_nulling_relids_context.html" target="wiki-view"><code>remove_nulling_relids_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__OffsetVarNodes_context.html" target="wiki-view"><code>OffsetVarNodes_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__OffsetVarNodes_walker.html" target="wiki-view"><code>OffsetVarNodes_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__IncrementVarSublevelsUp_context.html" target="wiki-view"><code>IncrementVarSublevelsUp_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__SetVarReturningType_context.html" target="wiki-view"><code>SetVarReturningType_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__rangeTableEntry_used_context.html" target="wiki-view"><code>rangeTableEntry_used_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__map_variable_attnos_context.html" target="wiki-view"><code>map_variable_attnos_context</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteManip_c__ReplaceVarsFromTargetList_context.html" target="wiki-view"><code>ReplaceVarsFromTargetList_context</code></a></li>
+</ul></body></html>

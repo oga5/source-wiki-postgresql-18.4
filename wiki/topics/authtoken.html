@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/authtoken.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AuthToken</h1>
+<h2>概念</h2>
+<p><code>AuthToken</code> は、PostgreSQL の認証設定ファイル（<code>pg_hba.conf</code> や <code>pg_ident.conf</code>）に記述された各トークンを表現するためのデータ構造です。トークン文字列そのものに加え、クォートの有無や、正規表現マッチングのためのコンパイル済み正規表現オブジェクトを保持します。</p>
+<h2>なぜ重要か</h2>
+<p>認証設定ファイルにおける柔軟なパターンマッチング（正規表現など）を安全かつ効率的に処理するために重要です。特に、正規表現リソース（<code>regex_t</code>）のライフサイクル（コンパイル、実行、解放）をトークン単位で適切に管理し、メモリリークを防ぐ役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/libpq</code></li>
+<li><code>module:src/include/libpq</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/libpq/hba.h#AuthToken</code>：トークン情報を保持する構造体。</li>
+<li><code>symbol:src/backend/libpq/hba.c#free_auth_token</code>：トークンに関連付けられた正規表現リソースを解放する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **パースと生成**: 設定ファイルのパース時にトークンが検出されると、<code>palloc0</code> 等を用いて <code>AuthToken</code> 構造体が動的に割り当てられます。 2. **正規表現のコンパイルとマッチング**: 必要に応じて <code>regcomp_auth_token</code> や <code>regexec_auth_token</code> を介して正規表現のコンパイルとマッチングが行われます。 3. **複製**: <code>copy_auth_token</code> により、既存のトークン構造体を複製することが可能です。 4. **リソース解放**: トークンが不要になった際（例: <code>expanded_pg_user_token</code> の解放時など）、<code>free_auth_token</code> が呼び出され、内部の正規表現リソースが解放されます。</p>
+<p>*注意: 設定ファイルの読み込みから認証判定、そして最終的なメモリ破棄に至る完全なエンドツーエンドの制御フローの全容は、提供された情報からは未検証です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>regex</code> フィールドが非NULLである場合、その正規表現オブジェクトは <code>pg_regcomp</code> 等で適切に初期化されていなければなりません。</li>
+<li><code>AuthToken</code> の破棄時には、正規表現リソースのリークを防ぐために必ず <code>free_auth_token</code> を経由して内部リソースを解放する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**構造体自体のメモリ管理**: <code>free_auth_token</code> は内部の正規表現リソース（<code>regex</code>）の解放（<code>pg_regfree</code>）のみを担当します。<code>AuthToken</code> 構造体自体のメモリ解放は呼び出し元が個別に行う必要があります。</li>
+<li>**メモリ配置の仮定**: <code>string</code> フィールドのメモリ領域が構造体自身と連続して確保される実装（<code>palloc0(sizeof(AuthToken) + toklen + 1)</code>）が存在するため、構造体のサイズ変更やメンバの個別解放を行う際には注意が必要です。</li>
+<li>**NULLポインタの扱い**: <code>free_auth_token</code> に <code>NULL</code> ポインタを渡した場合の挙動は、提供されたソース抜粋からは保証されていません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/libpq/hba.c</code></li>
+<li><code>src/include/libpq/hba.h</code></li>
+</ul></body></html>

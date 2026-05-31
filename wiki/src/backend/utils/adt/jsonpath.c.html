@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonpath.c</h1>
+<h2>概要</h2>
+<p><code>jsonpath.c</code> は、PostgreSQL の <code>jsonpath</code> データ型の内部バイナリ表現の構築、シリアライズ、デシリアライズ、およびテキスト変換を担う実装ファイルです。<code>jsonpath</code> は SQL/JSON 標準に基づいたクエリ言語であり、本ファイルはパース後の AST（抽象構文木）をメモリ効率の良いフラットなバイナリ形式へ変換し、実行エンジンが走査可能な状態にする役割を持ちます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、JSONB 関連の高度なクエリ機能を支える基盤です。<code>jsonpath_exec.c</code> がこのバイナリ形式を走査してクエリを実行するのに対し、本ファイルは「型としての定義」と「永続化・変換」に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 処理**: SQL 文字列と内部バイナリ表現（<code>JsonPath</code> 構造体）の相互変換。</li>
+<li>**バイナリレイアウト管理**: AST を再帰的に走査し、4バイト境界でアライメントされた可変長アイテムのシーケンスへ変換。</li>
+<li>**メタデータ管理**: <code>JsonPath</code> ヘッダー（バージョン、Lax/Strict モード）の管理。</li>
+<li>**プランナ支援**: <code>jspIsMutable</code> を通じて、クエリ内に含まれる関数が可変（volatile）かどうかを判定し、プランナの最適化を支援。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>入出力・変換</h3>
+<ul>
+<li><code>jsonpath_in</code> / <code>jsonpath_out</code>: SQL インターフェース用の入出力関数。</li>
+<li><code>jsonPathFromCstring</code>: 文字列をパースし、バイナリ形式へフラット化するメインエントリ。</li>
+<li><code>jsonPathToCstring</code>: バイナリ形式を SQL 形式の文字列へ復元。</li>
+</ul>
+<h3>バイナリ構築・走査</h3>
+<ul>
+<li><code>flattenJsonPathParseItem</code>: AST をバイナリへ変換する再帰関数。</li>
+<li><code>jspInit</code> / <code>jspInitByBuffer</code>: バイナリバッファから <code>JsonPathItem</code> 構造体を初期化し、走査可能にする。</li>
+<li><code>jspGetArg</code> / <code>jspGetNext</code> / <code>jspGetLeftArg</code> / <code>jspGetRightArg</code>: バイナリ内のリンクを辿り、引数や次のアイテムを取得するアクセサ群。</li>
+</ul>
+<h3>プランナサポート</h3>
+<ul>
+<li><code>jspIsMutable</code>: クエリの可変性を判定するエントリポイント。</li>
+<li><code>jspIsMutableWalker</code>: <code>jspIsMutable</code> の内部再帰走査関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>JsonPathDatatypeStatus</code></li>
+<li><code>JsonPathMutableContext</code></li>
+<li><code>alignStringInfoInt</code></li>
+<li><code>flattenJsonPathParseItem</code></li>
+<li><code>jsonPathToCstring</code></li>
+<li><code>jsonpath_in</code></li>
+<li><code>jsonpath_out</code></li>
+<li><code>jsonpath_recv</code></li>
+<li><code>jsonpath_send</code></li>
+<li><code>jspInit</code></li>
+<li><code>jspInitByBuffer</code></li>
+<li><code>reserveSpaceForItemPointer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **変換フロー**: <code>jsonPathFromCstring</code> が <code>parsejsonpath</code>（別モジュール）で AST を生成し、<code>flattenJsonPathParseItem</code> がそれを <code>StringInfo</code> バッファへ順次書き込みます。この際、アイテム間のリンク（オフセット）は <code>reserveSpaceForItemPointer</code> で予約し、再帰終了後に確定させます。 2. **走査フロー**: <code>jspInitByBuffer</code> がバイナリバッファのオフセットを読み取り、<code>JsonPathItem</code> 構造体を構築します。この構造体は <code>base</code> ポインタと現在の <code>pos</code> を保持し、アクセサ関数がこれを用いて動的に次のアイテムや引数を解決します。 3. **可変性判定フロー**: <code>jspIsMutable</code> がクエリ全体を走査し、タイムゾーン依存の型変換や volatile な関数が含まれるかを判定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/jsonpath.h</code>: データ型定義および <code>JsonPathItemType</code> 列挙型。</li>
+<li><code>lib/stringinfo.h</code>: バイナリ構築用バッファ操作。</li>
+<li><code>nodes/nodeFuncs.h</code>: AST 走査用ユーティリティ。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/json.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/jsonpath_exec.c</code>: 本ファイルで構築されたバイナリを実際に実行するエンジン。</li>
+<li><code>src/backend/utils/adt/jsonb.c</code>: JSONB 型自体の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: バイナリ形式は <code>JsonPath</code> ヘッダーの後に、<code>JsonPathItemType</code>、<code>next</code> ポインタ、および型固有のペイロードが続く構造です。<code>INTALIGN</code> マクロにより、各アイテムは 4 バイト境界に配置されます。</li>
+<li>**メモリ所有権**: <code>JsonPath</code> 構造体は <code>varlena</code> 型であり、PostgreSQL のメモリ管理（palloc）下で管理されます。<code>jsonPathFromCstring</code> で生成されたバッファは、最終的に <code>SET_VARSIZE</code> でサイズが確定されます。</li>
+<li>**制約**: <code>jspIsMutable</code> などの走査関数は、スタックオーバーフローを防ぐために <code>check_stack_depth()</code> を呼び出しています。</li>
+<li>**省略箇所**: 本ファイルにはパースロジックそのものは含まれていません（<code>parsejsonpath</code> は外部依存）。また、バイナリの実行ロジックは <code>jsonpath_exec.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jsonpath_in.html" target="wiki-view"><code>jsonpath_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jsonpath_recv.html" target="wiki-view"><code>jsonpath_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jsonpath_out.html" target="wiki-view"><code>jsonpath_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jsonpath_send.html" target="wiki-view"><code>jsonpath_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jsonPathToCstring.html" target="wiki-view"><code>jsonPathToCstring</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__flattenJsonPathParseItem.html" target="wiki-view"><code>flattenJsonPathParseItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__alignStringInfoInt.html" target="wiki-view"><code>alignStringInfoInt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__reserveSpaceForItemPointer.html" target="wiki-view"><code>reserveSpaceForItemPointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jspInit.html" target="wiki-view"><code>jspInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__jspInitByBuffer.html" target="wiki-view"><code>jspInitByBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__JsonPathDatatypeStatus.html" target="wiki-view"><code>JsonPathDatatypeStatus</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonpath_c__JsonPathMutableContext.html" target="wiki-view"><code>JsonPathMutableContext</code></a></li>
+</ul></body></html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistvacuum_c__gistdeletepage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistdeletepage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistvacuum.c:630</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスにおいて、空になったリーフページをツリーから切り離し、親ページから対応するダウンリンクを削除する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+                           Buffer parentBuffer, OffsetNumber downlink,
+                           Buffer leafBuffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>info</code>: インデックスのVACUUM情報。</li>
+<li><code>stats</code>: 削除統計情報を保持する構造体。</li>
+<li><code>parentBuffer</code>: 親ページのバッファ。</li>
+<li><code>downlink</code>: 親ページ内での対象リーフページへのオフセット番号。</li>
+<li><code>leafBuffer</code>: 削除対象のリーフページバッファ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 削除に成功した場合は <code>true</code>、並行処理による競合や条件不一致で削除を見送った場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象の <code>leafBuffer</code> はリーフページであること。</li>
+<li>ページが空（<code>PageGetMaxOffsetNumber</code> が <code>InvalidOffsetNumber</code>）であること。</li>
+<li>並行したページ分割（<code>GistFollowRight</code>）が発生していないこと。</li>
+<li>親ページが削除済みやリーフページではないこと。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検証**: ページがリーフであるか、空であるか、並行分割中ではないかをチェックする。 2. **ダウンリンク確認**: 親ページのダウンリンクが対象リーフを指しているかを確認する。不一致の場合は削除を中止する。 3. **削除処理**:</p>
+<ul>
+<li>現在のトランザクションIDを取得し、ページを削除状態（<code>GistPageSetDeleted</code>）にマークする。</li>
+<li>親ページから <code>PageIndexTupleDelete</code> を用いてダウンリンクを削除する。</li>
+<li>WALが必要な場合は <code>gistXLogPageDelete</code> を呼び出し、LSNを更新する。</li>
+<p>4. **統計更新**: <code>stats</code> の削除ページ数をインクリメントする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gist/gistvacuum.c</code> 内の <code>gistvacuum_delete_empty_pages</code> から呼び出される。</li>
+<li>**呼び出し先**: <code>BufferGetPage</code>, <code>GistPageIsLeaf</code>, <code>GistFollowRight</code>, <code>PageGetMaxOffsetNumber</code>, <code>PageIsNew</code>, <code>GistPageIsDeleted</code>, <code>PageGetItemId</code>, <code>PageGetItem</code>, <code>ItemPointerGetBlockNumber</code>, <code>ReadNextFullTransactionId</code>, <code>START_CRIT_SECTION</code>, <code>MarkBufferDirty</code>, <code>GistPageSetDeleted</code>, <code>PageIndexTupleDelete</code>, <code>RelationNeedsWAL</code>, <code>gistXLogPageDelete</code>, <code>gistGetFakeLSN</code>, <code>PageSetLSN</code>, <code>END_CRIT_SECTION</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexVacuumInfo</code>: VACUUM実行時のメタデータ。</li>
+<li><code>IndexBulkDeleteResult</code>: 削除結果を記録する統計構造体。</li>
+<li><code>Buffer</code>: PostgreSQLのバッファ管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**並行処理**: 挿入や分割が進行中の場合、安全のために削除をスキップする。</li>
+<li>**ダウンリンク不一致**: 親ページのダウンリンクが移動している場合、再スキャンは行わず <code>false</code> を返して終了する。</li>
+<li>**アサーション**: リーフページが非リーフページに変化している場合など、予期せぬ状態では <code>Assert(false)</code> が発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>削除されたページは即座に再利用されず、トランザクションIDによる保護が行われる。これは進行中のスキャンが古いダウンリンクを参照している可能性があるためである。</li>
+<li>削除処理はクリティカルセクション内で行われる。</li>
+</ul></body></html>

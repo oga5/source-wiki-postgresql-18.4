@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeAppend_c__ParallelAppendState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelAppendState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeAppend.c:69</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行時において、複数のワーカー間で <code>Append</code> ノードのサブプラン実行状況を共有・管理するための状態保持構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct ParallelAppendState
+{
+    LWLock      pa_lock;
+    int         pa_next_plan;
+    bool        pa_finished[FLEXIBLE_ARRAY_MEMBER];
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ（DSM）上に配置され、各ワーカープロセスがアクセスします。</li>
+<li>**出力**: <code>pa_next_plan</code> の更新によるサブプランの動的割り当て、および <code>pa_finished</code> 配列による各サブプランの完了状態の共有。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pa_lock</code> は、<code>pa_next_plan</code> を選択・更新する際の排他制御に使用されます。</li>
+<li><code>pa_finished[i]</code> の不変条件:</li>
+<li>非部分（non-partial）プランの場合: ワーカーがプランを選択した時点で <code>true</code> に設定されます。</li>
+<li>部分（partial）プランの場合: ワーカーがプランを完了するまで <code>false</code> を維持します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **サブプラン選択**: ワーカーは <code>pa_lock</code> を取得し、<code>pa_next_plan</code> を参照して次に実行すべきサブプランを決定します。 2. **状態更新**: 選択したプランの特性に応じて <code>pa_finished</code> を更新し、他のワーカーと実行状況を同期します。 3. **無効化**: パーティションプルーニング等で無効と判断されたサブプランについては、事前に <code>pa_finished</code> を <code>true</code> に設定することで、ワーカーによる選択を回避します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeAppend.c</code> 内の並列実行ロジック（<code>ExecAppend</code> 等）から参照されます。</li>
+<li>**呼び出し先**: 本構造体自体はデータ構造であり、関数呼び出しは含みません。</li>
+<li>**補足**: <code>src/include/nodes/execnodes.h</code> において <code>AppendState</code> 構造体の <code>as_pstate</code> フィールドとして保持されています。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>AppendState</code>: <code>Append</code> ノードの実行時状態を保持する構造体。</li>
+<li><code>LWLock</code>: 並列処理における排他制御用ロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**競合**: 複数のワーカーが同時にサブプランを選択しようとする場合、<code>pa_lock</code> によるシリアライズが必須です。</li>
+<li>**メモリ**: <code>pa_finished</code> は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、サブプラン数に応じた適切なメモリ確保が必要です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されるため、ポインタを含めることはできません。</li>
+<li><code>pa_finished</code> の更新タイミングは、プランが「部分」か「非部分」かによって厳密に制御する必要があるため、変更時は <code>nodeAppend.c</code> 内の選択ロジックとの整合性に注意してください。</li>
+</ul></body></html>

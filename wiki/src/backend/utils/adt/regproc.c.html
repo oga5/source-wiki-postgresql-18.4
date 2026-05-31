@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/regproc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/regproc.c</h1>
+<h2>概要</h2>
+<p><code>regproc.c</code> は、PostgreSQL のシステムカタログ（<code>pg_proc</code>, <code>pg_class</code>, <code>pg_operator</code> 等）を参照する特殊なデータ型（<code>regproc</code>, <code>regprocedure</code>, <code>regclass</code>, <code>regtype</code>, <code>regoperator</code>, <code>regcollation</code>, <code>regconfig</code>, <code>regdictionary</code>, <code>regrole</code>, <code>regnamespace</code>）の入出力および変換ロジックを実装するモジュールです。これらの型は内部的には <code>Oid</code> とバイナリ互換ですが、SQL インターフェース上では名前解決を伴う柔軟な I/O を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内において、システムオブジェクトの OID を人間が読み書き可能な名前（または修飾名）に変換する「メタデータ型」のハブとして機能します。主に SQL レベルでのオブジェクト参照を、システムカタログの OID へ解決する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 変換**: 文字列（名前）から OID への変換（<code>_in</code> 関数）および OID から名前への変換（<code>_out</code> 関数）。</li>
+<li>**名前解決**: 現在の <code>search_path</code> を考慮したオブジェクト名の検索と、曖昧な参照の解決。</li>
+<li>**バイナリ互換性**: <code>oidrecv</code>/<code>oidsend</code> を再利用したバイナリ形式のシリアライズ/デシリアライズ。</li>
+<li>**フォーマット出力**: <code>format_procedure</code> 等の関数を通じた、他モジュール向けの標準的なオブジェクト名生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>入出力関数群 (SQL インターフェース)</h3>
+<ul>
+<li><code>regprocin</code>/<code>regprocout</code>: <code>regproc</code> 型の入出力。</li>
+<li><code>regprocedurein</code>/<code>regprocedureout</code>: <code>regprocedure</code> 型（引数付き関数名）の入出力。</li>
+<li><code>regclassin</code>/<code>regclassout</code>: <code>regclass</code> 型（リレーション名）の入出力。</li>
+<li><code>regtypein</code>/<code>regtypeout</code>: <code>regtype</code> 型（型名）の入出力。</li>
+<li><code>regoperin</code>/<code>regoperout</code>: <code>regoper</code> 型（演算子名）の入出力。</li>
+<li><code>regoperatorin</code>/<code>regoperatorout</code>: <code>regoperator</code> 型（引数付き演算子名）の入出力。</li>
+</ul>
+<h3>ユーティリティ関数</h3>
+<ul>
+<li><code>format_procedure_extended</code>: <code>regprocedure</code> の名前生成ロジックを外部公開するための拡張関数。</li>
+<li><code>format_operator_extended</code>: <code>regoperator</code> の名前生成ロジックを外部公開するための拡張関数。</li>
+<li><code>stringToQualifiedNameList</code>: 文字列をスキーマ修飾名リストにパースする。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>parseDashOrOid</code>: &quot;-&quot; または数値 OID をパースする。</li>
+<li><code>parseNameAndArgTypes</code>: 関数/演算子の名前と引数リストをパースする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>format_operator</code></li>
+<li><code>format_operator_extended</code></li>
+<li><code>format_operator_parts</code></li>
+<li><code>format_operator_qualified</code></li>
+<li><code>format_procedure</code></li>
+<li><code>format_procedure_extended</code></li>
+<li><code>format_procedure_parts</code></li>
+<li><code>format_procedure_qualified</code></li>
+<li><code>to_regoper</code></li>
+<li><code>to_regoperator</code></li>
+<li><code>to_regproc</code></li>
+<li><code>to_regprocedure</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力フロー**: <code>_in</code> 関数が文字列を受け取り、<code>parseDashOrOid</code> で数値 OID かどうかを判定。数値でなければ <code>stringToQualifiedNameList</code> で名前を分解し、<code>FuncnameGetCandidates</code> や <code>RangeVarGetRelid</code> 等のカタログ検索関数を呼び出して OID を特定します。 2. **出力フロー**: <code>_out</code> 関数が OID を受け取り、<code>SearchSysCache</code> を使用してカタログから名前を取得。<code>quote_qualified_identifier</code> を用いて、必要に応じてスキーマ修飾付きの文字列を構築します。 3. **エラーハンドリング**: <code>escontext</code> (ErrorSaveContext) をサポートしており、エラー発生時に例外を投げずに NULL を返す安全な呼び出しが可能です。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_proc.h</code>, <code>pg_class.h</code>, <code>pg_operator.h</code> 等のシステムカタログ定義。</li>
+<li><code>utils/</code>: <code>syscache.h</code> (カタログ検索), <code>lsyscache.h</code> (型/名前解決), <code>regproc.h</code> (ヘッダー定義)。</li>
+<li><code>parser/</code>: <code>parse_type.h</code> (型名のパース)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/regproc.h</code>: 本モジュールの公開 API 定義。</li>
+<li><code>src/backend/catalog/namespace.c</code>: 名前解決の基盤ロジック。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: システムカタログのキャッシュアクセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>palloc</code> された文字列は呼び出し元で適切に解放される前提です。<code>format_</code> 系関数は palloc された文字列を返します。</li>
+<li>**ブートストラップモード**: <code>IsBootstrapProcessingMode()</code> チェックが存在し、初期化中の特殊な挙動を制御しています。</li>
+<li>**設計の意図**: これらの型は <code>Oid</code> のラッパーですが、SQL 上で「名前」を扱えるようにすることで、ユーザーが <code>pg_proc</code> 等を直接クエリしなくてもオブジェクトを特定できるように設計されています。</li>
+<li>**省略箇所**: <code>regprocrecv</code> 等のバイナリ I/O 関数は、単に <code>oidrecv</code> を呼び出すだけの単純なラッパーであるため、詳細は省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__to_regproc.html" target="wiki-view"><code>to_regproc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__to_regprocedure.html" target="wiki-view"><code>to_regprocedure</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_procedure.html" target="wiki-view"><code>format_procedure</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_procedure_qualified.html" target="wiki-view"><code>format_procedure_qualified</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_procedure_extended.html" target="wiki-view"><code>format_procedure_extended</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_procedure_parts.html" target="wiki-view"><code>format_procedure_parts</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__to_regoper.html" target="wiki-view"><code>to_regoper</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__to_regoperator.html" target="wiki-view"><code>to_regoperator</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_operator_extended.html" target="wiki-view"><code>format_operator_extended</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_operator.html" target="wiki-view"><code>format_operator</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_operator_qualified.html" target="wiki-view"><code>format_operator_qualified</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__regproc_c__format_operator_parts.html" target="wiki-view"><code>format_operator_parts</code></a></li>
+</ul></body></html>

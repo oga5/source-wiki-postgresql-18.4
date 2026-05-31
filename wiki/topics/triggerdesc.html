@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/triggerdesc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TriggerDesc</h1>
+<h2>概念</h2>
+<p><code>TriggerDesc</code> は、PostgreSQLにおいて特定のリレーション（テーブル）に関連付けられているすべてのトリガーのメタデータをまとめて保持するための構造体です。この構造体は、DML（データ操作言語）の実行時に、特定のイベント（INSERT、UPDATE、DELETEなど）やタイミング（BEFORE、AFTERなど）に対応するトリガーが存在するかどうかを高速に判定するためのキャッシュ（ブールフラグ群）を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>DML操作の実行時、リレーションにトリガーが定義されているかどうかを毎回システムカタログ（<code>pg_trigger</code>）から検索したり、トリガーの配列を走査したりすると、大きなオーバーヘッドが発生します。<code>TriggerDesc</code> は、<code>trig_insert_before_row</code> などの詳細なブールフラグを保持することで、該当するトリガーが存在しない場合にトリガー処理を即座にスキップできるようにし、実行エンジンのパフォーマンスを最適化するために極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/commands</code> (トリガーの構築、フラグ設定、コピー、解放などの操作ロジックを担当)</li>
+<li><code>module:src/include/utils</code> (構造体の定義とリレーションキャッシュ関連のヘッダーを提供)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/utils/reltrigger.h#TriggerDesc</code>: トリガーのメタデータと高速判定用フラグ群を保持する構造体。</li>
+<li><code>symbol:src/backend/commands/trigger.c#FreeTriggerDesc</code>: <code>TriggerDesc</code> のメモリ解放を行う関数（※詳細な呼び出しライフサイクルは提供されたコンテキストからは未詳）。</li>
+<li><code>RelationData</code> (<code>src/include/utils/rel.h</code>): <code>TriggerDesc</code> をメンバとして保持するリレーション構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **リレーションのオープンと構築**: リレーションがオープンされる際、<code>relcache</code> システムによって <code>pg_trigger</code> システムカタログから該当リレーションのトリガー情報が読み込まれ、<code>TriggerDesc</code> 構造体が構築されます。 2. **フラグの設定**: <code>src/backend/commands/trigger.c</code> 内の <code>SetTriggerFlags</code> などの関数により、定義されているトリガーの属性に基づいて <code>TriggerDesc</code> 内の各ブールフラグが適切に設定されます。 3. **DML実行時の高速判定**: 実行エンジンは、DML操作を行う際に <code>TriggerDesc</code> の対応するフラグをチェックします。フラグが <code>false</code> の場合、トリガー配列を走査することなく処理をスキップします。 4. **解放**: リレーションのクローズ時やキャッシュの無効化時には、<code>FreeTriggerDesc</code> を用いてメモリが解放されます（※具体的な解放のトリガー条件や詳細なフローは提供されたコンテキストからは未詳）。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>TriggerDesc</code> は <code>relcache</code> によって構築され、<code>RelationData</code> 構造体に格納されます。</li>
+<li>トリガーの追加や削除が行われた場合、配列内の情報と各ブールフラグの整合性が常に維持されていなければなりません。</li>
+<li>トリガーが定義されていない場合、すべてのブールフラグは <code>false</code> となります。</li>
+<li>行レベルの <code>TRUNCATE</code> トリガーは存在しないため、<code>TriggerDesc</code> には対応するフラグが含まれません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**新規トリガータイプ追加時の考慮漏れ**:</li>
+<p>新しいトリガータイプを追加する際、<code>TriggerDesc</code> に対応するブールフラグを追加し、<code>SetTriggerFlags</code> などのフラグ更新ロジックを修正することを怠ると、実行エンジンが新しいトリガーを正しく認識せずスキップしてしまう、あるいは最適化が効かなくなる可能性があります。</p>
+<li>**依存関係の肥大化**:</li>
+<p><code>TriggerDesc</code> は <code>rel.h</code> からインクルードされるため、この構造体や <code>reltrigger.h</code> に不要な依存関係を追加すると、コンパイルの依存関係が広範囲に影響を受ける可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/reltrigger.h</code>: <code>TriggerDesc</code> 構造体の定義と、保持しているブールフラグの一覧を確認できます。</li>
+<li><code>src/backend/commands/trigger.c</code>: <code>SetTriggerFlags</code> や <code>CopyTriggerDesc</code>、および <code>FreeTriggerDesc</code> などの具体的な操作ロジックが実装されています。</li>
+</ul></body></html>

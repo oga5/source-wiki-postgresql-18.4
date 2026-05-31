@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__amcheck__verify_common_c__amcheck_lock_relation_and_check.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>amcheck_lock_relation_and_check</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/amcheck/verify_common.c:59</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックスの整合性検証を行う際、対象リレーションの安全なロック取得、実行権限の昇格、GUC（設定パラメータ）の保護、および検証後のクリーンアップを一元管理するメインワークホース関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void amcheck_lock_relation_and_check(Oid indrelid,
+                                     Oid am_id,
+                                     IndexDoCheckCallback check,
+                                     LOCKMODE lockmode,
+                                     void *state)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>indrelid</code>: 検証対象インデックスの OID。</li>
+<li><code>am_id</code>: 検証対象のアクセス手法（AM）の OID。</li>
+<li><code>check</code>: 実際の検証ロジックを実行するコールバック関数。</li>
+<li><code>lockmode</code>: ロックの強さ（例: <code>ShareLock</code>）。</li>
+<li><code>state</code>: コールバック関数に渡される状態データ。</li>
+<li>出力: なし（検証失敗時はエラーをスロー）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>デッドロックを回避するため、インデックスよりも先に親テーブルのロックを取得する必要があります。</li>
+<li>検証関数はテーブル所有者の権限で実行される必要があります。</li>
+<li>ホットスタンバイモードにおいて、<code>parentcheck</code> が有効な場合はエラーを発生させます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロック取得**: <code>IndexGetRelation</code> で親テーブルを特定し、デッドロックを防ぐためにテーブル→インデックスの順でロックを取得します。 2. **コンテキスト設定**: <code>SetUserIdAndSecContext</code> によりテーブル所有者の権限へ昇格し、<code>NewGUCNestLevel</code> で設定変更を追跡可能にします。 3. **検証実行**: <code>index_checkable</code> で対象が検証可能か判定し、問題なければコールバック関数 <code>check</code> を呼び出します。 4. **後処理**: <code>AtEOXact_GUC</code> で GUC の変更をロールバックし、ユーザーIDとセキュリティコンテキストを復元します。 5. **解放**: <code>index_close</code> および <code>table_close</code> でロックを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>contrib/amcheck/verify_gin.c</code></li>
+<li><code>contrib/amcheck/verify_nbtree.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>IndexGetRelation</code>, <code>table_open</code>, <code>table_close</code>, <code>index_open</code>, <code>index_close</code></li>
+<li><code>GetUserIdAndSecContext</code>, <code>SetUserIdAndSecContext</code></li>
+<li><code>NewGUCNestLevel</code>, <code>AtEOXact_GUC</code></li>
+<li><code>index_checkable</code></li>
+<li>引数として渡された <code>check</code> コールバック関数</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: PostgreSQL のリレーション構造体。</li>
+<li><code>IndexDoCheckCallback</code>: 検証処理を定義する関数ポインタ型（<code>verify_common.h</code> で定義）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>indrelid</code> がインデックスではない場合、または親テーブルの特定に失敗した場合はエラーとなります。</li>
+<li>インデックスのドロップや再作成との競合が発生し、親テーブルの特定が不整合となった場合は <code>ERRCODE_UNDEFINED_TABLE</code> でエラーを報告します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はスーパーユーザー権限での実行を前提としています。</li>
+<li>ロックは検証終了後に即時解放されますが、これは呼び出されるルーチンが共有キャッシュの無効化をトリガーしないため安全です。</li>
+</ul></body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_shmem_shutdown.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgss_shmem_shutdown</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pg_stat_statements/pg_stat_statements.c:736</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL サーバーの停止時に、共有メモリ上のクエリ統計データおよびグローバル統計を永続化ファイルへダンプする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgss_shmem_shutdown(int code, Datum arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>code</code>: 終了コード（0以外の場合はクラッシュとみなされ、ダンプをスキップする）。</li>
+<li><code>arg</code>: <code>on_shmem_exit</code> から渡される補助データ（本関数では未使用）。</li>
+<li>**出力**: なし（副作用としてファイルシステムへ統計情報を書き出す）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ領域（<code>pgss</code> および <code>pgss_hash</code>）が初期化されていること。</li>
+<li><code>pgss_save</code> が真であること（設定により保存が有効であること）。</li>
+<li>正常終了時のみ実行されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ガード条件**: 異常終了時、共有メモリ未初期化時、または保存無効時には即座に終了する。 2. **ファイル作成**: <code>pg_stat_statements.stat.tmp</code> を作成し、ヘッダー情報とエントリ数を書き込む。 3. **データシリアライズ**:</p>
+<ul>
+<li>共有メモリ上のクエリテキストファイルを読み込む。</li>
+<li>ハッシュテーブルを走査し、各 <code>pgssEntry</code> と対応するクエリ文字列をファイルに書き出す。</li>
+<p>4. **統計保存**: <code>pgssGlobalStats</code> を書き出す。 5. **アトミックな更新**: <code>durable_rename</code> を使用して <code>.tmp</code> ファイルを正式な統計ファイルへ置換する。 6. **クリーンアップ**: 一時的なクエリテキストファイルを削除する。 7. **エラー処理**: 書き込み失敗時はエラーログを出力し、一時ファイルを削除する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>on_shmem_exit</code> に登録され、サーバー終了時に呼び出される。</li>
+<li>**呼び出し先**: <code>AllocateFile</code>, <code>fwrite</code>, <code>hash_get_num_entries</code>, <code>qtext_load_file</code>, <code>hash_seq_init</code>, <code>hash_seq_search</code>, <code>qtext_fetch</code>, <code>pfree</code>, <code>FreeFile</code>, <code>durable_rename</code>, <code>unlink</code>, <code>ereport</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgssEntry</code>: ハッシュテーブル内の各クエリ統計エントリ。</li>
+<li><code>pgssGlobalStats</code>: 拡張機能全体のグローバル統計。</li>
+<li><code>pgss_hash</code>: 統計を保持する共有メモリ上のハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ファイルシステムへの書き込み権限不足やディスクフルにより <code>fwrite</code> が失敗した場合、エラーログを出力し、一時ファイルおよびテキストファイルを削除して終了する。</li>
+<li>クラッシュ時にはダンプを行わず、データの一貫性を保護する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>on_shmem_exit</code> を介して登録されるため、シグネチャは <code>on_shmem_exit</code> の要件に従っている。</li>
+<li>クエリテキストの永続化において、メモリ上のオフセットとファイル上の位置を同期させる必要があるため、<code>qtext_fetch</code> による読み出しロジックの変更には注意が必要。</li>
+</ul></body></html>

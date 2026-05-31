@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtinsert.c</h1>
+<h2>概要</h2>
+<p>B-tree インデックスへのタプル挿入を管理する中心的なファイルです。Lehman &amp; Yao のアルゴリズムに基づき、インデックスの整合性を保ちながら、リーフページへの挿入、必要に応じたページ分割、および親ノードへのダウンリンク追加を処理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムの挿入ロジックの核です。検索（<code>nbtsearch.c</code>）で特定された位置に対し、排他ロックを保持したままデータを書き込みます。また、一意性制約のチェックや、ページ容量不足時のデデュプリケーション・削除処理のトリガーも担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**挿入フローの制御**: 挿入位置の特定から、実際のページへの書き込み、必要に応じたツリーの成長（ルート分割）までを統括します。</li>
+<li>**一意性制約の検証**: <code>_bt_check_unique</code> を通じて、挿入対象のキーが既に存在しないかを確認します。</li>
+<li>**ページ分割と再帰的挿入**: ページが満杯の場合、<code>_bt_split</code> でページを分割し、<code>_bt_insert_parent</code> で親ノードへ新しいダウンリンクを挿入します。</li>
+<li>**最適化**: 挿入負荷を軽減するための「ファストパス（右端挿入の最適化）」や、ページ分割を回避するための「ボトムアップ削除・デデュプリケーション」を実装しています。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>_bt_doinsert</code>: 挿入の公開インターフェース。一意性チェックと挿入フローの開始点。</li>
+<li><code>_bt_insertonpg</code>: 特定のページへの挿入を実行。必要に応じてページ分割を再帰的に呼び出す。</li>
+<li><code>_bt_split</code>: ページを左右に分割し、新しいページを割り当てる。</li>
+<li><code>_bt_findinsertloc</code>: 挿入すべき適切なページを特定する（必要に応じて右へ移動）。</li>
+<li><code>_bt_check_unique</code>: 一意性制約の違反をチェックし、競合時はトランザクションの終了を待機する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>_bt_search_insert</code> で挿入対象のリーフページを特定（ファストパスが有効ならキャッシュを利用）。 2. **検証**: 一意性制約がある場合、<code>_bt_check_unique</code> で競合を確認。競合時はロックを解放して待機し、再試行。 3. **位置特定**: <code>_bt_findinsertloc</code> でページ内の正確なオフセットを決定。容量不足時は削除やデデュプリケーションを試行。 4. **挿入**: <code>_bt_insertonpg</code> でデータを書き込み。容量不足が解消しない場合は <code>_bt_split</code> を実行。 5. **伝播**: 分割が発生した場合、<code>_bt_insert_parent</code> を再帰的に呼び出し、親ノードへダウンリンクを挿入。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree の基本構造とマクロ定義。</li>
+<li><code>access/nbtxlog.h</code>: 挿入・分割操作の WAL 記録用定義。</li>
+<li><code>storage/lmgr.h</code>: ロック管理。</li>
+<li><code>storage/predicate.h</code>: 直列化可能トランザクションの競合検知。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nbtsearch.c</code>: 挿入前のツリー探索ロジック。</li>
+<li><code>nbtpage.c</code>: ページ初期化やメタデータ管理。</li>
+<li><code>nbtdedup.c</code>: デデュプリケーションの詳細ロジック。</li>
+<li><code>nbtsplitloc.c</code>: ページ分割時の最適な分割位置の決定。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロック順序**: デッドロックを防ぐため、常にツリーの左から右、上から下への順序でロックを取得します。</li>
+<li>**ファストパス**: <code>BTREE_FASTPATH_MIN_LEVEL</code> 以上の高さを持つインデックスでは、右端への連続挿入を高速化する最適化が働きます。</li>
+<li>**WAL**: ページ分割は複雑な操作であるため、<code>START_CRIT_SECTION()</code> によるクリティカルセクション内で WAL 記録とページ更新をアトミックに行います。</li>
+</ul></body></html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/encodedatetime.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>EncodeDateTime</h1>
+<h2>概念</h2>
+<p><code>EncodeDateTime</code> は、PostgreSQLのソースコードにおいて、内部的な日付・時刻表現（<code>struct tm</code> など）を指定されたスタイル（ISO、SQL、German、Postgresなど）に基づいて文字列形式に変換（エンコード）するための関数です。この関数は、クライアント側のECPGライブラリと、サーバーのバックエンド側の両方に同名のシンボルとして存在します。</p>
+<h2>なぜ重要か</h2>
+<p>データベースシステムにおいて、日付や時刻のデータをユーザーが読みやすい、あるいは標準規格に準拠した文字列形式で出力することは不可欠です。<code>EncodeDateTime</code> は、タイムゾーン、小数秒、紀元前（BC）表記、欧州形式（EuroDates）などの多様なフォーマット要件を吸収し、一貫した文字列変換処理を提供します。また、ECPG（埋め込みSQL）とバックエンドのそれぞれで同様のエンコード処理を担うことで、システム全体での日付時刻表現の整合性を支えています。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたコンテキストに基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/interfaces/ecpg/pgtypeslib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/utils/adt/datetime.c#EncodeDateTime</code>：バックエンド側で日付・時刻のエンコードを行う関数（詳細な仕様は提供されたコンテキストからは未詳）。</li>
+<li><code>symbol:src/interfaces/ecpg/pgtypeslib/dt_common.c#EncodeDateTime</code>：ECPGのpgtypesライブラリにおいて、<code>struct tm</code> 形式の日付・時刻情報を文字列へ変換する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>現時点では、バックエンド側（<code>src/backend/utils/adt/datetime.c</code>）の <code>EncodeDateTime</code> の具体的な呼び出し元や、ECPG側における上位の呼び出しフローなど、システム全体におけるエンドツーエンドの流れは完全には判明していません。</p>
+<p>ECPG側（<code>dt_common.c</code>）における局所的な処理の流れは以下の通りです： 1. 入力された <code>style</code>（<code>USE_ISO_DATES</code>, <code>USE_SQL_DATES</code> など）に基づき、<code>switch</code> 文でフォーマット処理を分岐します。 2. 各スタイルに応じた順序で、<code>sprintf</code> を使用して出力先バッファ <code>str</code> へ日付・時刻を書き込みます。 3. <code>print_tz</code> が有効な場合、タイムゾーン名（<code>tzn</code>）またはオフセット（<code>tz</code>）を計算して追記します。 4. <code>USE_POSTGRES_DATES</code> スタイルの場合は、<code>date2j</code> を用いて曜日を算出し、文字列に含めます。</p>
+<h2>重要な不変条件</h2>
+<p>ECPG側の <code>EncodeDateTime</code> において、以下の不変条件が確認されています。</p>
+<ul>
+<li>**タイムゾーン出力の抑制**: <code>tm-&gt;tm_isdst &lt; 0</code> の場合、<code>print_tz</code> は強制的に <code>false</code> となります。</li>
+<li>**紀元前表記の付与**: <code>tm-&gt;tm_year &lt;= 0</code> の場合、歴史的な「0年」を考慮し、BC（紀元前）表記が付与されます。</li>
+<li>**小数秒のトリミング**: <code>fsec != 0</code> の場合、小数秒が追加され、末尾の不要なゼロは <code>TrimTrailingZeros</code> によって削除されます。</li>
+</ul>
+<p>※バックエンド側の <code>EncodeDateTime</code> における不変条件は、提供されたコンテキストからは不明です。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バッファオーバーフロー**: ECPG側の <code>EncodeDateTime</code> では、出力先バッファ <code>str</code> のサイズ管理は呼び出し側の責任となっています。十分なバッファサイズが確保されていない場合、<code>sprintf</code> によるメモリ破壊が発生する危険性があります。</li>
+<li>**非ASCIIタイムゾーン名**: タイムゾーン名 <code>tzn</code> に非ASCII文字が含まれる場合、<code>%.*s</code> による切り詰め処理がエンコーディングを考慮しないため、不正な文字列が生成される可能性があります（ただし、IANAデータベースのTZ略称はすべてASCIIであると想定されています）。</li>
+<li>**シグネチャの不一致**: バックエンド側の <code>EncodeDateTime</code> とECPG側の同名関数は、引数構成（例：<code>EuroDates</code> の有無など）が異なります。両者を混同して呼び出したり、移植したりしないよう注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/ecpg/pgtypeslib/dt_common.c</code>：ECPG側における <code>EncodeDateTime</code> の具体的な実装と、<code>TrimTrailingZeros</code> や <code>date2j</code> などの関連関数の定義。</li>
+<li><code>src/backend/utils/adt/datetime.c</code>：バックエンド側における <code>EncodeDateTime</code> の実装と、その引数構成や利用箇所の確認。</li>
+</ul></body></html>

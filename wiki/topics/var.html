@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/var.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Var</h1>
+<h2>概念</h2>
+<p><code>Var</code> は、PostgreSQLのクエリ処理（解析、計画、実行）において、テーブルの列やサブプランの出力を参照するための変数ノードを表現するデータ構造です。また、実行エンジンにおいては、プランツリー内の変数ノードを保持し、特に行全体（whole-row）の参照を評価するための実行時コンテキストの管理にも関与します。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ内の列参照やサブクエリの出力を正しく追跡・評価するために不可欠です。</p>
+<ul>
+<li>**柔軟な参照**: 物理テーブルの列だけでなく、サブプランの出力や、行全体（whole-row）の参照を統一的に表現できます。</li>
+<li>**コンテキストの追跡**: 外部結合によるNULL化の追跡（<code>varnullingrels</code>）や、相関サブクエリにおける外側クエリレベルの参照（<code>varlevelsup</code>）をサポートします。</li>
+<li>**実行時最適化**: 実行時には、不要な列のフィルタリング（<code>JunkFilter</code>）や、NULL値の実行時チェック（<code>slow</code> モード）を効率的に行うためのコンテキストを提供します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/nodes</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/nodes/primnodes.h#Var</code> (struct)**: クエリ処理の各段階で変数（列やサブプラン出力）を表現する基本ノード。</li>
+<li>**<code>symbol:src/include/executor/execExpr.h#Var</code> (struct <code>wholerow</code>)**: 実行エンジンにおいて、行全体（whole-row）の参照を評価・管理するための構造体。元の <code>Var</code> ノードへのポインタや、結果タプルのディスクリプタ（<code>tupdesc</code>）、不要な列を除去するための <code>junkFilter</code> を保持します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたソース情報からは、詳細なエンドツーエンドの完全な流れは完全には特定されていませんが、以下の部分的な流れが判明しています。</p>
+<p>1. **解析・計画段階**: クエリ内の列参照やサブクエリ出力が <code>Var</code> ノード（<code>nodes/primnodes.h</code>）として表現されます。 2. **実行段階の準備**: 行全体（whole-row）を参照する場合、<code>executor/execExpr.h</code> の <code>wholerow</code> 構造体が用意され、初回実行時（<code>first</code> フラグが真のとき）に必要なリソース（<code>tupdesc</code> や <code>junkFilter</code>）のセットアップが行われます。 3. **評価とフィルタリング**: <code>ExecEvalExpr</code> などの関数によって <code>Var</code> ノードが再帰的に走査され、指定された <code>varno</code> と <code>varattno</code> に基づいて値が抽出されます。行全体評価においては、<code>slow</code> フラグが有効な場合に実行時NULLチェックが行われ、<code>junkFilter</code> を使用して不要な列（resjunk列）が除去されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**特別な属性番号**: <code>varattno</code> が <code>0</code> の場合、そのテーブルの全列（whole-row Var）を指します。</li>
+<li>**特別なリレーション番号**: <code>varno</code> が負の値（<code>INNER_VAR</code>, <code>OUTER_VAR</code> 等）の場合、物理テーブルではなく実行時のサブプラン出力を指します。</li>
+<li>**ハッシュ・等価性判定の対象外**: <code>vartype</code>, <code>vartypmod</code>, <code>varcollid</code> はクエリのハッシュ化（Jumble）対象外であり、<code>varnosyn</code> と <code>varattnosyn</code> は意味論的な等価性判定において無視されます。</li>
+<li>**実行時の整合性**: <code>wholerow</code> 構造体の <code>var</code> は有効なプランツリーの <code>Var</code> ノードを指している必要があり、<code>tupdesc</code> は評価対象となるタプルの構造と一致している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**位置情報の欠落**: <code>location</code> が <code>-1</code> の場合、トークン位置が不明であることを示します。</li>
+<li>**照合順序の未定義**: <code>varcollid</code> が <code>InvalidOid</code> の場合、照合順序（Collation）が定義されていないことを示します。</li>
+<li>**メタデータの変更**: <code>pg_node_attr</code> マクロが付与されたフィールドは、クエリのハッシュ化や等価性判定において特別な扱いを受けるため、フィールドの追加・変更時には注意が必要です。</li>
+<li>**実行時エラーとパフォーマンス**: <code>wholerow</code> 評価において <code>var</code> が NULL の場合や <code>tupdesc</code> が不整合な場合、実行時に予期せぬ動作を引き起こす可能性があります。また、<code>slow</code> モードでのNULLチェックはパフォーマンスに影響を与える可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/nodes/primnodes.h</code> (<code>Var</code> 構造体の定義と各フィールドの詳細な役割)</li>
+<li><code>src/include/executor/execExpr.h</code> (<code>wholerow</code> 構造体および <code>ExprEvalStep</code> における実行時評価の仕組み)</li>
+</ul></body></html>

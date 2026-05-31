@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__activity__pgstat_shmem_c__pgstat_get_entry_ref.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_get_entry_ref</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/utils/activity/pgstat_shmem.c:456</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上の統計情報エントリへの参照（<code>PgStat_EntryRef</code>）を取得します。ローカルキャッシュに存在しない場合は共有メモリ上のハッシュテーブルを検索し、必要に応じて新規作成または再初期化を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>PgStat_EntryRef *pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64 objid, bool create, bool *created_entry)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>kind</code>: 統計情報の種類（<code>PgStat_Kind</code>）。</li>
+<li><code>dboid</code>: データベースOID。</li>
+<li><code>objid</code>: オブジェクトID。</li>
+<li><code>create</code>: 存在しない場合に新規作成するかどうか。</li>
+<li><code>created_entry</code>: 新規作成された場合に <code>true</code> が設定される出力用ポインタ（任意）。</li>
+<li>**出力**:</li>
+<li>成功時: 該当する統計エントリへの参照（<code>PgStat_EntryRef*</code>）。</li>
+<li>失敗時: <code>create</code> が <code>false</code> でエントリが存在しない場合、<code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>統計システムが初期化済みであること（<code>pgstat_assert_is_up()</code>）。</li>
+<li>共有メモリ上のハッシュテーブルが有効であること。</li>
+<li>システムがシャットダウン状態でないこと。</li>
+<li><code>create</code> が <code>false</code> の場合、<code>created_entry</code> は <code>NULL</code> であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **GC実行**: 必要に応じて <code>pgstat_gc_entry_refs()</code> を呼び出し、不要になった参照をクリーンアップする。 2. **ローカルキャッシュ検索**: <code>pgstat_get_entry_ref_cached()</code> を呼び出し、ローカルメモリ上のハッシュテーブルにヒットすれば即座に返す。 3. **共有メモリ検索**: <code>dshash_find()</code> で共有メモリ上のハッシュテーブルを検索する。 4. **新規作成**: <code>create</code> が <code>true</code> でエントリが見つからない場合、<code>dshash_find_or_insert()</code> を実行し、<code>pgstat_init_entry()</code> で初期化する。 5. **再利用**: 既に <code>dropped</code> フラグが立っているエントリに対して <code>create</code> が <code>true</code> の場合、<code>pgstat_reinit_entry()</code> で再初期化を行う。 6. **参照取得**: 最終的に見つかったエントリに対し、<code>pgstat_acquire_entry_ref()</code> を呼び出して参照を確立する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>pgstat.c</code>（各統計取得関数）、<code>pgstat_database.c</code>、<code>pgstat_replslot.c</code>、および <code>pgstat_shmem.c</code> 内のヘルパー関数。</li>
+<li>**呼び出し先**: <code>pgstat_need_entry_refs_gc</code>, <code>pgstat_gc_entry_refs</code>, <code>pgstat_get_entry_ref_cached</code>, <code>dshash_find</code>, <code>dshash_find_or_insert</code>, <code>pgstat_init_entry</code>, <code>pgstat_acquire_entry_ref</code>, <code>pgstat_release_entry_ref</code>, <code>pgstat_reinit_entry</code>, <code>dsa_get_address</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgStat_EntryRef</code>: バックエンドが保持する統計エントリへの参照構造体。</li>
+<li><code>PgStatShared_HashEntry</code>: 共有メモリ上のハッシュテーブルエントリ。</li>
+<li><code>PgStat_HashKey</code>: 統計エントリを一意に特定するキー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>pgstat_init_entry()</code> による新規エントリ確保に失敗した場合、<code>ERROR</code> を発生させる。</li>
+<li>**削除済みエントリ**: <code>dropped</code> フラグが立っているエントリに対し <code>create</code> が <code>false</code> の場合、参照を解放して <code>NULL</code> を返す。</li>
+<li>**同時実行**: <code>dshash_find_or_insert()</code> を使用することで、他バックエンドによる同時挿入を安全に処理する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は頻繁に呼び出されるため、ローカルキャッシュによる最適化が重要です。</li>
+<li><code>dropped</code> フラグが立っているエントリの再利用ロジックは、OIDの再利用やレプリケーションスロットの挙動に関連するため、変更時は注意が必要です。</li>
+</ul></body></html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/ruleutils.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/ruleutils.c</h1>
+<h2>概要</h2>
+<p><code>ruleutils.c</code> は、PostgreSQL の内部表現（<code>Query</code> ツリー、<code>Plan</code> ツリー、<code>Expr</code> ツリーなど）を、人間が読み書き可能な SQL ソースコード形式に逆コンパイル（deparse）するための中心的なモジュールです。<code>pg_get_viewdef</code> や <code>pg_get_ruledef</code> といったシステムカタログの定義を表示する SQL 関数のバックエンド実装を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内に位置し、主にメタデータ管理やシステムカタログの可視化を支援します。実行エンジンやプランナが生成した複雑なノード構造を、SQL 文として再構築することで、<code>pg_dump</code> や <code>EXPLAIN</code>、ビューの定義確認といった機能を支えています。</p>
+<h2>責務</h2>
+<ul>
+<li>**逆コンパイル（Deparsing）**: 内部ノード（<code>Query</code>, <code>Plan</code>, <code>Expr</code>）から SQL 文字列への変換。</li>
+<li>**名前解決**: 逆コンパイル時に、RTE（Range Table Entry）のエイリアスや列名を一意かつ整合的に決定する。</li>
+<li>**整形（Pretty Printing）**: 読みやすい SQL を生成するためのインデントや改行の制御。</li>
+<li>**システムカタログの逆生成**: トリガー、インデックス、制約、パーティション定義の SQL 文生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
+<ul>
+<li><code>deparse_context</code>: 逆コンパイル中の状態（出力バッファ、名前空間、整形フラグ）を保持する構造体。</li>
+<li><code>deparse_namespace</code>: クエリレベルごとの名前空間（RTE リスト、列名マッピング、プランツリー情報）を管理。</li>
+<li><code>deparse_columns</code>: 各 RTE における列名のエイリアス割り当てと競合解決を管理する構造体。</li>
+</ul>
+<h3>公開 API（SQL 関数経由）</h3>
+<ul>
+<li><code>pg_get_ruledef</code>, <code>pg_get_viewdef</code>: ルールやビューの定義を SQL 文字列として取得。</li>
+<li><code>pg_get_triggerdef</code>: トリガー定義の生成。</li>
+<li><code>pg_get_indexdef</code>: インデックス定義の生成。</li>
+<li><code>pg_get_constraintdef</code>: 制約定義の生成。</li>
+<li><code>pg_get_expr</code>: 式ツリーの逆コンパイル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>NameHashEntry</code></li>
+<li><code>deparse_columns</code></li>
+<li><code>deparse_context</code></li>
+<li><code>deparse_namespace</code></li>
+<li><code>get_delete_query_def</code></li>
+<li><code>get_insert_query_def</code></li>
+<li><code>get_update_query_def</code></li>
+<li><code>get_update_query_targetlist_def</code></li>
+<li><code>pg_get_ruledef</code></li>
+<li><code>pg_get_ruledef_ext</code></li>
+<li><code>pg_get_ruledef_worker</code></li>
+<li><code>pg_get_viewdef</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>deparse_context</code> を初期化し、対象となる <code>Query</code> や <code>Plan</code> に基づいて <code>deparse_namespace</code> を構築します。 2. **名前解決**: <code>set_rtable_names</code> および <code>set_using_names</code> を呼び出し、クエリ内のすべての RTE に対して一意なエイリアスと列名を割り当てます。 3. **再帰的走査**: <code>get_rule_expr</code> を起点として、ノードツリーを再帰的に走査します。 4. **文字列構築**: <code>StringInfo</code> バッファに対して、各ノードの型に応じた SQL 文字列を順次 <code>append</code> していきます。 5. **整形**: <code>appendContextKeyword</code> 等のヘルパー関数が、pretty-print フラグに応じて改行やインデントを挿入します。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**システムカタログ**: <code>pg_proc</code>, <code>pg_type</code>, <code>pg_operator</code>, <code>pg_constraint</code> 等のキャッシュ（<code>syscache.h</code>）を多用。</li>
+<li>**SPI**: <code>executor/spi.h</code> を使用して、システムカタログからルール定義などを取得。</li>
+<li>**ノード定義**: <code>nodes/parsenodes.h</code>, <code>nodes/pathnodes.h</code> 等のツリー構造を解析。</li>
+<li><code>access/amapi.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_depend.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_partitioned_table.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>common/keywords.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parser.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>rewrite/rewriteSupport.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+<li><code>utils/xml.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/ruleutils.h</code>: 本ファイルの公開インターフェース定義。</li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: ルールシステムの処理ロジック。</li>
+<li><code>src/backend/parser/parse_relation.c</code>: クエリ解析時の名前解決ロジック（本ファイルと対照的）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 逆コンパイル処理は非常にメモリを消費しやすいため、<code>StringInfo</code> を用いて効率的に文字列を構築しています。</li>
+<li>**複雑性**: 本ファイルが巨大な理由は、SQL のあらゆる構文（JOIN, JSON, Window 関数, パーティション等）を網羅的に逆コンパイルする必要があるためです。</li>
+<li>**注意点**: <code>deparse_columns</code> の列名割り当てロジックは、ビューの列名変更や削除に対応するために非常に複雑です。特に <code>JOIN USING</code> の処理は、名前の競合を避けるための再帰的な名前選択が行われており、このファイルの難所です。</li>
+<li>**制限事項**: 一部のユーティリティコマンドや、非常に古い形式のルール定義については、完全な逆コンパイルがサポートされていない場合があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__deparse_context.html" target="wiki-view"><code>deparse_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__deparse_namespace.html" target="wiki-view"><code>deparse_namespace</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__deparse_columns.html" target="wiki-view"><code>deparse_columns</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__NameHashEntry.html" target="wiki-view"><code>NameHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__pg_get_ruledef.html" target="wiki-view"><code>pg_get_ruledef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__pg_get_ruledef_ext.html" target="wiki-view"><code>pg_get_ruledef_ext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__pg_get_ruledef_worker.html" target="wiki-view"><code>pg_get_ruledef_worker</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__pg_get_viewdef.html" target="wiki-view"><code>pg_get_viewdef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__get_insert_query_def.html" target="wiki-view"><code>get_insert_query_def</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__get_update_query_def.html" target="wiki-view"><code>get_update_query_def</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__get_update_query_targetlist_def.html" target="wiki-view"><code>get_update_query_targetlist_def</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ruleutils_c__get_delete_query_def.html" target="wiki-view"><code>get_delete_query_def</code></a></li>
+</ul></body></html>

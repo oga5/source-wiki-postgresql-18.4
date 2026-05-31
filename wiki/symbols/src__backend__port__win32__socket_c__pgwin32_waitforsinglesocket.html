@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32__socket_c__pgwin32_waitforsinglesocket.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgwin32_waitforsinglesocket</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/win32/socket.c:180</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows環境において、単一のソケットに対する待機処理とPostgreSQLのシグナル監視を統合し、ブロッキング操作をエミュレートする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>s</code>: 待機対象のソケットハンドル。</li>
+<li><code>what</code>: 監視するイベントの種類（<code>FD_READ</code>, <code>FD_WRITE</code> 等のビットマスク）。</li>
+<li><code>timeout</code>: 待機するタイムアウト時間（ミリ秒）。</li>
+<li>**出力**:</li>
+<li><code>1</code>: ソケットが準備完了状態になった場合。</li>
+<li><code>0</code>: タイムアウト、シグナル割り込み、またはエラーが発生した場合。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>静的変数 <code>waitevent</code> は初回呼び出し時に作成され、以降の呼び出しで再利用される。</li>
+<li><code>WSAEventSelect</code> を使用してソケットとイベントを関連付けるが、関数終了前に必ず <code>WSAEventSelect(s, NULL, 0)</code> を呼び出し、関連付けを解除する。</li>
+<li>UDPソケットの書き込み待機時には、高負荷時のロック問題を回避するため、0.1秒のタイムアウトを用いたループ処理を行う。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>waitevent</code> をリセットする。 2. <code>WSAEventSelect</code> でソケット <code>s</code> に <code>what</code> イベントを関連付ける。 3. <code>pgwin32_signal_event</code>（シグナル用）と <code>waitevent</code>（ソケット用）の2つを対象に <code>WaitForMultipleObjectsEx</code> を実行する。 4. UDPかつ <code>FD_WRITE</code> の場合は、タイムアウト時に <code>WSASend</code> を試行してソケット状態を確認するループを実行する。 5. 待機解除後、イベントの関連付けを解除する。 6. 戻り値に応じて、シグナル受信時は <code>errno = EINTR</code>、タイムアウト時は <code>errno = EWOULDBLOCK</code> を設定する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/port/win32/socket.c</code> 内のソケット関連関数（接続、読み込み、書き込み処理など）。</li>
+<li>**呼び出し先**:</li>
+<li><code>CreateEvent</code>, <code>ResetEvent</code>, <code>WSAEventSelect</code>, <code>WaitForMultipleObjectsEx</code>, <code>WSASend</code>, <code>WSAGetLastError</code> (Win32 API)</li>
+<li><code>isDataGram</code>, <code>TranslateSocketError</code>, <code>pgwin32_dispatch_queued_signals</code> (内部関数)</li>
+<li><code>ereport</code> (PostgreSQLエラー報告)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SOCKET</code>: Win32ソケットハンドル。</li>
+<li><code>HANDLE</code>: イベントオブジェクト。</li>
+<li><code>pgwin32_signal_event</code>: PostgreSQLのシグナル通知用イベント。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>CreateEvent</code> または <code>ResetEvent</code> の失敗: <code>ereport(ERROR, ...)</code> によりプロセスを停止させる。</li>
+<li><code>WSAEventSelect</code> の失敗: <code>TranslateSocketError</code> を呼び出し、0を返す。</li>
+<li>予期しない <code>WaitForMultipleObjects</code> の戻り値: <code>ereport(ERROR, ...)</code> によりプロセスを停止させる。</li>
+<li><code>exceptfds</code> はサポートされていない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>UDP通信時の高負荷下でのロック問題に対するワークアラウンドが含まれている。</li>
+<li><code>WSAEventSelect</code> のデタッチ処理は、他のコードが同一ソケットに対してイベントを関連付ける可能性があるため必須である。</li>
+</ul></body></html>

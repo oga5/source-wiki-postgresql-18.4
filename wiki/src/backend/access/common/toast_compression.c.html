@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/toast_compression.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/toast_compression.c</h1>
+<h2>概要</h2>
+<p>TOAST（The Oversized-Attribute Storage Technique）データに対する圧縮および伸長処理を実装するモジュールです。PostgreSQLがサポートする複数の圧縮アルゴリズム（PGLZ, LZ4）を抽象化し、データ型（<code>varlena</code>）の圧縮状態を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> 内において、TOAST化されたデータの物理的な圧縮・伸長ロジックを担います。<code>detoast.c</code> 等の上位レイヤーから呼び出され、ストレージ層とメモリ上のデータ表現の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**圧縮アルゴリズムの抽象化**: PGLZおよびLZ4を用いた圧縮・伸長関数の提供。</li>
+<li>**メタデータ管理**: <code>varlena</code> ヘッダーから圧縮方式（ID）を抽出・識別する機能。</li>
+<li>**GUC連携**: <code>default_toast_compression</code> を通じた圧縮方式の制御。</li>
+<li>**エラーハンドリング**: 圧縮データの破損検知および、未サポートの圧縮アルゴリズム（LZ4未ビルド時）への対応。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pglz_compress_datum</code> / <code>lz4_compress_datum</code>: 各アルゴリズムによる圧縮実行関数。</li>
+<li><code>pglz_decompress_datum</code> / <code>lz4_decompress_datum</code>: 各アルゴリズムによる伸長実行関数。</li>
+<li><code>toast_get_compression_id</code>: <code>varlena</code> 構造体から圧縮方式を特定するユーティリティ。</li>
+<li><code>default_toast_compression</code>: システム全体でデフォルトとして使用される圧縮方式を保持するGUC変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CompressionNameToMethod</code></li>
+<li><code>GetCompressionMethodName</code></li>
+<li><code>lz4_decompress_datum_slice</code></li>
+<li><code>pglz_decompress_datum_slice</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **圧縮時**: <code>varlena</code> データを入力として受け取り、各アルゴリズムの <code>compress</code> 関数が <code>palloc</code> でメモリを確保し、圧縮後のデータを格納して返します。圧縮効率が悪い（圧縮後の方が大きい）場合は <code>NULL</code> を返します。 2. **伸長時**: 圧縮された <code>varlena</code> を受け取り、ヘッダー情報から伸長後のサイズを特定してメモリを確保し、伸長処理を行います。 3. **スライス伸長**: <code>_slice</code> 系関数は、データ全体ではなく指定された長さのみを伸長します（LZ4の場合は <code>LZ4_decompress_safe_partial</code> を利用）。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQLの型定義とマクロ。</li>
+<li><code>lz4.h</code>: LZ4ライブラリ（<code>USE_LZ4</code> 定義時）。</li>
+<li><code>access/detoast.h</code> / <code>access/toast_compression.h</code>: TOAST関連の型定義とインターフェース。</li>
+<li><code>common/pg_lzcompress.h</code>: PGLZ圧縮アルゴリズムの定義。</li>
+<li><code>varatt.h</code>: 可変長データ（<code>varlena</code>）のヘッダー操作マクロ。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/toast_compression.h</code>: 本ファイルの関数宣言および圧縮方式の定数定義。</li>
+<li><code>src/backend/access/common/detoast.c</code>: TOASTデータの伸長をトリガーする上位モジュール。</li>
+<li><code>src/common/pg_lzcompress.c</code>: PGLZアルゴリズムの実装本体。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**LZ4の制約**: LZ4はビルド時に <code>USE_LZ4</code> が有効である必要があります。未サポート環境で呼び出された場合は <code>NO_LZ4_SUPPORT()</code> マクロによりエラーが発生します。</li>
+<li>**ヘッダーの制約**: <code>ToastCompressionId</code> は <code>varlena</code> ヘッダー内の2ビットのみを使用するため、将来的に拡張する場合でも最大4種類までのアルゴリズムしかサポートできません。</li>
+<li>**スライス伸長**: <code>lz4_decompress_datum_slice</code> は、LZ4のバージョンが 1.8.3 未満の場合、部分伸長ができないため全伸長にフォールバックする安全策が講じられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__pglz_compress_datum.html" target="wiki-view"><code>pglz_compress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__pglz_decompress_datum.html" target="wiki-view"><code>pglz_decompress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__pglz_decompress_datum_slice.html" target="wiki-view"><code>pglz_decompress_datum_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__lz4_compress_datum.html" target="wiki-view"><code>lz4_compress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__lz4_decompress_datum.html" target="wiki-view"><code>lz4_decompress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__lz4_decompress_datum_slice.html" target="wiki-view"><code>lz4_decompress_datum_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__toast_get_compression_id.html" target="wiki-view"><code>toast_get_compression_id</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__CompressionNameToMethod.html" target="wiki-view"><code>CompressionNameToMethod</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__toast_compression_c__GetCompressionMethodName.html" target="wiki-view"><code>GetCompressionMethodName</code></a></li>
+</ul></body></html>

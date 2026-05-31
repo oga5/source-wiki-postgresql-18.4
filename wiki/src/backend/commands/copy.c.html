@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/copy.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/copy.c</h1>
+<h2>概要</h2>
+<p><code>copy.c</code> は、PostgreSQL の <code>COPY</code> SQL コマンドの実行を統括するメインエントリーポイントです。テーブルと外部ファイル（またはプログラム、標準入出力）間でのデータ転送を管理し、権限チェック、オプションの解析、および実行フェーズへの橋渡しを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュール内において、<code>COPY</code> コマンドの構文解析後の処理を担います。実際のデータ転送ロジックは <code>copyfrom.c</code>（読み込み）および <code>copyto.c</code>（書き出し）に委譲されており、本ファイルはそれらの上位層として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限管理**: ファイルシステムへのアクセス権限（<code>pg_read_server_files</code> 等）の検証。</li>
+<li>**オプション解析**: <code>COPY</code> コマンドのオプション（<code>FORMAT</code>, <code>DELIMITER</code>, <code>NULL</code> 等）の妥当性検証と構造体への変換。</li>
+<li>**実行制御**: <code>COPY</code> 対象のテーブルまたはクエリの準備、および適切な実行関数（<code>BeginCopyFrom</code>/<code>BeginCopyTo</code>）の呼び出し。</li>
+<li>**制約チェック**: 生成列の除外や、RLS（行レベルセキュリティ）が有効な場合のクエリベース転送への切り替え。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DoCopy</code>: <code>COPY</code> コマンドを実行するメイン関数。</li>
+<li><code>ProcessCopyOptions</code>: <code>COPY</code> 文のオプションリストを解析し、<code>CopyFormatOptions</code> 構造体を構築する。</li>
+<li><code>CopyGetAttnums</code>: 指定された列名リストから属性番号のリストを生成・検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>defGetCopyHeaderChoice</code></li>
+<li><code>defGetCopyLogVerbosityChoice</code></li>
+<li><code>defGetCopyOnErrorChoice</code></li>
+<li><code>defGetCopyRejectLimitOption</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>DoCopy</code> が <code>ParseState</code> と <code>CopyStmt</code> を受け取り、権限を確認する。 2. **準備**:</p>
+<ul>
+<li>テーブル対象の場合、<code>table_openrv</code> でロックを取得。</li>
+<li>RLS が有効な場合、<code>COPY</code> を <code>SELECT</code> クエリに変換して処理を継続する。</li>
+<p>3. **オプション解析**: <code>ProcessCopyOptions</code> が <code>DefElem</code> リストを走査し、フォーマットの整合性をチェックする。 4. **実行**:</p>
+<li><code>is_from</code> フラグに基づき、<code>CopyFrom</code> または <code>DoCopyTo</code> を呼び出し、実際のデータストリーム処理を開始する。</li>
+<p>5. **終了**: <code>table_close</code> でリソースを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/table.h</code>, <code>access/xact.h</code>: テーブルアクセスとトランザクション制御。</li>
+<li><code>commands/copy.h</code>, <code>commands/defrem.h</code>: <code>COPY</code> 関連の定義と構文解析ヘルパー。</li>
+<li><code>parser/</code>: 式の変換や列挙、権限チェックのためのパーサーユーティリティ。</li>
+<li><code>utils/</code>: リレーションキャッシュ、ACL、メモリ管理等のユーティリティ。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/rls.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/copyfrom.c</code>: <code>COPY FROM</code> の具体的なデータ読み込み・パース処理。</li>
+<li><code>src/backend/commands/copyto.c</code>: <code>COPY TO</code> の具体的なデータ書き出し処理。</li>
+<li><code>src/backend/commands/copyfromparse.c</code>: <code>COPY FROM</code> におけるデータパースの低レイヤー処理。</li>
+<li><code>src/bin/psql/copy.h</code>: クライアントサイドの <code>\copy</code> コマンド用ヘッダー（概念的に接続）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは主に「コマンドのセットアップ」に特化しています。データ転送のパフォーマンスやパースの詳細を追う場合は、<code>copyfrom.c</code> や <code>copyfromparse.c</code> を参照してください。</li>
+<li><code>COPY</code> オプションの追加や変更を行う際は、<code>ProcessCopyOptions</code> 内の整合性チェックロジックが非常に厳格であることに注意してください。</li>
+<li>RLS（行レベルセキュリティ）が有効な場合、<code>COPY</code> は内部的に <code>SELECT</code> クエリとして再構築されるため、デバッグ時にはクエリ変換のフローを追う必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__copy_c__DoCopy.html" target="wiki-view"><code>DoCopy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__defGetCopyHeaderChoice.html" target="wiki-view"><code>defGetCopyHeaderChoice</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__defGetCopyOnErrorChoice.html" target="wiki-view"><code>defGetCopyOnErrorChoice</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__defGetCopyRejectLimitOption.html" target="wiki-view"><code>defGetCopyRejectLimitOption</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__defGetCopyLogVerbosityChoice.html" target="wiki-view"><code>defGetCopyLogVerbosityChoice</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__ProcessCopyOptions.html" target="wiki-view"><code>ProcessCopyOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copy_c__CopyGetAttnums.html" target="wiki-view"><code>CopyGetAttnums</code></a></li>
+</ul></body></html>

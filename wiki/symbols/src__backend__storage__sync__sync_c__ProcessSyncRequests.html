@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__sync__sync_c__ProcessSyncRequests.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcessSyncRequests</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/sync/sync.c:285</code></li>
+</ul>
+<h2>目的</h2>
+<p>蓄積されたファイル同期（fsync）要求をハッシュテーブルから読み出し、物理ディスクへの書き込みを確実に実行する。チェックポイント処理の一部として機能する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ProcessSyncRequests(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: グローバル変数 <code>pendingOps</code>（fsync 要求を保持するハッシュテーブル）および <code>sync_cycle_ctr</code>（サイクル管理用カウンタ）。</li>
+<li>**出力**: なし（副作用としてディスク同期を実行し、完了した要求を <code>pendingOps</code> から削除する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pendingOps</code> が初期化されていること（未初期化時は <code>ERROR</code> を送出）。</li>
+<li>チェックポイント処理中にのみ呼び出されること。</li>
+<li>以前の呼び出しが失敗していた場合、<code>sync_cycle_ctr</code> を用いて古いエントリの整合性を強制的に修正する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **要求の吸収**: <code>AbsorbSyncRequests()</code> を呼び出し、最新の fsync 要求をハッシュテーブルに取り込む。 2. **サイクル管理**: <code>sync_cycle_ctr</code> をインクリメントし、今回処理すべき要求と次回以降に回すべき要求を区別する。 3. **ハッシュ走査**: <code>pendingOps</code> を走査し、<code>cycle_ctr</code> が現在のサイクルと一致しない（＝古い）エントリのみを処理対象とする。 4. **同期実行**: <code>syncsw</code> テーブル経由で各ハンドラの <code>sync_syncfiletag</code> を呼び出す。</p>
+<ul>
+<li><code>enableFsync</code> が無効な場合はスキップ。</li>
+<li>実行中に <code>AbsorbSyncRequests()</code> を定期的に呼び出し、キューのオーバーフローを防止する。</li>
+<li>ファイルが存在しない場合（<code>ENOENT</code> 等）は、<code>AbsorbSyncRequests()</code> を経由してキャンセル要求が届いていないか確認し、リトライまたはエラー処理を行う。</li>
+<p>5. **クリーンアップ**: 処理完了したエントリを <code>pendingOps</code> から削除する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xlog.c</code>（チェックポイント処理時）。</li>
+<li>**呼び出し先**: <code>AbsorbSyncRequests()</code>, <code>syncsw</code>（各ハンドラの同期関数）, <code>hash_seq_search()</code>, <code>hash_search()</code>, <code>elog</code>/<code>ereport</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pendingOps</code>: fsync 要求を管理するハッシュテーブル。</li>
+<li><code>PendingFsyncEntry</code>: ハッシュテーブル内の各エントリ。</li>
+<li><code>syncsw</code>: 同期処理を抽象化したハンドラテーブル。</li>
+<li><code>sync_cycle_ctr</code>: 処理の境界を管理するカウンタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**同期失敗**: ファイルアクセスエラーが発生した場合、<code>data_sync_elevel</code> に基づきエラーを報告する。ただし、ファイルが削除済み（<code>FILE_POSSIBLY_DELETED</code>）の場合はリトライを試みる。</li>
+<li>**チェックポイントの無限ループ防止**: サイクルカウンタにより、処理中に新しく追加された要求を次回の実行へ遅延させる。</li>
+<li>**メモリ不足**: <code>pendingOpsCxt</code> を使用して、クリティカルセクション内でのメモリ確保を許容する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>sync_in_progress</code> フラグは、前回の実行が中断された場合に古いエントリの <code>cycle_ctr</code> を更新するために使用される。</li>
+<li><code>FSYNCS_PER_ABSORB</code> ごとに要求の吸収を行うことで、長時間の同期処理中もキューの肥大化を抑制している。</li>
+</ul></body></html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/timezone/pgtz.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/timezone/pgtz.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のタイムゾーン処理における統合レイヤーです。OS のタイムゾーンデータベース（tzdb）と PostgreSQL 内部の時刻計算ロジックを橋渡しし、タイムゾーンの読み込み、キャッシュ、および列挙機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/timezone</code> サブシステムの中核であり、<code>pgtz.h</code> で定義された <code>pg_tz</code> 構造体を管理します。ファイルシステム上のタイムゾーンファイルを読み込み、<code>localtime.c</code> が提供する低レベルな解析関数を呼び出して、PostgreSQL が利用可能な形式に変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タイムゾーンのキャッシュ管理**: ハッシュテーブルを用いて、一度読み込んだタイムゾーン定義をメモリ上に保持し、再読み込みのコストを削減します。</li>
+<li>**ファイルシステム抽象化**: タイムゾーン名から対応するファイルパスを特定し、大文字小文字を区別しない検索をサポートします。</li>
+<li>**初期化**: セッションおよびログ用のデフォルトタイムゾーン（通常は GMT）をシステム起動時に設定します。</li>
+<li>**列挙機能**: 利用可能なタイムゾーンの一覧を取得するためのイテレータを提供します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_tzset(const char *tzname)</code>: 指定された名前のタイムゾーンをロードし、<code>pg_tz</code> 構造体を返します。キャッシュヒット時は即座に返却します。</li>
+<li><code>pg_open_tzfile(const char *name, char *canonname)</code>: タイムゾーンファイルを開くための低レベル関数。大文字小文字を区別しない検索を行います。</li>
+<li><code>session_timezone</code> / <code>log_timezone</code>: 現在のセッションおよびログ出力で使用されるタイムゾーンを指すグローバルポインタ。</li>
+<li><code>pg_tzenumerate_next</code>: 利用可能なタイムゾーンを再帰的に走査して列挙するイテレータ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>init_timezone_hashtable</code></li>
+<li><code>pg_TZDIR</code></li>
+<li><code>pg_open_tzfile</code></li>
+<li><code>pg_timezone_initialize</code></li>
+<li><code>pg_tz_cache</code></li>
+<li><code>pg_tzenum</code></li>
+<li><code>pg_tzenumerate_end</code></li>
+<li><code>pg_tzenumerate_start</code></li>
+<li><code>pg_tzset</code></li>
+<li><code>pg_tzset_offset</code></li>
+<li><code>scan_directory_ci</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **要求**: <code>pg_tzset</code> が呼ばれると、まず大文字に変換した名前で <code>timezone_cache</code> ハッシュテーブルを検索します。 2. **ロード**: キャッシュにない場合、<code>tzload</code> (localtime.c) を呼び出してファイルシステムからデータを読み込みます。 3. **正規化**: <code>pg_open_tzfile</code> はディレクトリを再帰的に走査し、ファイルシステム上の正しいパスと正規化された名前を特定します。 4. **保存**: 読み込まれた <code>pg_tz</code> 構造体はキャッシュに格納され、以降のアクセスを高速化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>pgtz.h</code>: 内部データ構造（<code>pg_tz</code>, <code>state</code>）の定義。</li>
+<li><code>storage/fd.h</code>: <code>AllocateDir</code>, <code>ReadDir</code> 等のディレクトリ操作関数。</li>
+<li><code>utils/hsearch.h</code>: タイムゾーンキャッシュ用のハッシュテーブル実装。</li>
+<li><code>common/file_utils.h</code>: パス操作やファイルシステム関連のユーティリティ。</li>
+<li><code>ctype.h</code></li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/timezone/localtime.c</code>: <code>tzload</code> や <code>tzparse</code> を実装しており、実際のバイナリ解析を担当します。</li>
+<li><code>src/timezone/tzfile.h</code>: tzdb ファイルフォーマットの構造定義。</li>
+<li><code>src/include/pgtime.h</code>: タイムゾーン関連の公開 API 定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**大文字小文字の扱い**: タイムゾーン名はハッシュテーブル検索のために内部で大文字に変換されます。</li>
+<li>**GMT の特別扱い**: <code>GMT</code> はファイルシステムに依存せず、常に <code>tzparse</code> を通じて初期化されるため、ブートストラップ時でも安全に利用可能です。</li>
+<li>**セキュリティ**: <code>scan_directory_ci</code> 内で <code>.</code> で始まるファイルやディレクトリをスキップすることで、タイムゾーンディレクトリ外へのアクセスを防いでいます。</li>
+<li>**列挙の注意**: <code>pg_tzenumerate_next</code> は <code>palloc</code> を使用するため、メモリコンテキストの管理に注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_TZDIR.html" target="wiki-view"><code>pg_TZDIR</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_open_tzfile.html" target="wiki-view"><code>pg_open_tzfile</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__scan_directory_ci.html" target="wiki-view"><code>scan_directory_ci</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tz_cache.html" target="wiki-view"><code>pg_tz_cache</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__init_timezone_hashtable.html" target="wiki-view"><code>init_timezone_hashtable</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzset.html" target="wiki-view"><code>pg_tzset</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzset_offset.html" target="wiki-view"><code>pg_tzset_offset</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_timezone_initialize.html" target="wiki-view"><code>pg_timezone_initialize</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzenum.html" target="wiki-view"><code>pg_tzenum</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzenumerate_start.html" target="wiki-view"><code>pg_tzenumerate_start</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzenumerate_end.html" target="wiki-view"><code>pg_tzenumerate_end</code></a></li>
+<li><a href="../../symbols/src__timezone__pgtz_c__pg_tzenumerate_next.html" target="wiki-view"><code>pg_tzenumerate_next</code></a></li>
+</ul></body></html>

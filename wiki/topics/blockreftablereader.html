@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/blockreftablereader.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BlockRefTableReader</h1>
+<h2>概念</h2>
+<p><code>BlockRefTableReader</code> は、ディスク上にバイナリ形式で保存されたブロック参照テーブル（BlockRefTable）から、変更されたデータベースブロックの情報をストリーミング形式で読み込み、復元するための状態保持構造体（コンテキスト）です。</p>
+<h2>なぜ重要か</h2>
+<p>増分バックアップ（<code>basebackup_incremental.c</code>）やWALサマリーの処理（<code>walsummaryfuncs.c</code>, <code>pg_walsummary.c</code>）において、変更されたブロックの情報を効率的にデシリアライズして復元するために不可欠な役割を果たします。I/Oコールバック（<code>io_callback_fn</code>）を介して抽象化されているため、ファイルシステム以外の様々なデータソースからストリーミング形式でデータを読み込むことができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/common</code></li>
+<li><code>module:src/include/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/common/blkreftable.c#BlockRefTableReader</code>**: 読み込み状態（バッファ、チャンク情報、エラーコールバックなど）を保持する実装構造体。</li>
+<li>**<code>symbol:src/include/common/blkreftable.h#BlockRefTableReader</code>**: 外部モジュール向けに公開されている不透明な（Opaque）構造体定義。</li>
+<li>**<code>symbol:src/common/blkreftable.c#CreateBlockRefTableReader</code>**: 構造体を初期化し、マジックナンバーの検証を行うAPI関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元が <code>CreateBlockRefTableReader</code> を実行します。この関数は <code>palloc0</code> でメモリを確保し、I/O読み込みコールバック（<code>read_callback</code>）やエラー報告コールバック（<code>error_callback</code>）を登録します。その後、データの先頭4バイトが <code>BLOCKREFTABLE_MAGIC</code> と一致するか検証します。 2. **リレーションの反復処理**: 呼び出し元は <code>BlockRefTableReaderNextRelation</code> を呼び出して、次のリレーションの変更情報を順次取得します。 3. **ブロック情報の取得**: <code>BlockRefTableReaderGetBlocks</code> を呼び出し、対象リレーション内の変更されたブロック番号のリストを取得します。内部的には、変更ブロック数に応じて配列表現またはビットマップ表現がデシリアライズされます。 4. **エラーハンドリング**: 読み込み中にCRCエラーや不整合が発生した場合、登録された <code>error_callback</code> を通じてエラーが報告されます。</p>
+<p>*注意: 呼び出し元（<code>basebackup_incremental.c</code> など）における具体的な統合フローや、データ全体の終端処理などの詳細なエンドツーエンドのライフサイクルは、提供されたコンテキストからは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ソート順の保証**: 読み込み対象のバイナリデータは、<code>tablespace</code> -&gt; <code>database</code> -&gt; <code>relfilenumber</code> -&gt; <code>forknumber</code> の順で厳密にソートされている必要があります。</li>
+<li>**マジックナンバーの検証**: データの先頭は必ず <code>BLOCKREFTABLE_MAGIC</code> で開始されていなければなりません。</li>
+<li>**CRC整合性**: 読み込み処理中、<code>INIT_CRC32C</code> で初期化されたCRC32Cによる整合性チェックが維持されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不透明な型（Opaque Type）への直接アクセス**: <code>BlockRefTableReader</code> は公開ヘッダー <code>src/include/common/blkreftable.h</code> では不透明な型として定義されています。内部メンバ（<code>chunk_data</code> や <code>chunk_position</code> など）に直接アクセスしようとせず、必ず <code>blkreftable.c</code> で提供されるAPIを介して操作する必要があります。</li>
+<li>**チャンクサイズ制限**: 内部の <code>chunk_data</code> は <code>MAX_ENTRIES_PER_CHUNK</code> の固定長配列として確保されているため、この定数を変更する場合は境界条件に注意が必要です。</li>
+<li>**ソート順の違反**: 入力データが期待される順序（データベース、テーブルスペース、リレーション、フォーク順）でソートされていない場合、読み込み処理が失敗するか、正しくデシリアライズできない可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/common/blkreftable.h</code>: 外部公開されているAPIおよび構造体の宣言。</li>
+<li><code>src/common/blkreftable.c</code>: <code>CreateBlockRefTableReader</code> の実装や、内部的なデシリアライズ処理（<code>BlockRefTableRead</code> など）の詳細。</li>
+</ul></body></html>

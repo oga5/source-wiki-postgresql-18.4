@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/timelineid.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TimeLineID</h1>
+<h2>概念</h2>
+<p><code>TimeLineID</code> は、PostgreSQLにおけるデータベースの履歴（世代）を識別するための識別子です。PITR（ポイントインタイムリカバリ）の実行などによってデータベースの歴史が分岐する際、新しいタイムラインが作成され、それぞれの分岐を管理・特定するために使用されます。</p>
+<p>内部的には <code>uint32</code> のエイリアス（<code>typedef</code>）として定義されています。</p>
+<h2>なぜ重要か</h2>
+<p><code>TimeLineID</code> は、データベースの世代管理とリカバリプロセスの根幹を支える要素です。</p>
+<ul>
+<li>**WAL位置の特定**: 64ビットのWAL位置ポインタ（<code>XLogRecPtr</code>）と組み合わせることで、特定のタイムライン上における正確なWAL位置を特定できます。</li>
+<li>**レプリケーションの制御**: 物理レプリケーションを開始する際、どのタイムラインのどの位置からWALのストリーミングを開始するか（<code>startpointTLI</code>）を指定するために不可欠です。</li>
+<li>**履歴の追跡**: タイムライン履歴ファイル（<code>timeline.history</code>）を介して、親タイムラインから新しいタイムラインへの分岐を追跡・管理します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/replication</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/access/xlogdefs.h#TimeLineID</code>**</li>
+<li><code>TimeLineID</code> の基本となる <code>typedef uint32 TimeLineID;</code> 定義箇所です。</li>
+<li>**<code>symbol:src/include/access/xlogreader.h#TimeLineID</code>**</li>
+<li>WALリーダーの状態管理（<code>XLogReaderState</code>）や、WALセグメントを開くためのコールバック関数（<code>WALSegmentOpenCB</code>）において、タイムラインIDを参照・更新するために使用されます。</li>
+<li>**<code>symbol:src/include/replication/walreceiver.h#TimeLineID</code>**</li>
+<li>WALレシーバにおいて、物理レプリケーションの開始点情報を保持する <code>physical</code> 構造体の <code>startpointTLI</code> フィールドなどで使用されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、タイムラインの分岐から履歴ファイルの作成、ストリーミング開始に至る完全なエンドツーエンドの制御フローは明らかになっていません。しかし、以下の部分的な流れが確認できます。</p>
+<p>1. **タイムライン情報の管理と検索**: <code>src/backend/access/transam/timeline.c</code> 内の関数群（<code>restoreTimeLineHistoryFiles</code>, <code>readTimeLineHistory</code>, <code>existsTimeLineHistory</code>, <code>findNewestTimeLine</code> など）が、履歴ファイルの復元や読み込み、最新タイムラインの検索を行います。 2. **WALの読み込み**: WALリーダーは、<code>WALSegmentOpenCB</code> コールバックを介して、対象となる <code>TimeLineID</code> をポインタ（<code>TimeLineID *tli_p</code>）経由で参照または更新しながらWALセグメントを開きます。 3. **レプリケーションの開始**: WALレシーバは、<code>walreceiver.h</code> 内の <code>physical</code> 構造体に格納された <code>startpointTLI</code>（<code>TimeLineID</code> 型）を基準として、指定されたタイムラインからWALのストリーミングを開始します。</p>
+<h2>重要な不変条件</h2>
+<p>提供された情報から特定できる不変条件は以下の通りです。</p>
+<ul>
+<li>**一意性**: データベースの特定の履歴（世代）を特定するため、タイムライン識別子として一意でなければなりません。</li>
+<li>**型制限**: <code>uint32</code> として定義されているため、値の範囲はこのデータ型の制限を受けます。</li>
+<li>**位置特定におけるペアリング**: WAL内の特定の位置を厳密に特定するためには、<code>XLogRecPtr</code> と <code>TimeLineID</code> が正しく組み合わされている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効なIDの指定**: 識別子として無効な値（<code>0</code> など）が渡された場合の挙動は、各関数（<code>readTimeLineHistory</code> など）の実装に依存します。また、存在しないタイムラインIDを指定すると、履歴ファイルの検索や読み込み処理が失敗する原因になります。</li>
+<li>**影響範囲の広さ**: <code>TimeLineID</code> は <code>access/xlogdefs.h</code> で定義された基本型であり、レプリケーションやリカバリ関連のコード全体で広く使用されています。さらに、フロントエンドツール（<code>pg_waldump</code> など）でも利用されるため、この型や関連ロジックを変更する際は、互換性と影響範囲に細心の注意を払う必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/access/xlogdefs.h</code>**: <code>TimeLineID</code> の基本定義を確認できます。</li>
+<li>**<code>src/include/access/xlogreader.h</code>**: WALリーダーにおける <code>TimeLineID</code> の利用方法を確認できます。</li>
+<li>**<code>src/include/replication/walreceiver.h</code>**: レプリケーション開始時における <code>TimeLineID</code> の役割を確認できます。</li>
+<li>**<code>src/backend/access/transam/timeline.c</code>**: 履歴ファイルの操作やタイムライン管理の実装ロジックが集中しているため、詳細な動作を理解するのに最適です。</li>
+</ul></body></html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_wait_one.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgaio_uring_wait_one</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/aio/method_io_uring.c:583</code></li>
+</ul>
+<h2>目的</h2>
+<p>特定の非同期 I/O (<code>PgAioHandle</code>) が完了するまで待機し、完了イベントを処理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgaio_uring_wait_one(PgAioHandle *ioh, uint64 ref_generation)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ioh</code>: 待機対象の <code>PgAioHandle</code> 構造体へのポインタ。</li>
+<li><code>ref_generation</code>: 待機対象の I/O 世代番号。</li>
+<li>**出力**: なし（完了時に状態更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ioh-&gt;owner_procno</code> に基づく <code>PgAioUringContext</code> が初期化済みであること。</li>
+<li>呼び出し元は <code>completion_lock</code> を保持していないこと（関数内で排他的に取得するため）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 対象の <code>PgAioUringContext</code> の <code>completion_lock</code> を排他取得する。 2. ループ内で以下を繰り返す：</p>
+<ul>
+<li><code>pgaio_io_was_recycled</code> を確認し、対象 I/O が既に完了・再利用されている場合はループを抜ける。</li>
+<li><code>io_uring_cq_ready</code> で完了キューを確認し、イベントがあれば <code>pgaio_uring_drain_locked</code> を呼び出して処理する。</li>
+<li>完了していない場合、<code>io_uring_wait_cqes</code> を呼び出し、カーネルからの完了通知を待機する（<code>WAIT_EVENT_AIO_IO_URING_EXECUTION</code> を報告）。</li>
+<li><code>io_uring_wait_cqes</code> が <code>EINTR</code> を返した場合は再試行し、その他のエラー時は <code>PANIC</code> を発生させる。</li>
+<p>3. <code>completion_lock</code> を解放して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/aio/method_io_uring.c</code> 内の <code>IoMethodOps</code> 構造体（<code>pgaio_uring_ops</code>）を通じて間接的に呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>pgaio_io_was_recycled</code></li>
+<li><code>io_uring_cq_ready</code></li>
+<li><code>pgstat_report_wait_start</code> / <code>pgstat_report_wait_end</code></li>
+<li><code>io_uring_wait_cqes</code></li>
+<li><code>pgaio_uring_drain_locked</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioHandle</code>: I/O 操作の状態を保持するハンドル。</li>
+<li><code>PgAioUringContext</code>: <code>io_uring</code> インスタンスと <code>completion_lock</code> を含むコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>io_uring_wait_cqes</code> が <code>EINTR</code> 以外のエラーを返した場合、<code>errno</code> を設定して <code>PANIC</code> する。</li>
+<li>他のバックエンドによって I/O が既に処理済みの場合、待機せずに即座に復帰する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>現在のロック実装は、所有プロセス以外のバックエンドが完了処理を行うことを想定しているが、所有プロセス自身が待機する場合でもロックを取得するため、オーバーヘッドが発生している。将来的な最適化の余地がある。</li>
+</ul></body></html>

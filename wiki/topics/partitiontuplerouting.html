@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/partitiontuplerouting.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PartitionTupleRouting</h1>
+<h2>概念</h2>
+<p><code>PartitionTupleRouting</code> は、パーティション化されたテーブルに対するデータ操作（INSERT、UPDATE、MERGE、および COPY コマンドなど）において、入力されたタプルを適切なリーフパーティションへルーティングするための実行環境や状態を一元管理するデータ構造です。</p>
+<p>本構造体は、ヘッダーファイル <code>execPartition.h</code> においては不完全型（opaque pointer）として定義され、具体的なメンバ変数は実装ファイルである <code>execPartition.c</code> 内に隠蔽されています。</p>
+<h2>なぜ重要か</h2>
+<p>パーティション数が多いテーブルにおいて、すべてのパーティションの実行時情報（<code>ResultRelInfo</code>）を最初から初期化すると、メモリ消費が激しくなります。<code>PartitionTupleRouting</code> は、ルーティング時に必要となった時点でオンデマンドに <code>ResultRelInfo</code> を初期化・登録する仕組みを提供し、メモリ消費を抑える重要な最適化を担っています。また、連続するタプルが同一パーティションに属する場合のキャッシュ機構（<code>get_partition_for_tuple</code> 内）など、アクセス効率の向上にも直結します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/executor/execPartition.h#PartitionTupleRouting</code></li>
+<p>外部モジュール向けに公開されている不完全型としての構造体定義。</p>
+<li><code>symbol:src/backend/executor/execPartition.c#PartitionTupleRouting</code></li>
+<p><code>Relation</code>、<code>PartitionDispatch</code>、<code>ResultRelInfo</code> の配列、メモリコンテキスト（<code>memcxt</code>）などを保持する具体的な構造体定義。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>src/backend/commands/copyfrom.c</code>（COPY コマンド実行時）や <code>nodeModifyTable.c</code> などの実行ノードから <code>ExecSetupPartitionTupleRouting</code> が呼び出され、ルートテーブル情報やメモリコンテキストを保持した <code>PartitionTupleRouting</code> 構造体が構築されます。 2. **ルーティング**: 挿入対象のタプルに対し <code>ExecFindPartition</code> が呼び出され、本構造体を参照してタプルのパーティションキーを評価します。 3. **再帰探索とオンデマンド初期化**: 階層化されたパーティション構造の場合、内部に保持する <code>PartitionDispatch</code> を介して再帰的に探索が行われます。未初期化のパーティションが特定された場合、<code>ExecInitPartitionInfo</code> 等を用いて <code>ResultRelInfo</code> を生成し、本構造体の <code>partitions</code> 配列等に動的に登録します。 4. **タプル挿入**: 特定された <code>ResultRelInfo</code>（挿入先のパーティション情報）に対してタプルが挿入されます。</p>
+<p>※なお、適切なパーティションが見つからない場合の具体的なエラーハンドリングや、UPDATE/MERGE における詳細な遷移など、エンドツーエンドのすべての詳細なフローは本コンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>PartitionDispatch</code> 情報は必ず本構造体にカプセル化されます。</li>
+<li>保持するメモリコンテキスト (<code>memcxt</code>) は、ルーティングに関連する動的割り当ての生存期間を管理します。</li>
+<li>挿入処理（<code>nodeModifyTable.c</code> 等）において、タプルルーティングの全ライフサイクルを通じて本構造体が有効である必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ヘッダーと実装の分離**: 構造体の詳細なメンバは <code>execPartition.c</code> に隠蔽されているため、構造体のメンバを変更する際は、インターフェースを定義する <code>execPartition.h</code> との整合性に注意する必要があります。</li>
+<li>**再帰探索のオーバーヘッド**: パーティション階層が非常に深い場合、<code>partition_dispatch_info</code> を介した再帰的な探索が発生し、オーバーヘッドが増大する可能性があります。</li>
+<li>**配列の拡張**: ルーティング中に <code>max_partitions</code> を超えるパーティションが特定された場合、配列の拡張（動的再割り当て）が発生する境界条件が存在します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/executor/execPartition.h</code></li>
+<p>外部に公開されているインターフェース定義。</p>
+<li><code>src/backend/executor/execPartition.c</code></li>
+<p><code>PartitionTupleRouting</code> の具体的なメンバ定義、および <code>ExecSetupPartitionTupleRouting</code> や <code>ExecFindPartition</code> などのルーティング制御関数の実装。</p>
+</ul></body></html>

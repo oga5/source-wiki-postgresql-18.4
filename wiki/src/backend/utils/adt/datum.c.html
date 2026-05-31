@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/datum.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/datum.c</h1>
+<h2>概要</h2>
+<p><code>datum.c</code> は、PostgreSQL の汎用データ型表現である <code>Datum</code> を操作するための低レベルなユーティリティ関数群を提供します。型ごとの物理的なメモリレイアウト（<code>byVal</code> か否か、<code>typLen</code> の値）に基づき、コピー、比較、シリアライズ、ハッシュ計算などの基本操作を抽象化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、特定のデータ型に依存しない「型メタデータ駆動型」の操作を担います。個別のデータ型（<code>int.c</code>, <code>varlena.c</code> 等）が実装する型固有のロジックと、それを利用する実行エンジンやストレージ層との間を仲介する基盤層です。</p>
+<h2>責務</h2>
+<ul>
+<li>**メモリ管理**: <code>Datum</code> のコピー（<code>datumCopy</code>）や、メモリコンテキスト間での転送（<code>datumTransfer</code>）の実行。</li>
+<li>**サイズ計算**: 型情報に基づいた <code>Datum</code> の実サイズ（<code>datumGetSize</code>）の算出。</li>
+<li>**バイナリ比較・ハッシュ**: 論理値ではなく、バイナリイメージに基づいた比較（<code>datum_image_eq</code>）やハッシュ計算（<code>datum_image_hash</code>）。</li>
+<li>**シリアライズ**: パラレルクエリ等のプロセス間通信で <code>Datum</code> を転送するための直列化・復元（<code>datumSerialize</code>, <code>datumRestore</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>datumCopy</code>: <code>palloc</code> を用いて <code>Datum</code> の独立したコピーを作成する。拡張オブジェクト（Expanded Object）のフラット化も行う。</li>
+<li><code>datumTransfer</code>: <code>datumCopy</code> に似ているが、読み書き可能な拡張オブジェクトを現在のメモリコンテキストへ再配置（reparent）する最適化を行う。</li>
+<li><code>datum_image_eq</code> / <code>datum_image_hash</code>: 型の論理的意味ではなく、ビット列としての同一性を判定・計算する。</li>
+<li><code>datumSerialize</code> / <code>datumRestore</code>: <code>Datum</code> をバイトストリームへ変換・復元する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>btequalimage</code></li>
+<li><code>datumEstimateSpace</code></li>
+<li><code>datumGetSize</code></li>
+<li><code>datumIsEqual</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>本モジュールの関数は、呼び出し元から提供される <code>typByVal</code>（値渡しフラグ）と <code>typLen</code>（型長）を引数として受け取ります。 1. **分岐**: <code>typByVal</code> が真であれば <code>Datum</code> 自体を直接操作し、偽であれば <code>Datum</code> が指すポインタを辿ります。 2. **型長判定**: <code>typLen</code> が <code>-1</code>（可変長）であれば <code>varlena</code> 構造体として扱い、<code>-2</code>（C文字列）であれば <code>strlen</code> を使用します。 3. **拡張オブジェクト**: <code>varlena</code> 型かつ <code>VARATT_IS_EXTERNAL_EXPANDED</code> が真の場合、<code>EOH_flatten_into</code> を呼び出してフラットなメモリ領域へ変換します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とエラー処理。</li>
+<li><code>access/detoast.h</code>: TOAST データの展開処理。</li>
+<li><code>common/hashfn.h</code>: バイナリハッシュ計算。</li>
+<li><code>utils/expandeddatum.h</code>: 拡張オブジェクトの操作。</li>
+<li><code>utils/datum.h</code>: 本ファイルのヘッダー。</li>
+<li><code>fmgr.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/datum.h</code>: インターフェース定義。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>: 可変長データ型の詳細な実装。</li>
+<li><code>src/backend/utils/adt/expandeddatum.c</code>: 拡張オブジェクトのメモリ管理ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**TOAST の扱い**: 本モジュールは TOAST ポインタをそのまま扱うことが基本ですが、<code>datumCopy</code> や <code>datumSerialize</code> では拡張オブジェクトをフラット化します。これは、呼び出し元がメモリコンテキストの寿命を意識せずに済むようにするためです。</li>
+<li>**比較の注意**: <code>datumIsEqual</code> は単純なバイト比較を行うため、TOAST されたデータや、異なる内部表現を持つ同一値に対しては期待通りの結果にならない可能性があります。</li>
+<li>**型情報の重要性**: すべての関数は呼び出し元が正しい <code>typByVal</code> と <code>typLen</code> を提供することを前提としています。これらが誤っていると、メモリ破壊や不正なポインタ参照を引き起こします。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumGetSize.html" target="wiki-view"><code>datumGetSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumCopy.html" target="wiki-view"><code>datumCopy</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumTransfer.html" target="wiki-view"><code>datumTransfer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumIsEqual.html" target="wiki-view"><code>datumIsEqual</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datum_image_eq.html" target="wiki-view"><code>datum_image_eq</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datum_image_hash.html" target="wiki-view"><code>datum_image_hash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__btequalimage.html" target="wiki-view"><code>btequalimage</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumEstimateSpace.html" target="wiki-view"><code>datumEstimateSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumSerialize.html" target="wiki-view"><code>datumSerialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datum_c__datumRestore.html" target="wiki-view"><code>datumRestore</code></a></li>
+</ul></body></html>

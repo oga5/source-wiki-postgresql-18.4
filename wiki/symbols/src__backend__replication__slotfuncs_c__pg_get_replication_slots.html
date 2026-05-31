@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__slotfuncs_c__pg_get_replication_slots.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_get_replication_slots</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/slotfuncs.c:235</code></li>
+</ul>
+<h2>目的</h2>
+<p>システム内の全レプリケーションスロットの情報を集約し、SQLインターフェース（<code>pg_replication_slots</code> ビュー）を通じて提供するセット返却関数（SRF）です。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum pg_get_replication_slots(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PG_FUNCTION_ARGS</code>（SQL関数呼び出しの引数）。</li>
+<li>**出力**: <code>Datum</code>（<code>pg_replication_slots</code> ビューの各列に対応するタプルのセット）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ReplicationSlotControlLock</code> を共有ロックで保持し、各スロットの <code>mutex</code> を個別に取得してスナップショットをコピーすることで、システム全体を長時間ブロックせずに整合性を確保します。</li>
+<li>スロット名などの情報は機密性が低いと見なされるため、特別な権限チェックは行われません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>InitMaterializedSRF</code> を呼び出し、結果セットの初期化を行います。 2. <code>GetXLogWriteRecPtr()</code> で現在のWAL書き込み位置を取得します。 3. <code>ReplicationSlotControlLock</code> を共有モードで取得し、全スロットを反復走査します。 4. 使用中のスロット（<code>in_use</code>）について、<code>mutex</code> を用いてスロット内容を一時変数にコピーします。 5. コピーしたデータに基づき、スロットの種類（物理/論理）、永続性、アクティブなPID、LSN位置（<code>restart_lsn</code>, <code>confirmed_flush</code>）、WALの可用性状態などを算出します。 6. WALの可用性（<code>walstate</code>）に応じて、<code>safe_wal_size</code>（WALが削除されるまでの残りバイト数）を計算します。 7. 構築した値を <code>tuplestore</code> に格納し、最終的に呼び出し元へ返却します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQLエンジン（<code>pg_replication_slots</code> ビューのクエリ実行時）。</li>
+<li>**呼び出し先**: </li>
+<li><code>GetXLogWriteRecPtr()</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>GetWALAvailability()</code></li>
+<li><code>XLByteToSeg</code> 等のWAL操作関数</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationSlot</code>: スロットの内部状態を保持する構造体。</li>
+<li><code>ReplicationSlotCtl</code>: 全スロットを管理する共有メモリ上の制御構造体。</li>
+<li><code>ReturnSetInfo</code>: SRFの結果セット情報を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>スロットが削除済みまたは無効化されている場合、<code>walstate</code> は <code>WALAVAIL_REMOVED</code> または <code>lost</code> と判定されます。</li>
+<li><code>max_slot_wal_keep_size_mb</code> が負の値である場合、<code>safe_wal_size</code> は計算されず <code>null</code> となります。</li>
+<li><code>restart_lsn</code> が無効な場合、関連するLSNフィールドは <code>null</code> として出力されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ReplicationSlotControlLock</code> を保持するため、スロット数が多い環境でもパフォーマンスへの影響を最小限に抑える設計になっています。</li>
+<li><code>walstate</code> の判定ロジックには、プロセスが生存している場合に「lost」ではなく「unreserved」と見なす等のヒューリスティックが含まれています。</li>
+</ul></body></html>

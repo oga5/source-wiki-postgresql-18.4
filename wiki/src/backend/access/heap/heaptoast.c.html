@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/heaptoast.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/heaptoast.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるTOAST（The Oversized-Attribute Storage Technique）のヒープ層における実装を提供します。可変長属性がページサイズを超過する場合の圧縮や、外部テーブルへの退避（アウトラインストレージ）を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> サブシステムの一部として、タプル挿入・更新時のデータ整形および削除時のリソース解放を担います。<code>heapam.c</code> から呼び出され、TOASTの内部ロジック（<code>toast_internals.c</code>）とヒープタプルの構造を橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**TOASTの適用**: 挿入・更新時にタプルがページサイズ制限を超える場合、圧縮や外部保存を行い、収まるサイズまで整形する。</li>
+<li>**ライフサイクル管理**: タプル削除時に、関連するTOASTテーブルの外部データをカスケード削除する。</li>
+<li>**データ復元**: 外部保存されたデータや圧縮データを、必要に応じてメモリ上で展開（フラット化）する。</li>
+<li>**スライス取得**: TOASTテーブルから特定範囲のデータのみを効率的に読み出す。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>heap_toast_insert_or_update</code>: 挿入・更新時のメインエントリポイント。TOAST処理の制御フローを統括します。</li>
+<li><code>heap_toast_delete</code>: タプル削除時にTOASTテーブルの関連エントリをクリーンアップします。</li>
+<li><code>toast_flatten_tuple</code>: 外部参照を含むタプルを、すべてインライン化された状態に変換します。</li>
+<li><code>heap_fetch_toast_slice</code>: TOASTテーブルから指定されたオフセットと長さのデータを取得します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>toast_build_flattened_tuple</code></li>
+<li><code>toast_flatten_tuple_to_datum</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **整形プロセス**: <code>heap_toast_insert_or_update</code> は <code>heap_deform_tuple</code> でタプルを分解し、<code>ToastTupleContext</code> を初期化します。 2. **優先順位付き圧縮/退避**: 以下の順序でデータを処理し、目標サイズ（<code>TOAST_TUPLE_TARGET</code>）以下を目指します。</p>
+<ul>
+<li>EXTENDED属性の圧縮 → 外部保存</li>
+<li>EXTERNAL属性の外部保存</li>
+<li>MAIN属性の圧縮 → 外部保存</li>
+<p>3. **再構築**: 変更が必要な場合、<code>heap_fill_tuple</code> を用いて新しいタプルを生成します。 4. **削除プロセス**: <code>heap_toast_delete</code> はタプルを分解し、<code>toast_delete_external</code> を呼び出してTOASTテーブルの該当行を削除します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/toast_internals.h</code>: TOASTの低レベルな圧縮・外部保存ロジック。</li>
+<li><code>access/toast_helper.h</code>: TOAST処理用の補助構造体や関数。</li>
+<li><code>access/heapam.h</code>: ヒープアクセスメソッドの定義。</li>
+<li><code>access/detoast.h</code>: 外部データや圧縮データの展開用インターフェース。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/common/toast_internals.c</code>: TOASTテーブルへの実際の書き込みや圧縮アルゴリズムの実装。</li>
+<li><code>src/include/access/heaptoast.h</code>: TOASTの閾値（<code>TOAST_TUPLE_THRESHOLD</code>等）や外部公開関数の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: TOAST処理はタプルの再構築を伴うため、頻繁な発生はオーバーヘッドとなります。</li>
+<li>**整合性**: <code>heap_toast_insert_or_update</code> は元のタプルを破壊せず、必要に応じて新しいタプルを <code>palloc</code> して返します。</li>
+<li>**注意点**: TOASTテーブルへの再帰的な呼び出しは禁止されています。<code>relkind</code> チェックが各関数で行われている点に注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__heap_toast_delete.html" target="wiki-view"><code>heap_toast_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__heap_toast_insert_or_update.html" target="wiki-view"><code>heap_toast_insert_or_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__toast_flatten_tuple.html" target="wiki-view"><code>toast_flatten_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__toast_flatten_tuple_to_datum.html" target="wiki-view"><code>toast_flatten_tuple_to_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__toast_build_flattened_tuple.html" target="wiki-view"><code>toast_build_flattened_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heaptoast_c__heap_fetch_toast_slice.html" target="wiki-view"><code>heap_fetch_toast_slice</code></a></li>
+</ul></body></html>

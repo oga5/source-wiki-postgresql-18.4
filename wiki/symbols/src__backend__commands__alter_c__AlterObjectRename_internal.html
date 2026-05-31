@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__alter_c__AlterObjectRename_internal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AlterObjectRename_internal</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/commands/alter.c:164</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのシステムカタログに登録された汎用オブジェクトの名前変更処理を実行する内部関数です。カタログの属性情報を動的に取得し、権限チェック、重複チェック、およびカタログタプルの更新を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 対象オブジェクトが格納されているシステムカタログの <code>Relation</code>。</li>
+<li><code>objectId</code>: 変更対象オブジェクトの <code>Oid</code>。</li>
+<li><code>new_name</code>: 新しいオブジェクト名。</li>
+<li>**出力**: なし（成功時はカタログを更新し、失敗時はエラーをスロー）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>rel</code> は有効なシステムカタログの <code>Relation</code> であること。</li>
+<li><code>objectId</code> に対応するタプルが <code>rel</code> 内に存在すること。</li>
+<li>呼び出し元で適切なロックが取得されていること。</li>
+<li>オブジェクトが所有者を持つ場合、実行ユーザーは所有者であるか、スーパーユーザーである必要がある。</li>
+<li>名前空間（スキーマ）に属するオブジェクトの場合、実行ユーザーは対象名前空間に対する <code>CREATE</code> 権限が必要。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **タプル取得**: <code>SearchSysCache1</code> を使用して対象オブジェクトのタプルを取得。 2. **権限検証**: スーパーユーザーでない場合、所有権チェックおよび名前空間に対する <code>CREATE</code> 権限チェックを実行。<code>Subscription</code> の場合は追加のデータベース権限チェックとパスワード要件の検証を行う。 3. **重複チェック**: オブジェクト型に応じて、名前空間内での名前の衝突をチェック（<code>IsThere...</code> 系関数や <code>SearchSysCacheExists</code> を使用）。 4. **タプル更新**: <code>heap_modify_tuple</code> を用いて名前属性を更新し、<code>CatalogTupleUpdate</code> でカタログへ書き込む。 5. **フック実行**: <code>InvokeObjectPostAlterHook</code> を呼び出し、イベントトリガーやキャッシュ無効化等の後処理を行う。 6. **後処理**: <code>Publication</code> 等、特定のオブジェクト型に対して必要な追加処理を実行。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/alter.c</code> 内の <code>RENAME</code> ステートメント処理フローから呼び出される。</li>
+<li>**呼び出し先**: <code>SearchSysCache1</code>, <code>heap_getattr</code>, <code>superuser</code>, <code>has_privs_of_role</code>, <code>object_aclcheck</code>, <code>IsThere...</code> 系関数, <code>heap_modify_tuple</code>, <code>CatalogTupleUpdate</code>, <code>InvokeObjectPostAlterHook</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: システムカタログの構造体。</li>
+<li><code>HeapTuple</code>: カタログタプル。</li>
+<li><code>Oid</code>: オブジェクト識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キャッシュルックアップ失敗**: <code>objectId</code> が存在しない場合、<code>elog(ERROR)</code> を発生。</li>
+<li>**権限不足**: 所有権がない、または名前空間への <code>CREATE</code> 権限がない場合、<code>aclcheck_error</code> を発生。</li>
+<li>**名前の衝突**: 同一名前空間内に同名のオブジェクトが存在する場合、<code>report_name_conflict</code> または <code>report_namespace_conflict</code> を経由してエラーを発生。</li>
+<li>**サブスクリプション制約**: <code>password_required=false</code> のサブスクリプションを非スーパーユーザーが変更しようとした場合、エラーを発生。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>get_object_attnum_...</code> 系関数を使用して属性番号を動的に解決するため、新しいオブジェクト型をサポートする場合は、それらの関数が対象カタログに対して正しく実装されている必要があります。</li>
+<li><code>Subscription</code> や <code>Procedure</code> 等、型固有のチェックロジックがハードコードされているため、複雑なオブジェクトを追加する際は条件分岐の肥大化に注意してください。</li>
+</ul></body></html>

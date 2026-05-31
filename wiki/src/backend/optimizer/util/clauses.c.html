@@ -1,0 +1,129 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/clauses.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/clauses.c</h1>
+<h2>概要</h2>
+<p><code>clauses.c</code> は、PostgreSQLのクエリプランナにおいて、式（Expression）ツリーの静的解析、簡略化、定数評価、および関数インライン展開を担う中心的なユーティリティファイルです。クエリの最適化過程で、述語の性質（揮発性、厳密性、並列安全性など）を判定し、不要な計算を排除してプランの実行効率を向上させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールにおいて、式ツリーを操作する「基盤」として機能します。他の最適化コンポーネント（<code>pathnode.c</code>, <code>restrictinfo.c</code> など）が、プラン作成の判断材料として式の性質を問い合わせるためのAPIを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**式の簡略化**: 定数畳み込み（<code>eval_const_expressions</code>）による式ツリーの簡略化。</li>
+<li>**属性解析**: 式に含まれる関数や演算子の性質（揮発性、厳密性、並列安全性）の判定。</li>
+<li>**インライン展開**: SQL関数やSRF（Set-Returning Function）のインライン展開による最適化。</li>
+<li>**制約推論**: 式からNULLにならないリレーションや変数を特定し、不要なスキャンを排除するための情報抽出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>式の簡略化・評価</h3>
+<ul>
+<li><code>eval_const_expressions</code>: 式ツリーを走査し、定数評価可能な部分を <code>Const</code> ノードに置換する。</li>
+<li><code>simplify_function</code>: 関数呼び出しの簡略化、引数のデフォルト値補完、名前付き引数の位置指定への変換を行う。</li>
+<li><code>inline_function</code>: SQL関数をインライン展開し、式ツリーに埋め込む。</li>
+</ul>
+<h3>性質判定（Walker系）</h3>
+<ul>
+<li><code>contain_mutable_functions</code>: 式に非IMMUTABLEな関数が含まれるか判定。</li>
+<li><code>contain_volatile_functions</code>: 式にVOLATILEな関数が含まれるか判定。</li>
+<li><code>max_parallel_hazard</code>: クエリ全体の並列安全性を判定。</li>
+<li><code>contain_nonstrict_functions</code>: 式がNULL入力に対してNULLを返さない（非厳密な）可能性があるか判定。</li>
+</ul>
+<h3>述語解析・制約抽出</h3>
+<ul>
+<li><code>find_nonnullable_rels</code> / <code>find_nonnullable_vars</code>: 式の結果がTRUEとなるためにNULLであってはならないリレーションや変数を特定。</li>
+<li><code>is_pseudo_constant_clause</code>: 式が現在のクエリレベルで定数とみなせるか判定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CommuteOpExpr</code></li>
+<li><code>NumRelids</code></li>
+<li><code>contain_agg_clause</code></li>
+<li><code>contain_agg_clause_walker</code></li>
+<li><code>contain_window_function</code></li>
+<li><code>eval_const_expressions_context</code></li>
+<li><code>find_window_functions</code></li>
+<li><code>find_window_functions_walker</code></li>
+<li><code>inline_error_callback_arg</code></li>
+<li><code>max_parallel_hazard_context</code></li>
+<li><code>substitute_actual_parameters_context</code></li>
+<li><code>substitute_actual_srf_parameters_context</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**Walkerパターン**: <code>expression_tree_walker</code> を利用し、式ツリーを再帰的に走査して特定のノード（<code>Aggref</code>, <code>WindowFunc</code>, <code>Param</code> 等）を探索します。</li>
+<li>**Mutatorパターン**: <code>expression_tree_mutator</code> を利用し、式ツリーを走査しながらノードの置換や簡略化を行います。</li>
+<li>**コンテキスト管理**: <code>eval_const_expressions_context</code> 等のコンテキスト構造体を引数として渡し、走査中の状態（パラメータの束縛、現在処理中のCASE式など）を保持します。</li>
+<li>**エラーハンドリング**: <code>sql_inline_error_callback</code> を使用し、インライン展開中に発生したエラーの発生源を特定します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: ノード定義、走査基盤（<code>nodeFuncs.h</code>, <code>makefuncs.h</code>）。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_proc</code>, <code>pg_operator</code> 等）へのアクセス。</li>
+<li><code>utils/</code>: キャッシュ（<code>syscache.h</code>）、メモリ管理（<code>memutils.h</code>）、データ型情報（<code>typcache.h</code>）。</li>
+<li><code>optimizer/</code>: プランナの主要データ構造（<code>pathnode.h</code>, <code>cost.h</code>）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/functions.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/multibitmapset.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/subscripting.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/json.h</code></li>
+<li><code>utils/jsonb.h</code></li>
+<li><code>utils/jsonpath.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/optimizer/clauses.h</code>: 本ファイルの公開関数プロトタイプ。</li>
+<li><code>src/backend/nodes/nodeFuncs.c</code>: 式ツリーの汎用的な走査・コピー関数。</li>
+<li><code>src/backend/optimizer/util/var.c</code>: 変数（<code>Var</code>）の抽出や操作。</li>
+<li><code>src/backend/rewrite/rewriteManip.c</code>: クエリ書き換え時の式操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>eval_const_expressions</code> 等の簡略化処理は、一時的なメモリコンテキストを作成して実行されます。これは、解析中に生成される大量のノードによるメモリリークを防ぐためです。</li>
+<li>**インライン展開の制限**: SQL関数が再帰的である場合や、副作用（VOLATILE）を持つ場合はインライン展開されません。</li>
+<li>**キャッシュ**: <code>RestrictInfo</code> や <code>PathTarget</code> には、揮発性判定の結果がキャッシュされます。これらのノードを直接変更する場合は、キャッシュを <code>VOLATILITY_UNKNOWN</code> にリセットする必要があります。</li>
+<li>**未実装・浅い部分**: <code>is_pseudo_constant_clause</code> は <code>Aggref</code> や <code>WindowFunc</code> のチェックを意図的に省略しています。これらはWHERE句での利用を想定しているためです。他のコンテキストで利用する場合は注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__eval_const_expressions_context.html" target="wiki-view"><code>eval_const_expressions_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__substitute_actual_parameters_context.html" target="wiki-view"><code>substitute_actual_parameters_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__substitute_actual_srf_parameters_context.html" target="wiki-view"><code>substitute_actual_srf_parameters_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__inline_error_callback_arg.html" target="wiki-view"><code>inline_error_callback_arg</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__max_parallel_hazard_context.html" target="wiki-view"><code>max_parallel_hazard_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__contain_agg_clause.html" target="wiki-view"><code>contain_agg_clause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__contain_agg_clause_walker.html" target="wiki-view"><code>contain_agg_clause_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__contain_window_function.html" target="wiki-view"><code>contain_window_function</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__find_window_functions.html" target="wiki-view"><code>find_window_functions</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__find_window_functions_walker.html" target="wiki-view"><code>find_window_functions_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__NumRelids.html" target="wiki-view"><code>NumRelids</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__clauses_c__CommuteOpExpr.html" target="wiki-view"><code>CommuteOpExpr</code></a></li>
+</ul></body></html>

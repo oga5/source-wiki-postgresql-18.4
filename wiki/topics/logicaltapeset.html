@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/logicaltapeset.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LogicalTapeSet</h1>
+<h2>概念</h2>
+<p><code>LogicalTapeSet</code> は、単一の物理ファイル（<code>BufFile</code>）上で複数の「論理テープ」を仮想的に構築・管理するためのコンテナ構造体です。外部ソートやハッシュ集計のスピル処理において、一時領域の効率的な管理と再利用を可能にします。</p>
+<h2>なぜ重要か</h2>
+<p>外部ソートなどの処理において、ディスク使用量を最小化するために極めて重要です。読み込み済みのブロックをフリーリストで管理して再利用する仕組みや、並列ソート時におけるワーカー間での領域管理を提供し、物理的なディスクI/Oと領域消費を最適化します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/sort</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/sort/logtape.c#LogicalTapeSet</code>**: 構造体の具体的なメンバー（物理ファイルポインタ、フリーリスト、ブロックカウンタなど）を定義する実装詳細。</li>
+<li>**<code>symbol:src/include/utils/logtape.h#LogicalTapeSet</code>**: 外部モジュール向けに公開されている不透明な（opaque）構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>LogicalTapeSetCreate()</code> を呼び出してセットを初期化します。並列ソート時には <code>SharedFileSet</code> を指定して共有管理を行います。 2. **書き込みとブロック割り当て**: <code>LogicalTapeWrite</code> を介してブロック単位で書き込みます。内部関数 <code>ltsGetBlock</code> は、フリーリスト（<code>freeBlocks</code>）に空きブロックがあればそれを再利用し、なければ物理ファイルを拡張して割り当てます。 3. **読み込みとブロック解放**: データを読み込んだ後、不要になったブロックは <code>ltsReleaseBlock</code> によってフリーリストへ戻され、将来の書き込み用に優先的に再割り当てされます。 4. **凍結**: <code>LogicalTapeFreeze</code> を呼び出すことで、テープを読み込み専用状態にし、他プロセスと共有可能な <code>TapeShare</code> を生成します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ブロック数の関係**: 常に <code>nBlocksAllocated &gt;= nBlocksWritten</code> が成立します。</li>
+<li>**フリーリストの構造**: <code>freeBlocks</code> は最小ヒープとして管理され、再利用可能なブロック番号を保持します。</li>
+<li>**メモリコンテキストの一貫性**: 同一の <code>LogicalTapeSet</code> に対するすべての操作は、同一の <code>palloc</code> コンテキストで実行される必要があります。</li>
+<li>**解放スペースの無視**: <code>forgetFreeSpace</code> が真に設定されている場合、解放されたブロックはフリーリストに記録されず、再利用されません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**凍結後の解放操作**: <code>LogicalTapeFreeze</code> を呼び出した後にブロックを解放しようとすると、再利用ロジックが停止します。ブロックの再利用は「一度読み込んだデータは二度と必要としない」というソートの特性に依存しているため、この前提を崩す操作には注意が必要です。</li>
+<li>**並列ソート時の書き込み制約**: 並列ソートの際、リーダープロセス側で作成された空のテープに対しては書き込みを行うことができません。</li>
+<li>**メモリ管理とリソースリーク**: 適切なメモリコンテキストで操作が行われない場合、エラー発生時にリソースの解放が不完全になる可能性があります。また、<code>freeBlocks</code> 配列の拡張時にメモリ不足が発生するリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/sort/logtape.c</code>（ブロックチェーン管理やフリーリストのヒープ構造などの具体的な実装）</li>
+<li><code>src/include/utils/logtape.h</code>（外部公開APIおよび関連データ構造 <code>LogicalTape</code>, <code>TapeShare</code> の定義）</li>
+</ul></body></html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dynamicfilelist.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DynamicFileList</h1>
+<h2>概念</h2>
+<p><code>DynamicFileList</code> は、PostgreSQL プロセスにおいてロード済みの動的ライブラリ（共有オブジェクト）を追跡・管理するための単方向連結リスト構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>動的ライブラリの重複ロードを防止し、ロード済みモジュールの走査を可能にするために重要です。また、ロードされたライブラリの ABI 互換性を検証するためのマジックブロック（<code>Pg_magic_struct</code>）や、プラットフォームごとのファイル一意性識別情報（デバイス番号や i-node）を保持する役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/fmgr</code></li>
+<li><code>module:src/include</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/utils/fmgr/dfmgr.c#DynamicFileList</code> : 構造体の実体定義および操作ロジック</li>
+<li><code>symbol:src/include/fmgr.h#DynamicFileList</code> : 構造体のヘッダー定義</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **ライブラリのロード要求**: <code>internal_load_library</code> 等が呼び出され、動的ライブラリのロードが試みられます。 2. **重複チェック**: 既存の <code>file_list</code> を走査し、同一の <code>device</code> および <code>inode</code>（Windows 以外の場合）を持つエントリが既に存在するか確認することで、重複ロードを防止します。 3. **メモリ確保と登録**: 重複がない場合、<code>malloc</code> を使用して <code>offsetof(DynamicFileList, filename) + strlen(libname) + 1</code> のサイズでメモリを確保し、新規エントリを作成して <code>file_list</code> / <code>file_tail</code> に追加します。 4. **走査**: <code>get_next_loaded_module</code> 等を通じて、ロード済みのライブラリリストが走査されます。</p>
+<p>※ 外部モジュール（<code>src/backend/commands/extension.c</code> など）から <code>internal_load_library</code> が呼び出される際の上流の完全な制御フローや、エラーハンドリング時の詳細なライフサイクルは、提供された情報からは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>filename</code> は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用した可変長配列であり、必ず構造体の末尾に配置されます。</li>
+<li>Windows（<code>WIN32</code>）環境以外では、ファイルの一意性を判定するために <code>device</code> と <code>inode</code> が使用されます。</li>
+<li>一度ロードされたライブラリは、現在の設計上アンロードされません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**構造体のコピー禁止**: <code>filename</code> が可変長配列であるため、構造体全体の単純なコピーやスタックへの割り当てを行うと、メモリ破壊を引き起こす原因になります。</li>
+<li>**プラットフォーム間の差異**: Windows 環境では <code>inode</code> フィールドが存在しないため、プラットフォーム固有の条件分岐（<code>#ifndef WIN32</code>）を意識する必要があります。</li>
+<li>**ABI 不整合**: <code>magic</code> フィールドが指す情報が <code>PG_MODULE_MAGIC</code> と一致しない場合、ロードが拒否されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/fmgr/dfmgr.c</code> : <code>DynamicFileList</code> のメモリ確保、リスト追加、重複チェックの具体的な実装。</li>
+<li><code>src/include/fmgr.h</code> : <code>DynamicFileList</code> 構造体の定義。</li>
+</ul></body></html>

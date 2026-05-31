@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__transam_c__TransactionIdDidCommit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TransactionIdDidCommit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/transam.c:125</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたトランザクションID（XID）が最終的にコミットされたかどうかを判定します。サブトランザクションの階層を再帰的に解決し、親トランザクションの状態に基づいて最終結果を返します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool TransactionIdDidCommit(TransactionId transactionId)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>transactionId</code> (判定対象のトランザクションID)</li>
+<li>**出力**: <code>bool</code> (コミット済みであれば <code>true</code>、それ以外は <code>false</code>)</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>TransactionLogFetch</code> を介して <code>CLOG</code>（Commit Log）から状態を取得します。</li>
+<li><code>SUB_COMMITTED</code> 状態のトランザクションについては、<code>SubTransGetParent</code> を用いて親トランザクションを辿る再帰処理が行われます。</li>
+<li><code>TransactionXmin</code> より古いトランザクションに対しては、<code>pg_subtrans</code> の情報が欠落している可能性があるため、安全側に倒して <code>false</code> を返します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>TransactionLogFetch(transactionId)</code> を呼び出し、現在のステータスを取得します。 2. ステータスが <code>TRANSACTION_STATUS_COMMITTED</code> の場合、直ちに <code>true</code> を返します。 3. ステータスが <code>TRANSACTION_STATUS_SUB_COMMITTED</code> の場合:</p>
+<ul>
+<li><code>transactionId</code> が <code>TransactionXmin</code> より古い場合は <code>false</code> を返します。</li>
+<li><code>SubTransGetParent</code> で親XIDを取得します。</li>
+<li>親XIDが無効な場合は警告を出力し <code>false</code> を返します。</li>
+<li>有効な親XIDに対して、本関数を再帰的に呼び出し、その結果を返します。</li>
+<p>4. 上記以外（<code>IN_PROGRESS</code> や <code>ABORTED</code> 等）の場合は <code>false</code> を返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>contrib/amcheck/verify_heapam.c</code></li>
+<li><code>src/backend/access/heap/heapam.c</code></li>
+<li><code>src/backend/access/heap/heapam_visibility.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>TransactionLogFetch</code></li>
+<li><code>TransactionIdPrecedes</code></li>
+<li><code>SubTransGetParent</code></li>
+<li><code>TransactionIdIsValid</code></li>
+<li><code>TransactionIdDidCommit</code> (再帰呼び出し)</li>
+<li><code>elog</code> (警告出力時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XidStatus</code>: トランザクションの状態（<code>COMMITTED</code>, <code>SUB_COMMITTED</code> 等）を保持する列挙型。</li>
+<li><code>TransactionId</code>: 32ビットのトランザクション識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**サブトランザクションの欠落**: データベース起動直後など、<code>pg_subtrans</code> に情報がない場合に警告 (<code>WARNING</code>) を出力し、<code>false</code> を返します。</li>
+<li>**再帰の深さ**: 深いサブトランザクション階層を持つ場合、再帰呼び出しによるスタック消費が発生します。</li>
+<li>**ラップアラウンド**: XID比較には <code>TransactionIdPrecedes</code> を使用しており、循環的な比較を正しく処理します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>CLOG</code> へのアクセスを抽象化する高レベルAPIです。</li>
+<li><code>SUB_COMMITTED</code> 状態の解決には <code>pg_subtrans</code> を参照するため、サブトランザクションの親子関係が正しく維持されていることが前提となります。</li>
+<li>キャッシュ機構（<code>TransactionLogFetch</code> 内）により、確定済みのトランザクション状態は最適化されます。</li>
+</ul></body></html>

@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/walmethods.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/walmethods.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、<code>pg_basebackup</code> や <code>pg_receivewal</code> において、ストリーミング受信した WAL（Write-Ahead Log）データを永続化するための抽象化レイヤーを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>WalWriteMethod</code> インターフェースを定義し、WAL の保存先として「ディレクトリ（<code>pg_wal</code> 形式）」と「単一の tar ファイル」という2つの異なる実装を提供します。これにより、呼び出し側は保存先の物理的な形式を意識せずに WAL を書き込めます。</p>
+<h2>責務</h2>
+<ul>
+<li>**抽象化**: <code>WalWriteMethodOps</code> を通じて、ファイルオープン、書き込み、同期、クローズの共通インターフェースを定義。</li>
+<li>**圧縮サポート**: Gzip および LZ4（ディレクトリメソッドのみ）による透過的な圧縮書き込みの管理。</li>
+<li>**整合性確保**: <code>sync</code> オプションが有効な場合、ファイルおよびディレクトリの <code>fsync</code> を実行し、データ永続性を保証。</li>
+<li>**tar 形式の管理**: tar ヘッダーの生成、パディング、および終了時の終端ブロック書き込み。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>WalWriteMethod</code>: 抽象基底構造体。圧縮設定やエラー状態を保持。</li>
+<li><code>WalWriteMethodOps</code>: 各メソッド（ディレクトリ/tar）が実装すべきコールバックテーブル。</li>
+<li><code>CreateWalDirectoryMethod</code>: ディレクトリ保存用メソッドのコンストラクタ。</li>
+<li><code>CreateWalTarMethod</code>: tar ファイル保存用メソッドのコンストラクタ。</li>
+<li><code>Walfile</code>: 書き込み中のファイルハンドルを保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DirectoryMethodData</code></li>
+<li><code>DirectoryMethodFile</code></li>
+<li><code>GetLastWalMethodError</code></li>
+<li><code>TarMethodData</code></li>
+<li><code>TarMethodFile</code></li>
+<li><code>dir_get_file_name</code></li>
+<li><code>dir_open_for_write</code></li>
+<li><code>tar_free</code></li>
+<li><code>tar_get_file_name</code></li>
+<li><code>tar_get_file_size</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>CreateWal...Method</code> を呼び出し、保存先と圧縮設定を初期化。 2. **書き込み**: <code>open_for_write</code> でファイルを開き、<code>write</code> でデータを流し込む。圧縮が有効な場合、内部バッファを経由して圧縮処理が行われる。 3. **同期**: <code>sync</code> メソッドにより、OS のキャッシュをディスクへフラッシュ。 4. **終了**: <code>close</code> でファイルを閉じ、必要に応じてリネームや tar ヘッダーの更新を行う。最後に <code>finish</code> でリソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>walmethods.h</code>: インターフェース定義。</li>
+<li><code>zlib.h</code> / <code>lz4frame.h</code>: 圧縮ライブラリ。</li>
+<li><code>common/file_utils.h</code>: <code>fsync_fname</code> 等のファイル操作ユーティリティ。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>pgtar.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/walmethods.h</code>: インターフェース定義とデータ構造の宣言。</li>
+<li><code>src/bin/pg_basebackup/receivelog.c</code>: 本モジュールを使用して WAL を受信・書き込みする主要なクライアント。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**エラーハンドリング**: <code>lasterrstring</code> が設定されている場合はそれが優先され、なければ <code>lasterrno</code> が使用されます。</li>
+<li>**tar メソッドの制約**: tar メソッドは「一度に1つのファイルのみオープン可能」という制限があります。これは WAL ストリーミングの特性上、順次書き込みが前提であるためです。</li>
+<li>**圧縮の差異**: ディレクトリメソッドは LZ4 をサポートしていますが、tar メソッドは Gzip のみをサポートしています。実装の際は <code>ifdef</code> で囲まれた条件付きコンパイル箇所に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__DirectoryMethodData.html" target="wiki-view"><code>DirectoryMethodData</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__DirectoryMethodFile.html" target="wiki-view"><code>DirectoryMethodFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__dir_get_file_name.html" target="wiki-view"><code>dir_get_file_name</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__dir_open_for_write.html" target="wiki-view"><code>dir_open_for_write</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__CreateWalDirectoryMethod.html" target="wiki-view"><code>CreateWalDirectoryMethod</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__TarMethodFile.html" target="wiki-view"><code>TarMethodFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__TarMethodData.html" target="wiki-view"><code>TarMethodData</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__tar_get_file_name.html" target="wiki-view"><code>tar_get_file_name</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__tar_get_file_size.html" target="wiki-view"><code>tar_get_file_size</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__tar_free.html" target="wiki-view"><code>tar_free</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__CreateWalTarMethod.html" target="wiki-view"><code>CreateWalTarMethod</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__walmethods_c__GetLastWalMethodError.html" target="wiki-view"><code>GetLastWalMethodError</code></a></li>
+</ul></body></html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__snapbuild_internal_h__SnapBuild.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SnapBuild</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/snapbuild_internal.h:26</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングにおけるスナップショット構築プロセスの内部状態を保持・管理する構造体です。トランザクションの追跡、カタログ変更履歴の管理、およびスナップショットのシリアライズをサポートします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct SnapBuild {
+    SnapBuildState state;
+    MemoryContext context;
+    TransactionId xmin;
+    TransactionId xmax;
+    XLogRecPtr start_decoding_at;
+    XLogRecPtr two_phase_at;
+    TransactionId initial_xmin_horizon;
+    bool building_full_snapshot;
+    bool in_slot_creation;
+    Snapshot snapshot;
+    XLogRecPtr last_serialized_snapshot;
+    ReorderBuffer *reorder;
+    TransactionId next_phase_at;
+    struct { size_t xcnt; size_t xcnt_space; bool includes_all_transactions; TransactionId *xip; } committed;
+    struct { size_t xcnt; TransactionId *xip; } catchange;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: WAL解析を通じて更新される <code>xmin</code>/<code>xmax</code>、<code>xl_running_xacts</code> 情報、およびディスクから復元されるシリアライズ済みデータ。</li>
+<li>**出力**: 論理デコーディングで使用される <code>Snapshot</code> オブジェクト、およびディスク保存用のシリアライズ状態。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>catchange</code> 配列は、スナップショット復元時にカタログ変更を正しく追跡するために使用されます。</li>
+<li><code>committed</code> 配列は、CONSISTENT状態に達するまでは全トランザクションを記録し、その後はカタログ変更を行ったもののみを記録します。</li>
+<li><code>in_slot_creation</code> が真の場合、スナップショットの復元はスキップされます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **状態管理**: <code>SnapBuildState</code> に基づき、スナップショットが「一貫性のある状態（CONSISTENT）」に達するまでトランザクション情報を蓄積します。 2. **シリアライズ**: <code>SnapBuildOnDisk</code> 構造体と連携し、現在のメモリ状態をディスクへ永続化します。 3. **復元**: <code>SnapBuildRestoreSnapshot()</code> を通じて、ディスク上のデータからメモリ状態を再構築します。 4. **カタログ追跡**: <code>catchange</code> 配列により、シリアライズ後にコミットされたトランザクションのカタログ変更漏れを防ぎます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/decode.c</code> (論理デコーディングコンテキスト経由)、<code>src/backend/replication/logical/reorderbuffer.c</code>。</li>
+<li>**呼び出し先**: <code>SnapBuildPurgeOlderTxn</code>, <code>SnapBuildBuildSnapshot</code>, <code>SnapBuildDistributeSnapshotAndInval</code> (いずれも <code>src/backend/replication/logical/snapbuild.c</code> 内)。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SnapBuildOnDisk</code>: ディスク保存用のシリアライズ形式。</li>
+<li><code>ReorderBuffer</code>: 変更されたトランザクションの再順序付け管理に使用。</li>
+<li><code>Snapshot</code>: 論理デコーディングで利用されるスナップショットの実体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>catchange</code> 配列の管理が不適切な場合、カタログ変更を見逃し、誤ったスナップショットでカタログを参照するリスクがあります。</li>
+<li><code>committed</code> 配列のソート順序や管理ロジックは、プロファイル結果に応じて改善の余地があるとされています。</li>
+<li><code>SnapBuildOnDisk</code> のレイアウト変更は、シリアライズデータの互換性に直接影響します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は論理デコーディングの核心であり、変更には細心の注意が必要です。</li>
+<li><code>catchange</code> 配列の管理ロジック（<code>SnapBuildPurgeOlderTxn</code> 等）を理解することが、論理デコーディングの正確性を担保する鍵となります。</li>
+<li>シリアライズ形式を変更する場合は、バージョン管理およびチェックサム計算ロジックの整合性を再確認してください。</li>
+</ul></body></html>

@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/partitioning/partdesc.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/partitioning/partdesc.c</h1>
+<h2>概要</h2>
+<p>パーティションテーブルの構造を記述する <code>PartitionDesc</code> 構造体の生成および管理を行うモジュールです。リレーションキャッシュ（relcache）と連携し、パーティションの階層構造や境界情報を効率的に取得・キャッシュする仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/partitioning</code> サブシステムにおいて、パーティションのメタデータを実行時に利用可能な形式へ変換する役割を担います。<code>partbounds.c</code> が境界値の計算ロジックを担うのに対し、本ファイルはそれらを統合した記述子（Descriptor）のライフサイクル管理を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ管理**: <code>RelationGetPartitionDesc</code> を通じて、パーティション情報を relcache に保持し、再利用可能な状態にする。</li>
+<li>**動的構築**: <code>RelationBuildPartitionDesc</code> により、カタログ（<code>pg_inherits</code>, <code>pg_class</code>）から最新のパーティション情報を読み取り、構造体を構築する。</li>
+<li>**ディレクトリ管理**: <code>PartitionDirectory</code> を提供し、クエリ実行中に一貫したパーティション記述子を保持する。</li>
+<li>**並行性制御**: <code>DETACH CONCURRENTLY</code> 等の DDL との競合を検知し、必要に応じて再試行を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationGetPartitionDesc</code>: パーティション記述子を取得する主要なエントリポイント。</li>
+<li><code>PartitionDescData</code>: パーティションの OID 配列、境界情報、および検索高速化のためのキャッシュフィールドを保持する構造体。</li>
+<li><code>PartitionDirectory</code>: 複数のリレーションに対する記述子を一括管理し、一貫性を保証するためのコンテナ。</li>
+<li><code>RelationBuildPartitionDesc</code>: カタログから情報を収集し、メモリコンテキストを適切に割り当てて記述子を生成する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreatePartitionDirectory</code></li>
+<li><code>DestroyPartitionDirectory</code></li>
+<li><code>PartitionDirectoryData</code></li>
+<li><code>PartitionDirectoryEntry</code></li>
+<li><code>PartitionDirectoryLookup</code></li>
+<li><code>get_default_oid_from_partdesc</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **要求**: <code>RelationGetPartitionDesc</code> が呼ばれると、まず relcache 内のキャッシュを確認する。 2. **検証**: キャッシュが存在しない、または <code>omit_detached</code>（デタッチ済みパーティションの除外）の条件が合致しない場合、<code>RelationBuildPartitionDesc</code> を呼び出す。 3. **構築**:</p>
+<ul>
+<li><code>find_inheritance_children_extended</code> で子テーブルの OID を取得。</li>
+<li>各パーティションの <code>relpartbound</code> をカタログから読み取り、<code>partition_bounds_create</code> で境界情報を正規化。</li>
+<li><code>CacheMemoryContext</code> 配下の専用メモリコンテキストにデータをコピーし、relcache に格納。</li>
+<p>4. **再試行**: 構築中に DDL によるカタログの不整合（<code>DETACH CONCURRENTLY</code> 等）が検出された場合、<code>goto retry</code> により再構築を行う。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/partition.h</code>, <code>catalog/pg_inherits.h</code>: パーティション関連のカタログ定義。</li>
+<li><code>partitioning/partbounds.h</code>: 境界値の計算と管理。</li>
+<li><code>utils/partcache.h</code>, <code>utils/rel.h</code>: リレーションキャッシュおよびパーティションキャッシュの操作。</li>
+<li><code>utils/hsearch.h</code>: <code>PartitionDirectory</code> 実装のためのハッシュテーブル。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/partitioning/partdesc.h</code>: 公開インターフェースと <code>PartitionDescData</code> の定義。</li>
+<li><code>src/backend/partitioning/partbounds.c</code>: 境界値の正規化ロジック。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: 本モジュールが生成した記述子を保持する relcache の実体。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: パーティション記述子は <code>CacheMemoryContext</code> の子コンテキストとして管理されます。これは relcache のエントリがフラッシュされる際に安全に解放されるように設計されています。</li>
+<li>**デタッチ済みパーティション**: <code>omit_detached</code> フラグが有効な場合、スナップショットに基づいて動的に記述子が生成されることがあります。これはキャッシュの無効化が困難なため、必要に応じて再構築される設計になっています。</li>
+<li>**デバッグ**: <code>RelationBuildPartitionDesc</code> 内の <code>retry</code> ロジックは、並行 DDL 実行時のカタログ不整合を解決するための重要なセーフガードです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__PartitionDirectoryData.html" target="wiki-view"><code>PartitionDirectoryData</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__PartitionDirectoryEntry.html" target="wiki-view"><code>PartitionDirectoryEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__RelationGetPartitionDesc.html" target="wiki-view"><code>RelationGetPartitionDesc</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__RelationBuildPartitionDesc.html" target="wiki-view"><code>RelationBuildPartitionDesc</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__CreatePartitionDirectory.html" target="wiki-view"><code>CreatePartitionDirectory</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__PartitionDirectoryLookup.html" target="wiki-view"><code>PartitionDirectoryLookup</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__DestroyPartitionDirectory.html" target="wiki-view"><code>DestroyPartitionDirectory</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partdesc_c__get_default_oid_from_partdesc.html" target="wiki-view"><code>get_default_oid_from_partdesc</code></a></li>
+</ul></body></html>

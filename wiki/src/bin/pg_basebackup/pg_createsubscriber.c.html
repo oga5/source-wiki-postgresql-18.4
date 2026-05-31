@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/pg_createsubscriber.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/pg_createsubscriber.c</h1>
+<h2>概要</h2>
+<p><code>pg_createsubscriber</code> は、既存の物理スタンバイサーバーを論理レプリケーションのサブスクライバー（ターゲット）へ変換するためのツールです。物理レプリケーションの停止、論理レプリケーション用オブジェクト（パブリケーション、スロット、サブスクリプション）の作成、およびシステム識別子のリセットを自動化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_basebackup</code> サブシステムの一部として、物理バックアップから論理レプリケーションへの移行という特殊な運用タスクを担います。<code>streamutil</code> や <code>receivelog</code> とは異なり、ストリーミングそのものではなく、サーバーのライフサイクル管理（<code>pg_ctl</code>）とカタログ操作を主軸とします。</p>
+<h2>責務</h2>
+<ul>
+<li>**環境検証**: パブリッシャーとサブスクライバーの構成（<code>wal_level</code>, <code>max_replication_slots</code> 等）が論理レプリケーションに適しているかを確認。</li>
+<li>**レプリケーション設定**: パブリッシャー側でのパブリケーションと論理レプリケーションスロットの作成。</li>
+<li>**リカバリ制御**: 物理スタンバイを特定の LSN で昇格させるためのリカバリ設定（<code>recovery_target_lsn</code> 等）の注入。</li>
+<li>**サブスクリプション構築**: サブスクライバー側でのサブスクリプション作成、レプリケーション開始位置の調整、および不要なオブジェクトのクリーンアップ。</li>
+<li>**システム識別子管理**: 変換後のサーバーが元のパブリッシャーと混同されないよう、<code>pg_resetwal</code> を用いたシステム識別子の変更。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>設定・コンテキスト管理</h3>
+<ul>
+<li><code>CreateSubscriberOptions</code>: コマンドライン引数を保持する構造体。</li>
+<li><code>LogicalRepInfo</code>: データベースごとのパブリケーション/サブスクリプション情報を保持。</li>
+<li><code>LogicalRepInfos</code>: 全データベースで共有される設定（<code>two_phase</code> 等）と <code>LogicalRepInfo</code> の配列。</li>
+</ul>
+<h3>サーバー制御・検証</h3>
+<ul>
+<li><code>start_standby_server</code> / <code>stop_standby_server</code>: <code>pg_ctl</code> を呼び出し、制限付きアクセスモードでサーバーを起動・停止。</li>
+<li><code>check_publisher</code> / <code>check_subscriber</code>: サーバーの GUC 設定を検証し、論理レプリケーションの要件を満たしているかチェック。</li>
+</ul>
+<h3>オブジェクト操作</h3>
+<ul>
+<li><code>setup_publisher</code>: パブリケーションとスロットを作成し、同期 LSN を取得。</li>
+<li><code>setup_subscriber</code>: サブスクリプションを作成し、<code>pg_replication_origin_advance</code> で開始位置を調整。</li>
+<li><code>modify_subscriber_sysid</code>: <code>pg_resetwal</code> を実行し、システム識別子を更新。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateSubscriberOptions</code></li>
+<li><code>LogicalRepInfo</code></li>
+<li><code>LogicalRepInfos</code></li>
+<li><code>WaitPMResult</code></li>
+<li><code>check_data_directory</code></li>
+<li><code>cleanup_objects_atexit</code></li>
+<li><code>concat_conninfo_dbname</code></li>
+<li><code>connect_database</code></li>
+<li><code>get_base_conninfo</code></li>
+<li><code>get_exec_path</code></li>
+<li><code>get_sub_conninfo</code></li>
+<li><code>store_pub_sub_info</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 引数解析後、<code>store_pub_sub_info</code> で各 DB の接続情報を構築。 2. **検証**: <code>check_publisher</code> と <code>check_subscriber</code> でレプリケーション要件を検証。 3. **準備**: <code>setup_publisher</code> でパブリッシャー側にスロットを作成し、昇格の基準となる LSN を取得。 4. **リカバリ設定**: <code>setup_recovery</code> で <code>recovery.conf</code>（または <code>postgresql.auto.conf</code>）を生成し、昇格ターゲットを設定。 5. **昇格**: <code>start_standby_server</code> でサーバーを起動し、<code>wait_for_end_recovery</code> で昇格完了を待機。 6. **論理構築**: <code>setup_subscriber</code> でサブスクリプションを有効化し、レプリケーションを開始。 7. **最終化**: <code>modify_subscriber_sysid</code> でシステム識別子をリセットし、物理レプリケーションとの関連を完全に断つ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: サーバーとの通信および SQL 実行。</li>
+<li><code>fe_utils/recovery_gen.h</code>: リカバリ設定の生成。</li>
+<li><code>common/controldata_utils.h</code>: <code>pg_control</code> ファイルの読み書き。</li>
+<li><code>getopt_long.h</code>: コマンドライン引数解析。</li>
+<li><code>common/connect.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>common/restricted_token.h</code></li>
+<li><code>fe_utils/simple_list.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/streamutil.c</code>: 接続管理の共通基盤。</li>
+<li><code>src/bin/pg_ctl/</code>: サーバー起動・停止のバックエンド。</li>
+<li><code>src/bin/pg_resetwal/</code>: システム識別子リセットのバックエンド。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>LogicalRepInfo</code> 配列は <code>num_dbs</code> に基づき動的に確保されます。エラー発生時は <code>cleanup_objects_atexit</code> が登録されており、作成済みのパブリケーションやスロットを可能な限り削除しようと試みます。</li>
+<li>**制約**: 本ツールは物理スタンバイが停止している状態で実行する必要があります。また、昇格後のサーバーは物理レプリケーションのターゲットとしては使用できなくなるため、失敗時のリカバリには物理バックアップからの再構築が必要です。</li>
+<li>**設計の意図**: <code>pg_ctl</code> を介してサーバーを再起動する際、<code>listen_addresses=&#x27;&#x27;</code> や <code>max_logical_replication_workers=0</code> を指定することで、変換プロセス中の意図しない外部接続やレプリケーション開始を防止しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__CreateSubscriberOptions.html" target="wiki-view"><code>CreateSubscriberOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html" target="wiki-view"><code>LogicalRepInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfos.html" target="wiki-view"><code>LogicalRepInfos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__WaitPMResult.html" target="wiki-view"><code>WaitPMResult</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__cleanup_objects_atexit.html" target="wiki-view"><code>cleanup_objects_atexit</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_base_conninfo.html" target="wiki-view"><code>get_base_conninfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_sub_conninfo.html" target="wiki-view"><code>get_sub_conninfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_exec_path.html" target="wiki-view"><code>get_exec_path</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_data_directory.html" target="wiki-view"><code>check_data_directory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__concat_conninfo_dbname.html" target="wiki-view"><code>concat_conninfo_dbname</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__store_pub_sub_info.html" target="wiki-view"><code>store_pub_sub_info</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__connect_database.html" target="wiki-view"><code>connect_database</code></a></li>
+</ul></body></html>

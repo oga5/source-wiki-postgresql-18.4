@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/exprstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExprState</h1>
+<h2>概念</h2>
+<p><code>ExprState</code> は、PostgreSQLのクエリ実行（Executor）エンジンにおいて、評価対象となる式（Expression）の実行時状態および実行命令列を保持・管理するための構造体です。静的な式ツリー（<code>Expr</code>）を実行時に評価可能な形式（<code>ExprEvalStep</code> の命令列など）に変換した状態を管理します。</p>
+<h2>なぜ重要か</h2>
+<p><code>ExprState</code> は、クエリ実行時における式評価の効率化と柔軟性を支える中心的なデータ構造です。</p>
+<ul>
+<li>**実行時評価の最適化**: 式ツリーをフラットな評価ステップ（<code>steps</code>）にコンパイルし、<code>evalfunc</code> を通じて順次実行することで、評価時のオーバーヘッドを削減します。</li>
+<li>**JITコンパイルとの連携**: JIT（Just-In-Time）コンパイルの入力対象として機能します。LLVM などの JIT プロバイダが <code>ExprState</code> の保持する情報を解析し、最適化された機械語コードを生成できるようにします。</li>
+<li>**エラーハンドリングとコンテキスト管理**: 評価結果（<code>resvalue</code>, <code>resnull</code>）の保持だけでなく、<code>ErrorSaveContext</code> を用いたソフトエラーの捕捉や、親プランノード（<code>PlanState</code>）との紐付けを可能にします。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/executor</code></li>
+<li><code>module:src/include/jit</code></li>
+<li><code>module:src/include/nodes</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/nodes/execnodes.h#ExprState</code>**: 式の実行時状態、評価ステップ（<code>steps</code>）、評価関数（<code>evalfunc</code>）、評価結果（<code>resvalue</code>, <code>resnull</code>）などを保持する具体的な構造体定義。</li>
+<li>**<code>symbol:src/include/jit/jit.h#ExprState</code>**: JITコンパイルのコールバック（<code>JitProviderCompileExprCB</code>）などで参照される <code>ExprState</code> の前方宣言。</li>
+<li>**<code>symbol:src/include/executor/execExpr.h#ExprState</code>**: 式評価の初期化や実行に関連するヘッダーファイルにおける <code>ExprState</code> の参照。</li>
+<li>**<code>symbol:src/include/nodes/execnodes.h#SetExprState</code>**: <code>execnodes.h</code> に定義されている関連エンティティ（詳細な役割は提供された情報からは未詳）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>ExecInitExpr</code> などの初期化プロセスを通じて、静的な式ツリーから <code>ExprState</code> が生成され、評価ステップ（<code>steps</code>）の命令列が構築されます。 2. **JITコンパイル（適用時）**: JITコンパイルが有効な場合、JITプロバイダは <code>JitProviderCompileExprCB</code> コールバックを介して <code>ExprState</code> を受け取り、その情報を解析して最適化された機械語コードを生成します。 3. **評価**: 実行エンジンが <code>evalfunc</code>（またはJIT生成された関数）を呼び出します。この際、<code>ExprContext</code> を介してタプルやパラメータが入力され、<code>steps</code> に格納された命令列が順次実行されます。 4. **結果の格納**: 評価結果は <code>resvalue</code>（データ値）および <code>resnull</code>（NULLフラグ）に格納され、必要に応じて <code>resultslot</code>（投影結果スロット）に保持されます。</p>
+<p>*注意: 初期化関数の内部実装や、JITプロバイダによる具体的な機械語生成アルゴリズムの全容など、詳細なエンドツーエンドのフローは提供された情報からは完全には特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**非永続性・非コピー性**: <code>ExprState</code> は実行時専用のデータ構造であり、<code>copyObject</code> や <code>equal</code> といったノードサポート関数はサポートしていません。</li>
+<li>**ステップ数の固定**: <code>steps_len</code> および <code>steps_alloc</code> は初期化フェーズでのみ使用され、実行時には変更されません。</li>
+<li>**JITコンパイル時の前提**: JITコンパイル処理においては、実行エンジンによって適切に初期化された有効な <code>ExprState</code> ポインタが提供される必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**永続化やコピーの試み**: <code>ExprState</code> は実行時専用の動的な状態を保持するため、シリアライズやコピーを行おうとすると破損や未定義動作の原因となります。</li>
+<li>**JITコンパイル時のNULLポインタ**: JITプロバイダに <code>NULL</code> ポインタが渡された場合の挙動はプロバイダの実装に依存するため、呼び出し側での適切な初期化と検証が不可欠です。</li>
+<li>**動的な評価関数の変更**: <code>evalfunc</code> は式の複雑さや最適化状態（JITの有無など）に応じて動的に切り替わる可能性があるため、デバッグ時に実行中のロジックを追跡する際は、<code>evalfunc</code> だけでなく元の式ツリーを指す <code>expr</code> フィールドを参照する必要があります。</li>
+<li>**エラーハンドリングの欠如**: <code>escontext</code>（<code>ErrorSaveContext</code>）が <code>NULL</code> の状態で評価中にエラーが発生すると、ソフトエラーとして捕捉されず、即座に例外がスローされます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/nodes/execnodes.h</code>: <code>ExprState</code> 構造体の詳細なメンバ定義や、<code>PlanState</code> などの関連する実行時ノード定義を確認します。</li>
+<li><code>src/include/executor/execExpr.h</code>: 式評価の初期化や実行に関連するAPI定義を確認します。</li>
+<li><code>src/include/jit/jit.h</code>: JITコンパイルのコールバック型（<code>JitProviderCompileExprCB</code>）や、JITプロバイダとのインターフェース定義を確認します。</li>
+</ul></body></html>

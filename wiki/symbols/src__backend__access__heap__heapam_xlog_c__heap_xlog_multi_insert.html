@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_multi_insert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_xlog_multi_insert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_xlog.c:535</code></li>
+</ul>
+<h2>目的</h2>
+<p>WAL（Write-Ahead Log）リプレイ中に、ヒープページへの複数タプル挿入操作を再現し、ページ状態を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void heap_xlog_multi_insert(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code> （リプレイ対象のWALレコード）</li>
+<li>**出力**: なし（副作用としてバッファおよび可視性マップを更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLH_INSERT_ALL_VISIBLE_CLEARED</code> フラグと <code>XLH_INSERT_ALL_FROZEN_SET</code> フラグは同時に設定できない（<code>Assert</code>による検証）。</li>
+<li>挿入操作はMVCCデータを上書きしないため、Hot Standbyにおけるコンフリクト処理は不要。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **可視性マップの更新**: <code>XLH_INSERT_ALL_VISIBLE_CLEARED</code> フラグがある場合、対象ブロックの可視性マップビットをクリアする。 2. **バッファの準備**: <code>XLOG_HEAP_INIT_PAGE</code> フラグがあればページを初期化し、それ以外は <code>XLogReadBufferForRedo</code> でバッファを取得する。 3. **タプルの挿入**:</p>
+<ul>
+<li>WALレコードからタプルデータを取り出し、各タプルのヘッダー情報を構築する。</li>
+<li><code>PageAddItem</code> を使用してページへタプルを書き込む。</li>
+<p>4. **ページ状態の確定**:</p>
+<li>ページLSNを更新し、バッファをダーティにする。</li>
+<li>フラグに応じて <code>PageClearAllVisible</code> または <code>PageSetAllVisible</code> を実行。</li>
+<p>5. **後処理**: バッファをアンロック・解放し、空き容量が少ない（<code>BLCKSZ / 5</code> 未満）場合は <code>XLogRecordPageWithFreeSpace</code> を呼び出してFSM（フリースペースマップ）を更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/heapam_xlog.c</code> 内の <code>heap_redo</code>（または関連するリプレイディスパッチャ）から呼び出されることが示唆されている。</li>
+<li>**呼び出し先**: <code>visibilitymap_pin</code>, <code>visibilitymap_clear</code>, <code>XLogInitBufferForRedo</code>, <code>XLogReadBufferForRedo</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>XLogRecordPageWithFreeSpace</code> 等のアクセスメソッドおよびバッファ管理関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_heap_multi_insert</code>: WALレコードのヘッダー構造体。</li>
+<li><code>xl_multi_insert_tuple</code>: 各タプルのメタデータ構造体。</li>
+<li><code>XLogReaderState</code>: WAL読み取り状態。</li>
+<li><code>Buffer</code>, <code>Page</code>: ヒープページ管理用構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber(page) + 1 &lt; offnum</code>: ページ内のオフセット番号が不正な場合に <code>PANIC</code>。</li>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合に <code>PANIC</code>。</li>
+<li>WALレコード内のタプルデータ長と期待される合計長が一致しない場合に <code>PANIC</code>。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はページ内の物理的なタプル配置を扱う。論理的な整合性はWAL生成側で担保されている前提。</li>
+<li>FSMの更新は、ページがフルページイメージから復元された場合にはスキップされる。</li>
+<li><code>XLH_INSERT_ALL_FROZEN_SET</code> が設定されている場合、すべてのタプルが可視であると見なされる点に注意。</li>
+</ul></body></html>

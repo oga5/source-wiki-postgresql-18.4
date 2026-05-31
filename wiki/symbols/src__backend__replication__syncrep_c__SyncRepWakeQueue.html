@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__syncrep_c__SyncRepWakeQueue.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SyncRepWakeQueue</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/syncrep.c:906</code></li>
+</ul>
+<h2>目的</h2>
+<p>同期レプリケーションの待機キューから、指定された条件を満たすバックエンドプロセスを解放し、ウェイクアップさせる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int SyncRepWakeQueue(bool all, int mode)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>all</code> (bool): <code>true</code> の場合、キュー内の全プロセスを解放する。<code>false</code> の場合、現在のLSN進捗状況に応じて条件を満たすプロセスのみを解放する。</li>
+<li><code>mode</code> (int): 待機モード（<code>SYNC_REP_WAIT_WRITE</code>, <code>SYNC_REP_WAIT_FLUSH</code>, <code>SYNC_REP_WAIT_APPLY</code>）。</li>
+<li>**出力**:</li>
+<li><code>int</code>: 解放したプロセス数。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mode</code> は <code>0</code> 以上 <code>NUM_SYNC_REP_WAIT_MODE</code> 未満であること。</li>
+<li><code>SyncRepLock</code> が排他モード（<code>LW_EXCLUSIVE</code>）で保持されていること。</li>
+<li>対象の待機キューがLSN順にソートされていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 指定された <code>mode</code> の待機キュー（<code>WalSndCtl-&gt;SyncRepQueue[mode]</code>）を走査する。 2. <code>all</code> が <code>false</code> の場合、現在のLSN（<code>walsndctl-&gt;lsn[mode]</code>）がプロセスの待機LSN（<code>proc-&gt;waitLSN</code>）に達していない時点で走査を終了する。 3. 条件を満たす各プロセスについて以下を実行する：</p>
+<ul>
+<li>キューからプロセスを削除する。</li>
+<li><code>pg_write_barrier()</code> を発行し、キューからの削除が完了したことを保証する。</li>
+<li>プロセスの状態を <code>SYNC_REP_WAIT_COMPLETE</code> に更新する。</li>
+<li><code>SetLatch</code> を呼び出し、待機中のプロセスを再開させる。</li>
+<p>4. 解放したプロセス数をカウントし、最後にその値を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/syncrep.c</code> 内の各箇所（<code>SyncRepReleaseWaiters</code> 等から呼び出され、レプリケーションの進捗に応じた解放を行う）。</li>
+<li>**呼び出し先**:</li>
+<li><code>dlist_delete_thoroughly</code></li>
+<li><code>SetLatch</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSndCtlData</code>: 同期レプリケーションの制御構造体。</li>
+<li><code>PGPROC</code>: バックエンドプロセスの状態を保持する構造体。</li>
+<li><code>SyncRepLock</code>: 待機キューを保護するLWLock。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>キューが空の場合、<code>numprocs</code> は <code>0</code> を返す。</li>
+<li><code>SyncRepLock</code> を保持せずに呼び出した場合、アサーションエラーが発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SyncRepWaitForLSN</code> と密接に関連しており、状態遷移（<code>SYNC_REP_WAIT_COMPLETE</code> への変更）とラッチ操作の順序は、メモリバリアを介して厳密に制御されている。変更を加える際は、<code>SyncRepWaitForLSN</code> 側の読み取りロジックとの整合性に注意すること。</li>
+</ul></body></html>

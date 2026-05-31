@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/handle-args.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>handle_args</h1>
+<h2>概念</h2>
+<p><code>handle_args</code> は、PostgreSQLのテスト用バイナリツール（<code>pg_test_fsync</code> および <code>pg_test_timing</code>）において、起動時に渡されたコマンドライン引数を解析・検証し、各ツールの実行パラメータを設定するための静的（<code>static</code>）関数です。</p>
+<h2>なぜ重要か</h2>
+<p>これらのツールは、ファイルシステムの同期性能（fsync）やタイマーの精度（timing）を測定するためのスタンドアロンなユーティリティです。<code>handle_args</code> は、ユーザーが指定したテスト実行時間や対象ファイル名などのパラメータを安全に解析し、不正な入力（範囲外の数値や未知のオプション）を排除して、ツールの安全な実行を保証するために重要な役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_test_fsync</code></li>
+<li><code>module:src/bin/pg_test_timing</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_test_fsync/pg_test_fsync.c#handle_args</code>**</li>
+<p><code>pg_test_fsync</code> ツール用の引数解析関数。テスト対象ファイル名（<code>-f</code> / <code>--filename</code>）やテストあたりの秒数（<code>-s</code> / <code>--secs-per-test</code>）を解析し、グローバル変数 <code>filename</code> と <code>secs_per_test</code> を更新します。</p>
+<li>**<code>symbol:src/bin/pg_test_timing/pg_test_timing.c#handle_args</code>**</li>
+<p><code>pg_test_timing</code> ツール用の引数解析関数。テスト実行期間（<code>-d</code> / <code>--duration</code>）を解析し、グローバル変数 <code>test_duration</code> を更新します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. 各ツールの <code>main</code> 関数から <code>handle_args(argc, argv)</code> が呼び出されます。 2. <code>--help</code> または <code>--version</code> が指定されている場合は、対応するヘルプ情報やバージョン情報を出力してプログラムを終了（<code>exit</code>）します。 3. <code>getopt_long</code> を用いて、コマンドライン引数をループ処理します。</p>
+<ul>
+<li><code>pg_test_fsync</code> では、<code>-f</code>（ファイル名）や <code>-s</code>（テスト秒数）を解析します。</li>
+<li><code>pg_test_timing</code> では、<code>-d</code>（テスト期間）を解析します。</li>
+<p>4. 入力された文字列引数を数値に変換（<code>strtoul</code> を使用）し、範囲チェックを行います。 5. 解析に成功すると、対応するグローバル変数（<code>filename</code>、<code>secs_per_test</code>、<code>test_duration</code>）を更新し、設定情報を標準出力に表示します。 6. 未知のオプションや余分な引数、範囲外の数値が指定された場合は、エラーメッセージを表示して <code>exit</code> します。</p>
+</ul>
+<p>※なお、<code>main</code> 関数から <code>handle_args</code> が呼び出された後の、テスト実行自体の詳細なエンドツーエンドの流れ（測定処理の具体的なループや終了処理など）は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**数値引数の範囲制約**:</li>
+<li><code>pg_test_fsync</code> の <code>-s</code>（秒数）に指定される値は、<code>1</code> から <code>UINT_MAX</code> の範囲内でなければなりません。</li>
+<li><code>pg_test_timing</code> の <code>-d</code>（期間）に指定される値は、正の整数（<code>0</code> より大きく <code>UINT_MAX</code> 以下の範囲）でなければなりません。</li>
+<li>**プログラムの即時終了**:</li>
+<li>引数解析中にエラーが発生した場合、または <code>--help</code> / <code>--version</code> が指定された場合は、必ずプログラムを終了（<code>exit</code>）し、後続の測定処理へ進んではなりません。</li>
+<li>**グローバル変数の更新**:</li>
+<li>解析に成功した場合、対応するグローバル変数（<code>filename</code>, <code>secs_per_test</code>, <code>test_duration</code>）が正しく更新されていなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**:</li>
+<p><code>pg_test_fsync.c</code> と <code>pg_test_timing.c</code> の両方に <code>static void handle_args(int argc, char *argv[])</code> という同名の関数が存在しますが、それぞれ解析するオプションや更新するグローバル変数が異なります。コードを変更する際は、対象のファイルを間違えないよう注意が必要です。</p>
+<li>**オーバーフローと型チェック**:</li>
+<p><code>test_duration</code> や <code>secs_per_test</code> は <code>unsigned int</code> 型であるため、<code>strtoul</code> による変換時に範囲外の数値が指定された場合のチェックを怠ると、予期せぬオーバーフローや不正な動作を引き起こす可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_test_fsync/pg_test_fsync.c</code></li>
+<li><code>src/bin/pg_test_timing/pg_test_timing.c</code></li>
+</ul></body></html>

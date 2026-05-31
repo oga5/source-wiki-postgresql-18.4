@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__postgres_fdw__connection_c__GetConnection.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GetConnection</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/postgres_fdw/connection.c:202</code></li>
+</ul>
+<h2>目的</h2>
+<p>リモートのPostgreSQLサーバーへの接続（<code>PGconn</code>）を取得します。接続キャッシュ（<code>ConnectionHash</code>）を管理し、必要に応じて新規接続の確立やトランザクションの同期を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>PGconn *GetConnection(UserMapping *user, bool will_prep_stmt, PgFdwConnState **state)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>user</code>: 接続先サーバーと認証情報を特定するための <code>UserMapping</code> 構造体。</li>
+<li><code>will_prep_stmt</code>: 呼び出し元がプリペアドステートメントを使用するかどうかを示すフラグ。</li>
+<li><code>state</code>: 接続ごとの状態（<code>PgFdwConnState</code>）を受け取るためのポインタ（不要な場合は <code>NULL</code> 可）。</li>
+<li>**出力**:</li>
+<li>リモートサーバーへの有効な <code>PGconn</code> ポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ConnectionHash</code> が未初期化の場合は、初回呼び出し時にハッシュテーブルの作成およびトランザクションコールバックの登録が行われます。</li>
+<li><code>UserMapping</code> の OID をキーとして接続がキャッシュされます。</li>
+<li>接続が「汚染」されている（<code>pgfdw_reject_incomplete_xact_state_change</code> で判定）場合、その接続は使用されません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **キャッシュ検索**: <code>user-&gt;umid</code> をキーに <code>ConnectionHash</code> を検索。 2. **接続確立**: キャッシュに接続がない、または無効化されている場合は <code>make_new_connection</code> を呼び出し接続を確立。 3. **トランザクション同期**: <code>begin_remote_xact</code> を呼び出し、ローカルのトランザクション深度に合わせてリモート側でトランザクションまたはセーブポイントを開始。 4. **エラー回復**: 接続失敗が検出された場合、<code>PG_CATCH</code> ブロック内で接続を破棄し、再接続を試行。 5. **状態更新**: <code>will_prep_stmt</code> フラグをキャッシュエントリに反映し、必要に応じて <code>state</code> を返却。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/postgres_fdw/postgres_fdw.c</code> 内の各実行関数（<code>fsstate</code> や <code>dmstate</code> の初期化時など）。</li>
+<li>**呼び出し先**: <code>hash_search</code>, <code>make_new_connection</code>, <code>begin_remote_xact</code>, <code>disconnect_pg_server</code>, <code>process_pending_request</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ConnCacheEntry</code>: 接続状態やトランザクション深度を保持するキャッシュエントリ。</li>
+<li><code>ConnectionHash</code>: 接続を管理するハッシュテーブル。</li>
+<li><code>PgFdwConnState</code>: 接続に関連付けられた内部状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**接続失敗**: <code>make_new_connection</code> が失敗した場合、キャッシュエントリは <code>conn == NULL</code> のまま保持されます。</li>
+<li>**トランザクションエラー**: リモート側でトランザクション開始に失敗した場合、<code>PG_CATCH</code> ブロックでエラーを捕捉し、接続が <code>CONNECTION_BAD</code> であれば再接続を試みます。再接続後も失敗する場合は例外が再スローされます。</li>
+<li>**無効化**: <code>invalidated</code> フラグが立っている接続は、トランザクション深度が 0 の時に破棄されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>接続キャッシュは <code>UserMapping</code> 単位であるため、ユーザーごとに認証情報が分離されます。</li>
+<li><code>xact_depth</code> によるトランザクション管理は、ローカルのサブトランザクションとリモートのセーブポイントを同期させるために重要です。</li>
+</ul></body></html>

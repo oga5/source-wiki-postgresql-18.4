@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__async_c__Notification.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Notification</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/commands/async.c:381</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>NOTIFY</code> コマンドによって発行される非同期通知メッセージを、メモリ上で表現するためのデータ構造です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct Notification
+{
+    uint16      channel_len;    /* チャネル名の長さ */
+    uint16      payload_len;    /* ペイロードの長さ */
+    char        data[FLEXIBLE_ARRAY_MEMBER]; /* チャネル名とペイロードの連続領域 */
+} Notification;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>palloc</code> を用いて動的に確保されるメモリ領域。<code>data</code> メンバには、ヌル終端されたチャネル名と、それに続くヌル終端されたペイロードが格納されます。</li>
+<li>**出力**: トランザクション内の保留中通知リスト（<code>pendingNotifies</code>）に格納されるか、<code>asyncQueueNotificationToEntry</code> を介して共有メモリ上の <code>AsyncQueueEntry</code> へ変換されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>data</code> 領域には、必ずチャネル名とペイロードがこの順序で、それぞれヌル終端された状態で格納されている必要があります。</li>
+<li><code>channel_len</code> および <code>payload_len</code> は、それぞれの文字列の長さを正確に反映している必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>トランザクション実行中に <code>NOTIFY</code> が発行されると、この構造体が生成され、ローカルリストに蓄積されます。</li>
+<li>コミット処理の過程で、この構造体の内容が共有メモリ上の <code>AsyncQueueEntry</code> にコピーされ、他のバックエンドへ通知が伝播されます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>AddEventToPendingNotifies</code>（保留リストへの追加時）、<code>asyncQueueNotificationToEntry</code>（キューへの書き込み時）などで参照されます。</li>
+<li>**呼び出し先**: 直接的な関数呼び出し関係はありませんが、メモリ確保のために <code>palloc</code> が使用されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>AsyncQueueEntry</code>: 共有メモリ上で通知を保持するための永続的な構造体。</li>
+<li><code>pendingNotifies</code>: 現在のトランザクションで保留中の <code>Notification</code> を保持するリスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ不足時: <code>palloc</code> によるメモリ確保に失敗した場合、エラーが発生します。</li>
+<li>文字列長: <code>channel_len</code> や <code>payload_len</code> が実際のデータ長と不整合を起こすと、後続の読み取り処理でバッファオーバーランや不正なメモリ参照を引き起こす可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>data</code> は可変長配列（<code>FLEXIBLE_ARRAY_MEMBER</code>）であるため、構造体のサイズ計算には <code>offsetof(Notification, data)</code> を使用してください。</li>
+<li>この構造体はトランザクションローカルなメモリ上に存在するため、コミット完了後は解放されます。永続化が必要な場合は <code>AsyncQueueEntry</code> への変換が必須です。</li>
+</ul></body></html>

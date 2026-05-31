@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execSRF.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execSRF.c</h1>
+<h2>概要</h2>
+<p><code>execSRF.c</code> は、PostgreSQL における集合を返す関数（SRF: Set-Returning Functions）の実行を管理する API を提供します。主に <code>nodeFunctionscan.c</code> および <code>nodeProjectSet.c</code> から利用され、<code>ReturnSetInfo</code> プロトコルに基づいた関数の呼び出しと結果の処理を抽象化します。</p>
+<h2>モジュール内での役割</h2>
+<p>実行エンジン（<code>src/backend/executor</code>）において、SRF の実行状態を保持する <code>SetExprState</code> の初期化と、関数呼び出しの反復処理を担います。特に、関数が一度に全結果を返す（Materialize）のか、呼び出しごとに値を返す（ValuePerCall）のかという差異を吸収し、呼び出し元に統一されたインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SRF 実行状態の管理**: <code>SetExprState</code> の初期化および、関数呼び出しに必要なメタデータ（引数、戻り値型、TupleDesc）の準備。</li>
+<li>**プロトコル制御**: <code>ReturnSetInfo</code> を介した SRF プロトコルの遵守確認と、エラーハンドリング。</li>
+<li>**結果の具現化**: 関数が返す結果を <code>Tuplestore</code> に格納し、呼び出し元が反復的に取得できるようにする。</li>
+<li>**メモリ管理**: SRF 実行に伴うメモリリークを防ぐためのコンテキスト切り替えと、クリーンアップコールバックの登録。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SetExprState</code>: SRF の実行状態を保持する構造体。</li>
+<li><code>ExecInitTableFunctionResult</code>: <code>FROM</code> 句で呼び出されるテーブル関数の初期化用。</li>
+<li><code>ExecMakeTableFunctionResult</code>: テーブル関数を実行し、結果を <code>Tuplestore</code> にマテリアライズする。</li>
+<li><code>ExecMakeFunctionResultSet</code>: プロジェクション（<code>SELECT</code> リスト等）内の SRF を実行し、値を逐次取得する。</li>
+<li><code>ReturnSetInfo</code>: SRF と実行エンジン間で通信するための構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEvalFuncArgs</code></li>
+<li><code>ExecInitFunctionResultSet</code></li>
+<li><code>ExecPrepareTuplestoreResult</code></li>
+<li><code>ShutdownSetExpr</code></li>
+<li><code>init_sexpr</code></li>
+<li><code>tupledesc_match</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ExecInit...</code> 関数が呼び出され、<code>SetExprState</code> が作成されます。ここで <code>fmgr_info</code> を用いて関数情報をキャッシュします。 2.  **実行**: <code>ExecMake...</code> 関数が呼び出されると、<code>ExprContext</code> を用いて引数を評価し、<code>FunctionCallInvoke</code> で関数を呼び出します。 3.  **プロトコル処理**:</p>
+<ul>
+<li><code>ValuePerCall</code> モードの場合、関数が <code>ExprMultipleResult</code> を返す限りループし、結果を <code>Tuplestore</code> に蓄積します。</li>
+<li><code>Materialize</code> モードの場合、関数が一度に返した <code>Tuplestore</code> をそのまま利用します。</li>
+<p>4.  **終了処理**: 実行終了時やエラー発生時には、登録された <code>ShutdownSetExpr</code> コールバックが呼び出され、<code>Tuplestore</code> の解放やリソースのクリーンアップが行われます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>funcapi.h</code>: SRF 関連の API 定義。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式評価関連のノード定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュと検証。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nodeFunctionscan.c</code>: <code>FROM</code> 句での SRF 呼び出し元。</li>
+<li><code>nodeProjectSet.c</code>: <code>SELECT</code> リスト等での SRF 呼び出し元。</li>
+<li><code>execExprInterp.c</code>: 式評価の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>SRF の実行はメモリコンテキストの切り替えが頻繁に行われます。特に <code>argContext</code>（引数用）と <code>econtext-&gt;ecxt_per_tuple_memory</code>（関数呼び出し用）の使い分けに注意してください。</li>
+<li><code>tupledesc_match</code> は、関数が返す行型とクエリが期待する行型が一致するかを検証します。動的な型（RECORD 型など）を扱う際の重要なチェックポイントです。</li>
+<li><code>ShutdownSetExpr</code> は、クエリが途中で中断された場合でもリソースを確実に解放するために重要です。新しい状態を追加する場合は、このコールバックへの登録を忘れないようにしてください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecInitTableFunctionResult.html" target="wiki-view"><code>ExecInitTableFunctionResult</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecMakeTableFunctionResult.html" target="wiki-view"><code>ExecMakeTableFunctionResult</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecInitFunctionResultSet.html" target="wiki-view"><code>ExecInitFunctionResultSet</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecMakeFunctionResultSet.html" target="wiki-view"><code>ExecMakeFunctionResultSet</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__init_sexpr.html" target="wiki-view"><code>init_sexpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ShutdownSetExpr.html" target="wiki-view"><code>ShutdownSetExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecEvalFuncArgs.html" target="wiki-view"><code>ExecEvalFuncArgs</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__ExecPrepareTuplestoreResult.html" target="wiki-view"><code>ExecPrepareTuplestoreResult</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execSRF_c__tupledesc_match.html" target="wiki-view"><code>tupledesc_match</code></a></li>
+</ul></body></html>

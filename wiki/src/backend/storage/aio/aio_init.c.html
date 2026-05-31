@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/aio_init.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/aio_init.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の非同期 I/O (AIO) サブシステムに必要な共有メモリ領域の計算、確保、および初期化を行うモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p>AIO サブシステム全体のライフサイクル管理における「ブートストラップ」フェーズを担います。共有メモリのレイアウトを定義し、PostgreSQL の起動時に必要なデータ構造を構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリサイズの算出**: <code>io_max_concurrency</code> に基づき、制御構造体、バックエンド状態、I/O ハンドル、および <code>iovec</code> 配列に必要なメモリ量を計算します。</li>
+<li>**共有メモリの初期化**: <code>ShmemInitStruct</code> を用いて各構造体を割り当て、バックエンドごとのアイドルリストやハンドルを初期化します。</li>
+<li>**バックエンドのセットアップ**: 各バックエンドプロセスが AIO を利用するためのコンテキスト（<code>pgaio_my_backend</code>）を割り当てます。</li>
+<li>**GUC の動的調整**: <code>io_max_concurrency</code> が未設定の場合、システムリソース（<code>NBuffers</code>）に応じて適切な値を自動決定します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>AioShmemSize()</code>: 共有メモリの総サイズを計算するエントリポイント。</li>
+<li><code>AioShmemInit()</code>: 共有メモリ領域の確保と、各バックエンドのハンドルリストの初期化を行う。</li>
+<li><code>pgaio_init_backend()</code>: 各バックエンドプロセス起動時に呼び出され、AIO コンテキストを紐付ける。</li>
+<li><code>io_max_concurrency</code>: 同時実行可能な I/O 数を制御するグローバル変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AioBackendShmemSize</code></li>
+<li><code>AioChooseMaxConcurrency</code></li>
+<li><code>AioCtlShmemSize</code></li>
+<li><code>AioHandleDataShmemSize</code></li>
+<li><code>AioHandleIOVShmemSize</code></li>
+<li><code>AioHandleShmemSize</code></li>
+<li><code>AioProcs</code></li>
+<li><code>AioShmemInit</code></li>
+<li><code>AioShmemSize</code></li>
+<li><code>pgaio_init_backend</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **サイズ計算**: <code>AioShmemSize</code> が呼び出され、各コンポーネント（<code>AioCtl</code>, <code>AioBackend</code>, <code>AioHandle</code> 等）のサイズを合算します。 2.  **初期化**: <code>AioShmemInit</code> が実行され、共有メモリ上に <code>PgAioCtl</code> を配置します。その後、各バックエンドの <code>PgAioBackend</code> 構造体に対して、<code>io_max_concurrency</code> 分の <code>PgAioHandle</code> を割り当て、<code>idle_ios</code> リストに登録します。 3.  **バックエンド接続**: 各プロセスが <code>pgaio_init_backend</code> を呼び出し、自身の <code>MyProcNumber</code> に対応する <code>PgAioBackend</code> 構造体へのポインタを保持します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/aio.h</code>, <code>storage/aio_internal.h</code>: AIO 固有のデータ構造定義。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ管理機能。</li>
+<li><code>storage/proc.h</code>: プロセス管理および <code>MyProcNumber</code> へのアクセス。</li>
+<li><code>utils/guc.h</code>: 設定パラメータの動的変更。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/io_worker.h</code></li>
+<li><code>storage/ipc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/aio.c</code>: AIO サブシステムのメインインターフェース。</li>
+<li><code>src/backend/storage/aio/method_io_uring.c</code>: <code>pgaio_method_ops</code> を介して呼び出される具体的な I/O 実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: 本ファイルは共有メモリの「静的な」レイアウトを決定します。<code>io_max_concurrency</code> の値がメモリ消費量に直結するため、調整時には注意が必要です。</li>
+<li>**初期化の順序**: <code>AioShmemInit</code> は PostgreSQL の共有メモリ初期化シーケンスの一部として呼び出されることを前提としています。</li>
+<li>**スケーラビリティ**: <code>AioChooseMaxConcurrency</code> は <code>NBuffers</code> に依存しており、メモリが豊富な環境では最大 64 までの同時実行数が自動的に選択されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioCtlShmemSize.html" target="wiki-view"><code>AioCtlShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioProcs.html" target="wiki-view"><code>AioProcs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioBackendShmemSize.html" target="wiki-view"><code>AioBackendShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioHandleShmemSize.html" target="wiki-view"><code>AioHandleShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioHandleIOVShmemSize.html" target="wiki-view"><code>AioHandleIOVShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioHandleDataShmemSize.html" target="wiki-view"><code>AioHandleDataShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioChooseMaxConcurrency.html" target="wiki-view"><code>AioChooseMaxConcurrency</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioShmemSize.html" target="wiki-view"><code>AioShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__AioShmemInit.html" target="wiki-view"><code>AioShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_init_c__pgaio_init_backend.html" target="wiki-view"><code>pgaio_init_backend</code></a></li>
+</ul></body></html>

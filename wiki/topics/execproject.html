@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/execproject.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecProject</h1>
+<h2>概念</h2>
+<p><code>ExecProject</code> は、PostgreSQLの実行エンジン（Executor）において、クエリのターゲットリスト（SELECT句など）に指定された式を評価し、結果のタプルを生成・投影（Projection）するための仕組みです。特に、ターゲットリスト内に集合を返す関数（SRF: Set Returning Functions）が含まれる場合、<code>ExecProjectSet</code> などの処理を通じて、1つの入力タプルから複数の出力行を生成・投影します。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ実行において、テーブルから取得した生のデータをそのまま返すだけでなく、関数の実行や計算式の評価、さらにはSRFによる行の展開を行う必要があります。これらをメモリリークなく、かつ効率的に実行するための基盤として、投影処理（Projection）は極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/executor/executor.h#ExecProject</code>**: 投影処理に関連する定義またはインターフェース（詳細な定義は提供されたコンテキストからは未確定）。</li>
+<li>**<code>symbol:src/backend/executor/nodeProjectSet.c#ExecProjectSet</code>**: ターゲットリストにSRFが含まれるクエリにおいて、入力タプルから複数の出力行を生成・投影する実行ノードのメイン処理関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>ExecProject</code> 全体の詳細なエンドツーエンドの流れは提供されたコンテキストからは未確定ですが、SRFを伴う投影処理（<code>ExecProjectSet</code>）の流れは以下の通りです：</p>
+<p>1. **呼び出し**: 実行エンジンが <code>ExecProcNode</code> を経由して <code>ExecProjectSet</code> を呼び出します。 2. **割り込みチェックとメモリリセット**: <code>CHECK_FOR_INTERRUPTS()</code> を実行し、<code>ResetExprContext</code> で式評価用メモリを解放します。 3. **未処理SRFの継続評価**: 前回の入力タプルから生成すべき行が残っている場合（<code>pending_srf_tuples</code> が真）、<code>ExecProjectSRF</code> を呼び出して残りの行を生成し、即座に返します。 4. **新規タプルの取得と評価**:</p>
+<ul>
+<li>残りがない場合、引数評価用メモリコンテキスト（<code>argcontext</code>）をリセットします。</li>
+<li>子ノードから <code>ExecProcNode</code> を呼び出して新しい入力タプルを取得します。タプルがなければ終了（<code>NULL</code> を返却）します。</li>
+<li>取得したタプルを <code>econtext-&gt;ecxt_outertuple</code> にセットし、<code>ExecProjectSRF</code> を呼び出して投影を実行します。</li>
+<li>結果が得られればそれを返し、得られなければ次の入力タプルを求めてループを継続します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>ExecProjectSet</code> に渡される <code>PlanState *pstate</code> は、実際には <code>ProjectSetState</code> 型の構造体でなければなりません。</li>
+<li>SRF はターゲットリストのトップレベルに存在する必要があります。</li>
+<li><code>ExecProject</code> 自体に関する詳細な不変条件は、提供されたコンテキストからは未確定です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ管理の複雑さ**: SRF は評価中にメモリリークを引き起こしやすいため、<code>argcontext</code> や <code>econtext</code> のリセットタイミング（<code>ResetExprContext</code> や <code>MemoryContextReset</code>）を誤ると、クエリ実行時のメモリ消費が肥大化する原因になります。</li>
+<li>**状態管理の不整合**: <code>pending_srf_tuples</code> フラグはSRFの評価が中断しているかどうかを決定する重要な状態であり、このフラグの管理を誤ると、行の出力漏れや無限ループが発生する可能性があります。</li>
+<li><code>ExecProject</code> 全般におけるその他の落とし穴は、提供されたコンテキストからは未確定です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/executor/executor.h</code>：<code>ExecProject</code> の定義や関連するマクロ・関数の宣言を確認できます。</li>
+<li><code>src/backend/executor/nodeProjectSet.c</code>：<code>ExecProjectSet</code> の具体的な実装や、SRFを伴う投影処理の詳細を確認できます。</li>
+</ul></body></html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__clog_c__TransactionIdSetPageStatus.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TransactionIdSetPageStatus</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/clog.c:292</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたトランザクションID（XID）およびサブトランザクションの状態を、CLOG（Commit Log）の特定のページに書き込む。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void TransactionIdSetPageStatus(
+    TransactionId xid, 
+    int nsubxids, 
+    TransactionId *subxids, 
+    XidStatus status, 
+    XLogRecPtr lsn, 
+    int64 pageno, 
+    bool all_xact_same_page
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>xid</code>: 対象のトランザクションID。</li>
+<li><code>nsubxids</code>: サブトランザクションの数。</li>
+<li><code>subxids</code>: サブトランザクションIDの配列。</li>
+<li><code>status</code>: 設定する状態（<code>XidStatus</code>）。</li>
+<li><code>lsn</code>: 関連する WAL の LSN。</li>
+<li><code>pageno</code>: 対象の CLOG ページ番号。</li>
+<li><code>all_xact_same_page</code>: すべての XID が同一ページ内にあるかを示すフラグ。</li>
+<li>**出力**: なし（副作用として CLOG ページを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>THRESHOLD_SUBTRANS_CLOG_OPT</code> が <code>PGPROC_MAX_CACHED_SUBXIDS</code> 以下であること（静的アサーション）。</li>
+<li><code>XactCtl</code> が初期化されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロック取得**: <code>SimpleLruGetBankLock</code> を使用して、対象ページに対応する SLRU バンクロックを取得する。 2. **グループ更新の試行**: 以下の条件を満たす場合、ロック競合を回避するためにグループ更新を試みる。</p>
+<ul>
+<li><code>all_xact_same_page</code> が真。</li>
+<li><code>xid</code> が現在のプロセス（<code>MyProc</code>）の XID と一致。</li>
+<li>サブトランザクション数が最適化閾値以下であり、かつ <code>MyProc</code> の情報と一致する。</li>
+<li><code>LWLockConditionalAcquire</code> で即座にロックが取れれば直接更新し、取れなければ <code>TransactionGroupUpdateXidStatus</code> を呼び出す。</li>
+<p>3. **通常更新**: グループ更新が適用できない、または成功しなかった場合、<code>LWLockAcquire</code> で排他ロックを確実に取得し、<code>TransactionIdSetPageStatusInternal</code> を呼び出して状態を更新する。 4. **終了**: ロックを解放して処理を完了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/clog.c</code> 内の <code>TransactionIdSetTreeStatus</code> 等から呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li><code>SimpleLruGetBankLock</code></li>
+<li><code>TransactionIdSetPageStatusInternal</code></li>
+<li><code>TransactionGroupUpdateXidStatus</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code> / <code>LWLockConditionalAcquire</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XactCtl</code>: CLOG の共有メモリ状態を管理する構造体。</li>
+<li><code>MyProc</code>: 現在のバックエンドプロセスの情報を保持する構造体。</li>
+<li><code>SLRU</code>: CLOG が利用するページキャッシュ機構。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ロック競合**: ページへのアクセスが集中している場合、グループ更新メカニズムへフォールバックする。</li>
+<li>**ページ境界**: <code>all_xact_same_page</code> が偽の場合、グループ更新はスキップされ、通常のロック取得処理へ移行する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>TransactionIdSetTreeStatus</code> の下位ルーチンであり、CLOG への書き込みにおける排他制御と最適化の分岐点となる。</li>
+<li>グループ更新の条件判定（<code>MyProc</code> との照合）は、並列処理における整合性維持のために重要である。</li>
+</ul></body></html>

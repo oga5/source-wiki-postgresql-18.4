@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtxlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtxlog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL B-tree インデックスの WAL（Write-Ahead Log）リプレイ処理を担うモジュールです。クラッシュリカバリやスタンバイサーバーでのデータ同期時に、WAL レコードを読み取り、インデックスページの状態を正確に再構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムの一部として、インデックスの物理的な変更（挿入、分割、削除、メタページ更新など）を WAL から再現する役割を持ちます。インデックスの論理的な操作（検索や挿入）を行う他のファイルとは異なり、このファイルは「物理的なページ状態の復元」に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>WAL レコードの種類に応じたリプレイ関数のディスパッチ。</li>
+<li>ページ分割（Split）や挿入（Insert）に伴う物理的なページ再構築。</li>
+<li>メタページの整合性維持と更新。</li>
+<li>ホットスタンバイ環境におけるリカバリ競合の解決。</li>
+<li>ページ整合性チェックのためのマスク処理（<code>btree_mask</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>btree_redo</code>: WAL レコードを解析し、適切な処理関数へ振り分けるメインエントリポイント。</li>
+<li><code>_bt_restore_page</code>: ページ内のタプルを順序通りに再配置する汎用ヘルパー。</li>
+<li><code>_bt_restore_meta</code>: メタページを WAL レコードの内容で上書き・初期化する関数。</li>
+<li><code>btree_mask</code>: リプレイ後のページに対して、WAL に記録されないヒントビットやフラグをマスクし、整合性チェックを可能にする関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>btree_xlog_dedup</code></li>
+<li><code>btree_xlog_delete</code></li>
+<li><code>btree_xlog_insert</code></li>
+<li><code>btree_xlog_mark_page_halfdead</code></li>
+<li><code>btree_xlog_newroot</code></li>
+<li><code>btree_xlog_reuse_page</code></li>
+<li><code>btree_xlog_split</code></li>
+<li><code>btree_xlog_startup</code></li>
+<li><code>btree_xlog_unlink_page</code></li>
+<li><code>btree_xlog_updates</code></li>
+<li><code>btree_xlog_vacuum</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ディスパッチ**: <code>btree_redo</code> が <code>XLogRecGetInfo</code> でレコードタイプを判定。 2. **メモリ管理**: <code>opCtx</code>（メモリコンテキスト）を使用して、リプレイ中に必要な一時的なメモリを確保・解放。 3. **ページ操作**: <code>XLogReadBufferForRedo</code> を使用して対象ページを読み込み、必要に応じて <code>PageAddItem</code> や <code>PageIndexMultiDelete</code> でページ内容を更新。 4. **メタデータ更新**: 必要な場合、<code>_bt_restore_meta</code> を呼び出してルートやレベル情報を更新。 5. **コミット**: <code>PageSetLSN</code> で LSN を更新し、<code>MarkBufferDirty</code> でバッファをダーティとしてマーク。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree のデータ構造定義。</li>
+<li><code>access/nbtxlog.h</code>: WAL レコードの構造体定義。</li>
+<li><code>access/bufmask.h</code>: ページマスク処理用。</li>
+<li><code>access/xlogutils.h</code>: WAL リプレイ用バッファ管理ユーティリティ。</li>
+<li><code>access/transam.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/nbtxlog.h</code>: WAL レコードの定義。このファイルで定義された構造体と <code>nbtxlog.c</code> の処理は密接に結合しています。</li>
+<li><code>src/backend/access/nbtree/nbtinsert.c</code>: インデックス挿入のメインロジック。ここで生成された WAL レコードが <code>nbtxlog.c</code> で消費されます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの簡略化**: 通常のインデックス操作では複数のページを同時にロックしますが、リカバリ時は並行更新が発生しないため、ページごとのロックで十分です。このため、コード内ではロックの取得・解放が簡略化されています。</li>
+<li>**物理的順序の維持**: <code>_bt_restore_page</code> は、ページ内のタプルを元の物理順序で再構築します。これは WAL の一貫性チェックにおいて重要です。</li>
+<li>**マスク処理**: <code>btree_mask</code> は、リプレイ後のページと元のページを比較する際に、無視すべきビット（ヒントビットやフラグ）をクリアするために使用されます。デバッグやテストでページ内容を検証する際に重要となります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_insert.html" target="wiki-view"><code>btree_xlog_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_split.html" target="wiki-view"><code>btree_xlog_split</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_dedup.html" target="wiki-view"><code>btree_xlog_dedup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_updates.html" target="wiki-view"><code>btree_xlog_updates</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_vacuum.html" target="wiki-view"><code>btree_xlog_vacuum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_delete.html" target="wiki-view"><code>btree_xlog_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_mark_page_halfdead.html" target="wiki-view"><code>btree_xlog_mark_page_halfdead</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_unlink_page.html" target="wiki-view"><code>btree_xlog_unlink_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_newroot.html" target="wiki-view"><code>btree_xlog_newroot</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_reuse_page.html" target="wiki-view"><code>btree_xlog_reuse_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_redo.html" target="wiki-view"><code>btree_redo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_startup.html" target="wiki-view"><code>btree_xlog_startup</code></a></li>
+</ul></body></html>

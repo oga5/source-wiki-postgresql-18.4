@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__file__fd_c__Vfd.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Vfd</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/file/fd.c:199</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのファイル管理サブシステムにおいて、OSのファイル記述子（FD）の枯渇を防ぐための仮想ファイル記述子（VFD）を保持する構造体です。LRU（Least Recently Used）キャッシュ機構の各エントリとして機能します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct vfd
+{
+    int            fd;                /* 現在のFD、またはVFD_CLOSED */
+    unsigned short fdstate;           /* VFD状態のビットフラグ */
+    ResourceOwner  resowner;          /* 自動クリーンアップ用の所有者 */
+    File           nextFree;          /* フリーリスト内の次へのリンク */
+    File           lruMoreRecently;   /* LRUリスト（二重連結リスト） */
+    File           lruLessRecently;
+    off_t          fileSize;          /* ファイルサイズ（一時ファイル以外は0） */
+    char          *fileName;          /* ファイル名（未使用時はNULL） */
+    int            fileFlags;         /* open(2)用フラグ */
+    mode_t         fileMode;          /* open(2)用モード */
+} Vfd;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>fileName</code>（文字列）、<code>fileFlags</code>、<code>fileMode</code> 等のファイルオープンに必要な属性を保持します。</li>
+<li>**出力**: <code>fd</code> フィールドを通じて、現在OSレベルで開かれている実際のファイル記述子を保持します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>fileName</code> は <code>malloc</code> で確保されており、VFDを閉じる際に必ず <code>free</code> する必要があります。</li>
+<li><code>VfdCache[0]</code> はLRUリングのアンカー（番兵）として使用されます。</li>
+<li><code>File</code> 型は <code>VfdCache</code> 配列のインデックスとして機能します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**LRU管理**: <code>lruMoreRecently</code> および <code>lruLessRecently</code> を用いて、アクセス頻度に基づいた二重連結リストを構成します。</li>
+<li>**リソース追跡**: <code>ResourceOwner</code> を保持し、トランザクション終了時などの自動クローズをサポートします。</li>
+<li>**キャッシュ溢れ対応**: プロセスが保持できるFD数を超過した場合、LRUリストの末尾にあるVFDが物理的にクローズされ、FDが解放されます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>fd.c</code> 内の <code>AllocateVfd</code>（確保）、<code>PathNameOpenFile</code>（初期化）、<code>LruDelete</code>（キャッシュ解放）、および <code>VfdCache</code> 配列を操作する各関数から参照されます。</li>
+<li>**呼び出し先**: 構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>File</code>: <code>VfdCache</code> 配列のインデックスとして使用される型。</li>
+<li><code>VfdCache</code>: <code>Vfd</code> 構造体の配列（グローバルなキャッシュ領域）。</li>
+<li><code>ResourceOwner</code>: リソースの所有権管理に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>fileName</code> がNULLの場合、そのVFDは未使用とみなされます。</li>
+<li><code>fd</code> が <code>VFD_CLOSED</code> の場合、ファイルは現在開かれていません。</li>
+<li><code>realloc</code> による <code>VfdCache</code> の拡張時にメモリ不足が発生する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>fileName</code> のメモリ管理（<code>malloc</code>/<code>free</code>）には特に注意してください。</li>
+<li><code>VfdCache</code> のサイズ変更（<code>realloc</code>）が発生すると、既存のポインタが無効になる可能性があるため、インデックス（<code>File</code>型）による参照を推奨します。</li>
+<li><code>FDDEBUG</code> マクロを有効にすると、LRUリングの操作ログが取得可能です。</li>
+</ul></body></html>

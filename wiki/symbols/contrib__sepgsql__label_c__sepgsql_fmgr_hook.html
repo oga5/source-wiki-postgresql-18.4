@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__label_c__sepgsql_fmgr_hook.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>sepgsql_fmgr_hook</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/sepgsql/label.c:310</code></li>
+</ul>
+<h2>目的</h2>
+<p>信頼されたプロシージャ（trusted procedure）の実行時に、クライアントのセキュリティラベルを動的に切り替え、実行終了後に元のラベルへ復元するためのフック関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void sepgsql_fmgr_hook(FmgrHookEventType event, FmgrInfo *flinfo, Datum *private);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>event</code>: 実行イベント（<code>FHET_START</code>, <code>FHET_END</code>, <code>FHET_ABORT</code>）。</li>
+<li><code>flinfo</code>: 実行対象関数の情報。</li>
+<li><code>private</code>: フック間で状態を保持するためのポインタ。内部で <code>stack</code> 構造体（<code>old_label</code>, <code>new_label</code>, <code>next_private</code>）を保持します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>FHET_START</code> 時に <code>new_label</code> が存在する場合、<code>db_procedure:entrypoint</code> 権限および <code>process:transition</code> 権限のチェックが必須です。</li>
+<li><code>FHET_END</code> または <code>FHET_ABORT</code> 発生時、<code>client_label_func</code> は必ず元のラベル状態に復元される必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **<code>FHET_START</code>**:</p>
+<ul>
+<li><code>private</code> が未初期化の場合、<code>flinfo-&gt;fn_oid</code> に基づき <code>sepgsql_avc_trusted_proc</code> で新しいラベルを取得し、権限チェックを実行します。</li>
+<li>現在の <code>client_label_func</code> を <code>stack-&gt;old_label</code> に退避し、<code>client_label_func</code> を <code>new_label</code> に更新します。</li>
+<li>登録されている <code>next_fmgr_hook</code> があれば呼び出します。</li>
+<p>2. **<code>FHET_END</code> / <code>FHET_ABORT</code>**:</p>
+<li>登録されている <code>next_fmgr_hook</code> があれば呼び出します。</li>
+<li><code>stack-&gt;old_label</code> を用いて <code>client_label_func</code> を元の値に戻します。</li>
+<p>3. **その他**:</p>
+<li>未定義のイベントに対しては <code>elog(ERROR)</code> を発生させます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/sepgsql/label.c</code> 内で <code>fmgr_hook</code> 変数に代入されており、PostgreSQL の関数実行フック機構から呼び出されます。</li>
+<li>**呼び出し先**: </li>
+<li><code>sepgsql_avc_trusted_proc</code></li>
+<li><code>sepgsql_avc_check_perms</code></li>
+<li><code>sepgsql_avc_check_perms_label</code></li>
+<li><code>next_fmgr_hook</code>（存在する場合）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>FmgrHookEventType</code>: フックイベントの種類。</li>
+<li><code>FmgrInfo</code>: 関数実行情報。</li>
+<li><code>stack</code> (内部構造体): ラベルの退避・復元およびフックチェーン管理用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>sepgsql_avc_check_perms</code> 等の権限チェックで拒否された場合、例外が発生し処理が中断されます。</li>
+<li><code>private</code> が指すメモリは <code>flinfo-&gt;fn_mcxt</code> 上で確保されます。</li>
+<li>未定義の <code>event</code> が渡された場合はエラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>client_label_func</code> を直接書き換えるため、再入可能性やスタックの整合性に注意してください。</li>
+<li><code>next_fmgr_hook</code> を介したフックチェーンの順序が正しく維持されているか確認が必要です。</li>
+</ul></body></html>

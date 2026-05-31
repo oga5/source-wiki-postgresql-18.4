@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/procarray.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/procarray.c</h1>
+<h2>概要</h2>
+<p><code>procarray.c</code> は、PostgreSQL の全アクティブバックエンドのプロセス状態（<code>PGPROC</code>）を管理する共有メモリ配列を制御するモジュールです。MVCC スナップショットの構築、トランザクションの可視性判定、およびホットスタンバイ時のトランザクション追跡の基盤となります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールの一部として、プロセス間通信と共有メモリ管理の最上位層に位置します。<code>proc.c</code> が個々のプロセス構造体を管理するのに対し、本ファイルはそれらの集合体（配列）を管理し、トランザクションのライフサイクルと可視性という高レベルなロジックを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス配列管理**: 全バックエンドの <code>PGPROC</code> へのインデックス管理と、トランザクション開始・終了時の配列への登録・削除。</li>
+<li>**MVCC スナップショット構築**: <code>GetSnapshotData</code> を通じて、現在の実行中トランザクション集合を特定し、スナップショットを生成する。</li>
+<li>**可視性判定**: <code>TransactionIdIsInProgress</code> 等により、特定の XID が現在実行中か否かを判定する。</li>
+<li>**ホットスタンバイ管理**: <code>KnownAssignedXids</code> を用いて、プライマリから伝播された実行中トランザクション情報を追跡し、スタンバイ側での MVCC 整合性を維持する。</li>
+<li>**XID ホライゾン計算**: VACUUM や論理デコーディングに必要な、削除不可な最小 XID（ホライゾン）の計算。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ構造体</h3>
+<ul>
+<li><code>ProcArrayStruct</code>: 共有メモリ上のメイン管理構造体。<code>pgprocnos</code> 配列や <code>KnownAssignedXids</code> のメタデータを保持。</li>
+<li><code>GlobalVisState</code>: 可視性判定のための境界値（<code>definitely_needed</code>, <code>maybe_needed</code>）を保持する構造体。</li>
+</ul>
+<h3>トランザクション管理・可視性</h3>
+<ul>
+<li><code>GetSnapshotData()</code>: 現在の実行中トランザクション集合をスナップショットとして取得する。</li>
+<li><code>TransactionIdIsInProgress()</code>: 指定した XID が現在実行中かを判定する（キャッシュや <code>KnownAssignedXids</code> を活用）。</li>
+<li><code>ComputeXidHorizons()</code>: 各種リレーションタイプに応じた削除不可 XID ホライゾンを計算する。</li>
+</ul>
+<h3>ホットスタンバイ用管理</h3>
+<ul>
+<li><code>KnownAssignedXids</code>: スタンバイ側で実行中とみなされる XID の配列。</li>
+<li><code>ProcArrayApplyRecoveryInfo()</code>: プライマリから送られた <code>RunningTransactions</code> 情報を適用する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ComputeXidHorizonsResult</code></li>
+<li><code>GlobalVisHorizonKind</code></li>
+<li><code>GlobalVisState</code></li>
+<li><code>KAXCompressReason</code></li>
+<li><code>KnownAssignedXidsReset</code></li>
+<li><code>ProcArrayAdd</code></li>
+<li><code>ProcArrayEndTransaction</code></li>
+<li><code>ProcArrayInitRecovery</code></li>
+<li><code>ProcArrayRemove</code></li>
+<li><code>ProcArrayShmemInit</code></li>
+<li><code>ProcArrayShmemSize</code></li>
+<li><code>ProcArrayStruct</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **トランザクション終了**: <code>ProcArrayEndTransaction</code> が呼ばれると、<code>ProcArrayLock</code> を取得し、<code>ProcGlobal-&gt;xids</code> 配列から自身の XID をクリアする。競合回避のため、グループクリア（<code>ProcArrayGroupClearXid</code>）が利用される場合がある。 2. **スナップショット構築**: <code>GetSnapshotData</code> は <code>ProcArrayLock</code> (Shared) を取得し、<code>pgprocnos</code> を走査して実行中の XID を収集する。結果は <code>Snapshot</code> 構造体に格納される。 3. **ホライゾン計算**: <code>ComputeXidHorizons</code> は、全プロセスの <code>xmin</code> と <code>xid</code> を走査し、レプリケーションスロットの制限も考慮して、VACUUM が安全に削除できる最小 XID を算出する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: <code>PGPROC</code> 構造体の定義。</li>
+<li><code>access/transam.h</code>, <code>access/xact.h</code>: トランザクション ID 管理の基盤。</li>
+<li><code>storage/lwlock.h</code>: <code>ProcArrayLock</code> 等の排他制御。</li>
+<li><code>utils/snapshot.h</code>: スナップショット構造体の定義。</li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_lfind.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/transam.c</code>: <code>latestCompletedXid</code> 等のグローバル変数の管理。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションのコミット・アボート処理。</li>
+<li><code>src/backend/storage/ipc/proc.c</code>: <code>PGPROC</code> 自体の初期化と管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの重要性**: <code>ProcArrayLock</code> は非常に頻繁に取得されるため、競合がパフォーマンスのボトルネックになりやすいです。<code>ProcArrayGroupClearXid</code> のようなグループ化処理は、この競合を緩和するための重要な最適化です。</li>
+<li>**メモリレイアウト**: <code>ProcArrayStruct</code> は共有メモリ上に配置され、<code>pgprocnos</code> 配列を通じて <code>allProcs</code> 配列を参照します。この間接参照により、プロセス配列の並び替えを効率化しています。</li>
+<li>**ホットスタンバイの複雑性**: <code>KnownAssignedXids</code> は、プライマリの情報をスタンバイでエミュレートするための複雑な仕組みです。この領域は、WAL 適用とスナップショット構築のタイミングが重なるため、特に注意が必要です。</li>
+<li>**未解決の浅い領域**: <code>GlobalVisTest*</code> 系の関数は、スナップショット構築を高速化するための近似計算を行っています。これらはパフォーマンスと正確性のトレードオフを調整する高度なロジックであり、詳細な挙動は <code>ComputeXidHorizons</code> の実装に依存します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayStruct.html" target="wiki-view"><code>ProcArrayStruct</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__GlobalVisState.html" target="wiki-view"><code>GlobalVisState</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ComputeXidHorizonsResult.html" target="wiki-view"><code>ComputeXidHorizonsResult</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__GlobalVisHorizonKind.html" target="wiki-view"><code>GlobalVisHorizonKind</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__KAXCompressReason.html" target="wiki-view"><code>KAXCompressReason</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayShmemSize.html" target="wiki-view"><code>ProcArrayShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayShmemInit.html" target="wiki-view"><code>ProcArrayShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayAdd.html" target="wiki-view"><code>ProcArrayAdd</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayRemove.html" target="wiki-view"><code>ProcArrayRemove</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayEndTransaction.html" target="wiki-view"><code>ProcArrayEndTransaction</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__ProcArrayInitRecovery.html" target="wiki-view"><code>ProcArrayInitRecovery</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procarray_c__KnownAssignedXidsReset.html" target="wiki-view"><code>KnownAssignedXidsReset</code></a></li>
+</ul></body></html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_insert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>btree_xlog_insert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtxlog.c:159</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスへの挿入操作を WAL（Write-Ahead Log）からリプレイし、物理ページの状態を再構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void btree_xlog_insert(bool isleaf, bool ismeta, bool posting, XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>isleaf</code>: 挿入対象がリーフページか否か。</li>
+<li><code>ismeta</code>: メタページの更新を伴うか否か。</li>
+<li><code>posting</code>: ポスティングリストの分割を伴うか否か。</li>
+<li><code>record</code>: WAL レコードの状態を保持する <code>XLogReaderState</code> 構造体。</li>
+<li>**出力**: なし（副作用としてバッファおよびメタページを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リプレイ時は並行更新が発生しないため、ページロックは簡略化されている。</li>
+<li><code>isleaf</code> が <code>false</code>（内部ページ）の場合、子レベルの不完全な分割フラグをクリアする。</li>
+<li><code>ismeta</code> が <code>true</code> の場合、最後にメタページの復元を行う。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **内部ページ処理**: リーフでない場合、<code>_bt_clear_incomplete_split</code> を呼び出し、子ページの不完全分割フラグをクリアする。 2. **バッファ読み込み**: <code>XLogReadBufferForRedo</code> で対象ページを取得。<code>BLK_NEEDS_REDO</code> の場合のみ以下を実行。 3. **挿入処理**:</p>
+<ul>
+<li>通常挿入 (<code>!posting</code>): <code>PageAddItem</code> を使用してタプルをページに追加。</li>
+<li>ポスティングリスト分割 (<code>posting</code>): <code>_bt_swap_posting</code> を用いて既存のポスティングリストを分割し、新しいアイテムを挿入。</li>
+<p>4. **コミット**: <code>PageSetLSN</code> で LSN を更新し、<code>MarkBufferDirty</code> でバッファをダーティにする。 5. **メタページ更新**: <code>ismeta</code> が真であれば <code>_bt_restore_meta</code> を呼び出す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>btree_redo</code>（<code>src/backend/access/nbtree/nbtxlog.c</code> 内の各ケースで呼び出される）。</li>
+<li>**呼び出し先**:</li>
+<li><code>_bt_clear_incomplete_split</code></li>
+<li><code>XLogReadBufferForRedo</code></li>
+<li><code>PageAddItem</code></li>
+<li><code>_bt_swap_posting</code></li>
+<li><code>PageSetLSN</code>, <code>MarkBufferDirty</code></li>
+<li><code>_bt_restore_meta</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_btree_insert</code>: WAL レコードの挿入データ構造。</li>
+<li><code>XLogReaderState</code>: WAL レコードの読み取り状態。</li>
+<li><code>Buffer</code>, <code>Page</code>: PostgreSQL のバッファ管理およびページ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合、<code>PANIC</code> で停止する。</li>
+<li>ポスティングリスト分割時に <code>isleaf</code> が偽である場合、アサーションエラーが発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリ専用であり、通常のインデックス挿入ロジック（<code>nbtinsert.c</code>）とは異なり、ロックの結合を行わない。</li>
+<li>ポスティングリストの分割処理は、WAL データから復元された <code>newitem</code> を使用して物理的なページ状態を正確に再現する必要がある。</li>
+</ul></body></html>

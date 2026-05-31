@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/checkpointer.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/checkpointer.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL 9.2 で導入されたチェックポインタープロセスを実装するファイルです。データベースの整合性を維持するためのチェックポイント処理を定期的に、あるいは要求に応じて実行します。また、バックエンドプロセスからのファイル同期（fsync）要求を収集し、効率的に処理する役割も担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、補助プロセス（Auxiliary Process）として動作します。バッファマネージャーや WAL 管理サブシステムと密接に連携し、共有メモリを介して他のバックエンドプロセスと通信します。</p>
+<h2>責務</h2>
+<ul>
+<li>**チェックポイント実行**: 定期的なタイムアウト、またはバックエンドからの明示的な要求に基づくチェックポイント（またはリカバリ中のリスタートポイント）の実行。</li>
+<li>**fsync 要求の集約**: バックエンドが直接ファイル書き込みを行った際に発生する fsync 要求をキューイングし、重複排除を行ってから同期処理へ渡す。</li>
+<li>**プロセス間通信**: 共有メモリ上のフラグとラッチを用いた、チェックポイント開始・完了の同期。</li>
+<li>**設定管理**: <code>SIGHUP</code> 受信時の設定再読み込みと、共有メモリへの設定反映。</li>
+<li>**シャットダウン処理**: サーバー停止時の最終チェックポイント実行と、統計情報の書き出し。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ構造体</h3>
+<ul>
+<li><code>CheckpointerShmemStruct</code>: チェックポインターとバックエンド間の通信用共有メモリ。</li>
+<li><code>ckpt_lck</code>: チェックポイント状態フィールドを保護するスピンロック。</li>
+<li><code>ckpt_started</code>, <code>ckpt_done</code>, <code>ckpt_failed</code>: チェックポイントの進行状況を追跡するカウンタ。</li>
+<li><code>requests[]</code>: バックエンドから送られた fsync 要求のリングバッファ。</li>
+</ul>
+<h3>メインループ・制御</h3>
+<ul>
+<li><code>CheckpointerMain</code>: プロセスのエントリポイント。シグナルハンドラの設定、メモリコンテキストの初期化、メインループの実行を行う。</li>
+<li><code>ProcessCheckpointerInterrupts</code>: 設定再読み込みやログ出力要求などの割り込みを処理。</li>
+</ul>
+<h3>要求・同期処理</h3>
+<ul>
+<li><code>RequestCheckpoint</code>: バックエンドがチェックポイントを要求する際に呼び出す関数。</li>
+<li><code>ForwardSyncRequest</code>: バックエンドが fsync 要求をキューに送るためのインターフェース。</li>
+<li><code>AbsorbSyncRequests</code>: キューに溜まった fsync 要求を同期メカニズムへ転送する。</li>
+<li><code>CompactCheckpointerRequestQueue</code>: キューが溢れた際に重複を排除して圧縮する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckArchiveTimeout</code></li>
+<li><code>CheckpointWriteDelay</code></li>
+<li><code>CheckpointerMain</code></li>
+<li><code>CheckpointerRequest</code></li>
+<li><code>CheckpointerShmemInit</code></li>
+<li><code>CheckpointerShmemSize</code></li>
+<li><code>CheckpointerShmemStruct</code></li>
+<li><code>CheckpointerSlotMapping</code></li>
+<li><code>ImmediateCheckpointRequested</code></li>
+<li><code>IsCheckpointOnSchedule</code></li>
+<li><code>ProcessCheckpointerInterrupts</code></li>
+<li><code>ReqShutdownXLOG</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **チェックポイント開始**: <code>CheckpointerMain</code> ループ内で <code>ckpt_flags</code> を監視。フラグが立っていれば <code>CreateCheckPoint</code> を呼び出す。 2. **fsync 要求フロー**:</p>
+<ul>
+<li>バックエンドが <code>ForwardSyncRequest</code> を呼び出し、共有メモリの <code>requests</code> 配列に書き込む。</li>
+<li>チェックポインターは <code>AbsorbSyncRequests</code> を定期的に呼び出し、キューを空にして <code>RememberSyncRequest</code>（<code>storage/smgr.h</code> 経由）へ渡す。</li>
+<p>3. **同期**: バックエンドは <code>RequestCheckpoint</code> 内で <code>ConditionVariable</code> を使用し、チェックポインターが <code>ckpt_done</code> を更新するまで待機する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xlog_internal.h</code>: WAL 関連の制御。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/smgr.h</code>: バッファおよびストレージマネージャーの操作。</li>
+<li><code>storage/shmem.h</code>, <code>storage/lwlock.h</code>, <code>storage/spin.h</code>: 共有メモリとロック管理。</li>
+<li><code>postmaster/pmsignal.h</code>: プロセス間シグナル通信。</li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xlog.c</code>: <code>CreateCheckPoint</code> の実体。</li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: <code>BufferSync</code> 等、チェックポイント中に呼び出されるバッファ管理関数。</li>
+<li><code>src/backend/postmaster/bgwriter.c</code>: 役割は異なるが、同様にバックグラウンドでバッファを処理する補助プロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>CheckpointerMain</code> は専用の <code>MemoryContext</code> を作成し、エラー発生時にリセットすることでメモリリークを防いでいます。</li>
+<li>**エラー処理**: <code>sigsetjmp</code> を使用してエラーからの復帰を実装しています。エラー発生時は <code>LWLock</code> やバッファの解放を明示的に行う必要があります。</li>
+<li>**fsync キュー**: <code>MAX_CHECKPOINT_REQUESTS</code> は <code>NBuffers</code> に基づいて動的に決定されます。キューが満杯になった際の <code>CompactCheckpointerRequestQueue</code> は、ハッシュテーブルを使用して重複を排除するコストのかかる処理であるため、高負荷時には注意が必要です。</li>
+<li>**省略された詳細**: <code>CreateCheckPoint</code> 内部の複雑な WAL 書き込みロジックや、<code>smgr</code> レベルの物理的なファイル操作の詳細は本ファイルには含まれていません。これらは <code>access/</code> および <code>storage/</code> 配下の各モジュールに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerRequest.html" target="wiki-view"><code>CheckpointerRequest</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemStruct.html" target="wiki-view"><code>CheckpointerShmemStruct</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html" target="wiki-view"><code>CheckpointerMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ProcessCheckpointerInterrupts.html" target="wiki-view"><code>ProcessCheckpointerInterrupts</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckArchiveTimeout.html" target="wiki-view"><code>CheckArchiveTimeout</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ImmediateCheckpointRequested.html" target="wiki-view"><code>ImmediateCheckpointRequested</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointWriteDelay.html" target="wiki-view"><code>CheckpointWriteDelay</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__IsCheckpointOnSchedule.html" target="wiki-view"><code>IsCheckpointOnSchedule</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ReqShutdownXLOG.html" target="wiki-view"><code>ReqShutdownXLOG</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemSize.html" target="wiki-view"><code>CheckpointerShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemInit.html" target="wiki-view"><code>CheckpointerShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerSlotMapping.html" target="wiki-view"><code>CheckpointerSlotMapping</code></a></li>
+</ul></body></html>

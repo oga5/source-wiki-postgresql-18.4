@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/checkcondition-arr.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>checkcondition_arr</h1>
+<h2>概念</h2>
+<p><code>checkcondition_arr</code> は、PostgreSQL の特定のクエリ実行エンジンにおいて、ソート済みの配列内に対象の要素（整数値やハッシュ値など）が存在するかどうかを二分探索（バイナリサーチ）によって判定するためのコールバック関数です。</p>
+<p>この名前を持つ関数は、<code>contrib/intarray</code> モジュールと <code>src/backend/utils/adt</code> モジュールの2箇所に、それぞれ独立した静的（<code>static</code>）関数として定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>この関数は、インデックスの評価やクエリの条件判定において、高速な要素検索を提供するために重要です。</p>
+<ul>
+<li>**<code>contrib/intarray</code> において**: 整数配列に対するクエリ条件の判定を高速化します。</li>
+<li>**<code>src/backend/utils/adt</code>（GiST インデックス）において**: <code>tsquery</code> のオペランドが <code>tsvector</code> のインデックスキーに含まれているかを高速に判定し、不要なインデックス走査を削減します。</li>
+</ul>
+<p>いずれも、ソート済み配列の特性を活かした二分探索を用いることで、検索効率を向上させています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/intarray/_int_bool.c#checkcondition_arr</code>: <code>CHKVAL</code> 構造体が保持するソート済み整数配列から、<code>ITEM</code> 構造体の値を二分探索し、存在の有無を <code>bool</code> で返します。</li>
+<li><code>symbol:src/backend/utils/adt/tsgistidx.c#checkcondition_arr</code>: GiST インデックスのリーフページにおいて、<code>CHKVAL</code> 構造体が保持するソート済みハッシュ値配列から <code>QueryOperand</code> のハッシュ値を二分探索し、適合性を <code>TSTernaryValue</code>（<code>TS_MAYBE</code> または <code>TS_NO</code>）で返します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける呼び出しの流れは以下の通りです。</p>
+<h3>1. <code>contrib/intarray</code> における流れ</h3>
+<ul>
+<li>クエリ実行エンジン（<code>execute()</code> 関数など）からコールバックとして <code>checkcondition_arr</code> が呼び出されます。</li>
+<li>検索対象の配列範囲（<code>arrb</code> から <code>arre</code>）を保持する <code>CHKVAL</code> 構造体と、検索対象の値を持つ <code>ITEM</code> 構造体が渡されます。</li>
+<li>二分探索により値が検索され、結果（<code>true</code> または <code>false</code>）が返されます。</li>
+</ul>
+<h3>2. <code>src/backend/utils/adt</code> における流れ</h3>
+<ul>
+<li>GiST インデックスの整合性チェック時、<code>gtsvector_consistent</code> から <code>TS_execute</code> を介してコールバックとして <code>checkcondition_arr</code> が呼び出されます。</li>
+<li><code>CHKVAL</code> 構造体（ハッシュ値配列の範囲）と、検索対象の <code>QueryOperand</code> が渡されます。</li>
+<li>オペランドが前方一致（<code>prefix</code>）を要求する場合は即座に <code>TS_MAYBE</code> を返します。そうでない場合はハッシュ値配列を二分探索し、一致すれば <code>TS_MAYBE</code>、見つからなければ <code>TS_NO</code> を返します。</li>
+</ul>
+<p>※ 各モジュール外のより広範なエンドツーエンドの全体フロー（例えば、SQLクエリのパースからこれらの関数が呼び出されるまでの完全なコールスタックや、他システムとの詳細な相互作用）については、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**配列のソート順**: 探索対象となる <code>CHKVAL</code> 内の配列（<code>arrb</code> から <code>arre</code>）は、昇順にソートされていなければなりません。ソートされていない場合、二分探索が正しく機能せず、値が存在しても見つからない可能性があります。</li>
+<li>**ループ不変条件**: 二分探索のループ実行中、常に <code>StopLow &lt;= val &lt; StopHigh</code>（または探索範囲のインデックス境界）が維持されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**未ソート配列の入力**: 入力配列がソートされていない場合、関数はエラーをスローせず静かに誤った結果（見落とし）を返します。</li>
+<li>**前方一致（Prefix）時のインデックス精度の低下**: <code>tsgistidx.c</code> の実装では、<code>QueryOperand</code> に <code>prefix</code> フラグが設定されている場合、ハッシュ値による二分探索を行わずに即座に <code>TS_MAYBE</code> を返します。これにより、インデックスによる絞り込みが行われず、後続のヒープ再チェック（Recheck）の負荷が高まる可能性があります。</li>
+<li>**名前の衝突と混同**: 同名の <code>static</code> 関数が異なるファイルに存在するため、ソースコードの静的解析やデバッグ時に、どちらのモジュールの関数が呼び出されているかを混同しやすい点に注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/intarray/_int_bool.c</code> (特に <code>checkcondition_arr</code> および <code>execute</code> の実装)</li>
+<li><code>src/backend/utils/adt/tsgistidx.c</code> (特に <code>checkcondition_arr</code> および <code>gtsvector_consistent</code> の実装)</li>
+</ul></body></html>

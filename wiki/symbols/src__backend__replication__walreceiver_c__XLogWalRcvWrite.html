@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiver_c__XLogWalRcvWrite.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogWalRcvWrite</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiver.c:889</code></li>
+</ul>
+<h2>目的</h2>
+<p>プライマリサーバーから受信した WAL データをローカルの WAL セグメントファイルに書き込み、共有メモリ上の書き込み進捗状況を更新します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>buf</code>: 受信した WAL データを含むバッファ。</li>
+<li><code>nbytes</code>: 書き込むデータのバイト数。</li>
+<li><code>recptr</code>: 書き込み開始位置を示す WAL ポインタ。</li>
+<li><code>tli</code>: タイムライン ID。</li>
+<li>**出力**: なし（副作用としてファイル書き込みおよび共有メモリ更新を実行）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tli != 0</code> であること。</li>
+<li>書き込み対象のセグメントファイルが適切に管理されていること（必要に応じて <code>XLogFileInit</code> が呼び出される）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>nbytes</code> が 0 になるまでループし、WAL セグメント境界を跨ぐ書き込みを処理します。 2. 現在のセグメントが完了している場合、<code>XLogWalRcvClose</code> を呼び出してファイルを閉じます。 3. ファイルが開かれていない場合、<code>XLogFileInit</code> を使用して新しいセグメントファイルを作成します。 4. <code>pg_pwrite</code> を使用して、現在のセグメント内のオフセット位置へデータを書き込みます。この際、<code>pgstat_report_wait_start</code> を用いて I/O 待機イベントを記録します。 5. 書き込み失敗時は <code>PANIC</code> レベルでエラーを報告します（ディスクフル等）。 6. 書き込み完了後、<code>LogstreamResult.Write</code> を更新し、共有メモリ上の <code>WalRcv-&gt;writtenUpto</code> を最新の書き込み位置に同期させます。 7. セグメントが完全に書き込まれた場合、アーカイブ通知のために再度 <code>XLogWalRcvClose</code> を呼び出します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walreceiver.c</code> 内のストリーミングループ（850行目付近）。</li>
+<li>**呼び出し先**:</li>
+<li><code>XLogWalRcvClose</code></li>
+<li><code>XLogFileInit</code></li>
+<li><code>pg_pwrite</code></li>
+<li><code>pgstat_report_wait_start</code> / <code>pgstat_report_wait_end</code></li>
+<li><code>pgstat_count_io_op_time</code></li>
+<li><code>pg_atomic_write_u64</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogstreamResult</code>: 書き込み進捗を保持するグローバル変数。</li>
+<li><code>WalRcv</code>: 共有メモリ上のレシーバー状態構造体。</li>
+<li><code>recvFile</code>, <code>recvSegNo</code>: 現在書き込み中のファイルハンドルとセグメント番号。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ディスクフル**: <code>pg_pwrite</code> が失敗し、<code>errno</code> が設定されていない場合は <code>ENOSPC</code> とみなして <code>PANIC</code> を発生させます。</li>
+<li>**セグメント境界**: <code>XLByteInSeg</code> を使用してセグメント境界を判定し、必要に応じてファイルを切り替えます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_pwrite</code> を使用して直接ファイルシステムへ書き込みます。<code>fsync</code> による永続化は本関数ではなく、別途 <code>XLogWalRcvFlush</code> が担当します。</li>
+<li><code>pg_stat_io</code> 統計情報収集のため、I/O タイミングの計測が含まれています。</li>
+</ul></body></html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginget.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginget.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）索引の検索処理において、インデックスからタプル（TID）を取得するためのコアロジックを実装するファイルです。主に <code>gingetbitmap</code> 関数を通じて、検索条件に合致するヒープタプルの TID をビットマップ形式で収集します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおける「検索エンジン」の役割を担います。<code>ginscan.c</code> で初期化されたスキャン状態に基づき、B-tree 構造のインデックスページおよび未処理の挿入データ（Pending List）を走査します。</p>
+<h2>責務</h2>
+<ul>
+<li>**Pending List の走査**: <code>fastupdate</code> 機能によりメインインデックスに未反映のデータを検索し、結果をビットマップに統合する。</li>
+<li>**メインインデックスの走査**: B-tree 構造を辿り、各キーの出現位置（Posting Tree または Posting List）から TID を抽出する。</li>
+<li>**検索キーの最適化**: 頻度に基づいて検索キーを「必須（Required）」と「追加（Additional）」に分類し、効率的な走査を実現する。</li>
+<li>**一致判定**: ユーザー定義の consistent 関数を呼び出し、TID が検索条件を満たすかを判定する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gingetbitmap</code>: GIN 検索のメインエントリーポイント。</li>
+<li><code>scanPendingInsert</code>: Pending List を走査し、ビットマップに結果を追加する。</li>
+<li><code>startScan</code>: 各検索キーの走査を開始し、頻度に基づいた最適化を行う。</li>
+<li><code>keyGetItem</code>: 特定の検索キーに対して、次に合致する TID を取得する。</li>
+<li><code>scanGetItem</code>: 全ての検索キーを統合し、最終的な合致 TID を特定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>collectMatchBitmap</code></li>
+<li><code>entryGetItem</code></li>
+<li><code>entryIndexByFrequencyCmp</code></li>
+<li><code>entryLoadMoreItems</code></li>
+<li><code>moveRightIfItNeeded</code></li>
+<li><code>pendingPosition</code></li>
+<li><code>scanPostingTree</code></li>
+<li><code>startScanEntry</code></li>
+<li><code>startScanKey</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>gingetbitmap</code> が <code>ginNewScanKey</code> を呼び出し、スキャンキーを構築。 2. **Pending List 処理**: <code>scanPendingInsert</code> がメタページから Pending List を辿り、合致する TID をビットマップに追加。 3. **メイン走査**: <code>startScan</code> で各キーの出現頻度を推定し、<code>scanGetItem</code> をループ実行。 4. **キー統合**: <code>scanGetItem</code> は各キーの <code>keyGetItem</code> を呼び出し、TID が全ての条件を満たすか（AND 条件）を判定。 5. **結果収集**: 最終的に合致した TID またはページ単位のビットマップを <code>tbm_add_tuples</code> / <code>tbm_add_page</code> で出力。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GIN 内部構造体および関数定義。</li>
+<li><code>access/relscan.h</code>: インデックススキャン記述子。</li>
+<li><code>storage/predicate.h</code>: 述語ロック（Predicate Lock）による同時実行制御。</li>
+<li><code>utils/datum.h</code>, <code>utils/memutils.h</code>: データ型操作およびメモリ管理。</li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ginscan.c</code>: スキャンのセットアップと状態管理。</li>
+<li><code>gindatapage.c</code>: GIN データページ（Posting Tree/List）の読み取り。</li>
+<li><code>ginlogic.c</code>: ユーザー定義の consistent 関数（一致判定ロジック）の実行。</li>
+<li><code>ginfast.c</code>: Pending List の管理とクリーンアップ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**デッドロック回避**: Posting Tree を走査する際、インデックスページをアンロックしてデッドロックを防ぐ実装が随所にあります。再走査が必要なケース（<code>collectMatchBitmap</code> 等）があるため、複雑な状態遷移を伴います。</li>
+<li>**Lossy Page**: GIN はページ単位の「Lossy」な結果を返すことがあります。これはビットマップ上でページ全体を走査対象とすることを意味し、<code>recheck</code> フラグと併せて理解する必要があります。</li>
+<li>**最適化**: <code>startScanKey</code> で行われる頻度ベースのキー分類は、クエリ性能を左右する重要な最適化です。頻度の低いキーを先に処理することで、不要な走査をスキップしています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__pendingPosition.html" target="wiki-view"><code>pendingPosition</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__moveRightIfItNeeded.html" target="wiki-view"><code>moveRightIfItNeeded</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__scanPostingTree.html" target="wiki-view"><code>scanPostingTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__collectMatchBitmap.html" target="wiki-view"><code>collectMatchBitmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__startScanEntry.html" target="wiki-view"><code>startScanEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__entryIndexByFrequencyCmp.html" target="wiki-view"><code>entryIndexByFrequencyCmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__startScanKey.html" target="wiki-view"><code>startScanKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__startScan.html" target="wiki-view"><code>startScan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__entryLoadMoreItems.html" target="wiki-view"><code>entryLoadMoreItems</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__entryGetItem.html" target="wiki-view"><code>entryGetItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__keyGetItem.html" target="wiki-view"><code>keyGetItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginget_c__scanGetItem.html" target="wiki-view"><code>scanGetItem</code></a></li>
+</ul></body></html>

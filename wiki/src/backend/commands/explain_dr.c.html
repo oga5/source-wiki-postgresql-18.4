@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/explain_dr.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/explain_dr.c</h1>
+<h2>概要</h2>
+<p><code>explain_dr.c</code> は、<code>EXPLAIN (SERIALIZE)</code> オプション実行時に使用される特殊な <code>DestReceiver</code> を実装するモジュールです。クエリ結果をクライアントへ送信する代わりに、シリアライズ処理（データ型の変換やTOAST解除など）のオーバーヘッドを計測・収集する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、<code>EXPLAIN</code> コマンドの計測機能を拡張します。通常の <code>DestReceiver</code> がネットワーク経由でのデータ転送を目的とするのに対し、本モジュールは「シリアライズにかかるコスト」を定量化するためのサンドボックスとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シリアライズのシミュレーション**: <code>printtup</code> と同様のロジックでデータを構築し、実際のネットワーク送信をスキップする。</li>
+<li>**リソース計測**: シリアライズ処理中の CPU 時間、バッファアクセス数、および生成されたバイト数を集計する。</li>
+<li>**メモリ管理**: 行ごとの一時的なメモリコンテキストを管理し、大規模な結果セットでもメモリリークを防ぐ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SerializeDestReceiver</code>: 計測状態を保持する構造体。<code>DestReceiver</code> を継承し、フォーマット情報や計測メトリクスを保持する。</li>
+<li><code>CreateExplainSerializeDestReceiver</code>: <code>EXPLAIN</code> 実行時に計測用レシーバーを生成するファクトリ関数。</li>
+<li><code>serializeAnalyzeReceive</code>: 各タプルを受け取り、シリアライズ処理と計測を行うメインループ。</li>
+<li><code>GetSerializationMetrics</code>: 収集された計測結果を <code>ExplainState</code> に引き渡すためのインターフェース。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>serializeAnalyzeDestroy</code></li>
+<li><code>serializeAnalyzeShutdown</code></li>
+<li><code>serializeAnalyzeStartup</code></li>
+<li><code>serialize_prepare_info</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>CreateExplainSerializeDestReceiver</code> でレシーバーが作成され、<code>serializeAnalyzeStartup</code> でメモリコンテキストとバッファが初期化される。 2. **データ処理**: <code>serializeAnalyzeReceive</code> が呼び出されるたびに、以下の処理が実行される：</p>
+<ul>
+<li><code>serialize_prepare_info</code> で出力関数（<code>typoutput</code> / <code>typsend</code>）をキャッシュ。</li>
+<li><code>slot_getallattrs</code> でタプルをデコード。</li>
+<li><code>pq_send...</code> 系関数で <code>StringInfo</code> バッファにデータを構築（送信はしない）。</li>
+<li>経過時間とバッファ使用量を計測し、<code>metrics</code> に加算。</li>
+<p>3. **終了**: <code>serializeAnalyzeShutdown</code> で確保したメモリとリソースを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>commands/explain.h</code>, <code>commands/explain_state.h</code>: <code>EXPLAIN</code> の状態管理用。</li>
+<li><code>libpq/pqformat.h</code>, <code>libpq/protocol.h</code>: PostgreSQL プロトコル形式でのデータ構築用。</li>
+<li><code>utils/lsyscache.h</code>: 型情報の取得用。</li>
+<li><code>commands/explain_dr.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/explain.c</code>: <code>EXPLAIN</code> コマンドのメインロジック。</li>
+<li><code>src/backend/access/printtup.c</code>: 本モジュールが模倣している、通常のクライアント送信ロジック。</li>
+<li><code>src/include/commands/explain_dr.h</code>: 本モジュールの公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本モジュールは「実際にデータを送らない」という点が重要です。<code>pq_endmessage_reuse</code> を呼び出さず、バッファの長さ（<code>len</code>）だけをカウントすることで、ネットワーク負荷を除外した純粋なシリアライズコストを測定しています。</li>
+<li><code>CREATE TABLE AS</code> など、他の <code>DestReceiver</code> が使われるケースでは <code>GetSerializationMetrics</code> がゼロを返すよう設計されており、安全に呼び出せるようになっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__SerializeDestReceiver.html" target="wiki-view"><code>SerializeDestReceiver</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__serialize_prepare_info.html" target="wiki-view"><code>serialize_prepare_info</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__serializeAnalyzeReceive.html" target="wiki-view"><code>serializeAnalyzeReceive</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__serializeAnalyzeStartup.html" target="wiki-view"><code>serializeAnalyzeStartup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__serializeAnalyzeShutdown.html" target="wiki-view"><code>serializeAnalyzeShutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__serializeAnalyzeDestroy.html" target="wiki-view"><code>serializeAnalyzeDestroy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__CreateExplainSerializeDestReceiver.html" target="wiki-view"><code>CreateExplainSerializeDestReceiver</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__explain_dr_c__GetSerializationMetrics.html" target="wiki-view"><code>GetSerializationMetrics</code></a></li>
+</ul></body></html>

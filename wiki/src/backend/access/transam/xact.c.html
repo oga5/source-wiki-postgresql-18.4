@@ -1,0 +1,138 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xact.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xact.c</h1>
+<h2>概要</h2>
+<p><code>xact.c</code> は、PostgreSQLのトランザクション管理システムの最上位層を実装するファイルです。トランザクションのライフサイクル（開始、コミット、アボート、2PC）、サブトランザクションの階層管理、および並列クエリ実行時の状態同期を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、トランザクションの論理的な状態遷移を制御する中心的な役割を果たします。物理的な永続化（CLOG、サブトランザクションIDの永続化）やWALの書き込みについては、他のサブモジュール（<code>clog.c</code>, <code>subtrans.c</code>, <code>xlog.c</code>）に委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**トランザクション状態管理**: <code>TransactionStateData</code> を用いたスタックベースのトランザクション階層管理。</li>
+<li>**ライフサイクル制御**: <code>StartTransaction</code>, <code>CommitTransaction</code>, <code>AbortTransaction</code> 等による状態遷移の実行。</li>
+<li>**並列処理の同期**: 並列ワーカーへのトランザクション状態のシリアライズと、ワーカー内での状態復元。</li>
+<li>**コールバック管理**: トランザクションの開始・終了時に実行される外部モジュール用フックの管理。</li>
+<li>**リカバリ時の再実行**: WALレコード（<code>xact_redo</code>）に基づいたトランザクション状態の復元。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>CurrentTransactionState</code>: 現在のトランザクション状態を指すポインタ。</li>
+<li><code>TransactionStateData</code>: トランザクションの階層、メモリコンテキスト、リソースオーナー、XID等を保持する構造体。</li>
+<li><code>TransState</code> / <code>TBlockState</code>: トランザクションの内部状態およびSQLレベルのブロック状態を定義する列挙型。</li>
+</ul>
+<h3>トランザクション識別子</h3>
+<ul>
+<li><code>GetTopTransactionId()</code> / <code>GetCurrentTransactionId()</code>: XIDの取得と必要に応じた割り当て。</li>
+<li><code>AssignTransactionId()</code>: 新規XIDの生成と、親トランザクションへの伝播。</li>
+</ul>
+<h3>制御フロー</h3>
+<ul>
+<li><code>StartTransaction()</code> / <code>CommitTransaction()</code> / <code>AbortTransaction()</code>: トランザクションの基本操作。</li>
+<li><code>StartSubTransaction()</code> / <code>CommitSubTransaction()</code> / <code>AbortSubTransaction()</code>: サブトランザクション（SAVEPOINT）の制御。</li>
+<li><code>CommitTransactionCommand()</code> / <code>AbortCurrentTransaction()</code>: SQLコマンド単位のトランザクション制御。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtStart_Cache</code></li>
+<li><code>AtStart_Memory</code></li>
+<li><code>AtStart_ResourceOwner</code></li>
+<li><code>AtSubStart_Memory</code></li>
+<li><code>AtSubStart_ResourceOwner</code></li>
+<li><code>SerializedTransactionState</code></li>
+<li><code>SubXactCallbackItem</code></li>
+<li><code>TBlockState</code></li>
+<li><code>TransState</code></li>
+<li><code>TransactionState</code></li>
+<li><code>TransactionStateData</code></li>
+<li><code>XactCallbackItem</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>StartTransaction</code> がメモリコンテキストとリソースオーナーを初期化し、<code>TRANS_INPROGRESS</code> へ遷移。 2. **XID割り当て**: <code>AssignTransactionId</code> が必要に応じてXIDを生成。サブトランザクションの場合、親のXIDを先に確定させる再帰的処理を行う。 3. **コミット**: <code>CommitTransaction</code> がトリガーやポータルを処理し、<code>RecordTransactionCommit</code> でWALレコードを生成。その後、<code>clog.c</code> を更新して永続化。 4. **アボート**: <code>AbortTransaction</code> がリソースオーナーを解放し、<code>RecordTransactionAbort</code> でアボートをWALに記録。 5. **並列処理**: <code>SerializeTransactionState</code> で状態を共有メモリに書き出し、ワーカー側で <code>StartParallelWorkerTransaction</code> がそれを読み込んで復元する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>xlog.h</code>, <code>subtrans.h</code>, <code>twophase.h</code> 等（トランザクション永続化とWAL）</li>
+<li><code>storage/</code>: <code>proc.h</code>, <code>lmgr.h</code>, <code>bufmgr.h</code> 等（プロセス管理とロック）</li>
+<li><code>utils/</code>: <code>memutils.h</code>, <code>snapmgr.h</code>, <code>guc.h</code> 等（メモリとGUC管理）</li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>executor/spi.h</code></li>
+<li><code>libpq/be-fsstubs.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/md.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/sinvaladt.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/combocid.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/xact.h</code>: 公開インターフェースとデータ構造の定義。</li>
+<li><code>src/backend/access/transam/clog.c</code>: トランザクション状態の永続化（SLRU）。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: WALの物理的な書き込みとフラッシュ。</li>
+<li><code>src/backend/access/transam/subtrans.c</code>: サブトランザクションIDの親子関係管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: トランザクション状態は <code>TopTransactionContext</code> に保持されます。<code>AbortTransaction</code> は <code>TransactionAbortContext</code> を使用して、メモリ不足時でもアボート処理が完遂できるように設計されています。</li>
+<li>**不変条件**: 子トランザクションのXIDは必ず親のXIDより後に割り当てられます。<code>AssignTransactionId</code> はこの順序を保証するために再帰的に親を遡ります。</li>
+<li>**並列処理の制約**: 並列ワーカー内では、新しいXIDの割り当てやコマンドカウンタの変更は禁止されています。これは、リーダーとワーカー間で状態を同期させるための制約です。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大であるため、個別のコールバック関数の詳細や、特定のコマンド（<code>PREPARE</code> 等）の複雑なエラーハンドリングの詳細は省略しています。これらは <code>src/backend/access/transam/README</code> を併読することを推奨します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransState.html" target="wiki-view"><code>TransState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TBlockState.html" target="wiki-view"><code>TBlockState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransactionStateData.html" target="wiki-view"><code>TransactionStateData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransactionState.html" target="wiki-view"><code>TransactionState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__SerializedTransactionState.html" target="wiki-view"><code>SerializedTransactionState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__XactCallbackItem.html" target="wiki-view"><code>XactCallbackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__SubXactCallbackItem.html" target="wiki-view"><code>SubXactCallbackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_Cache.html" target="wiki-view"><code>AtStart_Cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_Memory.html" target="wiki-view"><code>AtStart_Memory</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_ResourceOwner.html" target="wiki-view"><code>AtStart_ResourceOwner</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtSubStart_Memory.html" target="wiki-view"><code>AtSubStart_Memory</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtSubStart_ResourceOwner.html" target="wiki-view"><code>AtSubStart_ResourceOwner</code></a></li>
+</ul></body></html>

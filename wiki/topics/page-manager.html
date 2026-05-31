@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/page-manager.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Page Manager</h1>
+<h2>概念</h2>
+<p><code>Page Manager</code>（主に <code>FreePageManager</code> として実装）は、共有メモリ領域内においてページ単位（4096バイト / <code>FPM_PAGE_SIZE</code>）のメモリ割り当ておよび解放を管理する仕組みです。OS標準のメモリ管理が困難な共有メモリ環境下において、断片化を抑制しつつ効率的なメモリ管理を行うための基盤を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>動的共有メモリ（DSM）や動的共有メモリ割り当て器（DSA）の管理において、アドレス空間が固定されない共有メモリ内でメモリを効率的にアロケートするために重要です。内部で相対ポインタ（<code>relptr</code>）を使用することで、アドレス空間の変動に対応しながらページ単位の管理を可能にします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/mmgr</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/freepage.h#FreePageManager</code>** (構造体)</li>
+<p>ページ単位のメモリ管理を行うメインの構造体。共有メモリ内で使用されるため、内部では相対ポインタを用いて管理されます。</p>
+<li>**<code>symbol:src/backend/utils/mmgr/freepage.c#FreePageManagerGet</code>** (関数)</li>
+<p>指定されたページ数（<code>npages</code>）のメモリ領域を <code>FreePageManager</code> から確保し、その開始ページ番号を返すAPIです。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>FreePageManagerInitialize</code> を呼び出し、管理対象のベースアドレスを設定します。 2. **確保**: <code>FreePageManagerGet</code> を呼び出してメモリを確保します。</p>
+<ul>
+<li>内部関数 <code>FreePageManagerGetInternal</code> により、フリーリストまたは B-tree から適切な空き領域を探索・確保します。</li>
+<li>確保処理に伴う B-tree の構造変化を整理するため、<code>FreePageBtreeCleanup</code> を実行します。</li>
+<li>クリーンアップ結果に基づき <code>fpm-&gt;contiguous_pages</code> を更新し、必要に応じて <code>FreePageManagerUpdateLargest</code> で最大連続ページ数を再計算します。</li>
+<li>成功時は <code>fpm-&gt;free_pages</code> を減算し、開始ページ番号を <code>first_page</code> に格納して <code>true</code> を返します。</li>
+<p>3. **解放**: <code>FreePageManagerPut</code> を介して領域をフリーリストへ戻します。その際、B-tree を用いて隣接する空き領域と統合（Coalesce）し、断片化を防止します。</p>
+</ul>
+<p>※ 呼び出し元である <code>dsm.c</code> や <code>dsa.c</code> との具体的な連携や、ロック制御（<code>lwlock.h</code>）を交えた詳細な並行処理フローの全貌は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**アライメント**: 管理対象領域は <code>FPM_PAGE_SIZE</code>（4096バイト）の倍数でアライメントされていなければなりません。</li>
+<li>**デバッグ時の整合性検証**: <code>FPM_EXTRA_ASSERTS</code> が有効な場合、<code>FreePageManagerGet</code> の実行時に以下の不変条件が検証されます。</li>
+<li>確保成功時、<code>fpm-&gt;free_pages</code> が要求された <code>npages</code> 以上であること。</li>
+<li>確保後の <code>fpm-&gt;free_pages</code> が、管理下の全空きページの合計と一致すること。</li>
+<li><code>fpm-&gt;contiguous_pages</code> が、管理下の最大連続空きページ数と一致すること。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ枯渇**: 管理対象領域が枯渇した場合、<code>FreePageManagerGet</code> は <code>false</code> を返します。呼び出し側で適切にハンドリングする必要があります。</li>
+<li>**再帰的確保の懸念**: 確保処理に伴い B-tree のノードが再利用される際、内部で再帰的なメモリ確保が発生する可能性があります。</li>
+<li>**アドレスの不固定性**: 共有メモリ内でアドレス空間が固定されないため、絶対ポインタを直接保持してはなりません。常に <code>fpm_segment_base</code> マクロ等を使用し、現在のセグメントベースからのオフセット（相対ポインタ）としてアドレスを計算する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/freepage.h</code>: <code>FreePageManager</code> 構造体の定義、および関連する <code>FreePageSpanLeader</code> や <code>FreePageBtree</code> などのデータ構造の宣言。</li>
+<li><code>src/backend/utils/mmgr/freepage.c</code>: <code>FreePageManagerGet</code> を含む、ページ管理・割り当てアルゴリズムの具体的な実装。</li>
+</ul></body></html>

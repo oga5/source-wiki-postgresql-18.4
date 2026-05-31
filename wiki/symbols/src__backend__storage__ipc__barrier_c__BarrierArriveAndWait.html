@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__barrier_c__BarrierArriveAndWait.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BarrierArriveAndWait</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/storage/ipc/barrier.c:124</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列処理を行う複数のプロセス間で同期を取り、全参加者が特定の地点に到達するまで待機させる。また、バリア解除時にシリアルな処理を担当するプロセスを1つ選出する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool BarrierArriveAndWait(Barrier *barrier, uint32 wait_event_info)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>barrier</code>: 同期状態を保持する <code>Barrier</code> 構造体へのポインタ。</li>
+<li><code>wait_event_info</code>: 待機時に使用する待機イベント情報。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 呼び出し元プロセスが「シリアル作業担当」として選出された場合に <code>true</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元プロセスは、対象の <code>barrier</code> に参加（attach）している必要がある。</li>
+<li><code>barrier</code> 構造体内の操作は、内部のスピンロックによって保護されている。</li>
+<li>待機中、フェーズは <code>start_phase</code> または <code>next_phase</code> のいずれかであり、それ以上進むことはない（呼び出し元が参加しているため）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **到達処理**: スピンロックを取得し、<code>arrived</code> カウンタをインクリメントする。 2. **フェーズ移行判定**: <code>arrived</code> が <code>participants</code> に達した場合、<code>phase</code> を進め、<code>elected</code> フラグを更新し、<code>ConditionVariableBroadcast</code> で待機中の全プロセスを起床させる。 3. **待機**: 最後の参加者でない場合、<code>ConditionVariableSleep</code> を使用してフェーズが更新されるまでループ待機する。 4. **選出**: 最後に到達したプロセス、または離脱によってフェーズが進んだ際に起床したプロセスのうち、<code>elected</code> フラグが未設定のものが選出され、<code>true</code> を返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHash.c</code> 内の各所（<code>nodeHash.c:261</code>, <code>323</code>, <code>598</code>, <code>1219</code>, <code>1338</code>, <code>1351</code>, <code>1362</code>, <code>1419</code>, <code>1668</code>, <code>1697</code>, <code>1732</code>, <code>3168</code> など）。</li>
+<li>**呼び出し先**: <code>SpinLockAcquire</code>, <code>SpinLockRelease</code>, <code>ConditionVariableBroadcast</code>, <code>ConditionVariablePrepareToSleep</code>, <code>ConditionVariableSleep</code>, <code>ConditionVariableCancelSleep</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Barrier</code>: 同期状態（<code>arrived</code>, <code>participants</code>, <code>phase</code>, <code>elected</code>）と条件変数、スピンロックを保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>参加者数が 0 の動的バリアモードでは、離脱によるフェーズ進行が発生し得る。</li>
+<li>待機中に他のプロセスが離脱した場合でも、フェーズが <code>next_phase</code> に進めば待機から復帰する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、呼び出し元が CPU タイムスライスを保持している間にシリアル作業を開始できるよう、最後に到達したプロセスを優先的に選出する設計となっている。</li>
+<li>待機中は条件変数を使用するため、スピンロックを保持したまま長時間待機することはない。</li>
+</ul></body></html>

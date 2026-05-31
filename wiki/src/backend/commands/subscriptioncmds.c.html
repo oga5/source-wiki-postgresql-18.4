@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/subscriptioncmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/subscriptioncmds.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける「サブスクリプション」の作成、変更、削除を管理するコマンド処理モジュールです。システムカタログ <code>pg_subscription</code> および <code>pg_subscription_rel</code> の操作と、パブリッシャー（リモートノード）との通信を仲介します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> ディレクトリの一部として、論理レプリケーションの制御プレーンを担います。SQL コマンド（<code>CREATE/ALTER/DROP SUBSCRIPTION</code>）を解析し、カタログ更新とリモートノードへの接続（<code>libpqwalreceiver</code> 経由）を調整します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 実行**: サブスクリプションのライフサイクル管理（作成、変更、削除）。</li>
+<li>**オプション解析**: <code>CREATE/ALTER SUBSCRIPTION</code> の複雑なオプション（<code>slot_name</code>, <code>copy_data</code>, <code>two_phase</code> 等）の検証とデフォルト値の適用。</li>
+<li>**リモート連携**: パブリッシャーへの接続、パブリケーションの存在確認、テーブルリストの取得、レプリケーションスロットの作成・削除。</li>
+<li>**整合性維持**: サブスクリプションの所有権チェック、権限管理、および依存関係の記録。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CreateSubscription</code>, <code>AlterSubscription</code>, <code>DropSubscription</code>: SQL コマンドに対応するメインエントリーポイント。</li>
+<li><code>SubOpts</code>: コマンドオプションを保持する内部構造体。</li>
+<li><code>parse_subscription_options</code>: 各種オプションの構文解析と相互排他チェックを行う共通関数。</li>
+<li><code>AlterSubscription_refresh</code>: <code>REFRESH PUBLICATION</code> 実行時に、ローカルのテーブル状態とリモートのパブリケーションを同期させる関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterSubscriptionOwner</code></li>
+<li><code>AlterSubscriptionOwner_internal</code></li>
+<li><code>AlterSubscriptionOwner_oid</code></li>
+<li><code>CheckAlterSubOption</code></li>
+<li><code>ReplicationSlotDropAtPubNode</code></li>
+<li><code>ReportSlotConnectionError</code></li>
+<li><code>SubRemoveRels</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: <code>parse_subscription_options</code> が <code>DefElem</code> リストを走査し、<code>SubOpts</code> 構造体に変換します。 2. **検証**: 権限チェックおよび <code>PreventInTransactionBlock</code> によるトランザクション制約の確認が行われます。 3. **カタログ操作**: <code>heap_form_tuple</code> や <code>CatalogTupleInsert/Update</code> を使用して <code>pg_subscription</code> を更新します。 4. **リモート通信**: <code>walrcv_connect</code> を介してパブリッシャーと通信し、<code>fetch_table_list</code> で対象テーブルを特定し、<code>AddSubscriptionRelState</code> でローカルの同期状態を初期化します。 5. **後処理**: <code>LogicalRepWorkersWakeupAtCommit</code> 等を呼び出し、バックグラウンドのレプリケーションワーカーへ変更を通知します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_subscription.h</code>, <code>catalog/pg_subscription_rel.h</code>: カタログ定義。</li>
+<li><code>replication/walreceiver.h</code>, <code>replication/logicallauncher.h</code>: リモートノードとの通信およびワーカー制御。</li>
+<li><code>access/xact.h</code>, <code>access/table.h</code>: トランザクションおよびテーブルアクセス。</li>
+<li><code>utils/syscache.h</code>: カタログキャッシュの検索。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/objectaddress.h</code></li>
+<li><code>catalog/pg_authid_d.h</code></li>
+<li><code>catalog/pg_database_d.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/subscriptioncmds.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>replication/worker_internal.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/worker.c</code>: サブスクリプションの実際のデータ適用を行うワーカーの実装。</li>
+<li><code>src/backend/replication/logical/launcher.c</code>: サブスクリプションのワーカーを起動・管理するランチャー。</li>
+<li><code>src/include/commands/subscriptioncmds.h</code>: 公開プロトタイプ定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクション制約**: レプリケーションスロットの作成や削除など、一部の操作は非トランザクション的であるため、トランザクションブロック内での実行が禁止されている箇所があります。</li>
+<li>**エラーハンドリング**: <code>PG_TRY/PG_FINALLY</code> ブロックを使用して、リモート接続の切断漏れを防いでいます。</li>
+<li>**複雑性**: <code>AlterSubscription</code> は非常に多くのサブコマンドを処理するため、<code>switch</code> 文で分岐しています。特定のサブコマンド（<code>REFRESH</code> 等）を追う際は、該当する <code>case</code> ラベルから読み進めるのが効率的です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__SubOpts.html" target="wiki-view"><code>SubOpts</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__CreateSubscription.html" target="wiki-view"><code>CreateSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__AlterSubscription_refresh.html" target="wiki-view"><code>AlterSubscription_refresh</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__SubRemoveRels.html" target="wiki-view"><code>SubRemoveRels</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__CheckAlterSubOption.html" target="wiki-view"><code>CheckAlterSubOption</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__AlterSubscription.html" target="wiki-view"><code>AlterSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__DropSubscription.html" target="wiki-view"><code>DropSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__ReplicationSlotDropAtPubNode.html" target="wiki-view"><code>ReplicationSlotDropAtPubNode</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__AlterSubscriptionOwner_internal.html" target="wiki-view"><code>AlterSubscriptionOwner_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__AlterSubscriptionOwner.html" target="wiki-view"><code>AlterSubscriptionOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__AlterSubscriptionOwner_oid.html" target="wiki-view"><code>AlterSubscriptionOwner_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__subscriptioncmds_c__ReportSlotConnectionError.html" target="wiki-view"><code>ReportSlotConnectionError</code></a></li>
+</ul></body></html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeGather.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeGather.c</h1>
+<h2>概要</h2>
+<p><code>nodeGather.c</code> は、PostgreSQL の並列クエリ実行における「Gather」ノードを実装するファイルです。複数のバックグラウンドワーカーによって並列実行されたプランの結果を収集し、単一のストリームとして統合します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムにおいて、並列実行の「集約点」として機能します。ワーカーの起動、タスクの割り当て、およびワーカーからの結果取得（<code>TupleQueue</code> 経由）を管理し、上位ノードに対しては通常のシーケンシャルなスキャンと同様のインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**並列ワーカーの管理**: <code>ParallelContext</code> を使用したワーカーの起動、再初期化、および終了処理。</li>
+<li>**結果の統合**: ワーカーからのタスクキュー読み取りと、必要に応じたリーダープロセス自身によるプラン実行の切り替え。</li>
+<li>**実行状態の保持**: <code>GatherState</code> を通じて、ワーカーの進捗状況やリーダーのローカル実行状態を管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitGather</code>: <code>GatherState</code> を初期化し、子プランの実行準備を行う。</li>
+<li><code>ExecGather</code>: ノードのメイン実行関数。ワーカーの起動と、タスクキューまたはローカル実行からのタプル取得を行う。</li>
+<li><code>gather_getnext</code>: ワーカーからの読み取りとローカル実行をループ内で制御する。</li>
+<li><code>gather_readnext</code>: 特定の <code>TupleQueueReader</code> からタプルを非ブロックで取得する。</li>
+<li><code>ExecShutdownGather</code>: 並列実行に関連するリソース（ワーカー、共有メモリ）を解放する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndGather</code></li>
+<li><code>ExecReScanGather</code></li>
+<li><code>ExecShutdownGatherWorkers</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitGather</code> で <code>GatherState</code> を構築。初回実行時に <code>ExecGather</code> が呼ばれると、<code>ParallelContext</code> を作成しワーカーを起動。 2. **タプル取得**: <code>gather_getnext</code> が呼び出されると、以下の順序でタプルを探す：</p>
+<ul>
+<li>ワーカーの <code>TupleQueue</code> をラウンドロビンで走査し、タプルがあれば返す。</li>
+<li>ワーカーから取得できない場合、リーダープロセス自身が <code>ExecProcNode</code> を呼び出し、プランをローカル実行する。</li>
+<p>3. **終了**: <code>ExecEndGather</code> または <code>ExecReScanGather</code> が呼ばれると、ワーカーを停止し、共有メモリ上の状態をクリーンアップする。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execParallel.h</code>: 並列実行の基盤機能。</li>
+<li><code>executor/tqueue.h</code>: ワーカー間通信用のタプルキュー。</li>
+<li><code>executor/nodeGather.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/wait_event.h</code>: 待機イベントの管理。</li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execParallel.c</code>: 並列実行のインフラストラクチャ（ワーカー起動・共有メモリ管理）。</li>
+<li><code>src/backend/executor/nodeGatherMerge.c</code>: ソート順序を維持したまま結果を統合する類似ノード。</li>
+<li><code>src/backend/executor/tqueue.c</code>: タプルキューの低レベル実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ローカル実行の重要性**: ワーカーが利用できない場合や、<code>parallel_leader_participation</code> が有効な場合、リーダープロセス自身がプランを実行します。この挙動は <code>need_to_scan_locally</code> フラグで制御されています。</li>
+<li>**非ブロック読み取り**: <code>gather_readnext</code> はワーカーからの読み取りに <code>TupleQueueReaderNext</code> を使用しており、ワーカーがタプルを生成するまで待機（ブロック）しない設計になっています。</li>
+<li>**メモリ管理**: <code>ExecGather</code> 内で <code>ResetExprContext</code> を呼び出し、タプルごとのメモリを適切に解放している点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecInitGather.html" target="wiki-view"><code>ExecInitGather</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecGather.html" target="wiki-view"><code>ExecGather</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecEndGather.html" target="wiki-view"><code>ExecEndGather</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__gather_getnext.html" target="wiki-view"><code>gather_getnext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__gather_readnext.html" target="wiki-view"><code>gather_readnext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecShutdownGatherWorkers.html" target="wiki-view"><code>ExecShutdownGatherWorkers</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecShutdownGather.html" target="wiki-view"><code>ExecShutdownGather</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGather_c__ExecReScanGather.html" target="wiki-view"><code>ExecReScanGather</code></a></li>
+</ul></body></html>

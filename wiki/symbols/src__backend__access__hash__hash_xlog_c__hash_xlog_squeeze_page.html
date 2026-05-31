@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_squeeze_page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hash_xlog_squeeze_page</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/hash/hash_xlog.c:626</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスのオーバーフローページを解放（Squeeze）する操作をWALリプレイ時に再適用し、インデックスの物理的な整合性を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void hash_xlog_squeeze_page(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リプレイ対象のWALレコードは <code>xl_hash_squeeze_page</code> 構造体を含む必要がある。</li>
+<li>操作の開始時に、プライマリバケットページに対してクリーンアップロックを取得し、スキャンとの競合を防止する。</li>
+<li>挿入されたタプル数（<code>ninserted</code>）は、WALレコード内の記録（<code>xldata-&gt;ntups</code>）と一致しなければならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロック取得**: プライマリバケットページを読み込み、クリーンアップロックを確保する。 2. **タプル移動**: <code>writebuf</code>（移動先ページ）に対し、WALレコードから読み取ったタプルを <code>PageAddItem</code> で追加する。 3. **ページ更新**:</p>
+<ul>
+<li>移動先ページが解放されるオーバーフローページの直前である場合、<code>hasho_nextblkno</code> を更新する。</li>
+<li>解放されたオーバーフローページを <code>_hash_pageinit</code> で初期化し、<code>LH_UNUSED_PAGE</code> フラグを立てる。</li>
+<li>解放されたページの前後にあるページ（<code>prevbuf</code>, <code>nextbuf</code>）のリンク情報（<code>hasho_nextblkno</code>, <code>hasho_prevblkno</code>）を修正する。</li>
+<p>4. **永続化**: 変更された各バッファに対してLSNを設定し、<code>MarkBufferDirty</code> を呼び出す。 5. **解放**: 取得したすべてのバッファのロックを解除する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>hash_redo</code>（<code>src/backend/access/hash/hash_xlog.c:1098</code> にて確認）。</li>
+<li>**呼び出し先**: <code>XLogReadBufferForRedoExtended</code>, <code>XLogReadBufferForRedo</code>, <code>_hash_pageinit</code>, <code>PageAddItem</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_hash_squeeze_page</code>: WALレコードのデータ構造。</li>
+<li><code>HashPageOpaque</code>: ハッシュインデックスページのメタデータ（<code>hasho_nextblkno</code> 等）。</li>
+<li><code>Buffer</code>: PostgreSQLのバッファ管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が失敗した場合、<code>elog(ERROR)</code> によりリカバリ処理が中断される。</li>
+<li>タプルが存在しない場合、<code>is_prim_bucket_same_wrt</code> または <code>is_prev_bucket_same_wrt</code> が真であることをアサーションで検証する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は冪等（idempotent）である必要がある。</li>
+<li>通常のインデックス操作とは異なり、リプレイ中は同時アクセスがないため、メタページやビットマップページの更新は本関数内では行わず、呼び出し元または別のリプレイ処理に委ねられている。</li>
+</ul></body></html>

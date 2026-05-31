@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__adt__format_type_c__format_type_extended.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>format_type_extended</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/adt/format_type.c:111</code></li>
+</ul>
+<h2>目的</h2>
+<p>データ型OIDおよび型修飾子（typmod）を、人間が読みやすい標準的なSQL形式の文字列に変換します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>char *format_type_extended(Oid type_oid, int32 typemod, bits16 flags)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>type_oid</code>: 変換対象のデータ型OID。</li>
+<li><code>typemod</code>: 型修飾子（例: <code>varchar(n)</code> の <code>n</code>）。</li>
+<li><code>flags</code>: 動作を制御するビットフラグ（<code>FORMAT_TYPE_INVALID_AS_NULL</code>, <code>FORMAT_TYPE_ALLOW_INVALID</code>, <code>FORMAT_TYPE_TYPEMOD_GIVEN</code> など）。</li>
+<li>**出力**:</li>
+<li>変換された型名の文字列（<code>palloc</code> 済み）。</li>
+<li>無効なOIDやキャッシュミス時にフラグ設定に応じて <code>NULL</code>、<code>&quot;-&quot;</code>、<code>&quot;???&quot;</code> を返却。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_type</code> システムカタログへのアクセスが必要です。</li>
+<li><code>typemod</code> が <code>-1</code> の場合、型修飾子は指定されていないものとして扱われます。</li>
+<li>組み込み型（<code>bool</code>, <code>int4</code> 等）は、SQL標準に準拠した名称に変換されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **無効OIDチェック**: <code>type_oid</code> が <code>InvalidOid</code> の場合、フラグに従い <code>NULL</code> または <code>&quot;-&quot;</code> を返します。 2. **キャッシュ検索**: <code>SearchSysCache1</code> で <code>pg_type</code> を検索し、型情報を取得します。失敗時はフラグに従い <code>NULL</code>、<code>&quot;???&quot;</code> を返すかエラーを投げます。 3. **配列判定**: <code>IsTrueArrayType</code> かつ <code>TYPSTORAGE_PLAIN</code> でない場合、配列の基底型を特定し、再帰的に処理を切り替えます。 4. **型名変換**:</p>
+<ul>
+<li>組み込み型（<code>BIT</code>, <code>BOOL</code>, <code>BPCHAR</code>, <code>FLOAT4</code>, <code>FLOAT8</code>, <code>INT2</code>, <code>INT4</code>, <code>INT8</code>, <code>NUMERIC</code>, <code>INTERVAL</code>, <code>TIME</code>, <code>TIMETZ</code>, <code>TIMESTAMP</code>, <code>TIMESTAMPTZ</code>, <code>VARBIT</code>）は、<code>switch</code> 文によりハードコードされた名称を選択します。</li>
+<li><code>with_typemod</code> が有効な場合、<code>printTypmod</code> を呼び出し、型固有の <code>typmodout</code> 関数で修飾子を付与します。</li>
+<p>5. **メモリ管理**: 結果文字列は <code>palloc</code> されます。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/utils/adt/format_type.c:81</code> (<code>format_type</code>)</li>
+<li><code>contrib/postgres_fdw/deparse.c</code></li>
+<li><code>src/backend/catalog/objectaddress.c</code></li>
+<li><code>src/backend/utils/adt/arrayfuncs.c</code></li>
+<li>その他 <code>contrib/btree_gist/btree_gist.c</code> 等。</li>
+<li>**呼び出し先**:</li>
+<li><code>SearchSysCache1</code>, <code>ReleaseSysCache</code></li>
+<li><code>printTypmod</code></li>
+<li><code>IsTrueArrayType</code></li>
+<li><code>elog</code> (エラー発生時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Form_pg_type</code>: <code>pg_type</code> カタログの行構造体。</li>
+<li><code>HeapTuple</code>: システムキャッシュから取得される型定義のタプル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キャッシュミス**: <code>pg_type</code> に該当OIDが存在しない場合、<code>flags</code> に <code>FORMAT_TYPE_ALLOW_INVALID</code> が含まれていれば <code>&quot;???&quot;</code> を返し、そうでなければ <code>elog(ERROR)</code> を発生させます。</li>
+<li>**typmodの扱い**: <code>typmod</code> が <code>-1</code> の場合、型固有の出力関数を呼び出さず、型名のみを返却するロジックが含まれています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>新しい組み込み型を追加する場合、<code>switch</code> 文へのケース追加と、必要に応じた <code>typmodout</code> の処理を検討してください。</li>
+<li><code>format_type</code> は本関数のラッパーであり、引数のフラグを省略したインターフェースを提供しています。</li>
+<li><code>type_maximum_size</code> と型定義の知識を共有しているため、型定義の変更時は整合性に注意してください。</li>
+</ul></body></html>

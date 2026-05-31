@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_insert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_xlog_insert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_xlog.c:416</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページへのタプル挿入操作をWALリプレイ時に再現し、ページ状態を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void heap_xlog_insert(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code> (リプレイ対象のWALレコード)</li>
+<li>**出力**: なし（副作用としてバッファおよび可視性マップ、FSMを更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>xlrec-&gt;flags</code> に <code>XLH_INSERT_ALL_FROZEN_SET</code> が含まれていないこと（ヒープ挿入パスではフリーズ処理を行わないため）。</li>
+<li>ページが初期化される場合（<code>XLOG_HEAP_INIT_PAGE</code>）、<code>XLogInitBufferForRedo</code> を介してページが再構築される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **可視性マップの更新**: <code>XLH_INSERT_ALL_VISIBLE_CLEARED</code> フラグがある場合、対象ブロックの可視性マップビットをクリアする。 2. **バッファの取得**: <code>XLOG_HEAP_INIT_PAGE</code> ならページを初期化し、それ以外は <code>XLogReadBufferForRedo</code> でバッファを取得する。 3. **タプルの復元**:</p>
+<ul>
+<li>WALレコードからタプルヘッダーとデータを読み取る。</li>
+<li><code>HeapTupleHeader</code> を構築し、Xmin、Cmin、<code>t_ctid</code> を設定する。</li>
+<li><code>PageAddItem</code> を使用してページにタプルを挿入する。</li>
+<p>4. **ページ状態の更新**:</p>
+<li>ページLSNを更新し、バッファをダーティとしてマークする。</li>
+<li><code>XLH_INSERT_ALL_VISIBLE_CLEARED</code> フラグがある場合、ページ上の <code>PD_ALL_VISIBLE</code> ビットをクリアする。</li>
+<p>5. **FSMの更新**: ページ内の空き容量が <code>BLCKSZ / 5</code> 未満になった場合、<code>XLogRecordPageWithFreeSpace</code> を呼び出しフリースペースマップを更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>heap_redo</code>（<code>src/backend/access/heap/heapam_xlog.c:1193</code> での呼び出しが確認されている）。</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogRecGetBlockTag</code>, <code>visibilitymap_pin</code>, <code>visibilitymap_clear</code>, <code>XLogInitBufferForRedo</code>, <code>XLogReadBufferForRedo</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>XLogRecordPageWithFreeSpace</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_heap_insert</code>: WALレコードのデータ構造。</li>
+<li><code>HeapTupleHeaderData</code>: ページ上のタプルヘッダー構造。</li>
+<li><code>Buffer</code>: バッファマネージャの管理単位。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber(page) + 1 &lt; xlrec-&gt;offnum</code>: ページ内のオフセット番号が不正な場合に <code>PANIC</code>。</li>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合に <code>PANIC</code>。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は物理的なページ操作に特化している。論理的な整合性はWAL生成側（<code>heapam.c</code>）で担保されている前提である。</li>
+<li>ページがフルページイメージから復元された場合、FSMの更新はスキップされる。</li>
+<li>新しいWALレコードタイプ追加時は、<code>heap_mask</code> 関数での非決定的なビットの除外を忘れないこと。</li>
+</ul></body></html>

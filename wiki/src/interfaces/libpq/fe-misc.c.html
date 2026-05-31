@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-misc.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-misc.c</h1>
+<h2>概要</h2>
+<p><code>fe-misc.c</code> は、<code>libpq</code> における低レベルな通信 I/O、バッファ管理、およびプラットフォーム抽象化を担うユーティリティモジュールです。PostgreSQL プロトコル v3.0 のメッセージ形式に従ったデータの読み書き、ソケットの非ブロッキング I/O 制御、およびエラーメッセージのフォーマット機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の通信層の最下層に位置し、<code>fe-protocol3.c</code> などの上位層がソケットを直接操作することなく、ストリームとしてデータを扱えるように抽象化を提供します。<code>PGconn</code> 構造体が保持する入出力バッファの管理と、プラットフォーム依存のソケットポーリング（<code>poll</code>/<code>select</code>）を隠蔽します。</p>
+<h2>責務</h2>
+<ul>
+<li>**データシリアライズ/デシリアライズ**: ネットワークバイトオーダーとホストバイトオーダーの変換、およびプロトコルメッセージの構築。</li>
+<li>**バッファ管理**: <code>PGconn</code> 内の入出力バッファの動的拡張、再配置、およびメモリ確保の失敗時のエラーハンドリング。</li>
+<li>**ソケット I/O**: 非ブロッキングモードでのソケット読み書き、およびタイムアウト付きの待機処理。</li>
+<li>**国際化・ユーティリティ**: エラーメッセージの翻訳（NLS）、マルチバイト文字の長さ計算、環境変数からのエンコーディング取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>メッセージ構築・解析</h3>
+<ul>
+<li><code>pqPutMsgStart</code> / <code>pqPutMsgEnd</code>: メッセージ構築の開始と終了（長さフィールドの計算を含む）。</li>
+<li><code>pqPutc</code> / <code>pqPuts</code> / <code>pqPutInt</code>: メッセージへのデータ書き込み。</li>
+<li><code>pqGetc</code> / <code>pqGets</code> / <code>pqGetInt</code>: 受信バッファからのデータ読み出し。</li>
+<li><code>pqParseDone</code>: メッセージ解析完了後のバッファポインタ更新。</li>
+</ul>
+<h3>バッファ管理</h3>
+<ul>
+<li><code>pqCheckOutBufferSpace</code> / <code>pqCheckInBufferSpace</code>: バッファの動的拡張とメモリ確保。</li>
+</ul>
+<h3>I/O 制御</h3>
+<ul>
+<li><code>pqReadData</code>: ソケットからデータを読み込み、<code>inBuffer</code> に追加。</li>
+<li><code>pqFlush</code>: 出力バッファ内のデータをソケットへフラッシュ。</li>
+<li><code>pqWait</code> / <code>pqWaitTimed</code>: ソケットの読み書き可能状態を待機。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>PQmblen</code> / <code>PQdsplen</code>: マルチバイト文字のバイト長および表示幅の取得。</li>
+<li><code>libpq_append_conn_error</code>: <code>PGconn</code> のエラーバッファへの翻訳済みエラーメッセージ追加。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQdsplen</code></li>
+<li><code>PQenv2encoding</code></li>
+<li><code>PQgetCurrentTimeUSec</code></li>
+<li><code>PQlibVersion</code></li>
+<li><code>PQmblen</code></li>
+<li><code>PQmblenBounded</code></li>
+<li><code>PQsocketPoll</code></li>
+<li><code>libpq_binddomain</code></li>
+<li><code>libpq_gettext</code></li>
+<li><code>libpq_ngettext</code></li>
+<li><code>pqGets_append</code></li>
+<li><code>pqGets_internal</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **送信フロー**: <code>pqPutMsgStart</code> でバッファを確保し、<code>pqPut*</code> 関数群でデータを積む。<code>pqPutMsgEnd</code> でメッセージ長を確定し、バッファサイズが 8KB を超えるか明示的な <code>pqFlush</code> が呼ばれると <code>pqSendSome</code> がソケットへ書き出す。 2. **受信フロー**: <code>pqReadData</code> がソケットから <code>inBuffer</code> へ読み込む。必要に応じて <code>memmove</code> でバッファを左詰めし、空き領域を確保する。上位層は <code>pqGet*</code> 関数群を使用して <code>inBuffer</code> からデータを消費する。 3. **待機フロー**: <code>pqWaitTimed</code> が <code>PQsocketPoll</code> を呼び出し、<code>poll</code> または <code>select</code> を用いてソケットの状態を監視する。タイムアウト時は <code>libpq_append_conn_error</code> でエラーを記録する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-int.h</code>: <code>PGconn</code> 構造体の定義。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字処理。</li>
+<li><code>port/pg_bswap.h</code>: エンディアン変換。</li>
+<li><code>sys/select.h</code>, <code>poll.h</code>, <code>unistd.h</code>: プラットフォーム固有の I/O API。</li>
+<li><code>libpq-fe.h</code></li>
+<li><code>pg_config_paths.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-protocol3.c</code>: 本ファイルの関数を使用してプロトコルメッセージを解析・構築する上位層。</li>
+<li><code>fe-secure.c</code>: SSL/TLS 通信時の I/O を抽象化するモジュール。</li>
+<li><code>pqexpbuffer.c</code>: 動的バッファ管理の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PGconn</code> 内の <code>inBuffer</code> および <code>outBuffer</code> は <code>libpq</code> が所有し、<code>realloc</code> で動的に拡張されます。呼び出し側はバッファの生存期間を意識する必要はありません。</li>
+<li>**非ブロッキング I/O**: <code>libpq</code> は基本的に非ブロッキングモードで動作します。<code>pqSendSome</code> や <code>pqReadData</code> が <code>EAGAIN</code> や <code>EWOULDBLOCK</code> を受け取った場合、呼び出し側は適切に待機（<code>pqWait</code>）して再試行する必要があります。</li>
+<li>**バッファの左詰め**: <code>pqReadData</code> および <code>pqCheckInBufferSpace</code> は、バッファの断片化を防ぐために <code>memmove</code> を使用してデータを先頭に寄せます。このため、バッファ内のポインタを保持し続けることは危険です。</li>
+<li>**省略された詳細**: 本ファイルは低レベルな I/O に特化しているため、認証ロジックやクエリ実行のステートマシンについては記述されていません。これらは <code>fe-auth.c</code> や <code>fe-exec.c</code> が担当します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQlibVersion.html" target="wiki-view"><code>PQlibVersion</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__pqGets_internal.html" target="wiki-view"><code>pqGets_internal</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__pqGets_append.html" target="wiki-view"><code>pqGets_append</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQsocketPoll.html" target="wiki-view"><code>PQsocketPoll</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQgetCurrentTimeUSec.html" target="wiki-view"><code>PQgetCurrentTimeUSec</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQmblen.html" target="wiki-view"><code>PQmblen</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQmblenBounded.html" target="wiki-view"><code>PQmblenBounded</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQdsplen.html" target="wiki-view"><code>PQdsplen</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__PQenv2encoding.html" target="wiki-view"><code>PQenv2encoding</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__libpq_binddomain.html" target="wiki-view"><code>libpq_binddomain</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__libpq_gettext.html" target="wiki-view"><code>libpq_gettext</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-misc_c__libpq_ngettext.html" target="wiki-view"><code>libpq_ngettext</code></a></li>
+</ul></body></html>

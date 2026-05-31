@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeAgg.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeAgg.c</h1>
+<h2>概要</h2>
+<p><code>nodeAgg.c</code> は、PostgreSQL の集約（Aggregate）演算を実行するプランノードの実装です。SQL の <code>GROUP BY</code> や集約関数（<code>SUM</code>, <code>COUNT</code>, <code>AVG</code> 等）の計算を担い、ソートベースの集約とハッシュベースの集約の両方をサポートします。また、メモリ制限時のディスク退避（Spilling）や、並列クエリ実行時の統計情報共有といった高度な機能も内包しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、プランナが生成した <code>Agg</code> ノードを実行します。式評価エンジン（<code>execExpr.c</code>）と密接に連携し、集約関数の遷移関数（Transition Function）や最終関数（Final Function）を呼び出すことで、タプルストリームから集約結果を生成します。</p>
+<h2>責務</h2>
+<ul>
+<li>**集約戦略の実行**:</li>
+<li><code>AGG_SORTED</code>: ソート済み入力に対するグループ化。</li>
+<li><code>AGG_HASHED</code>: ハッシュテーブルを用いたグループ化。</li>
+<li><code>AGG_MIXED</code>: ソートとハッシュを組み合わせた複雑なグループ化。</li>
+<li>**メモリ管理**: 複数のグループ化セット（Grouping Sets）に対応したメモリコンテキストの切り替えと、ハッシュテーブルのメモリ制限管理。</li>
+<li>**ディスク退避（Spilling）**: ハッシュテーブルが <code>work_mem</code> を超過した場合の、パーティション分割によるディスクへの退避と再帰的な処理。</li>
+<li>**集約関数のライフサイクル**: 遷移関数の呼び出し、最終関数の適用、および <code>AggCheckCallContext</code> 等を通じた集約関数への実行コンテキストの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>AggState</code>: 集約実行のルート構造体。実行フェーズ、ハッシュテーブル、メモリコンテキストを保持。</li>
+<li><code>AggStatePerTrans</code>: 集約の遷移状態（Transition State）情報。遷移関数やシリアライズ関数の情報を保持。</li>
+<li><code>AggStatePerGroup</code>: 各グループの現在の遷移値（<code>transValue</code>）を保持する構造体。</li>
+</ul>
+<h3>ハッシュ集約関連</h3>
+<ul>
+<li><code>HashAggSpill</code>: ディスク退避時のパーティション情報を管理。</li>
+<li><code>HashAggBatch</code>: 再処理が必要なバッチ処理単位。</li>
+<li><code>lookup_hash_entries</code>: 入力タプルをハッシュテーブルにマッピングし、必要に応じて退避処理をトリガーする。</li>
+</ul>
+<h3>集約関数 API</h3>
+<ul>
+<li><code>AggCheckCallContext</code>: 関数が集約として呼ばれているか確認し、メモリコンテキストを取得。</li>
+<li><code>AggGetAggref</code>: 実行中の集約式（<code>Aggref</code>）を取得。</li>
+<li><code>AggRegisterCallback</code>: 集約処理終了時のクリーンアップコールバックを登録。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AggCheckCallContext</code></li>
+<li><code>ExecAgg</code></li>
+<li><code>ExecAggInitializeDSM</code></li>
+<li><code>ExecAggInitializeWorker</code></li>
+<li><code>ExecEndAgg</code></li>
+<li><code>ExecInitAgg</code></li>
+<li><code>ExecReScanAgg</code></li>
+<li><code>FindColsContext</code></li>
+<li><code>GetAggInitVal</code></li>
+<li><code>HashAggBatch</code></li>
+<li><code>HashAggSpill</code></li>
+<li><code>hash_create_memory</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitAgg</code> がプランツリーを走査し、集約関数ごとの遷移関数や最終関数の情報を <code>FmgrInfo</code> としてキャッシュする。 2. **実行**: <code>ExecAgg</code> が戦略に応じて <code>agg_retrieve_direct</code>（ソート）または <code>agg_retrieve_hash_table</code>（ハッシュ）を呼び出す。 3. **遷移処理**: <code>advance_aggregates</code> が式評価エンジンを呼び出し、入力タプルを遷移関数に渡す。 4. **ハッシュ退避**: <code>hash_agg_check_limits</code> がメモリ使用量を監視し、超過時に <code>hash_agg_enter_spill_mode</code> を呼び出してディスク退避を開始する。 5. **最終化**: <code>finalize_aggregates</code> が最終関数を呼び出し、結果を射影（Projection）用のスロットに格納する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execExpr.h</code>: 式評価エンジンとの連携。</li>
+<li><code>utils/dynahash.h</code>, <code>utils/tuplesort.h</code>: ハッシュテーブルおよびソート処理。</li>
+<li><code>utils/logtape.h</code>: ディスク退避時の論理テープ管理。</li>
+<li><code>catalog/pg_aggregate.h</code>: 集約関数のメタデータ定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>lib/hyperloglog.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/expandeddatum.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/memutils_memorychunk.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeAgg.h</code>: <code>AggState</code> 等のデータ構造定義。</li>
+<li><code>src/backend/executor/execExpr.c</code>: 集約関数の実行ステップを構築する式評価ロジック。</li>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: ソートベース集約の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリコンテキスト**: 集約処理は非常にメモリを消費しやすいため、<code>aggcontexts</code>（グループ化セットごと）や <code>hashcontext</code>（ハッシュテーブル用）といった複数のコンテキストを使い分けています。これらは <code>ReScan</code> やグループ境界でリセットされます。</li>
+<li>**Spilling の複雑性**: ハッシュ集約のディスク退避は再帰的です。<code>hash_choose_num_partitions</code> によるパーティション数の決定ロジックは、メモリ効率と I/O コストのバランスを取るための重要なヒューリスティックです。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大であるため、個別の集約関数（<code>SUM</code>, <code>AVG</code> 等）の具体的な実装ロジックは <code>pg_proc</code> に依存しており、ここでは抽象的な呼び出しインターフェースのみを扱っています。また、JIT コンパイルされた式評価の詳細は <code>execExpr.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__HashAggSpill.html" target="wiki-view"><code>HashAggSpill</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__HashAggBatch.html" target="wiki-view"><code>HashAggBatch</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__FindColsContext.html" target="wiki-view"><code>FindColsContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__hash_create_memory.html" target="wiki-view"><code>hash_create_memory</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAgg.html" target="wiki-view"><code>ExecAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecInitAgg.html" target="wiki-view"><code>ExecInitAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__GetAggInitVal.html" target="wiki-view"><code>GetAggInitVal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecEndAgg.html" target="wiki-view"><code>ExecEndAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecReScanAgg.html" target="wiki-view"><code>ExecReScanAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__AggCheckCallContext.html" target="wiki-view"><code>AggCheckCallContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeDSM.html" target="wiki-view"><code>ExecAggInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeWorker.html" target="wiki-view"><code>ExecAggInitializeWorker</code></a></li>
+</ul></body></html>

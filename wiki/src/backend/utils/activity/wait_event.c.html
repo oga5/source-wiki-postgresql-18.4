@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/wait_event.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/wait_event.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバックエンドプロセスが待機状態にある際、その理由（待機イベント）を記録・報告するためのインフラストラクチャです。<code>pg_stat_activity</code> ビューなどで現在の待機状況を可視化するために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> サブシステムの一部として、バックエンドの実行状態を追跡する役割を担います。特に、拡張モジュールやインジェクションポイントが独自の待機イベントを動的に定義・登録できる仕組みを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**待機状態の報告**: プロセスが現在何で待機しているかを保持するメモリ領域の管理。</li>
+<li>**カスタムイベントの管理**: 拡張モジュールが動的に追加する待機イベントのID割り当てと、名前とIDの相互変換用ハッシュテーブルの管理。</li>
+<li>**イベント情報の解決**: 整数値（<code>wait_event_info</code>）から、人間が読める「待機クラス」および「待機イベント名」への変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>my_wait_event_info</code>: 現在のバックエンドの待機状態を保持するポインタ。初期はローカル変数、起動後は共有メモリを指します。</li>
+<li><code>WaitEventCustomHashByInfo</code> / <code>WaitEventCustomHashByName</code>: カスタムイベントの名前とIDをマッピングする共有メモリ上のハッシュテーブル。</li>
+<li><code>WaitEventExtensionNew</code> / <code>WaitEventInjectionPointNew</code>: 拡張モジュールが新しい待機イベントを登録するための公開API。</li>
+<li><code>pgstat_report_wait_start</code> / <code>pgstat_report_wait_end</code>: 待機開始・終了時に呼び出されるインライン関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetWaitEventCustomIdentifier</code></li>
+<li><code>WaitEventCustomCounterData</code></li>
+<li><code>WaitEventCustomEntryByInfo</code></li>
+<li><code>WaitEventCustomEntryByName</code></li>
+<li><code>WaitEventCustomNew</code></li>
+<li><code>WaitEventCustomShmemInit</code></li>
+<li><code>WaitEventCustomShmemSize</code></li>
+<li><code>pgstat_get_wait_event</code></li>
+<li><code>pgstat_get_wait_event_type</code></li>
+<li><code>pgstat_reset_wait_event_storage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: バックエンド起動時に <code>pgstat_set_wait_event_storage</code> を呼び出し、<code>my_wait_event_info</code> を共有メモリ上の領域へリダイレクトします。 2. **待機報告**: 待機が発生する箇所で <code>pgstat_report_wait_start(info)</code> を呼び出し、共有メモリ上の値を更新します。終了時は <code>pgstat_report_wait_end()</code> で0にリセットします。 3. **カスタム登録**: <code>WaitEventCustomNew</code> が呼び出されると、<code>WaitEventCustomLock</code> を用いて排他制御を行い、共有メモリ上のカウンタから一意なIDを取得し、ハッシュテーブルに登録します。 4. **情報取得**: <code>pgstat_get_wait_event</code> が呼び出されると、<code>wait_event_info</code> の上位ビット（クラス）をマスクし、対応するサブシステム（LWLock, IO, カスタム等）の関数を呼び出して名前を解決します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/lmgr.h</code>, <code>storage/lwlock.h</code>, <code>storage/spin.h</code>: ロック関連の識別子取得や排他制御に使用。</li>
+<li><code>utils/wait_event.h</code>: 公開インターフェースとデータ構造の定義。</li>
+<li><code>utils/pgstat_wait_event.c</code>: 組み込みの待機イベント名解決ロジックを保持する補助ファイル。</li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/wait_event_types.h</code>: 待機イベントの列挙型定義。</li>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計情報収集の全体的な管理。</li>
+<li><code>src/backend/storage/lmgr/lwlock.c</code>: LWLock待機イベントの具体的な解決ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: <code>pgstat_report_wait_start</code> は非常に頻繁に呼ばれるため、オーバーヘッドを最小化する設計になっています。<code>pgstat_track_activities</code> のチェックすら行わず、アトミックな書き込みのみを行う点に注意してください。</li>
+<li>**メモリ**: <code>my_wait_event_info</code> は、プロセス初期化前でも安全に呼び出せるよう、デフォルトでローカル変数に向けられています。</li>
+<li>**拡張性**: カスタムイベントは共有メモリを消費するため、<code>WAIT_EVENT_CUSTOM_HASH_MAX_SIZE</code>（現在は128）という上限があることに留意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomEntryByInfo.html" target="wiki-view"><code>WaitEventCustomEntryByInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomEntryByName.html" target="wiki-view"><code>WaitEventCustomEntryByName</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomCounterData.html" target="wiki-view"><code>WaitEventCustomCounterData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomShmemSize.html" target="wiki-view"><code>WaitEventCustomShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomShmemInit.html" target="wiki-view"><code>WaitEventCustomShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventExtensionNew.html" target="wiki-view"><code>WaitEventExtensionNew</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventInjectionPointNew.html" target="wiki-view"><code>WaitEventInjectionPointNew</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomNew.html" target="wiki-view"><code>WaitEventCustomNew</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__GetWaitEventCustomIdentifier.html" target="wiki-view"><code>GetWaitEventCustomIdentifier</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__pgstat_reset_wait_event_storage.html" target="wiki-view"><code>pgstat_reset_wait_event_storage</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__pgstat_get_wait_event_type.html" target="wiki-view"><code>pgstat_get_wait_event_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__wait_event_c__pgstat_get_wait_event.html" target="wiki-view"><code>pgstat_get_wait_event</code></a></li>
+</ul></body></html>

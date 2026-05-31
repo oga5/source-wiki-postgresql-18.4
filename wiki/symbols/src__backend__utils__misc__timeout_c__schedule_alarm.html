@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__misc__timeout_c__schedule_alarm.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>schedule_alarm</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/misc/timeout.c:209</code></li>
+</ul>
+<h2>目的</h2>
+<p>有効なタイムアウトイベントのリストから最も近い期限を特定し、<code>setitimer</code> を用いて <code>SIGALRM</code> をスケジュールする。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>static void schedule_alarm(TimestampTz now)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>now</code> (現在の時刻を示す <code>TimestampTz</code>)</li>
+<li>**出力**: なし（副作用として <code>setitimer</code> の設定およびグローバル状態の更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>active_timeouts</code> 配列が期限順にソートされていること。</li>
+<li><code>num_active_timeouts &gt; 0</code> の場合にのみ実行される。</li>
+<li><code>setitimer</code> 呼び出し前に <code>enable_alarm()</code> を呼び出し、シグナルハンドラを有効化する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **期限の特定**: <code>active_timeouts[0]</code> から最も近い期限を取得する。 2. **異常検知と補正**:</p>
+<ul>
+<li>現在時刻が期限を過ぎている場合、<code>signal_pending</code> を解除し、即時割り込みを強制する。</li>
+<li><code>signal_pending</code> が真で、かつ期限から10ms以上経過している場合は、タイマー要求の喪失とみなして状態をリセットする。</li>
+<p>3. **タイマー設定**:</p>
+<li><code>TimestampDifference</code> で残り時間を計算し、<code>setitimer</code> を呼び出す。</li>
+<li>既に適切なタイマーが設定されている場合（<code>signal_pending</code> が真かつ期限が妥当）、重複した <code>setitimer</code> 呼び出しを抑制する。</li>
+<p>4. **状態更新**: <code>signal_due_at</code> を更新し、<code>signal_pending</code> を真に設定する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>enable_timeout_after</code>、<code>enable_timeout_every</code>、<code>reschedule_timeouts</code>、<code>remove_timeout_index</code> 等、タイムアウト状態を変更する関数群から呼び出される。</li>
+<li>**呼び出し先**: <code>enable_alarm</code>、<code>setitimer</code>、<code>TimestampDifference</code>、<code>MemSet</code>、<code>elog</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>active_timeouts</code>: 有効なタイムアウトイベントを保持する配列。</li>
+<li><code>signal_pending</code>: 割り込みが予約済みかを示すフラグ。</li>
+<li><code>signal_due_at</code>: 次の割り込み予定時刻。</li>
+<li><code>itimerval</code>: <code>setitimer</code> に渡す時間構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>setitimer</code> が失敗した場合、<code>elog(FATAL)</code> によりプロセスを終了させる。</li>
+<li>期限が過去である場合、即時割り込み（<code>secs=0, usecs=1</code>）をスケジュールする。</li>
+<li>割り込みハンドラと本関数の間で競合が発生する可能性があるが、<code>signal_pending</code> フラグと <code>enable_alarm</code> の順序制御により安全性が担保されている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>setitimer</code> はコストが高いため、不要な呼び出しを避けるロジックが含まれている。</li>
+<li>シグナルハンドラとの競合を避けるため、<code>signal_pending</code> の更新順序（<code>setitimer</code> の前）は厳守すること。</li>
+<li>10ms の閾値は現代的なシステムのタイムアウト粒度を考慮した経験的な値である。</li>
+</ul></body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__sort__tuplesort_c__Sharedsort.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Sharedsort</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/utils/sort/tuplesort.c:343</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ソート処理において、リーダープロセスとワーカープロセス間でソート状態や一時ファイル情報を共有・調整するための構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct Sharedsort {
+    slock_t           mutex;
+    int               currentWorker;
+    int               workersFinished;
+    SharedFileSet     fileset;
+    int               nTapes;
+    TapeShare         tapes[FLEXIBLE_ARRAY_MEMBER];
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 並列ソート実行時に共有メモリ領域（<code>shm_toc_allocate</code>）から割り当てられます。</li>
+<li>**出力**: ワーカープロセスが <code>tapes</code> 配列を通じて自身のソート結果（テープ情報）をリーダーに報告し、リーダーがそれらを統合してマージ処理を行います。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mutex</code> は <code>tapes</code> 配列より前の全フィールドを保護します。</li>
+<li><code>currentWorker</code> は 0 から始まる隙間のない連番として生成されます。</li>
+<li><code>workersFinished</code> がリーダー側の <code>state.nParticipants</code> と一致したとき、リーダーはマージを開始する準備が整ったと判断します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ワーカーの識別**: <code>currentWorker</code> を用いて各ワーカーに一意の ID を割り当てます。 2. **進捗報告**: 各ワーカーは処理完了時に <code>workersFinished</code> をインクリメントします。 3. **テープの統合**: リーダーは <code>tapes</code> 配列を参照し、各ワーカーが作成した一時ファイル（<code>SharedFileSet</code>）を連結して最終的なマージを実行します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/brin/brin.c</code> および <code>src/backend/access/gin/gininsert.c</code> において、並列ビルド時の共有メモリ管理として利用されています。</li>
+<li>**呼び出し先**: 共有メモリ管理機能（<code>shm_toc_allocate</code>）および <code>SharedFileSet</code> を介した一時ファイル管理機能と連携します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SharedFileSet</code>: 並列処理で共有される一時ファイル群を管理します。</li>
+<li><code>TapeShare</code>: 各ワーカーのテープ情報を格納する構造体です。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、構造体のサイズは <code>nTapes</code> に依存して動的に決定されます。</li>
+<li>共有メモリの割り当て失敗や、ワーカープロセスが正常に完了報告を行わない場合、リーダープロセスがマージフェーズへ移行できず待機状態となる可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>tuplesort.c</code> の並列ソートロジックの中核です。並列処理のデバッグ時には、<code>mutex</code> による排他制御と <code>workersFinished</code> のカウントアップが正しく行われているかを確認してください。</li>
+<li><code>brin.c</code> や <code>gininsert.c</code> が主な利用者ですが、他のインデックスアクセス手法で並列ソートを導入する際のテンプレートとしても機能します。</li>
+</ul></body></html>

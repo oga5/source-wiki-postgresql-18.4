@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/aio.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/aio.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの非同期I/O（AIO）サブシステムの中心となる制御ロジックを実装するファイルです。I/Oハンドルのライフサイクル管理、I/Oのステージングと発行、および完了待ち合わせのインターフェースを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>AIOサブシステムにおける「オーケストレーター」です。具体的なI/O実行手法（<code>method_*.c</code>）と、上位レイヤー（<code>bufmgr</code>や<code>smgr</code>）の間に位置し、バックエンドごとのI/O状態を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ハンドル管理**: <code>PgAioHandle</code>の取得、解放、および再利用の制御。</li>
+<li>**I/O発行の抽象化**: 同期実行と非同期実行（バッチ処理含む）の切り替え。</li>
+<li>**完了待ち合わせ**: <code>PgAioWaitRef</code>を用いたI/O完了の待機と、完了時のコールバック実行。</li>
+<li>**リソース保護**: <code>ResourceOwner</code>との連携による、エラー発生時のI/Oクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgaio_io_acquire</code>: I/Oハンドルを取得するメイン関数。空きがない場合は完了待ちを行う。</li>
+<li><code>pgaio_io_stage</code>: I/O操作を定義し、実行キューに投入する。</li>
+<li><code>pgaio_submit_staged</code>: ステージングされたI/Oをカーネルまたはワーカーへ一括発行する。</li>
+<li><code>pgaio_wref_wait</code>: 特定のI/O操作の完了を待機する。</li>
+<li><code>pgaio_method_ops</code>: 現在選択されているI/Oメソッド（<code>sync</code>, <code>worker</code>, <code>io_uring</code>）の関数テーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_Aio</code></li>
+<li><code>pgaio_io_acquire_nb</code></li>
+<li><code>pgaio_io_get_id</code></li>
+<li><code>pgaio_io_get_owner</code></li>
+<li><code>pgaio_io_get_wref</code></li>
+<li><code>pgaio_io_release</code></li>
+<li><code>pgaio_io_release_resowner</code></li>
+<li><code>pgaio_io_resowner_register</code></li>
+<li><code>pgaio_io_set_flag</code></li>
+<li><code>pgaio_io_update_state</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **取得**: <code>pgaio_io_acquire</code>で<code>PgAioHandle</code>を確保し、<code>HANDED_OUT</code>状態にする。 2. **定義**: <code>pgaio_io_stage</code>で操作内容（<code>PgAioOp</code>）をハンドルに設定し、<code>STAGED</code>状態へ遷移。 3. **発行**: <code>pgaio_submit_staged</code>が呼ばれると、<code>pgaio_method_ops-&gt;submit</code>経由でI/Oが発行され、<code>SUBMITTED</code>状態になる。 4. **完了**: I/O完了時、<code>pgaio_io_process_completion</code>が呼ばれ、状態が<code>COMPLETED_IO</code>から<code>COMPLETED_LOCAL</code>へと遷移し、待機中のプロセスが起床される。 5. **再利用**: <code>pgaio_io_reclaim</code>によりハンドルが<code>IDLE</code>に戻され、次のI/Oに備える。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/aio.h</code>, <code>storage/aio_internal.h</code>: AIOの型定義と内部インターフェース。</li>
+<li><code>lib/ilist.h</code>: I/Oハンドル管理用のリスト構造。</li>
+<li><code>utils/resowner.h</code>: トランザクション境界でのリソース管理。</li>
+<li><code>port/atomics.h</code>: 状態遷移時のメモリバリア制御。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/wait_event_types.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/method_*.c</code>: 各I/Oメソッドの具体的な実装。</li>
+<li><code>src/backend/storage/aio/aio_io.c</code>: <code>readv</code>/<code>writev</code>などの具体的なI/O操作ロジック。</li>
+<li><code>README.md</code>: AIOサブシステムの全体像とシーケンス図。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**中断の禁止**: <code>pgaio_io_update_state</code>や<code>pgaio_io_reclaim</code>など、状態遷移を伴う関数内では<code>HOLD_INTERRUPTS()</code>が必須です。これは、割り込みによる再帰的なI/O待ち合わせや状態不整合を防ぐためです。</li>
+<li>**バッチ処理**: <code>pgaio_enter_batchmode</code>を使用する際は、デッドロックを避けるため、バッチ処理中に他のバックエンドのロックを待つような操作を行わないよう注意してください。</li>
+<li>**デバッグ**: <code>pgaio_debug_io</code>マクロが各所に配置されており、I/Oのライフサイクルを追跡するのに役立ちます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_acquire.html" target="wiki-view"><code>pgaio_io_acquire</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_acquire_nb.html" target="wiki-view"><code>pgaio_io_acquire_nb</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_release.html" target="wiki-view"><code>pgaio_io_release</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_release_resowner.html" target="wiki-view"><code>pgaio_io_release_resowner</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_set_flag.html" target="wiki-view"><code>pgaio_io_set_flag</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_get_id.html" target="wiki-view"><code>pgaio_io_get_id</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_get_owner.html" target="wiki-view"><code>pgaio_io_get_owner</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_get_wref.html" target="wiki-view"><code>pgaio_io_get_wref</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_update_state.html" target="wiki-view"><code>pgaio_io_update_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_resowner_register.html" target="wiki-view"><code>pgaio_io_resowner_register</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__pgaio_io_stage.html" target="wiki-view"><code>pgaio_io_stage</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_c__AtEOXact_Aio.html" target="wiki-view"><code>AtEOXact_Aio</code></a></li>
+</ul></body></html>

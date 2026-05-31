@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerSlot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BackgroundWorkerSlot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/postmaster/bgworker.c:74</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上でバックグラウンドワーカーの状態を保持し、Postmasterとバックエンドプロセス間でのワーカー管理（起動、監視、終了）を仲介するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct BackgroundWorkerSlot
+{
+    bool        in_use;
+    bool        terminate;
+    pid_t       pid;            /* InvalidPid = 未起動; 0 = 停止済み */
+    uint64      generation;     /* スロット再利用時にインクリメント */
+    BackgroundWorker worker;
+} BackgroundWorkerSlot;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>BackgroundWorker</code> 構造体（ワーカーの構成情報）。</li>
+<li>**出力**: プロセスID (<code>pid</code>)、終了フラグ (<code>terminate</code>)、およびワーカーの実行状態。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>Postmasterは共有メモリのロックを取得できないため、<code>in_use</code> フラグとメモリバリアを用いたロックレスなプロトコルで同期されます。</li>
+<li><code>generation</code> はスロットが再利用されるたびに更新され、古いスロット情報との混同を防ぎます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **登録**: バックエンドが <code>RegisterDynamicBackgroundWorker</code> を通じてスロットを確保し、<code>in_use</code> を <code>true</code> に設定します。 2. **監視**: Postmasterは <code>BackgroundWorkerStateChange</code> を介してスロットをスキャンし、<code>in_use</code> かつ <code>pid</code> が <code>InvalidPid</code> であるワーカーを起動します。 3. **終了**: <code>terminate</code> フラグが設定されると、Postmasterは対象プロセスに終了シグナルを送信します。 4. **解放**: ワーカー終了後、<code>ReportBackgroundWorkerExit</code> によりスロットの状態が更新されます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/postmaster/bgworker.c</code> 内のワーカー管理関数群（<code>RegisterDynamicBackgroundWorker</code>, <code>BackgroundWorkerStateChange</code>, <code>ReportBackgroundWorkerExit</code> 等）。</li>
+<li>**呼び出し先**: 直接的な関数呼び出しはありません。データ構造として <code>BackgroundWorkerData</code> 配列の一部として参照されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BackgroundWorkerArray</code>: 共有メモリ上の <code>BackgroundWorkerSlot</code> の配列。</li>
+<li><code>BackgroundWorker</code>: ワーカーの定義情報を含む構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**データ破損**: Postmasterが共有メモリを読み取る際、データが破損している可能性があるため、常にパラノイア的なチェックが求められます。</li>
+<li>**スロット枯渇**: 登録可能なワーカー数は共有メモリ上のスロット数に制限されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体へのアクセスは、ロックレスプロトコルに従い、必ず適切なメモリバリア（<code>pg_read_barrier</code> / <code>pg_write_barrier</code>）を伴う必要があります。</li>
+<li><code>pid</code> の値が <code>InvalidPid</code>（未起動）か <code>0</code>（停止済み）かによって、Postmasterの再起動ロジックが分岐するため、状態遷移の正確な管理が重要です。</li>
+</ul></body></html>

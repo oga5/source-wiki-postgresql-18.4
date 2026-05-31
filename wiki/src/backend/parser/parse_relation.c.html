@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_relation.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_relation.c</h1>
+<h2>概要</h2>
+<p><code>parse_relation.c</code> は、PostgreSQL の意味解析フェーズにおいて、クエリ内のリレーション（テーブル、ビュー、CTE、サブクエリ、関数など）の名前解決と、それらのリレーションを表現する <code>RangeTblEntry</code> (RTE) の構築・管理を担う中核モジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムにおいて、SQL の FROM 句や JOIN 句に現れるデータソースをシステムカタログや <code>ParseState</code> と照合し、プランナが利用可能な形式（<code>RangeTblEntry</code>）へ変換する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**名前解決**: SQL 内の識別子（テーブル名、エイリアス）を <code>ParseNamespaceItem</code> を通じて解決する。</li>
+<li>**RTE 構築**: 各種データソース（テーブル、関数、サブクエリ、CTE、VALUES、JOIN）に対応する <code>RangeTblEntry</code> を生成し、<code>ParseState</code> に登録する。</li>
+<li>**可視性管理**: <code>LATERAL</code> 句やスコープに基づいたリレーションの可視性チェック。</li>
+<li>**エラー診断**: 存在しないテーブルやカラムに対する、ヒント付きの親切なエラーメッセージ生成（曖昧な名前の解決やスペルミスの推測）。</li>
+<li>**権限管理**: リレーションに対する <code>SELECT</code> 権限の追跡と <code>RTEPermissionInfo</code> の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>名前解決・検索</h3>
+<ul>
+<li><code>refnameNamespaceItem</code>: 名前空間からリレーションを検索するメイン関数。</li>
+<li><code>scanNameSpaceForCTE</code> / <code>scanNameSpaceForENR</code>: CTE や一時的な名前付きリレーションの検索。</li>
+<li><code>colNameToVar</code>: カラム名を <code>Var</code> ノードに解決する。</li>
+<li><code>searchRangeTableForRel</code> / <code>searchRangeTableForCol</code>: エラーメッセージ生成用のヒューリスティック検索。</li>
+</ul>
+<h3>RTE 構築（ファクトリ群）</h3>
+<ul>
+<li><code>addRangeTableEntry</code>: 通常のテーブル用。</li>
+<li><code>addRangeTableEntryForSubquery</code>: サブクエリ用。</li>
+<li><code>addRangeTableEntryForFunction</code>: 関数用。</li>
+<li><code>addRangeTableEntryForJoin</code>: JOIN 構造用。</li>
+<li><code>addRangeTableEntryForCTE</code>: WITH 句の CTE 用。</li>
+</ul>
+<h3>診断・ユーティリティ</h3>
+<ul>
+<li><code>FuzzyAttrMatchState</code>: カラム名のスペルミス推測用状態構造体。</li>
+<li><code>markNullableIfNeeded</code>: 外部結合による NULL 許容状態のマーク。</li>
+<li><code>markVarForSelectPriv</code>: カラムへのアクセス権限要求の記録。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FuzzyAttrMatchState</code></li>
+<li><code>GetCTEForRTE</code></li>
+<li><code>GetNSItemByRangeTablePosn</code></li>
+<li><code>GetRTEByRangeTablePosn</code></li>
+<li><code>check_lateral_ref_ok</code></li>
+<li><code>getRTEPermissionInfo</code></li>
+<li><code>get_parse_rowmark</code></li>
+<li><code>get_rte_attribute_is_dropped</code></li>
+<li><code>get_rte_attribute_name</code></li>
+<li><code>get_tle_by_resno</code></li>
+<li><code>rte_visible_if_lateral</code></li>
+<li><code>rte_visible_if_qualified</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析開始**: <code>analyze.c</code> 等から <code>addRangeTableEntry...</code> 系関数が呼ばれ、RTE が生成される。 2. **名前空間登録**: <code>addNSItemToQuery</code> により、生成された <code>ParseNamespaceItem</code> が <code>ParseState</code> の <code>p_namespace</code> リストに追加される。 3. **カラム解決**: 式の解析中に <code>colNameToVar</code> が呼ばれると、<code>p_namespace</code> を走査し、<code>scanNSItemForColumn</code> を経由して <code>Var</code> ノードを生成する。 4. **エラー発生時**: <code>errorMissingRTE</code> や <code>errorMissingColumn</code> が呼ばれ、<code>searchRangeTableForRel/Col</code> を用いて、スペルミスや <code>LATERAL</code> 不足などのヒントを生成する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_type</code>, <code>pg_proc</code> 等のシステムカタログ参照。</li>
+<li><code>nodes/</code>: <code>RangeTblEntry</code>, <code>ParseNamespaceItem</code>, <code>Var</code> 等のノード定義。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code> (キャッシュ検索), <code>varlena.h</code> (文字列操作)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_enr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/parser/parse_relation.h</code>: 公開プロトタイプ定義。</li>
+<li><code>src/backend/parser/parse_cte.c</code>: CTE のスコープ管理。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 式解析におけるカラム解決の呼び出し元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ParseState</code> に紐付くメモリコンテキスト上で <code>palloc</code> されるため、個別の <code>pfree</code> は不要です。</li>
+<li>**不変条件**: <code>p_namespace</code> 内のアイテムは、<code>LATERAL</code> 句の有無やスコープによって可視性が動的に変化します。</li>
+<li>**エラー診断の深さ**: 本ファイルは単なる解決器ではなく、ユーザーフレンドリーなエラーメッセージ生成のために <code>Levenshtein</code> 距離を用いたスペルチェックなど、非常に詳細な診断ロジックを含んでいます。</li>
+<li>**省略された詳細**: <code>isQueryUsingTempRelation</code> などの再帰的なクエリツリー走査関数は、主に DDL や特定の制約チェックのために存在しており、通常の名前解決フローとは独立しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__FuzzyAttrMatchState.html" target="wiki-view"><code>FuzzyAttrMatchState</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__check_lateral_ref_ok.html" target="wiki-view"><code>check_lateral_ref_ok</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__GetNSItemByRangeTablePosn.html" target="wiki-view"><code>GetNSItemByRangeTablePosn</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__GetRTEByRangeTablePosn.html" target="wiki-view"><code>GetRTEByRangeTablePosn</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__GetCTEForRTE.html" target="wiki-view"><code>GetCTEForRTE</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__get_rte_attribute_name.html" target="wiki-view"><code>get_rte_attribute_name</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__get_rte_attribute_is_dropped.html" target="wiki-view"><code>get_rte_attribute_is_dropped</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__get_tle_by_resno.html" target="wiki-view"><code>get_tle_by_resno</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__get_parse_rowmark.html" target="wiki-view"><code>get_parse_rowmark</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__rte_visible_if_lateral.html" target="wiki-view"><code>rte_visible_if_lateral</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__rte_visible_if_qualified.html" target="wiki-view"><code>rte_visible_if_qualified</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_relation_c__getRTEPermissionInfo.html" target="wiki-view"><code>getRTEPermissionInfo</code></a></li>
+</ul></body></html>

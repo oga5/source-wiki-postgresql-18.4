@@ -1,0 +1,129 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/aclchk.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/aclchk.c</h1>
+<h2>概要</h2>
+<p><code>aclchk.c</code> は、PostgreSQL のアクセス制御（ACL: Access Control List）の検証および更新を統括する中心的なファイルです。SQL の <code>GRANT</code> / <code>REVOKE</code> コマンドの実行、<code>ALTER DEFAULT PRIVILEGES</code> の管理、およびシステム内の権限チェック（<code>aclcheck</code>）の基盤を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムにおいて、権限管理のロジックをカプセル化しています。<code>utils/acl.h</code> で定義された低レベルな ACL 操作関数をラップし、システムカタログ（<code>pg_class</code>, <code>pg_proc</code>, <code>pg_default_acl</code> 等）のメタデータと連携して、オブジェクトごとの権限判定や更新を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限操作の実行**: <code>GRANT</code> / <code>REVOKE</code> コマンドの解析結果に基づき、対象オブジェクトの ACL を更新。</li>
+<li>**デフォルト権限の管理**: <code>ALTER DEFAULT PRIVILEGES</code> によるスキーマ単位またはデータベース単位のデフォルト権限設定の永続化。</li>
+<li>**権限チェックの提供**: 実行時の権限確認（<code>aclcheck</code>）および、特定の権限ビットの有無を判定するマスク処理。</li>
+<li>**拡張機能の初期権限管理**: <code>pg_init_privs</code> を介した、拡張機能インストール時の初期権限の追跡。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>権限更新・管理</h3>
+<ul>
+<li><code>ExecuteGrantStmt</code>: <code>GRANT</code> / <code>REVOKE</code> コマンドのメインエントリーポイント。</li>
+<li><code>ExecAlterDefaultPrivilegesStmt</code>: <code>ALTER DEFAULT PRIVILEGES</code> コマンドのハンドラ。</li>
+<li><code>merge_acl_with_grant</code>: 既存の ACL に新しい権限を適用（追加/削除）するコア関数。</li>
+<li><code>restrict_and_check_grant</code>: 権限付与の妥当性を検証し、警告やエラーを生成する。</li>
+</ul>
+<h3>権限チェック（マスク処理）</h3>
+<ul>
+<li><code>pg_aclmask</code>: オブジェクトタイプに応じた権限マスクの計算。</li>
+<li><code>object_aclcheck</code>: オブジェクトに対する権限の有無を判定する汎用関数。</li>
+<li><code>pg_class_aclmask</code>: テーブル/シーケンスに対する権限判定。</li>
+<li><code>pg_attribute_aclmask</code>: 列単位の権限判定。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>InternalGrant</code>: <code>GRANT</code> / <code>REVOKE</code> 文の内部表現。</li>
+<li><code>InternalDefaultACL</code>: <code>ALTER DEFAULT PRIVILEGES</code> の情報を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecGrantStmt_oids</code></li>
+<li><code>ExecGrant_Attribute</code></li>
+<li><code>ExecGrant_Language_check</code></li>
+<li><code>ExecGrant_Largeobject</code></li>
+<li><code>ExecGrant_Parameter</code></li>
+<li><code>ExecGrant_Relation</code></li>
+<li><code>ExecGrant_Type_check</code></li>
+<li><code>ExecGrant_common</code></li>
+<li><code>ExecuteGrantStmt</code></li>
+<li><code>InternalDefaultACL</code></li>
+<li><code>RemoveRoleFromInitPriv</code></li>
+<li><code>ReplaceRoleInInitPriv</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コマンド解析**: <code>ExecuteGrantStmt</code> がパーサーからの <code>GrantStmt</code> を受け取り、<code>InternalGrant</code> 構造体に変換します。 2. **オブジェクト特定**: <code>objectNamesToOids</code> が名前解決を行い、対象オブジェクトの OID リストを生成します。 3. **権限適用**: <code>ExecGrant_Relation</code> や <code>ExecGrant_common</code> などの型別ハンドラが、対象カタログのタプルをロックし、<code>merge_acl_with_grant</code> を呼び出して ACL を更新します。 4. **依存関係更新**: <code>updateAclDependencies</code> を通じて、ACL に含まれるロールの依存関係を <code>pg_shdepend</code> に反映させます。 5. **永続化**: <code>CatalogTupleUpdate</code> によりシステムカタログを更新し、<code>CommandCounterIncrement</code> で変更を可視化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/acl.h</code>: ACL の基本データ構造と操作関数。</li>
+<li><code>utils/syscache.h</code>: システムカタログの高速検索。</li>
+<li><code>catalog/pg_*.h</code>: 各種システムカタログの定義。</li>
+<li><code>access/heapam.h</code>: カタログタプルの直接操作。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_default_acl.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_init_privs.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_largeobject_metadata.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_parameter_acl.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>commands/proclang.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>foreign/foreign.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/aclchk_internal.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/acl.c</code>: ACL のビット演算や文字列変換などの低レベル実装。</li>
+<li><code>src/backend/catalog/dependency.c</code>: オブジェクト間の依存関係管理。</li>
+<li><code>src/backend/catalog/objectaddress.c</code>: オブジェクトの汎用的な識別。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>merge_acl_with_grant</code> は古い ACL を <code>pfree</code> し、新しい ACL を返すため、呼び出し側でのメモリリークに注意が必要です。</li>
+<li>**ロック**: <code>objectNamesToOids</code> は <code>AccessShareLock</code> を使用します。並行 DDL 実行時にタプルが更新されるとエラーになる可能性があるため、必要に応じて呼び出し側でより強いロックを確保してください。</li>
+<li>**システムカタログ**: <code>pg_init_privs</code> への書き込みは、拡張機能のインストール時や <code>binary_upgrade</code> モード時に限定されます。</li>
+<li>**省略された詳細**: 本ファイルは非常に多機能であるため、各オブジェクトタイプ（<code>LargeObject</code>, <code>Parameter</code> 等）固有のチェックロジックは、個別の <code>ExecGrant_*</code> 関数に委譲されています。特定のオブジェクトタイプに興味がある場合は、該当する <code>ExecGrant_</code> 関数を直接参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__InternalDefaultACL.html" target="wiki-view"><code>InternalDefaultACL</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecuteGrantStmt.html" target="wiki-view"><code>ExecuteGrantStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrantStmt_oids.html" target="wiki-view"><code>ExecGrantStmt_oids</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Attribute.html" target="wiki-view"><code>ExecGrant_Attribute</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Relation.html" target="wiki-view"><code>ExecGrant_Relation</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_common.html" target="wiki-view"><code>ExecGrant_common</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Language_check.html" target="wiki-view"><code>ExecGrant_Language_check</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Largeobject.html" target="wiki-view"><code>ExecGrant_Largeobject</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Type_check.html" target="wiki-view"><code>ExecGrant_Type_check</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ExecGrant_Parameter.html" target="wiki-view"><code>ExecGrant_Parameter</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__ReplaceRoleInInitPriv.html" target="wiki-view"><code>ReplaceRoleInInitPriv</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__aclchk_c__RemoveRoleFromInitPriv.html" target="wiki-view"><code>RemoveRoleFromInitPriv</code></a></li>
+</ul></body></html>

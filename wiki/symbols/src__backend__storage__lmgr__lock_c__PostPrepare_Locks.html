@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__lock_c__PostPrepare_Locks.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PostPrepare_Locks</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/lock.c:3541</code></li>
+</ul>
+<h2>目的</h2>
+<p>準備済みトランザクション（Prepared Transaction）へロックの所有権を移譲する。トランザクションのコミット準備完了後、そのトランザクションが保持していたロックを、共有メモリ上のダミープロセス（<code>TwoPhaseGetDummyProc</code>）へ引き継ぐために使用される。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void PostPrepare_Locks(TransactionId xid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>xid</code> (準備対象のトランザクションID)</li>
+<li>**出力**: なし（副作用として共有メモリ上のロック所有権が更新される）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し前に <code>AtPrepare_Locks</code> が実行され、高速パス（Fast-Path）ロックが既にメインテーブルへ移行済みであること。</li>
+<li>呼び出し元プロセスがロックグループのリーダーであるか、グループに属していないこと。</li>
+<li>セッションレベルのロックとトランザクションレベルのロックを同一オブジェクトに対して同時に保持していないこと。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ローカルロックの整理**: <code>LockMethodLocalHash</code> を走査し、準備済みトランザクションに引き継ぐべきロックを特定する。セッションレベルのみのロックは無視し、トランザクションレベルのロックに対して <code>releaseMask</code> を設定する。 2. **共有メモリ上のロック移譲**: 各ロックパーティションを順次ロックし、<code>PROCLOCK</code> エントリを走査する。 3. **所有権の更新**: <code>hash_update_hash_key</code> を使用して、<code>PROCLOCK</code> の所有者を現在のプロセスからダミープロセスへ変更する。 4. **リストの再構築**: <code>dlist</code> を操作し、ロックを現在のプロセスのリストからダミープロセスのリストへ移動させる。 5. **クリティカルセクション**: 処理全体を <code>START_CRIT_SECTION()</code> で囲み、エラー発生時の整合性を保護する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xact.c:2697</code></li>
+<li>**呼び出し先**: <code>TwoPhaseGetDummyProc</code>, <code>hash_seq_init</code>, <code>hash_seq_search</code>, <code>RemoveLocalLock</code>, <code>LockHashPartitionLockByIndex</code>, <code>LWLockAcquire</code>, <code>LWLockRelease</code>, <code>hash_update_hash_key</code>, <code>dlist_delete</code>, <code>dlist_push_tail</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LOCALLOCK</code>: プロセスローカルなロック管理構造体。</li>
+<li><code>PROCLOCK</code>: プロセスとロックオブジェクトの関連付けを管理する共有メモリ上の構造体。</li>
+<li><code>LOCK</code>: ロックオブジェクトそのものを表す共有メモリ上の構造体。</li>
+<li><code>PGPROC</code>: プロセス管理構造体（ダミープロセスを含む）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**PANIC**: セッションレベルとトランザクションレベルのロックを混在して保持している場合、またはロックの再割り当て時にハッシュテーブルで重複エントリが検出された場合に発生する。</li>
+<li>**メモリ不足**: 共有メモリ不足によりロック設定が不完全な場合、ローカルロックエントリを削除して処理を継続する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>AtPrepare_Locks</code> と対になって動作する。<code>AtPrepare_Locks</code> で高速パスを排除しているため、本関数実行中に他バックエンドがリストを操作することはない。</li>
+<li><code>hash_update_hash_key</code> を使用しているのは、ハッシュキー（所有者）を変更する際に、メモリ確保の失敗リスクを避けるためである。</li>
+</ul></body></html>

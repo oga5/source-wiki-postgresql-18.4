@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/rbtree.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RBTree</h1>
+<h2>概念</h2>
+<p><code>RBTree</code> は、PostgreSQLにおける汎用的な赤黒木（平衡二分探索木）の制御構造体です。 メモリ管理やキーの比較ロジックを呼び出し側に委譲する「侵入型（intrusive）設計」を採用しており、呼び出し側が定義する構造体の先頭メンバに <code>RBTNode</code> を配置して使用します。これにより、任意のデータ構造に対して $O(\lg n)$ の検索・挿入・削除性能を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLの内部において、バランスの取れた二分探索木を効率的かつ汎用的に管理するために重要です。 侵入型設計により、木構造の管理ロジック（回転や再着色による平衡維持）と、具体的なデータ構造やメモリ管理、重複キーの処理（結合）を分離できます。これにより、メモリの再割り当てを最小限に抑えつつ、一貫した $O(\lg n)$ の計算量を保証するデータ構造を再利用可能にしています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/lib</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/lib/rbtree.c#RBTree</code>: <code>RBTree</code> 構造体の具体的なフィールド定義。ルートノード、ノードサイズ、各種コールバック関数（比較、結合、メモリ確保・解放）およびユーザー引数を保持します。</li>
+<li><code>symbol:src/include/lib/rbtree.h#RBTree</code>: <code>RBTree</code> の不透明な（opaque）構造体宣言（<code>typedef struct RBTree RBTree;</code>）。外部モジュールに対して内部フィールドを非公開にし、APIを介した操作を強制します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し側が <code>rbt_create</code> を呼び出し、ノードサイズ、比較関数（<code>comparator</code>）、重複時の結合関数（<code>combiner</code>）、メモリ確保・解放関数（<code>allocfunc</code>, <code>freefunc</code>）、および共通引数（<code>arg</code>）を登録して <code>RBTree</code> インスタンスを生成します。 2. **操作**:</p>
+<ul>
+<li>**検索 (<code>rbt_find</code> 等)**: 登録された比較関数を用いて木を探索します。</li>
+<li>**挿入 (<code>rbt_insert</code>)**: 新しいノードを挿入します。キーが重複する場合は、登録された <code>combiner</code> コールバックを呼び出して既存ノードを更新します。挿入後は、赤黒木の平衡を維持するために回転（Rotation）と色変更を行います。</li>
+<li>**削除 (<code>rbt_delete</code>)**: 指定されたノードを削除し、必要に応じて平衡維持アルゴリズムを実行します。</li>
+<li>**走査**: <code>rbt_begin_iterate</code> 等のイテレータ関数により、スタックを使用せず親ポインタを辿ることで、昇順または降順に木を走査します。</li>
+</ul>
+<p>*(注: 呼び出し元モジュールからこれらの一連の操作がどのように連鎖して呼び出されるかという、システム全体における具体的なエンドツーエンドのユースケースの流れは、提供されたコンテキストからは不明です。)*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**侵入型構造**: ユーザー定義のノード構造体は、その先頭メンバとして必ず <code>RBTNode</code> を配置しなければなりません。</li>
+<li>**カプセル化**: 呼び出し側は <code>RBTNode</code> の内部フィールド（<code>color</code>, <code>left</code>, <code>right</code>, <code>parent</code>）を直接操作してはならず、<code>RBTree</code> の内部フィールドも非公開として扱わなければなりません。</li>
+<li>**不変の制御パラメータ**: <code>rbt_create</code> によって初期化された <code>node_size</code> や各種コールバック関数（<code>comparator</code> 等）は、初期化後に変更してはなりません。</li>
+<li>**番兵の利用**: 境界条件の判定には、NULLの代わりに静的な番兵 <code>RBTNIL</code> が使用されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ解放の範囲**: <code>freefunc</code> コールバックはノード自体のメモリ解放のみを担当します。ノードの内部にさらに動的確保されたサブデータが存在する場合、それらを再帰的に解放する処理は <code>freefunc</code> 単体では自動的に行われないため、呼び出し側で適切に管理する必要があります。</li>
+<li>**不適切なコールバック実装**: 比較関数やメモリ確保関数が提供されない場合、または不適切な実装である場合の挙動やエラーハンドリングの詳細は、提供されたコンテキストからは不明です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/lib/rbtree.c</code>: <code>RBTree</code> の具体的なフィールド定義、平衡維持アルゴリズム（回転・色変更）、および各操作関数の実装。</li>
+<li><code>src/include/lib/rbtree.h</code>: <code>RBTree</code> の不透明な型定義、および外部に公開されているAPI関数の宣言。</li>
+</ul></body></html>

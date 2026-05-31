@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/time/snapmgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/time/snapmgr.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのMVCC（多版同時実行制御）におけるスナップショットのライフサイクル管理を担う中核モジュールです。トランザクション内での可視性判定に使用されるスナップショットの生成、登録、参照カウント管理、および外部プロセスへのエクスポート/インポート機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/time</code> モジュールの一部として、トランザクションの可視性境界を定義します。<code>procarray.c</code> が提供するシステム全体のトランザクション状態を基に、個々のクエリやトランザクションが必要とするスナップショットを構築・保持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スナップショットのライフサイクル管理**: <code>ActiveSnapshot</code> スタックと <code>RegisteredSnapshots</code> ヒープを用いた参照カウント管理。</li>
+<li>**VACUUM最適化**: 保持中のスナップショットに基づき、<code>MyProc-&gt;xmin</code> を更新し、不要なタプルの削除を促進。</li>
+<li>**スナップショットの永続化と共有**: <code>pg_export_snapshot</code> によるファイルベースの共有と、<code>ImportSnapshot</code> による他トランザクションへの状態引き継ぎ。</li>
+<li>**カタログスナップショットの管理**: システムカタログスキャン用スナップショットのキャッシュと無効化制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>スナップショット管理（グローバル変数）</h3>
+<ul>
+<li><code>CurrentSnapshot</code>, <code>SecondarySnapshot</code>, <code>CatalogSnapshot</code>: 現在のトランザクションで利用される主要なスナップショットへのポインタ。</li>
+<li><code>ActiveSnapshot</code>: 現在のクエリ実行コンテキストを管理するスタックのトップ。</li>
+<li><code>RegisteredSnapshots</code>: <code>pairingheap</code> で管理される、参照中のスナップショット集合。</li>
+</ul>
+<h3>ライフサイクル操作</h3>
+<ul>
+<li><code>GetTransactionSnapshot()</code>: トランザクションの最初のスナップショットを取得。</li>
+<li><code>PushActiveSnapshot()</code> / <code>PopActiveSnapshot()</code>: クエリ実行中のスナップショットスタック操作。</li>
+<li><code>RegisterSnapshot()</code> / <code>UnregisterSnapshot()</code>: リソースオーナーによる明示的なスナップショット保持。</li>
+</ul>
+<h3>エクスポート/インポート</h3>
+<ul>
+<li><code>ExportSnapshot()</code>: スナップショットをファイルへシリアライズ。</li>
+<li><code>ImportSnapshot()</code>: ファイルからスナップショットをリストアし、現在のトランザクションに適用。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ActiveSnapshotElt</code></li>
+<li><code>AtEOXact_Snapshot</code></li>
+<li><code>AtSubAbort_Snapshot</code></li>
+<li><code>AtSubCommit_Snapshot</code></li>
+<li><code>DeleteAllExportedSnapshotFiles</code></li>
+<li><code>ExportedSnapshot</code></li>
+<li><code>FreeSnapshot</code></li>
+<li><code>GetTransactionSnapshot</code></li>
+<li><code>ResourceOwnerForgetSnapshot</code></li>
+<li><code>ResourceOwnerRememberSnapshot</code></li>
+<li><code>SerializedSnapshotData</code></li>
+<li><code>SnapshotResetXmin</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **取得**: <code>GetTransactionSnapshot()</code> が呼ばれると、<code>GetSnapshotData()</code> を経由して <code>procarray.c</code> から最新のトランザクション状態を取得します。 2. **スタック管理**: クエリ実行時に <code>PushActiveSnapshot()</code> が呼ばれ、<code>ActiveSnapshot</code> スタックに積まれます。これにより、再帰的なクエリ実行やサブトランザクションでの可視性が維持されます。 3. **リソース追跡**: <code>RegisteredSnapshots</code> ヒープは、<code>xmin</code> が最も古いスナップショットを常に先頭に保持します。これにより、<code>SnapshotResetXmin()</code> が <code>MyProc-&gt;xmin</code> を効率的に更新し、VACUUMの停止を防ぎます。 4. **解放**: トランザクション終了時、<code>AtEOXact_Snapshot()</code> が呼び出され、登録済みスナップショットのクリーンアップとファイルベースの共有スナップショットの削除を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/procarray.h</code>: システム全体のトランザクション状態取得。</li>
+<li><code>utils/resowner.h</code>: リソースオーナーによるスナップショットの自動解放管理。</li>
+<li><code>lib/pairingheap.h</code>: <code>RegisteredSnapshots</code> の優先度付きキュー管理。</li>
+<li><code>access/xact.h</code>: トランザクションのネストレベルや状態管理。</li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_lfind.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/procarray.c</code>: スナップショットの基となるトランザクション状態の提供元。</li>
+<li><code>src/backend/utils/time/combocid.c</code>: 同一トランザクション内でのタプル可視性（CID）管理。</li>
+<li><code>src/include/utils/snapshot.h</code>: <code>SnapshotData</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>CopySnapshot()</code> で生成されたスナップショットは <code>TopTransactionContext</code> に割り当てられます。<code>regd_count</code> と <code>active_count</code> が両方とも0になった時点で <code>pfree()</code> されます。</li>
+<li>**不変条件**: <code>RegisteredSnapshots</code> ヒープ内のスナップショットは、<code>xmin</code> の昇順で管理されます。<code>MyProc-&gt;xmin</code> は常にこのヒープの先頭（最も古い <code>xmin</code>）と同期している必要があります。</li>
+<li>**エッジケース**: <code>ImportSnapshot</code> は、異なるデータベース間でのスナップショット共有を禁止しています。これは、VACUUMの <code>OldestXmin</code> 計算がデータベース単位であるためです。</li>
+<li>**省略された詳細**: 本ファイルはスナップショットの「管理」に特化しており、実際の可視性判定ロジック（<code>HeapTupleSatisfiesMVCC</code> 等）は <code>access/heap/heapam_visibility.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ActiveSnapshotElt.html" target="wiki-view"><code>ActiveSnapshotElt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ExportedSnapshot.html" target="wiki-view"><code>ExportedSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerRememberSnapshot.html" target="wiki-view"><code>ResourceOwnerRememberSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerForgetSnapshot.html" target="wiki-view"><code>ResourceOwnerForgetSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__SerializedSnapshotData.html" target="wiki-view"><code>SerializedSnapshotData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__GetTransactionSnapshot.html" target="wiki-view"><code>GetTransactionSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__FreeSnapshot.html" target="wiki-view"><code>FreeSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__SnapshotResetXmin.html" target="wiki-view"><code>SnapshotResetXmin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtSubCommit_Snapshot.html" target="wiki-view"><code>AtSubCommit_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtSubAbort_Snapshot.html" target="wiki-view"><code>AtSubAbort_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtEOXact_Snapshot.html" target="wiki-view"><code>AtEOXact_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__DeleteAllExportedSnapshotFiles.html" target="wiki-view"><code>DeleteAllExportedSnapshotFiles</code></a></li>
+</ul></body></html>

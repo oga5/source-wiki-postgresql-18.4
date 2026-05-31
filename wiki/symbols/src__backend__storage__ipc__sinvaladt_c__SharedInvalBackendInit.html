@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__sinvaladt_c__SharedInvalBackendInit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SharedInvalBackendInit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/sinvaladt.c:271</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有キャッシュ無効化（Shared Cache Invalidation）システムにおいて、現在のバックエンドプロセスを共有メモリ上の管理構造に登録し、初期化を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SharedInvalBackendInit(bool sendOnly)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>sendOnly</code> (bool): <code>true</code> の場合、このバックエンドはメッセージの送信のみを行い、受信（キャッシュ更新）を行わないことを示す。</li>
+<li>**出力**: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MyProcNumber</code> が有効な範囲（<code>0</code> 以上 <code>NumProcStateSlots</code> 未満）で設定されていること。</li>
+<li>呼び出し時に <code>SInvalWriteLock</code> を保持していないこと（内部で排他ロックを取得するため）。</li>
+<li>該当する <code>ProcState</code> スロットが現在未使用（<code>procPid == 0</code>）であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>MyProcNumber</code> を用いて共有メモリ上の <code>ProcState</code> スロットを特定する。 2. <code>SInvalWriteLock</code> を排他モードで取得する。 3. スロットが既に使用中であればエラーを投げる。 4. <code>pgprocnos</code> 配列に自身の <code>MyProcNumber</code> を追加する。 5. 共有メモリからローカルのトランザクションID状態を読み込む。 6. 自身の <code>ProcState</code> を初期化する（PIDの設定、<code>nextMsgNum</code> を現在の <code>maxMsgNum</code> に同期、各フラグを <code>false</code> に設定）。 7. <code>SInvalWriteLock</code> を解放する。 8. プロセス終了時に <code>CleanupInvalidationState</code> が自動実行されるよう <code>on_shmem_exit</code> に登録する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/ipc/standby.c</code>: <code>SharedInvalBackendInit(true);</code></li>
+<li><code>src/backend/utils/init/postinit.c</code>: <code>SharedInvalBackendInit(false);</code></li>
+<li>**呼び出し先**:</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code> (<code>SInvalWriteLock</code>)</li>
+<li><code>on_shmem_exit</code> (<code>CleanupInvalidationState</code>)</li>
+<li><code>elog</code> (エラーハンドリング)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SISeg</code>: 共有メモリ上のメイン構造体。</li>
+<li><code>ProcState</code>: 各バックエンドの進捗状態を保持する構造体。</li>
+<li><code>MyProcNumber</code>: 現在のプロセスのインデックス。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>MyProcNumber</code> が未設定の場合、<code>ERROR</code> を発生させる。</li>
+<li><code>MyProcNumber</code> が範囲外の場合、<code>PANIC</code> を発生させる。</li>
+<li>スロットが既に他のプロセスによって使用されている場合、<code>ERROR</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SInvalWriteLock</code> を排他モードで取得するため、頻繁な呼び出しはパフォーマンスに影響を与える可能性があるが、通常はプロセス初期化時に一度のみ実行される。</li>
+<li><code>on_shmem_exit</code> によるクリーンアップ登録は、プロセスが異常終了した場合でも共有メモリ上の状態を整合させるために不可欠である。</li>
+</ul></body></html>

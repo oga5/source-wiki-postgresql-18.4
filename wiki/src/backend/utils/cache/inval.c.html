@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/inval.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/inval.c</h1>
+<h2>概要</h2>
+<p><code>inval.c</code> は、PostgreSQLのキャッシュ無効化（Invalidation）メカニズムのディスパッチャーです。システムカタログやリレーション記述子の変更を追跡し、トランザクション境界でローカルキャッシュのフラッシュや、共有メモリを介した他バックエンドへの通知（SIメッセージ）を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールにおいて、キャッシュの整合性を維持する「調整役」です。<code>catcache.c</code> や <code>relcache.c</code> が個別のキャッシュエントリを管理するのに対し、本ファイルはそれらの変更イベントを収集・蓄積し、適切なタイミングで一括処理する責務を負います。</p>
+<h2>責務</h2>
+<ul>
+<li>**イベントの蓄積**: トランザクション内の各コマンドで発生したキャッシュ無効化要求を <code>TopTransactionContext</code> に保持。</li>
+<li>**整合性の保証**: コマンド終了時、トランザクションコミット時、およびサブトランザクションの境界で、キャッシュのフラッシュとSIメッセージの送信を制御。</li>
+<li>**コールバック管理**: キャッシュ依存を持つ外部サブシステム（プランナ、型キャッシュ等）が登録したコールバック関数の管理と実行。</li>
+<li>**WAL連携**: <code>wal_level=logical</code> 時の論理デコーディング用無効化情報のWAL書き込み。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>transInvalInfo</code>: 現在のトランザクションにおける無効化イベントのスタック（<code>TransInvalidationInfo</code>）。</li>
+<li><code>inplaceInvalInfo</code>: インプレース更新（WAL挿入クリティカルセクション内）用の無効化情報。</li>
+<li><code>InvalMessageArrays</code>: 蓄積された <code>SharedInvalidationMessage</code> を保持するグローバル配列。</li>
+</ul>
+<h3>登録・ディスパッチ</h3>
+<ul>
+<li><code>CacheInvalidateHeapTuple</code>: カタログタプルの変更を登録。</li>
+<li><code>CacheInvalidateRelcache</code>: リレーションキャッシュの無効化を登録。</li>
+<li><code>AcceptInvalidationMessages</code>: 共有メモリからSIメッセージを読み込み、ローカルキャッシュをフラッシュ。</li>
+<li><code>AtEOXact_Inval</code>: トランザクション終了時にメッセージを送信または処理。</li>
+</ul>
+<h3>コールバック</h3>
+<ul>
+<li><code>CacheRegisterSyscacheCallback</code>: システムキャッシュ変更時の通知関数を登録。</li>
+<li><code>CallSyscacheCallbacks</code>: 登録されたコールバックを特定のキャッシュIDに対して実行。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_Inval</code></li>
+<li><code>AtInplace_Inval</code></li>
+<li><code>ForgetInplace_Inval</code></li>
+<li><code>InvalMessageArray</code></li>
+<li><code>InvalidationInfo</code></li>
+<li><code>InvalidationMsgsGroup</code></li>
+<li><code>PostPrepare_Inval</code></li>
+<li><code>PreInplace_Inval</code></li>
+<li><code>RELCACHECALLBACK</code></li>
+<li><code>RELSYNCCALLBACK</code></li>
+<li><code>SYSCACHECALLBACK</code></li>
+<li><code>TransInvalidationInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <code>CacheInvalidateHeapTuple</code> 等が呼ばれると、<code>PrepareInvalidationState</code> を介して <code>transInvalInfo</code> にメッセージが追加されます。 2. **コマンド境界**: <code>CommandEndInvalidationMessages</code> が呼ばれると、<code>CurrentCmdInvalidMsgs</code> にあるメッセージがローカルで実行され、<code>PriorCmdInvalidMsgs</code> へ移動します。 3. **コミット時**: <code>AtEOXact_Inval(true)</code> が呼ばれ、蓄積されたメッセージが <code>SendSharedInvalidMessages</code> を通じて共有メモリへ書き出されます。 4. **他バックエンド**: <code>AcceptInvalidationMessages</code> が定期的に呼ばれ、<code>LocalExecuteInvalidationMessage</code> を通じて自身のキャッシュを更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/sinval.h</code>: 共有無効化メッセージの定義とキュー操作。</li>
+<li><code>utils/catcache.h</code>, <code>utils/relcache.h</code>: キャッシュのフラッシュ対象となる主要モジュール。</li>
+<li><code>access/xact.h</code>: トランザクション状態の管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/sinvaladt.c</code>: SIメッセージの物理的な共有メモリ管理。</li>
+<li><code>src/backend/utils/cache/catcache.c</code>: カタログキャッシュの具体的なフラッシュ実装。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: リレーションキャッシュの具体的なフラッシュ実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>transInvalInfo</code> は <code>TopTransactionContext</code> に割り当てられ、トランザクション終了時に自動的に解放されます。明示的な <code>pfree</code> は不要です。</li>
+<li>**インプレース更新**: <code>CacheInvalidateHeapTupleInplace</code> は、WALのクリティカルセクション内で実行されるため、トランザクションのロールバックが不可能な特殊なケースを扱います。</li>
+<li>**順序の重要性**: キャッシュのフラッシュは、依存関係を考慮して「カタログキャッシュ」→「リレーションキャッシュ」の順で行われます。</li>
+<li>**省略された詳細**: 本ファイルはメッセージの「蓄積」と「ディスパッチ」に特化しており、個別のキャッシュエントリの削除ロジック（<code>RelationCacheInvalidateEntry</code> 等）は各キャッシュモジュールに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__InvalMessageArray.html" target="wiki-view"><code>InvalMessageArray</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__InvalidationMsgsGroup.html" target="wiki-view"><code>InvalidationMsgsGroup</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__InvalidationInfo.html" target="wiki-view"><code>InvalidationInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__TransInvalidationInfo.html" target="wiki-view"><code>TransInvalidationInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__SYSCACHECALLBACK.html" target="wiki-view"><code>SYSCACHECALLBACK</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__RELCACHECALLBACK.html" target="wiki-view"><code>RELCACHECALLBACK</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__RELSYNCCALLBACK.html" target="wiki-view"><code>RELSYNCCALLBACK</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__PostPrepare_Inval.html" target="wiki-view"><code>PostPrepare_Inval</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__AtEOXact_Inval.html" target="wiki-view"><code>AtEOXact_Inval</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__PreInplace_Inval.html" target="wiki-view"><code>PreInplace_Inval</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__AtInplace_Inval.html" target="wiki-view"><code>AtInplace_Inval</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__inval_c__ForgetInplace_Inval.html" target="wiki-view"><code>ForgetInplace_Inval</code></a></li>
+</ul></body></html>

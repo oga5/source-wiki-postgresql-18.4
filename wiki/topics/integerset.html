@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/integerset.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>IntegerSet</h1>
+<h2>概念</h2>
+<p><code>IntegerSet</code> は、大量の 64 ビット整数をメモリ効率よく保持するために設計された、B-tree ベースのデータ構造です。Simple-8b アルゴリズムによる圧縮技術と B-tree 構造を組み合わせることで、メモリ消費を最小限に抑えながら、高速な存在判定や走査を可能にします。</p>
+<h2>なぜ重要か</h2>
+<p>大量の整数データをメモリ上に保持する際、単純な配列や通常のツリー構造ではメモリ消費量が膨大になります。<code>IntegerSet</code> は、特に整数が連続して密に詰まっている場合に極めて高い圧縮効率を発揮します。これにより、GiST インデックスの VACUUM 処理（<code>gistvacuum.c</code>）など、メモリ制約が厳しいシステムコンポーネントにおいて、リソース消費を抑えつつ効率的な集合管理を実現するために重要となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/lib</code> (実装)</li>
+<li><code>module:src/include/lib</code> (インターフェース定義)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/lib/integerset.h#IntegerSet</code>**: 外部モジュールに公開される不透明ポインタ（Opaque Pointer）としての構造体定義。</li>
+<li>**<code>symbol:src/backend/lib/integerset.c#IntegerSet</code>**: メモリコンテキスト、B-tree のルート、挿入バッファ、およびイテレータの状態を管理する具体的な内部構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>IntegerSet</code> は、特定の <code>MemoryContext</code> を指定して作成されます。 2. **データの追加**: <code>intset_add_member</code> を介して 64 ビット整数を追加します。</p>
+<ul>
+<li>追加された値は、まず一時的に <code>buffered_values</code> バッファに蓄積されます。</li>
+<li>バッファが溢れると、<code>intset_flush_buffered_values</code> が呼び出され、Simple-8b アルゴリズムで圧縮された上で B-tree のリーフノード（<code>intset_leaf_node</code>）へ書き込まれます。</li>
+<p>3. **検索**: <code>intset_is_member</code> を用いて値の存在判定を行います。まずバッファ内を検索し、見つからなければ B-tree を二分探索して、リーフノード内の圧縮データを <code>simple8b_contains</code> で走査します。 4. **走査（イテレーション）**: <code>intset_iterate_next</code> などのイテレータを介して、バッファおよび B-tree 内の全要素を昇順で取得します。 5. **破棄**: <code>IntegerSet</code> 自体を個別に解放する関数は提供されていません。作成時に使用した <code>MemoryContext</code> を破棄することで、関連するすべてのメモリを一括して解放します。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**昇順での追加**: <code>intset_add_member</code> を使用して値を追加する際は、必ず**昇順**（以前に追加した値よりも大きい値）で追加しなければなりません。</li>
+<li>**イテレーション中の追加禁止**: イテレーション（走査）がアクティブな状態（<code>iter_active</code> が真）のときは、<code>intset_add_member</code> による値の追加はサポートされていません。</li>
+<li>**メモリ管理のライフサイクル**: メモリの解放は、作成時に紐付けられた <code>MemoryContext</code> の破棄に完全に依存します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**順序違反による破損**: 昇順ではない値を挿入した場合、内部の不変条件が破壊され、正しい検索や走査が行えなくなる可能性があります。</li>
+<li>**疎なデータによるメモリ増大**: 整数が密に詰まっている場合に高い圧縮効率を発揮する設計であるため、ランダムで疎（スパース）なデータ集合に対しては、圧縮効率が低下しメモリ消費量が増大する可能性があります。</li>
+<li>**イテレーション中の更新**: イテレータによる走査の実行中に値を挿入しようとすると、予期しない動作を引き起こす可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/lib/integerset.h</code>: 外部公開されている API インターフェースおよび基本特性の確認。</li>
+<li><code>src/backend/lib/integerset.c</code>: <code>IntegerSet</code> の具体的な構造体定義、Simple-8b 圧縮、および B-tree 操作の実装詳細。</li>
+<li><code>src/backend/access/gist/gistvacuum.c</code>: <code>IntegerSet</code> を <code>internal_page_set</code> や <code>empty_leaf_set</code> として実際に利用しているユースケース。</li>
+</ul></body></html>

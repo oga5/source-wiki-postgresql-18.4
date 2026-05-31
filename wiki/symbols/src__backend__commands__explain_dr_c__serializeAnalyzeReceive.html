@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__explain_dr_c__serializeAnalyzeReceive.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>serializeAnalyzeReceive</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/explain_dr.c:104</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>EXPLAIN (SERIALIZE)</code> 実行時に、クエリ結果のタプルをクライアントへ送信することなく、シリアライズ処理（データ変換やTOAST解除）にかかるコストを計測・収集する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool serializeAnalyzeReceive(TupleTableSlot *slot, DestReceiver *self);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>slot</code>: 処理対象のタプルを含む <code>TupleTableSlot</code>。</li>
+<li><code>self</code>: <code>SerializeDestReceiver</code> 型としてキャストされる <code>DestReceiver</code> インスタンス。</li>
+<li>**出力**: 常に <code>true</code> を返す。副作用として <code>self</code> 内の <code>metrics</code>（バイト数、時間、バッファ使用量）が更新される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>self</code> は <code>SerializeDestReceiver</code> 構造体へのポインタであること。</li>
+<li><code>slot</code> は有効なタプル記述子（<code>tts_tupleDescriptor</code>）を持つこと。</li>
+<li>ネットワーク送信は行わないため、<code>pq_endmessage_reuse()</code> は呼び出さないこと。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **計測開始**: <code>es-&gt;timing</code> および <code>es-&gt;buffers</code> が有効な場合、開始時点の時刻とバッファ使用量を記録。 2. **準備**: 必要に応じて <code>serialize_prepare_info</code> を呼び出し、属性情報をキャッシュ。<code>slot_getallattrs</code> でタプルをデコード。 3. **シリアライズ**: <code>tmpcontext</code> に切り替え、<code>pq_beginmessage_reuse</code> を使用して <code>DataRow</code> メッセージ形式でデータを構築。</p>
+<ul>
+<li>テキスト形式の場合は <code>OutputFunctionCall</code>、バイナリ形式の場合は <code>SendFunctionCall</code> を使用。</li>
+<p>4. **集計**: 構築したメッセージの長さ（<code>buf-&gt;len</code>）を <code>metrics.bytesSent</code> に加算。 5. **後処理**: メモリコンテキストを復元・リセットし、計測が有効であれば終了時刻とバッファ使用量の差分を <code>metrics</code> に累積。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 明示的な呼び出し元情報は提供されていないが、<code>DestReceiver</code> の <code>receiveSlot</code> フィールドに本関数が登録される（<code>src/backend/commands/explain_dr.c:280</code>）。</li>
+<li>**呼び出し先**: <code>serialize_prepare_info</code>, <code>slot_getallattrs</code>, <code>MemoryContextSwitchTo</code>, <code>pq_beginmessage_reuse</code>, <code>pq_sendint16</code>, <code>OutputFunctionCall</code>, <code>SendFunctionCall</code>, <code>MemoryContextReset</code>, <code>INSTR_TIME_...</code> マクロ群, <code>BufferUsageAccumDiff</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SerializeDestReceiver</code>: 計測状態とバッファを保持する構造体。</li>
+<li><code>TupleTableSlot</code>: 処理対象のタプルデータ。</li>
+<li><code>DestReceiver</code>: 汎用的なタプル受信インターフェース。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>slot</code> が空の場合や、型変換関数が失敗した場合は例外が発生する可能性がある。</li>
+<li>メモリコンテキストの切り替え失敗や、<code>tmpcontext</code> の管理不備によるメモリリークのリスクがある（<code>MemoryContextReset</code> により抑制）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>printtup()</code> のロジックを模倣しているため、データ構築ロジックを変更する際は <code>printtup.c</code> との整合性に注意すること。</li>
+<li>ネットワーク負荷を除外するため、<code>pq_endmessage_reuse()</code> を呼び出さない設計を維持すること。</li>
+</ul></body></html>

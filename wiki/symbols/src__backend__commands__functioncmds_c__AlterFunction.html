@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__functioncmds_c__AlterFunction.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AlterFunction</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/functioncmds.c:1360</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQLの <code>ALTER FUNCTION</code> 文を処理し、システムカタログ <code>pg_proc</code> 上の関数またはプロシージャの属性を変更する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ObjectAddress AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>pstate</code>: パーサー状態。</li>
+<li><code>stmt</code>: 変更対象の関数名、引数、および適用するアクション（<code>DefElem</code> リスト）を含む <code>AlterFunctionStmt</code> 構造体。</li>
+<li>**出力**: 変更された関数の <code>ObjectAddress</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象の関数は <code>pg_proc</code> に存在する必要がある。</li>
+<li>呼び出し元は対象関数の所有者である必要がある。</li>
+<li>集約関数（<code>PROKIND_AGGREGATE</code>）の変更は許可されない。</li>
+<li><code>leakproof</code> 属性の変更はスーパーユーザーのみに許可される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_proc</code> を <code>RowExclusiveLock</code> でオープンし、対象関数を <code>LookupFuncWithArgs</code> で特定する。 2. <code>SearchSysCacheCopy1</code> で対象関数のタプルを取得し、所有権限を検証する。 3. <code>compute_common_attribute</code> を用いて <code>stmt-&gt;actions</code> を解析し、各属性（volatility, cost, rows, parallel等）の更新値を抽出する。 4. 抽出された属性値を <code>pg_proc</code> のタプルに反映させる。</p>
+<ul>
+<li><code>support</code> 属性の場合は、依存関係（<code>pg_depend</code>）の追加または置換を行う。</li>
+<li><code>set_items</code>（設定パラメータ）がある場合は、<code>update_proconfig_value</code> を経由して <code>proconfig</code> 配列を更新する。</li>
+<p>5. <code>CatalogTupleUpdate</code> でシステムカタログを更新し、<code>InvokeObjectPostAlterHook</code> を呼び出して変更を通知する。 6. テーブルをクローズし、メモリ上のタプルを解放して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/tcop/utility.c</code> (SQL解析後の実行フェーズ)</li>
+<li>**呼び出し先**: </li>
+<li><code>compute_common_attribute</code>, <code>LookupFuncWithArgs</code>, <code>object_ownercheck</code>, <code>interpret_func_volatility</code>, <code>interpret_func_support</code>, <code>update_proconfig_value</code>, <code>CatalogTupleUpdate</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>AlterFunctionStmt</code>: SQL文の構文木。</li>
+<li><code>Form_pg_proc</code>: <code>pg_proc</code> カタログの行構造。</li>
+<li><code>ObjectAddress</code>: オブジェクトの識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>対象関数が見つからない場合、<code>LookupFuncWithArgs</code> がエラーを発生させる。</li>
+<li>所有者でない場合、<code>aclcheck_error</code> が発生する。</li>
+<li>集約関数に対して実行した場合、<code>ERRCODE_WRONG_OBJECT_TYPE</code> でエラーとなる。</li>
+<li><code>COST</code> や <code>ROWS</code> に非正の値を指定した場合、<code>ERRCODE_INVALID_PARAMETER_VALUE</code> でエラーとなる。</li>
+<li><code>proretset</code> が偽の関数に対して <code>ROWS</code> を指定した場合、エラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>procForm</code> を介した直接的な値の更新は、<code>CatalogTupleUpdate</code> を呼び出す前までに行うこと。更新後の <code>procForm</code> はダングリングポインタとなるため注意が必要。</li>
+<li><code>prokind</code> によるプロシージャと関数の分岐処理が含まれているため、将来的な属性追加時は <code>compute_common_attribute</code> との整合性に留意すること。</li>
+</ul></body></html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/sequence.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/sequence.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのシーケンス（<code>CREATE SEQUENCE</code> 等で作成されるオブジェクト）の管理、値の生成、および永続化を担う実装ファイルです。シーケンスのメタデータ管理と、トランザクションを跨いで値をキャッシュするセッション内状態の管理を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、SQLコマンド（<code>CREATE/ALTER SEQUENCE</code>）の実行エンジンを提供します。また、<code>access/sequence.h</code> で定義されたインターフェースを実装し、シーケンスの物理的な読み書きを抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シーケンスのライフサイクル管理**: シーケンスの作成、変更、削除、およびリセット処理。</li>
+<li>**値の生成とキャッシュ**: <code>nextval()</code> による値の払い出しと、パフォーマンス向上のためのプリフェッチ（<code>SEQ_LOG_VALS</code>）管理。</li>
+<li>**WALログの生成**: シーケンスの更新をWALに記録し、クラッシュリカバリを保証する。</li>
+<li>**セッション状態の保持**: <code>SeqTable</code> を用いて、現在のセッションでアクセスしたシーケンスのキャッシュ状態を管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SeqTableData</code>: セッション内でシーケンスの現在のキャッシュ状態（<code>last</code>, <code>cached</code>）を保持する構造体。</li>
+<li><code>seqhashtab</code>: セッション内でアクセスされたシーケンスを追跡するためのハッシュテーブル。</li>
+<li><code>nextval_internal</code>: シーケンスの値をインクリメントし、必要に応じてWALを書き込む中核関数。</li>
+<li><code>fill_seq_with_data</code>: シーケンスの物理ページを初期化・更新する関数。</li>
+<li><code>SEQ_LOG_VALS</code>: クラッシュ時の損失を許容しつつ、WAL書き込みを削減するためのプリフェッチ数（32）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterSequence</code></li>
+<li><code>DefineSequence</code></li>
+<li><code>DeleteSequenceTuple</code></li>
+<li><code>ResetSequence</code></li>
+<li><code>ResetSequenceCaches</code></li>
+<li><code>SeqTable</code></li>
+<li><code>SequenceChangePersistence</code></li>
+<li><code>fill_seq_fork_with_data</code></li>
+<li><code>pg_get_sequence_data</code></li>
+<li><code>sequence_magic</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: 初めてシーケンスにアクセスする際、<code>init_sequence</code> がハッシュテーブルを検索し、なければエントリを作成します。 2.  **値の取得**: <code>nextval()</code> が呼ばれると、キャッシュに空きがある場合は即座に値を返します。空きがない場合は、<code>read_seq_tuple</code> でディスク上の最新状態を読み込み、<code>SEQ_LOG_VALS</code> 分の値を確保してWALを記録します。 3.  **永続化**: <code>START_CRIT_SECTION</code> / <code>END_CRIT_SECTION</code> で囲まれた領域で、バッファの更新とWALの書き込みが行われます。 4.  **リセット**: <code>ResetSequence</code> や <code>AlterSequence</code> は、<code>RelationSetNewRelfilenumber</code> を呼び出して物理ファイルを再作成することで、トランザクション的に状態をリセットします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>xlog.h</code>, <code>table.h</code>, <code>sequence.h</code> 等、低レベルのストレージおよびWALアクセス層。</li>
+<li><code>catalog/</code>: <code>pg_sequence.h</code> 等、システムカタログ定義。</li>
+<li><code>storage/</code>: <code>lmgr.h</code>（ロック管理）、<code>smgr.h</code>（ストレージ管理）。</li>
+<li><code>utils/</code>: <code>syscache.h</code>（システムキャッシュ）、<code>acl.h</code>（権限チェック）。</li>
+<li><code>access/bufmask.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/sequence.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_sequence.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/resowner.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/sequence.h</code>: シーケンス関連の外部公開インターフェース。</li>
+<li><code>src/backend/catalog/pg_sequence.c</code>: シーケンスのカタログ定義。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: シーケンスもヒープテーブルとして実装されているため、その基礎となるアクセス層。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>シーケンスは通常のテーブルと同様にヒープとして扱われますが、<code>VACUUM</code> の対象外である点に注意してください。</li>
+<li><code>nextval()</code> はトランザクションのロールバックに関わらず値を消費します。これはシーケンスの設計上の仕様です。</li>
+<li><code>seq_redo</code> 関数は、WALリプレイ時にシーケンスのページを再構築するために使用されます。</li>
+<li><code>ALTER SEQUENCE</code> での変更は、物理ファイルを再作成することでトランザクションの原子性を保証しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__sequence_magic.html" target="wiki-view"><code>sequence_magic</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__SeqTableData.html" target="wiki-view"><code>SeqTableData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__SeqTable.html" target="wiki-view"><code>SeqTable</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__DefineSequence.html" target="wiki-view"><code>DefineSequence</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__ResetSequence.html" target="wiki-view"><code>ResetSequence</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__fill_seq_with_data.html" target="wiki-view"><code>fill_seq_with_data</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__fill_seq_fork_with_data.html" target="wiki-view"><code>fill_seq_fork_with_data</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__AlterSequence.html" target="wiki-view"><code>AlterSequence</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__SequenceChangePersistence.html" target="wiki-view"><code>SequenceChangePersistence</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__DeleteSequenceTuple.html" target="wiki-view"><code>DeleteSequenceTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__pg_get_sequence_data.html" target="wiki-view"><code>pg_get_sequence_data</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__sequence_c__ResetSequenceCaches.html" target="wiki-view"><code>ResetSequenceCaches</code></a></li>
+</ul></body></html>

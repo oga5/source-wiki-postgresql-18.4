@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__subscriptioncmds_c__AlterSubscription_refresh.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AlterSubscription_refresh</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/subscriptioncmds.c:819</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおける <code>REFRESH PUBLICATION</code> コマンドを実行し、ローカルのサブスクリプションとリモートのパブリケーション間でのテーブル同期状態を更新します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void AlterSubscription_refresh(Subscription *sub, bool copy_data, List *validate_publications)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>sub</code>: 対象となるサブスクリプション構造体。</li>
+<li><code>copy_data</code>: 新規テーブル追加時にデータをコピーするかどうかを指定するフラグ。</li>
+<li><code>validate_publications</code>: 検証対象のパブリケーションリスト（NULL可）。</li>
+<li>**出力**: なし（成功時はカタログ更新とワーカー制御を実行、失敗時はエラーをスロー）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>libpqwalreceiver</code> ライブラリがロード可能であること。</li>
+<li>パブリッシャーへの接続が確立できること。</li>
+<li><code>pg_subscription_rel</code> に対して <code>AccessExclusiveLock</code> を取得し、同期処理中の競合を防止する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **接続**: <code>walrcv_connect</code> を使用してパブリッシャーに接続。 2. **検証**: <code>validate_publications</code> が指定されていればパブリケーションの存在を確認。 3. **リスト取得**: リモートのパブリケーションからテーブルリストを取得し、ローカルの <code>pg_subscription_rel</code> と比較。 4. **差分処理**:</p>
+<ul>
+<li>リモートに存在しローカルにないテーブル: <code>AddSubscriptionRelState</code> で追加。</li>
+<li>ローカルに存在しリモートにないテーブル: <code>RemoveSubscriptionRel</code> で削除し、関連するレプリケーションワーカーを停止。</li>
+<p>5. **後処理**: <code>READY</code> 状態でないテーブルについては、必要に応じてレプリケーションオリジンを削除。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/subscriptioncmds.c</code> 内の <code>AlterSubscription</code> 関数から複数回参照。また <code>src/backend/replication/logical/tablesync.c</code> にも言及あり。</li>
+<li>**呼び出し先**: <code>walrcv_connect</code>, <code>fetch_table_list</code>, <code>GetSubscriptionRelations</code>, <code>AddSubscriptionRelState</code>, <code>RemoveSubscriptionRel</code>, <code>logicalrep_worker_stop</code>, <code>replorigin_drop_by_name</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Subscription</code>: サブスクリプション情報を保持。</li>
+<li><code>SubscriptionRelState</code>: ローカルのテーブル同期状態。</li>
+<li><code>SubRemoveRels</code>: 削除対象テーブルの情報を一時保持する内部構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>パブリッシャーへの接続失敗時は <code>ERRCODE_CONNECTION_FAILURE</code> でエラー終了。</li>
+<li>サポートされていないリレーション種別（<code>CheckSubscriptionRelkind</code>）が含まれる場合はエラー。</li>
+<li>トランザクション内で実行される場合、カタログロックにより他のワーカーの再起動と競合しないよう制御される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>PG_TRY/PG_FINALLY</code> ブロックにより、接続エラー発生時でもリソースが適切に解放されるよう設計されています。</li>
+<li><code>pg_subscription_rel</code> のロックは、同期処理中の整合性を保つために不可欠です。変更を加える際は、ワーカーのライフサイクルへの影響を考慮してください。</li>
+</ul></body></html>

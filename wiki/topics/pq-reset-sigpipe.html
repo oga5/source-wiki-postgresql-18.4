@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pq-reset-sigpipe.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pq_reset_sigpipe</h1>
+<h2>概念</h2>
+<p><code>pq_reset_sigpipe</code> は、ネットワーク通信操作の完了後に、一時的にブロックされていた <code>SIGPIPE</code> シグナルを復元し、シグナルマスクを元の状態に戻すための内部ユーティリティ関数です。</p>
+<h2>なぜ重要か</h2>
+<p>ネットワーク送信中に接続が切断されると <code>SIGPIPE</code> シグナルが発生し、プロセスが意図せず終了する可能性があります。これを防ぐために一時的に <code>SIGPIPE</code> をブロックしますが、通信完了後にはシグナルマスクを適切に復元し、不要な <code>SIGPIPE</code> を消費（クリア）する必要があります。<code>pq_reset_sigpipe</code> は、この復元処理とシグナルのクリーンアップを安全に行うために重要です。また、処理の前後でソケットエラー状態（<code>SOCK_ERRNO</code>）を維持する役割も担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/interfaces/libpq</code></li>
+<li><code>module:src/interfaces/libpq-oauth</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/interfaces/libpq-oauth/oauth-utils.c#pq_reset_sigpipe</code></li>
+<li><code>symbol:src/interfaces/libpq/fe-secure.c#pq_reset_sigpipe</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **シグナルブロック（前処理）**: ネットワーク操作の前に、<code>pq_block_sigpipe</code>（詳細なフローは本コンテキストでは未定義）などを用いて <code>SIGPIPE</code> をブロックし、元のシグナルマスクや保留状態を保存します。 2. **ネットワーク操作**: 実際の通信処理を実行します。 3. **シグナル復元とクリーンアップ（本関数）**:</p>
+<ul>
+<li>現在のソケットエラー番号（<code>SOCK_ERRNO</code>）を退避します。</li>
+<li>通信中に <code>EPIPE</code> が発生し（<code>got_epipe</code> が真）、かつブロック前に <code>SIGPIPE</code> が保留されていなかった（<code>sigpipe_pending</code> が偽）場合、新たに発生して保留中となっている <code>SIGPIPE</code> を <code>sigwait</code> を用いて消費・クリアします。</li>
+<li><code>pthread_sigmask</code> を使用して、保存されていた元のシグナルマスク（<code>osigset</code>）を復元します。</li>
+<li>退避していたソケットエラー番号を書き戻します。</li>
+</ul>
+<p>※なお、<code>pq_block_sigpipe</code> から <code>pq_reset_sigpipe</code> に至る全体的な呼び出しライフサイクルや、呼び出し元（<code>oauth-curl.c</code>, <code>fe-print.c</code>, <code>fe-secure.c</code> など）における具体的なエラー伝播の完全なエンドツーエンドフローは、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ソケットエラー状態の保持**: 本関数の実行前後で、ソケットエラー状態（<code>SOCK_ERRNO</code>）が変更されずに保持されることが保証されます。</li>
+<li>**有効なシグナルマスクの要求**: 引数 <code>osigset</code> は、事前に <code>pq_block_sigpipe</code> 等によって取得された有効なシグナルマスクでなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**エラーハンドリングの欠如**: 内部で使用している <code>sigpending</code> や <code>sigwait</code> が失敗した場合の明示的なエラーハンドリングは実装されていません。</li>
+<li>**条件付きのシグナルクリア**: <code>got_epipe</code> が偽の場合、保留中の <code>SIGPIPE</code> をクリアする処理はスキップされます。このため、呼び出し側が <code>EPIPE</code> 発生の有無を正しく判定して引数に渡す必要があります。</li>
+<li>**複数モジュールでの共有**: 本関数は <code>libpq</code> 本体と <code>libpq-oauth</code> モジュールの両方で共有されているため、一方の変更が他方に影響を与える可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/libpq-oauth/oauth-utils.c</code> (関数の具体的な実装箇所)</li>
+<li><code>src/interfaces/libpq/fe-secure.c</code> (関数が定義・使用されている箇所)</li>
+<li><code>src/interfaces/libpq/fe-print.c</code> (呼び出し元の1つ)</li>
+<li><code>src/interfaces/libpq-oauth/oauth-curl.c</code> (呼び出し元の1つ)</li>
+</ul></body></html>

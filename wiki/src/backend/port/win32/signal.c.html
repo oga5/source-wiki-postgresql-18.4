@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/port/win32/signal.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/port/win32/signal.c</h1>
+<h2>概要</h2>
+<p>Windows環境におけるPOSIXシグナル機能のエミュレーション層です。Windowsにはネイティブなシグナル機構が存在しないため、名前付きパイプとイベントオブジェクトを用いて、Unixライクなシグナル処理（<code>kill</code>、<code>sigaction</code>、<code>sigprocmask</code>等）を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/port/win32</code> モジュールの一部として、PostgreSQLバックエンドがWindows上でシグナルを適切に受信・処理するための基盤を提供します。他のプラットフォーム依存コードと連携し、プロセス間通信を介したシグナル伝達を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シグナルリスナーの運用**: 名前付きパイプを監視し、外部からのシグナル要求（<code>kill</code>相当）を待機する専用スレッドの管理。</li>
+<li>**シグナルキューイング**: 受信したシグナルをスレッドセーフにキューへ格納し、メインスレッドに通知する。</li>
+<li>**シグナルディスパッチ**: メインスレッドにおいて、キューイングされたシグナルを適切なハンドラ関数へ振り分ける。</li>
+<li>**POSIX互換APIの提供**: <code>pqsigaction</code> や <code>pqsigprocmask</code> を通じて、Unix環境と同一のシグナル制御インターフェースを公開する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_signal_queue</code>: 受信済みシグナルのビットマスク。メインスレッドとシグナルスレッド間で共有される。</li>
+<li><code>pgwin32_signal_event</code>: シグナルの到着をメインスレッドに通知するためのWindowsイベントオブジェクト。</li>
+<li><code>pgwin32_signal_initialize()</code>: シグナル処理スレッドの起動と初期化を行う。</li>
+<li><code>pgwin32_dispatch_queued_signals()</code>: キュー内のシグナルを処理するメインループ。</li>
+<li><code>pg_signal_thread()</code>: 名前付きパイプを介してシグナル要求を待ち受けるバックグラウンドスレッド。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pg_console_handler</code></li>
+<li><code>pg_queue_signal</code></li>
+<li><code>pg_signal_thread</code></li>
+<li><code>pg_usleep</code></li>
+<li><code>pgwin32_create_signal_listener</code></li>
+<li><code>pgwin32_dispatch_queued_signals</code></li>
+<li><code>pgwin32_signal_initialize</code></li>
+<li><code>pqsigaction</code></li>
+<li><code>pqsigprocmask</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **受信**: 外部プロセスが名前付きパイプにシグナル番号を書き込むと、<code>pg_signal_thread</code> がそれを検知する。 2.  **キューイング**: <code>pg_queue_signal</code> が <code>pg_signal_queue</code> を更新し、<code>pgwin32_signal_event</code> をセットする。 3.  **通知**: メインスレッドは <code>pg_usleep</code> や <code>CHECK_FOR_INTERRUPTS</code> 等の待機ポイントでイベントを検知する。 4.  **実行**: <code>pgwin32_dispatch_queued_signals</code> が呼び出され、マスクされていないシグナルハンドラが実行される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とエラー報告機能。</li>
+<li><code>libpq/pqsignal.h</code>: シグナル関連の定数および関数宣言。</li>
+<li>Windows API (<code>windows.h</code> 相当): <code>CreateNamedPipe</code>, <code>CreateEvent</code>, <code>CreateThread</code> 等。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/libpq/pqsignal.h</code>: シグナルハンドラの型定義や定数。</li>
+<li><code>src/port/kill.c</code> (外部): Windows上で <code>kill()</code> を呼び出した際に、このモジュールのパイプへ書き込む実装が含まれる。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スレッド安全性**: <code>pg_signal_queue</code> はシグナルスレッドとメインスレッドの両方からアクセスされるため、<code>pg_signal_crit_sec</code> による排他制御が必須です。</li>
+<li>**デッドロック注意**: シグナルハンドラ内でさらにシグナルをブロックする処理が含まれるため、ハンドラ実行中のロック解除と再取得のフローを追う際は注意してください。</li>
+<li>**パイプの役割**: 名前付きパイプは「シグナル送信者」と「受信者」の同期を保証するために使用されており、単なる通知以上の役割（送信側への完了通知）を担っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pg_usleep.html" target="wiki-view"><code>pg_usleep</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pgwin32_signal_initialize.html" target="wiki-view"><code>pgwin32_signal_initialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pgwin32_dispatch_queued_signals.html" target="wiki-view"><code>pgwin32_dispatch_queued_signals</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pqsigprocmask.html" target="wiki-view"><code>pqsigprocmask</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pqsigaction.html" target="wiki-view"><code>pqsigaction</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pgwin32_create_signal_listener.html" target="wiki-view"><code>pgwin32_create_signal_listener</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pg_queue_signal.html" target="wiki-view"><code>pg_queue_signal</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pg_signal_thread.html" target="wiki-view"><code>pg_signal_thread</code></a></li>
+<li><a href="../../../../symbols/src__backend__port__win32__signal_c__pg_console_handler.html" target="wiki-view"><code>pg_console_handler</code></a></li>
+</ul></body></html>

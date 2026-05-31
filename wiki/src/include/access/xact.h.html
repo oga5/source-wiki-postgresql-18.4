@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/access/xact.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/access/xact.h</h1>
+<h2>概要</h2>
+<p><code>src/include/access/xact.h</code> は、PostgreSQL のトランザクション管理システムにおける中核的な定義ファイルです。トランザクションの状態遷移、分離レベル、WAL（Write-Ahead Logging）へのコミット/アボート記録の構造、およびトランザクション制御のための公開 API を定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは、<code>src/backend/access/transam/xact.c</code> と対をなし、バックエンドプロセス全体で共有されるトランザクション状態のインターフェースを提供します。トランザクションの開始・終了、サブトランザクション、セーブポイント、および 2 フェーズコミット（2PC）の制御を抽象化し、実行エンジンやコマンド処理層に対して一貫したトランザクションセマンティクスを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**トランザクション状態管理**: トランザクションの分離レベル、読み取り専用フラグ、および実行状態の保持。</li>
+<li>**WAL レコード定義**: コミット、アボート、準備（Prepare）時の WAL 物理レイアウトの定義。</li>
+<li>**イベント通知**: トランザクションのライフサイクル（コミット/アボート）にフックするためのコールバック機構の提供。</li>
+<li>**並列処理制御**: 並列クエリ実行時のトランザクション状態の同期と伝播。</li>
+<li>**フラグ管理**: トランザクション単位での一時オブジェクトアクセスやロック状態の追跡。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>トランザクション状態と分離レベル</h3>
+<ul>
+<li><code>XactIsoLevel</code>: 現在のトランザクション分離レベル（READ COMMITTED, REPEATABLE READ, SERIALIZABLE）。</li>
+<li><code>IsolationUsesXactSnapshot()</code>: トランザクション全体で単一スナップショットを使用するか判定するマクロ。</li>
+<li><code>MyXactFlags</code>: トランザクションの属性（一時名前空間アクセス、排他ロック取得など）を保持するビットフラグ。</li>
+</ul>
+<h3>WAL レコード構造体</h3>
+<ul>
+<li><code>xl_xact_commit</code>, <code>xl_xact_abort</code>: WAL に書き込まれる基本レコード構造。</li>
+<li><code>xl_xact_parsed_commit</code>, <code>xl_xact_parsed_abort</code>: WAL レコードを解析し、扱いやすくした構造体。</li>
+<li><code>XLOG_XACT_*</code>: WAL レコードタイプを識別するためのオペコード。</li>
+</ul>
+<h3>トランザクション制御 API</h3>
+<ul>
+<li><code>StartTransactionCommand()</code>, <code>CommitTransactionCommand()</code>, <code>AbortCurrentTransaction()</code>: トランザクションの基本ライフサイクル制御。</li>
+<li><code>BeginInternalSubTransaction()</code>, <code>ReleaseCurrentSubTransaction()</code>: サブトランザクション制御。</li>
+<li><code>RegisterXactCallback()</code>, <code>RegisterSubXactCallback()</code>: トランザクションイベントへのフック登録。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**トランザクション開始/終了**: <code>StartTransactionCommand</code> から始まり、<code>xact.c</code> 内の内部状態を更新。終了時には <code>XactLogCommitRecord</code> を経由して WAL を生成し、ディスクへのフラッシュを待機します。</li>
+<li>**WAL 解析**: リカバリ時やレプリケーション時には、<code>xact_redo</code> が WAL レコードを読み込み、<code>ParseCommitRecord</code> 等で解析された構造体を用いてトランザクションの効果を再適用します。</li>
+<li>**フラグ伝播**: <code>MyXactFlags</code> はトランザクションの生存期間中、特定のイベント（一時テーブル作成など）が発生するたびに更新され、コミット時のチェックや制約判定に使用されます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/transam.h</code>: トランザクション ID（XID）の基本定義。</li>
+<li><code>access/xlogreader.h</code>: WAL 解析用インターフェース。</li>
+<li><code>storage/sinval.h</code>: キャッシュ無効化メッセージの定義。</li>
+<li><code>nodes/pg_list.h</code>: リスト構造の利用。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xact.c</code>: 本ヘッダーで定義された関数の実装。</li>
+<li><code>src/backend/access/transam/xactdesc.c</code>: WAL レコードのデバッグ出力および解析ロジック。</li>
+<li><code>src/backend/access/transam/subtrans.c</code>: サブトランザクションの管理。</li>
+<li><code>src/backend/access/transam/twophase.c</code>: 2 フェーズコミットの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリとライフタイム**: <code>xl_xact_parsed_*</code> 構造体は、WAL レコードの解析時に一時的に生成されるものであり、永続的なメモリ管理は呼び出し側に依存します。</li>
+<li>**アライメント**: WAL レコード構造体は、<code>sizeof(int)</code> の倍数でアライメントされるよう設計されています。これはクロスプラットフォームでの WAL 互換性を維持するためです。</li>
+<li>**省略された詳細**: 本ファイルはインターフェース定義に特化しており、具体的なロック獲得ロジックや CLOG（Commit Log）への書き込み詳細は <code>xact.c</code> および <code>clog.c</code> に委譲されています。</li>
+<li>**注意点**: <code>MyXactFlags</code> はグローバル変数ですが、バックエンドプロセスごとに独立したメモリ空間に存在するため、プロセス間での直接的な共有は行われません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__access__xact_h__SyncCommitLevel.html" target="wiki-view"><code>SyncCommitLevel</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__XactEvent.html" target="wiki-view"><code>XactEvent</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__SubXactEvent.html" target="wiki-view"><code>SubXactEvent</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__SubTransactionId.html" target="wiki-view"><code>SubTransactionId</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__SavedTransactionCharacteristics.html" target="wiki-view"><code>SavedTransactionCharacteristics</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_assignment.html" target="wiki-view"><code>xl_xact_assignment</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_xinfo.html" target="wiki-view"><code>xl_xact_xinfo</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_dbinfo.html" target="wiki-view"><code>xl_xact_dbinfo</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_subxacts.html" target="wiki-view"><code>xl_xact_subxacts</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_relfilelocators.html" target="wiki-view"><code>xl_xact_relfilelocators</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_stats_item.html" target="wiki-view"><code>xl_xact_stats_item</code></a></li>
+<li><a href="../../../symbols/src__include__access__xact_h__xl_xact_stats_items.html" target="wiki-view"><code>xl_xact_stats_items</code></a></li>
+</ul></body></html>

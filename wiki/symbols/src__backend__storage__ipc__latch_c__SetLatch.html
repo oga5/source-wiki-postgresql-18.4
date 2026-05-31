@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__latch_c__SetLatch.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SetLatch</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/latch.c:289</code></li>
+</ul>
+<h2>目的</h2>
+<p>ラッチをセットし、そのラッチを待機しているプロセス（自身または他プロセス）を起床させる。シグナルハンドラ内からの呼び出しにも対応する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>void SetLatch(Latch *latch)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>latch</code> (操作対象の <code>Latch</code> 構造体へのポインタ)</li>
+<li>**出力**: なし</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_memory_barrier()</code> により、本関数呼び出し前のメモリ変更が確実にフラッシュされる。</li>
+<li><code>latch-&gt;is_set</code> が既に <code>true</code> の場合、関数は即座に終了する。</li>
+<li><code>latch-&gt;maybe_sleeping</code> が <code>false</code> の場合、通知処理を行わずに終了する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. メモリバリアを適用する。 2. <code>is_set</code> フラグを <code>true</code> に設定する。 3. 再度メモリバリアを適用する。 4. <code>maybe_sleeping</code> フラグを確認し、待機者がいない場合は終了する。 5. OS 依存の通知処理を実行する:</p>
+<ul>
+<li>**非 Windows**: <code>owner_pid</code> を取得し、自身であれば <code>WakeupMyProc()</code> を、他プロセスであれば <code>WakeupOtherProc(owner_pid)</code> を呼び出す。</li>
+<li>**Windows**: <code>latch-&gt;event</code> に格納されたハンドルに対して <code>SetEvent()</code> を実行する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>parallel.c</code>, <code>xlog.c</code>, <code>xlogrecovery.c</code>, <code>async.c</code>, <code>autovacuum.c</code>, <code>checkpointer.c</code>, <code>interrupt.c</code> 等の各モジュールから、プロセス間通知や待機解除のために呼び出される。</li>
+<li>**呼び出し先**: <code>WakeupMyProc()</code>, <code>WakeupOtherProc()</code> (非 Windows)、または <code>SetEvent()</code> (Windows)。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Latch</code>: ラッチの状態（<code>is_set</code>, <code>maybe_sleeping</code>, <code>owner_pid</code> または <code>event</code>）を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**競合**: <code>owner_pid</code> の取得はアトミックではない可能性があるが、実用上は <code>pid_t</code> が 32bit 整数に収まるため許容される。</li>
+<li>**誤通知**: 稀に誤ったプロセスにシグナルが送られる可能性があるが、PostgreSQL のプロセスは不要な <code>SIGUSR1</code> を無視する設計のため問題とならない。</li>
+<li>**Windows**: <code>SetEvent()</code> のエラーはシグナルハンドラ等のクリティカルパスを考慮し、意図的に無視される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>WaitLatch</code>/<code>ResetLatch</code> との組み合わせにおいて、待機側はループの最後で待機するコーディングパターンに従う必要がある。これにより、ループ開始前に発生した <code>SetLatch</code> を見逃す競合を防ぐ。</li>
+<li>シグナルハンドラから呼び出される可能性があるため、内部で <code>errno</code> を破壊しないよう注意が必要である。</li>
+</ul></body></html>

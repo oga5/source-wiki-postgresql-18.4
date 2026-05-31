@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/tcl/pltcl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/tcl/pltcl.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の手続き型言語（PL）として Tcl を統合するための中心的な実装ファイルです。SQL 関数、トリガー、およびイベントトリガーの実行ハンドラを提供し、PostgreSQL の SPI（Server Programming Interface）と Tcl インタプリタ間のブリッジとして機能します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/pl/tcl</code> モジュールの核であり、Tcl インタプリタのライフサイクル管理、SQL 呼び出しのディスパッチ、およびデータ型の相互変換を担います。PostgreSQL のバックエンドプロセス内で Tcl を安全かつ効率的に実行するための環境構築を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**インタプリタ管理**: ユーザーごとの Tcl インタプリタの生成・キャッシュ。</li>
+<li>**関数コンパイル**: SQL 関数を Tcl プロシージャへ変換し、ハッシュテーブルで管理。</li>
+<li>**SPI 統合**: Tcl スクリプトから SQL を実行するためのコマンド（<code>spi_exec</code>, <code>spi_prepare</code> 等）の提供。</li>
+<li>**データ変換**: PostgreSQL のタプル・データ型と Tcl オブジェクト間の変換（UTF-8 エンコーディングの考慮を含む）。</li>
+<li>**エラーハンドリング**: Tcl のエラーを PostgreSQL の <code>ereport</code> へ変換し、SQLSTATE を伝播。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インタプリタとキャッシュ管理</h3>
+<ul>
+<li><code>pltcl_interp_desc</code>: ユーザーごとの Tcl インタプリタ状態とクエリキャッシュを保持する構造体。</li>
+<li><code>pltcl_proc_desc</code>: コンパイル済み関数のキャッシュ情報。メモリコンテキスト管理と参照カウントを含む。</li>
+<li><code>pltcl_proc_htab</code>: 関数 OID とユーザー ID をキーとする関数キャッシュハッシュテーブル。</li>
+</ul>
+<h3>実行ハンドラ</h3>
+<ul>
+<li><code>pltcl_call_handler</code>: SQL 関数呼び出しのエントリポイント。</li>
+<li><code>pltclu_call_handler</code>: 非信頼（Untrusted）Tcl 関数用のエントリポイント。</li>
+<li><code>pltcl_func_handler</code>, <code>pltcl_trigger_handler</code>: それぞれ関数とトリガーの実行ロジック。</li>
+</ul>
+<h3>SPI 統合コマンド</h3>
+<ul>
+<li><code>pltcl_SPI_execute</code>, <code>pltcl_SPI_prepare</code>: Tcl から SQL を実行・準備するためのコマンド実装。</li>
+<li><code>pltcl_elog</code>: Tcl から PostgreSQL の <code>elog</code>/<code>ereport</code> を呼び出すためのコマンド。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>TclExceptionNameMap</code></li>
+<li><code>Tcl_Size</code></li>
+<li><code>options</code></li>
+<li><code>pltcl_call_state</code></li>
+<li><code>pltcl_get_condition_name</code></li>
+<li><code>pltcl_init_interp</code></li>
+<li><code>pltcl_init_tuple_store</code></li>
+<li><code>pltcl_interp_desc</code></li>
+<li><code>pltcl_proc_desc</code></li>
+<li><code>pltcl_proc_key</code></li>
+<li><code>pltcl_proc_ptr</code></li>
+<li><code>pltcl_query_desc</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> で Tcl の Notifier サブシステムをオーバーライドし、PostgreSQL のバックエンドと競合しないように設定。 2. **呼び出し**: <code>pltcl_call_handler</code> が呼び出されると、<code>pltcl_fetch_interp</code> で現在のユーザーに対応するインタプリタを取得。 3. **コンパイル**: <code>compile_pltcl_function</code> が関数定義を検索し、未キャッシュであれば Tcl プロシージャとして定義。 4. **実行**: <code>Tcl_EvalObjEx</code> で Tcl コードを実行。SPI 経由の SQL 実行時は <code>pltcl_subtrans_begin/commit/abort</code> を使用してサブトランザクションを管理。 5. **変換**: <code>pltcl_build_tuple_argument</code> / <code>pltcl_build_tuple_result</code> を介して、PostgreSQL のタプルと Tcl のリスト形式間でデータを変換。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**PostgreSQL コア**: <code>postgres.h</code>, <code>fmgr.h</code>, <code>executor/spi.h</code>, <code>utils/memutils.h</code> 等。</li>
+<li>**Tcl ライブラリ**: <code>tcl.h</code>。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>pltclerrcodes.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pltclerrcodes.h</code>: SQLSTATE と Tcl エラーラベルのマップ定義。</li>
+<li><code>src/pl/tcl/</code>: 他の補助的なファイル（もし存在する場合）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>pltcl_proc_desc</code> は <code>fn_cxt</code>（メモリコンテキスト）で管理され、参照カウントが 0 になった時点で解放されます。</li>
+<li>**UTF-8 変換**: <code>UTF_BEGIN</code>/<code>UTF_END</code> マクロは、PostgreSQL の内部エンコーディングと Tcl の UTF-8 間での変換時に発生する一時的なメモリリークを防ぐためのラッパーです。</li>
+<li>**サブトランザクション**: SPI 操作は常にサブトランザクション内で実行され、エラー発生時に PostgreSQL のトランザクション状態を保護します。</li>
+<li>**制限事項**: Tcl の Notifier サブシステムを無効化しているため、Tcl のイベントループ機能は PostgreSQL 内では使用できません。</li>
+<li>**未実装/浅い部分**: <code>pltcl_SPI_prepare</code> で作成されたプランは、関数が再コンパイルされる際にメモリリークする可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__Tcl_Size.html" target="wiki-view"><code>Tcl_Size</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_interp_desc.html" target="wiki-view"><code>pltcl_interp_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_proc_desc.html" target="wiki-view"><code>pltcl_proc_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_query_desc.html" target="wiki-view"><code>pltcl_query_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_proc_key.html" target="wiki-view"><code>pltcl_proc_key</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_proc_ptr.html" target="wiki-view"><code>pltcl_proc_ptr</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_call_state.html" target="wiki-view"><code>pltcl_call_state</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__TclExceptionNameMap.html" target="wiki-view"><code>TclExceptionNameMap</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_init_interp.html" target="wiki-view"><code>pltcl_init_interp</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_get_condition_name.html" target="wiki-view"><code>pltcl_get_condition_name</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__options.html" target="wiki-view"><code>options</code></a></li>
+<li><a href="../../../symbols/src__pl__tcl__pltcl_c__pltcl_init_tuple_store.html" target="wiki-view"><code>pltcl_init_tuple_store</code></a></li>
+</ul></body></html>

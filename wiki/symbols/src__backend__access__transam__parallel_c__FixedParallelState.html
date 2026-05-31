@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__parallel_c__FixedParallelState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>FixedParallelState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/transam/parallel.c:82</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、リーダープロセスからワーカープロセスへ継承すべき固定サイズの共有状態を保持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct FixedParallelState
+{
+    Oid            database_id;
+    Oid            authenticated_user_id;
+    Oid            session_user_id;
+    Oid            outer_user_id;
+    Oid            current_user_id;
+    Oid            temp_namespace_id;
+    Oid            temp_toast_namespace_id;
+    int            sec_context;
+    bool           session_user_is_superuser;
+    bool           role_is_superuser;
+    PGPROC        *parallel_leader_pgproc;
+    pid_t          parallel_leader_pid;
+    ProcNumber     parallel_leader_proc_number;
+    TimestampTz    xact_ts;
+    TimestampTz    stmt_ts;
+    SerializableXactHandle serializable_xact_handle;
+    slock_t        mutex;
+    XLogRecPtr     last_xlog_end;
+} FixedParallelState;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: リーダープロセスが <code>InitializeParallelDSM</code> 内で本構造体を共有メモリ上に確保し、値を設定する。</li>
+<li>**出力**: ワーカープロセスが起動時に共有メモリから本構造体を読み取り、自身の実行環境をリーダーと同期させる。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mutex</code> フィールドは、構造体内の他のフィールド（特に <code>last_xlog_end</code>）へのアクセスを保護するために使用される。</li>
+<li>ワーカーは、リーダーから継承したこれらの状態を自身のメモリ空間に復元する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: リーダーが <code>shm_toc_allocate</code> を用いて共有メモリ上に領域を確保し、現在のトランザクションやセッション情報を書き込む。 2. **同期**: ワーカーは起動後、共有メモリ上の本構造体を参照し、自身のセッション状態をリーダーと一致させる。 3. **更新**: ワーカーは実行中に <code>last_xlog_end</code> を更新する場合があり、その際は <code>mutex</code> による排他制御が行われる。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/parallel.c</code> 内の <code>InitializeParallelDSM</code>（初期化時）および各並列処理関数。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、関数を呼び出すものではない。</li>
+<li>**注記**: <code>MyFixedParallelState</code> という静的変数を通じて、バックエンドローカルなコピーが保持される場合がある。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行のライフサイクルを管理する構造体。</li>
+<li><code>PGPROC</code>: リーダープロセスの識別に使用。</li>
+<li><code>SerializableXactHandle</code>: 直列化可能トランザクションのハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリの確保に失敗した場合、並列クエリの初期化自体が失敗する。</li>
+<li><code>mutex</code> の競合により、ワーカーが <code>last_xlog_end</code> を更新する際に待機が発生する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は、ワーカーがリーダーの環境を再現するために不可欠な情報を網羅している。新しいセッション属性やトランザクション状態を並列化対象に追加する場合は、本構造体へのフィールド追加と、<code>InitializeParallelDSM</code> でのシリアライズ処理の更新が必要となる。</li>
+</ul></body></html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/relcache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/relcache.c</h1>
+<h2>概要</h2>
+<p><code>relcache.c</code> は、PostgreSQL のリレーション記述子（<code>Relation</code> 構造体）をメモリ上にキャッシュする「リレーションキャッシュ（Relcache）」の核心部分です。システムカタログ（<code>pg_class</code>, <code>pg_attribute</code> 等）へのアクセスを最小化し、クエリ実行時のオーバーヘッドを削減します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールにおいて、物理的なテーブルやインデックスのメタデータを管理する最上位のキャッシュ層です。<code>catcache.c</code>（低レベルなタプルキャッシュ）を利用してリレーション記述子を構築し、<code>inval.c</code> を通じてキャッシュの整合性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**リレーション記述子の管理**: <code>Relation</code> 構造体の生成、ハッシュテーブルによる検索、参照カウントによるライフサイクル管理。</li>
+<li>**遅延構築**: 必要になった時点でシステムカタログをスキャンし、リレーション記述子を構築する（遅延初期化）。</li>
+<li>**整合性維持**: <code>inval.c</code> と連携し、DDL 等によるカタログ更新時にキャッシュを無効化・再構築する。</li>
+<li>**起動高速化**: <code>pg_internal.init</code> ファイルを用いた、バックエンド起動時のキャッシュ構築の高速化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><code>RelationIdCache</code>: リレーションOIDをキーとするハッシュテーブル。</li>
+<li><code>RelationIdGetRelation()</code>: キャッシュからリレーションを取得する公開API。</li>
+<li><code>RelationClose()</code>: 参照カウントを減らし、必要に応じてクリーンアップを行う。</li>
+</ul>
+<h3>構築・再構築</h3>
+<ul>
+<li><code>RelationBuildDesc()</code>: システムカタログからリレーション記述子を構築する中心関数。</li>
+<li><code>RelationRebuildRelation()</code>: 既存の記述子をカタログの最新情報で再構築する。</li>
+<li><code>RelationBuildLocalRelation()</code>: 新規作成中のリレーションに対する記述子を生成する。</li>
+</ul>
+<h3>ライフサイクル・整合性</h3>
+<ul>
+<li><code>RelationCacheInvalidate()</code>: キャッシュ全体を再構築・フラッシュする（SIメッセージ溢れ時など）。</li>
+<li><code>AtEOXact_RelationCache()</code>: トランザクション終了時のクリーンアップ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AllocateRelationDesc</code></li>
+<li><code>InProgressEnt</code></li>
+<li><code>IndexSupportInitialize</code></li>
+<li><code>InitIndexAmRoutine</code></li>
+<li><code>OpClassCacheEnt</code></li>
+<li><code>RelIdCacheEnt</code></li>
+<li><code>RelationCacheInitFilePostInvalidate</code></li>
+<li><code>RelationCacheInitFilePreInvalidate</code></li>
+<li><code>RelationCacheInitFileRemove</code></li>
+<li><code>RelationCacheInitFileRemoveInDir</code></li>
+<li><code>RelationInitIndexAccessInfo</code></li>
+<li><code>RelationInitPhysicalAddr</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>RelationIdGetRelation</code> がハッシュテーブルを検索。ヒットすれば参照カウントをインクリメントして返す。 2. **構築**: ミス時は <code>RelationBuildDesc</code> を呼び出す。</p>
+<ul>
+<li><code>ScanPgRelation</code> で <code>pg_class</code> を取得。</li>
+<li><code>RelationBuildTupleDesc</code> で <code>pg_attribute</code> 等から属性情報を構築。</li>
+<li><code>RelationBuildRuleLock</code> 等でルールやトリガー情報を付与。</li>
+<p>3. **無効化**: <code>RelationCacheInvalidateEntry</code> が呼ばれると、<code>RelationFlushRelation</code> を経由して <code>rd_isvalid</code> を偽にし、次回アクセス時に再構築を強制する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>pg_class</code>, <code>pg_attribute</code>, <code>pg_index</code>, <code>pg_rewrite</code> 等のシステムカタログ定義。</li>
+<li>**ストレージ**: <code>storage/lmgr.h</code> (ロック管理), <code>storage/smgr.h</code> (物理ファイル管理)。</li>
+<li>**インフラ**: <code>utils/catcache.h</code> (カタログキャッシュ), <code>utils/inval.h</code> (無効化管理), <code>utils/memutils.h</code> (メモリコンテキスト)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/tupdesc_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/partition.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_amproc.h</code></li>
+<li><code>catalog/pg_attrdef.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_publication.h</code></li>
+<li><code>catalog/pg_rewrite.h</code></li>
+<li><code>catalog/pg_shseclabel.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/schemapg.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteDefine.h</code></li>
+<li><code>rewrite/rowsecurity.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/resowner.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/relcache.h</code>: 公開ヘッダー。</li>
+<li><code>src/backend/utils/cache/inval.c</code>: キャッシュ無効化メッセージの処理。</li>
+<li><code>src/backend/utils/cache/catcache.c</code>: 低レベルなカタログタプルキャッシュ。</li>
+<li><code>src/backend/utils/cache/relmapper.c</code>: 物理ファイル番号のマップ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>Relation</code> 構造体およびそのサブ構造体は <code>CacheMemoryContext</code> に配置されます。<code>RelationDestroyRelation</code> はこれらを適切に解放しますが、一部の構造体は <code>EOXactTupleDescArray</code> を介してトランザクション終了まで保持される場合があります。</li>
+<li>**再構築の安全性**: <code>RelationRebuildRelation</code> は、既存の <code>Relation</code> ポインタを維持したまま中身を入れ替えるため、ポインタを保持している呼び出し元を壊さないよう設計されています。</li>
+<li>**初期化の複雑さ**: ブートストラップ時や初期起動時の「鶏と卵」問題（カタログを読むためにキャッシュが必要だが、キャッシュを作るためにカタログが必要）を解決するため、<code>formrdesc</code> や <code>load_critical_index</code> といった特殊な初期化パスが存在します。</li>
+<li>**未実装・浅い部分**: <code>RelationBuildRuleLock</code> 等の複雑なノード構造の構築は、必要になるまで遅延されます。また、<code>debug_discard_caches</code> が有効な場合、キャッシュの生存期間が極端に短くなるため、デバッグ時には注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelIdCacheEnt.html" target="wiki-view"><code>RelIdCacheEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__InProgressEnt.html" target="wiki-view"><code>InProgressEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__OpClassCacheEnt.html" target="wiki-view"><code>OpClassCacheEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__AllocateRelationDesc.html" target="wiki-view"><code>AllocateRelationDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationInitPhysicalAddr.html" target="wiki-view"><code>RelationInitPhysicalAddr</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__InitIndexAmRoutine.html" target="wiki-view"><code>InitIndexAmRoutine</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationInitIndexAccessInfo.html" target="wiki-view"><code>RelationInitIndexAccessInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__IndexSupportInitialize.html" target="wiki-view"><code>IndexSupportInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationCacheInitFilePreInvalidate.html" target="wiki-view"><code>RelationCacheInitFilePreInvalidate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationCacheInitFilePostInvalidate.html" target="wiki-view"><code>RelationCacheInitFilePostInvalidate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationCacheInitFileRemove.html" target="wiki-view"><code>RelationCacheInitFileRemove</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__relcache_c__RelationCacheInitFileRemoveInDir.html" target="wiki-view"><code>RelationCacheInitFileRemoveInDir</code></a></li>
+</ul></body></html>

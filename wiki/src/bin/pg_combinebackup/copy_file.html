@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_combinebackup/copy_file.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_combinebackup/copy_file.c</h1>
+<h2>概要</h2>
+<p><code>copy_file.c</code> は、<code>pg_combinebackup</code> においてバックアップファイルをコピーするための抽象化レイヤーを提供します。プラットフォーム固有の最適化されたコピー手法（クローン、ハードリンク、<code>copy_file_range</code> 等）を統一的なインターフェースで利用可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_combinebackup</code> のバックアップ再構築プロセスにおいて、物理的なファイル転送を担当します。他のモジュールが「どのファイルをどうコピーするか」を決定した後、このモジュールが実際の I/O を実行し、必要に応じてチェックサム計算を並行して行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**戦略的コピー**: <code>CopyMethod</code> に基づき、最適なシステムコールを選択して実行する。</li>
+<li>**チェックサム計算**: コピー中、またはコピー後にファイル内容の整合性を検証する。</li>
+<li>**ドライラン対応**: 実際のコピーを行わずに、ファイルアクセス権限の確認やログ出力のみを行うモードの提供。</li>
+<li>**エラーハンドリング**: I/O エラー発生時の致命的な例外処理とログ出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>copy_file()</code>: 本モジュールのメインエントリーポイント。</li>
+<li><code>CopyMethod</code>: コピー手法を定義する列挙型（<code>CLONE</code>, <code>COPY</code>, <code>LINK</code> 等）。</li>
+<li><code>checksum_file()</code>: コピー手法がチェックサムを自動計算しない場合に呼び出される補助関数。</li>
+<li><code>copy_file_blocks()</code>: 最も基本的なブロック単位の読み書きによるコピー実装。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>checksum_file</code></li>
+<li><code>copy_file</code></li>
+<li><code>copy_file_blocks</code></li>
+<li><code>copy_file_by_range</code></li>
+<li><code>copy_file_clone</code></li>
+<li><code>copy_file_copyfile</code></li>
+<li><code>copy_file_link</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>copy_file()</code> が呼び出され、<code>dry_run</code> モードであればファイル存在確認のみを行う。 2. **戦略決定**: <code>copy_method</code> に応じて、適切な実装関数（<code>copy_file_clone</code> 等）を関数ポインタに割り当てる。 3. **実行**: 選択された関数がソースからデスティネーションへデータを転送する。 4. **検証**:</p>
+<ul>
+<li><code>copy_file_blocks</code> は転送と同時にチェックサムを更新する。</li>
+<li>その他の手法（<code>clone</code>, <code>link</code> 等）は、転送完了後に <code>checksum_file()</code> を呼び出して検証を行う。</li>
+<p>5. **終了**: 成功またはエラー発生時にログを出力し、ファイルディスクリプタを閉じる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通定義。</li>
+<li><code>common/file_perm.h</code>: ファイル作成時のパーミッション管理。</li>
+<li><code>common/logging.h</code>: ログ出力用インターフェース。</li>
+<li><code>copy_file.h</code>: 公開インターフェース定義。</li>
+<li>システムヘッダー: <code>&lt;fcntl.h&gt;</code>, <code>&lt;unistd.h&gt;</code>, <code>&lt;sys/stat.h&gt;</code> 等の標準 I/O 関連。</li>
+<li><code>copyfile.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>linux/fs.h</code></li>
+<li><code>sys/ioctl.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_combinebackup/copy_file.h</code>: <code>CopyMethod</code> 列挙型の定義。</li>
+<li><code>src/common/checksum_helper.c</code>: チェックサム計算の具体的な実装。</li>
+<li><code>src/bin/pg_combinebackup/pg_combinebackup.c</code>: このモジュールを呼び出し、コピー戦略を決定するメインロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**プラットフォーム依存性**: <code>copy_file_clone</code> や <code>copy_file_by_range</code> は、OS が対応していない場合に <code>pg_fatal</code> を発生させます。利用環境のカーネルサポート状況に注意してください。</li>
+<li>**チェックサムの挙動**: <code>copy_file_blocks</code> は転送と計算を同時に行いますが、他の手法はコピー後に別途読み込みが発生するため、パフォーマンス特性が異なります。</li>
+<li>**ドライラン**: <code>dry_run</code> モードは単なるシミュレーションではなく、ソースファイルのオープンが可能かどうかのチェックを含みます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file.html" target="wiki-view"><code>copy_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__checksum_file.html" target="wiki-view"><code>checksum_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_blocks.html" target="wiki-view"><code>copy_file_blocks</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_clone.html" target="wiki-view"><code>copy_file_clone</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_by_range.html" target="wiki-view"><code>copy_file_by_range</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_copyfile.html" target="wiki-view"><code>copy_file_copyfile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_link.html" target="wiki-view"><code>copy_file_link</code></a></li>
+</ul></body></html>

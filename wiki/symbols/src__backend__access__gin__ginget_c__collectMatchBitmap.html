@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginget_c__collectMatchBitmap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>collectMatchBitmap</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginget.c:120</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスの特定の検索エントリに対し、合致するTID（タプル識別子）をビットマップ形式で収集する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool collectMatchBitmap(GinBtreeData *btree, GinBtreeStack *stack, GinScanEntry scanEntry, Snapshot snapshot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>btree</code>: GIN B-treeの走査状態。</li>
+<li><code>stack</code>: 現在のインデックスページ位置を保持するスタック。</li>
+<li><code>scanEntry</code>: 検索対象のエントリ情報。</li>
+<li><code>snapshot</code>: 述語ロック用のスナップショット。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 処理が正常に完了した場合は <code>true</code>。インデックス構造の変更により再走査が必要な場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>stack-&gt;buffer</code> は呼び出し時点でロックされている必要がある。</li>
+<li><code>scanEntry-&gt;matchBitmap</code> は本関数内で <code>tbm_create</code> により初期化される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>tbm_create</code> でビットマップを初期化。 2. <code>PredicateLockPage</code> で対象のリーフページをロック。 3. <code>moveRightIfItNeeded</code> を用いて、対象の属性番号に合致するインデックスエントリを走査。 4. 部分一致検索（<code>isPartialMatch</code>）の場合、<code>comparePartialFn</code> を用いて一致判定を行い、条件に応じて走査を終了または継続。 5. <code>GIN_SEARCH_MODE_ALL</code> モードの場合、NULLアイテムに到達した時点で走査を終了。 6. エントリが <code>PostingTree</code> を指す場合:</p>
+<ul>
+<li>デッドロック回避のため、一時的にバッファのロックを解除。</li>
+<li><code>scanPostingTree</code> を呼び出し、TIDをビットマップに収集。</li>
+<li>再度バッファをロックし、インデックス構造の変更がないか確認。変更がある場合は <code>false</code> を返して再走査を促す。</li>
+<p>7. エントリが <code>PostingList</code> の場合、後続の処理（ソース抜粋外）へ移行。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginget.c</code> 内の走査ロジックから呼び出される。</li>
+<li>**呼び出し先**: <code>tbm_create</code>, <code>PredicateLockPage</code>, <code>moveRightIfItNeeded</code>, <code>BufferGetPage</code>, <code>PageGetItem</code>, <code>gintuple_get_attrnum</code>, <code>gintuple_get_key</code>, <code>FunctionCall4Coll</code>, <code>GinIsPostingTree</code>, <code>GinGetPostingTree</code>, <code>datumCopy</code>, <code>LockBuffer</code>, <code>scanPostingTree</code>, <code>ereport</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GinBtreeData</code>: GINインデックスの走査状態を保持。</li>
+<li><code>GinBtreeStack</code>: インデックス走査中のページ位置スタック。</li>
+<li><code>GinScanEntry</code>: 検索キーごとの状態管理構造体。</li>
+<li><code>TIDBitmap</code>: 収集されたTIDを保持するビットマップ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**再走査**: Posting Treeの走査中にインデックス構造が変更された場合、<code>false</code> を返して呼び出し元に再試行を要求する。</li>
+<li>**エラー**: インデックス内でタプルを再発見できない場合、<code>ereport(ERROR, ...)</code> により処理を中断する。</li>
+<li>**部分一致**: 検索キーがNULLの場合、または部分一致条件で不一致と判定された場合は即座に終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>Posting Tree走査中のロック解除はデッドロック回避に不可欠である。</li>
+<li><code>idatum</code> のコピーと解放（<code>datumCopy</code>/<code>pfree</code>）は、メモリ管理の観点から <code>attbyval</code> フラグに依存している点に注意すること。</li>
+</ul></body></html>

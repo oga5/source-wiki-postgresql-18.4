@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/aset.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/aset.c</h1>
+<h2>概要</h2>
+<p><code>aset.c</code> は、PostgreSQL のメモリ管理システムにおける標準的なメモリコンテキスト実装である <code>AllocSet</code> を提供します。小規模なメモリ割り当てを効率的に管理するため、複数のチャンクを大きなブロックに集約し、解放時には即座に <code>free()</code> せず、再利用可能なフリーリストへ保持する戦略をとります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/mmgr</code> モジュールにおける「汎用的なメモリコンテキスト」の役割を担います。<code>mcxt.c</code> が定義する抽象的な <code>MemoryContext</code> インターフェースを具現化し、クエリ実行中やトランザクション中の頻繁なメモリ確保・解放を高速化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ブロック管理**: <code>malloc()</code> で確保した大きなメモリブロックを管理し、その内部を小さなチャンクに分割して提供する。</li>
+<li>**フリーリスト管理**: 解放されたチャンクをサイズ別のフリーリストに繋ぎ、次回の <code>palloc()</code> で再利用する。</li>
+<li>**大規模割り当ての分離**: <code>ALLOC_CHUNK_LIMIT</code> を超える巨大な要求に対しては、専用のブロックを割り当て、解放時に即座に <code>free()</code> する。</li>
+<li>**コンテキストの再利用**: コンテキスト削除時に、メモリを完全に解放せずフリーリストに保持することで、コンテキストの生成・破棄コストを削減する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>AllocSetContext</code>: <code>MemoryContext</code> を継承した主要な構造体。ブロックリストとフリーリストを保持する。</li>
+<li><code>AllocBlockData</code>: <code>malloc</code> されたメモリブロックのヘッダー。</li>
+<li><code>AllocSetAlloc</code>: メモリ確保のメイン関数。</li>
+<li><code>AllocSetFree</code>: メモリ解放のメイン関数。</li>
+<li><code>AllocSetReset</code>: コンテキスト内の全チャンクを解放し、初期状態に戻す。</li>
+<li><code>context_freelists</code>: コンテキスト自体を再利用するためのグローバルなリスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AllocBlock</code></li>
+<li><code>AllocFreeListLink</code></li>
+<li><code>AllocPointer</code></li>
+<li><code>AllocSet</code></li>
+<li><code>AllocSetDelete</code></li>
+<li><code>AllocSetFreeIndex</code></li>
+<li><code>AllocSetFreeList</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **確保 (<code>AllocSetAlloc</code>)**:</p>
+<ul>
+<li>要求サイズが <code>allocChunkLimit</code> 以下ならフリーリストを検索。見つかればそれを返し、なければ現在のブロックの空き領域から切り出す。</li>
+<li>空き領域が不足していれば、新しいブロックを <code>malloc</code> し、現在のブロックの残りをフリーリストに回収してから新しいブロックを使用する。</li>
+<p>2. **解放 (<code>AllocSetFree</code>)**:</p>
+<li>チャンクが「外部管理（巨大）」であれば即座に <code>free()</code>。</li>
+<li>通常のチャンクであれば、サイズに応じたフリーリストの先頭に繋ぐ。</li>
+<p>3. **リセット (<code>AllocSetReset</code>)**:</p>
+<li>「キーパーブロック（コンテキストヘッダーと共有）」以外の全ブロックを <code>free()</code> し、フリーリストをクリアする。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>utils/memutils.h</code>, <code>utils/memutils_internal.h</code>: メモリコンテキストのインターフェースと内部構造。</li>
+<li><code>utils/memutils_memorychunk.h</code>: チャンクヘッダーの操作。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作による高速なサイズ計算。</li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの基盤実装。<code>AllocSet</code> のライフサイクル管理の呼び出し元。</li>
+<li><code>src/backend/utils/mmgr/memdebug.c</code>: <code>MEMORY_CONTEXT_CHECKING</code> が有効な場合のデバッグ機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: この実装は「断片化の抑制」と「割り当て速度」のバランスを重視しています。特に <code>AllocSetFreeIndex</code> はホットスポットであるため、ビットスキャン命令を活用した最適化が行われています。</li>
+<li>**Valgrind**: メモリのアクセス権限（<code>NOACCESS</code> / <code>UNDEFINED</code>）を細かく制御しており、メモリ破壊を早期に検出できるよう設計されています。</li>
+<li>**注意**: <code>AllocSet</code> は <code>pfree()</code> 時に即座に OS へメモリを返さないため、長期間生存するコンテキストで大量のメモリを確保・解放し続けると、メモリ使用量が高止まりする可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocBlock.html" target="wiki-view"><code>AllocBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocPointer.html" target="wiki-view"><code>AllocPointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocFreeListLink.html" target="wiki-view"><code>AllocFreeListLink</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetContext.html" target="wiki-view"><code>AllocSetContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSet.html" target="wiki-view"><code>AllocSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocBlockData.html" target="wiki-view"><code>AllocBlockData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetFreeList.html" target="wiki-view"><code>AllocSetFreeList</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetFreeIndex.html" target="wiki-view"><code>AllocSetFreeIndex</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetReset.html" target="wiki-view"><code>AllocSetReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetDelete.html" target="wiki-view"><code>AllocSetDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetAlloc.html" target="wiki-view"><code>AllocSetAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__aset_c__AllocSetFree.html" target="wiki-view"><code>AllocSetFree</code></a></li>
+</ul></body></html>

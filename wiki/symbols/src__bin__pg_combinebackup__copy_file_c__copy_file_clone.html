@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_combinebackup__copy_file_c__copy_file_clone.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>copy_file_clone</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_combinebackup/copy_file.c:226</code></li>
+</ul>
+<h2>目的</h2>
+<p>OSのファイルクローン機能（Copy-on-Write）を利用して、ソースファイルをデスティネーションへ効率的に複製し、必要に応じてチェックサムを計算する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void copy_file_clone(const char *src, const char *dest, pg_checksum_context *checksum_ctx);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>src</code>: コピー元ファイルのパス（入力）。</li>
+<li><code>dest</code>: コピー先ファイルのパス（入力）。</li>
+<li><code>checksum_ctx</code>: チェックサム計算用のコンテキスト（入力）。</li>
+<li>戻り値: なし（成功時）。失敗時は <code>pg_fatal</code> によりプロセスを終了する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>プラットフォームが <code>HAVE_COPYFILE</code> (macOS等) または Linux の <code>FICLONE</code> ioctl をサポートしている必要がある。</li>
+<li><code>dest</code> ファイルは存在しない状態であること（<code>O_EXCL</code> フラグによる排他作成）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **プラットフォーム固有のクローン実行**:</p>
+<ul>
+<li><code>HAVE_COPYFILE</code> が定義されている場合: <code>copyfile(src, dest, NULL, COPYFILE_CLONE_FORCE)</code> を実行。</li>
+<li>Linux の場合: <code>src</code> を読み取り専用、<code>dest</code> を書き込み・作成・排他モードで開き、<code>ioctl(dest_fd, FICLONE, src_fd)</code> を実行。</li>
+<p>3. **チェックサム計算**: クローン完了後、<code>checksum_file(src, checksum_ctx)</code> を呼び出し、ソースファイルの内容に基づいたチェックサムを更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_combinebackup/copy_file.c</code> 内の <code>copy_file</code> 関数（戦略選択時に <code>strategy_implementation</code> へ代入される）。</li>
+<li>**呼び出し先**: <code>checksum_file</code>（チェックサム計算用）、およびOSシステムコール（<code>open</code>, <code>ioctl</code>, <code>close</code>, <code>unlink</code>）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_checksum_context</code>: チェックサム計算の状態を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**プラットフォーム非対応**: サポートされていない環境では <code>pg_fatal</code> を発生させる。</li>
+<li>**I/O エラー**: ファイルのオープン、クローン操作、またはクローズに失敗した場合、エラーメッセージと共に <code>pg_fatal</code> で終了する。</li>
+<li>**排他制御**: <code>dest</code> ファイルが既に存在する場合、<code>O_EXCL</code> によりオープンが失敗し、エラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はコピー後に別途 <code>checksum_file</code> を呼び出すため、ブロック単位のコピー（<code>copy_file_blocks</code>）とは異なり、コピー完了後に再度ソースファイルを読み込む必要がある。</li>
+<li>Linux環境での <code>ioctl</code> 失敗時には、不完全なファイルが残らないよう <code>unlink</code> を確実に行うこと。</li>
+</ul></body></html>

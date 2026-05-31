@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/sort/tuplesortvariants.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/sort/tuplesortvariants.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのソートサブシステムにおける「データ型ごとの具体的な処理」を実装するモジュールです。<code>tuplesort.c</code> が提供する汎用的なソートエンジン（メモリ内ソートおよび外部マージソート）に対し、ヒープタプル、インデックス、Datumといった各データ型に固有の比較、シリアライズ（書き込み）、デシリアライズ（読み込み）ロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>tuplesort.c</code> がソートのライフサイクル（初期化、投入、実行、取得）を制御するのに対し、本ファイルは <code>Tuplesortstate</code> 構造体の関数ポインタ（<code>comparetup</code>, <code>writetup</code>, <code>readtup</code> 等）を埋めるための具体的な実装を提供します。これにより、ソートエンジン本体をデータ型から分離し、拡張性を確保しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ型固有の比較**: 各データ型の構造に応じた比較関数の提供（<code>comparetup_xxx</code>）。</li>
+<li>**I/O 抽象化**: 一時ファイル（<code>LogicalTape</code>）へのタプルのシリアライズおよび復元（<code>writetup_xxx</code>, <code>readtup_xxx</code>）。</li>
+<li>**最適化の適用**: 略称キー（Abbreviated Keys）の計算や、ソートキーの準備。</li>
+<li>**リソース管理**: 特定のソートバリアントで必要な実行状態（<code>EState</code> 等）の初期化と解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>初期化関数（Dispatchers）</h3>
+<ul>
+<li><code>tuplesort_begin_heap</code>: ヒープタプルのソート開始。</li>
+<li><code>tuplesort_begin_cluster</code>: <code>CLUSTER</code> コマンド用のソート開始。</li>
+<li><code>tuplesort_begin_index_xxx</code>: 各種インデックス（B-tree, Hash, GiST, BRIN, GIN）用のソート開始。</li>
+<li><code>tuplesort_begin_datum</code>: 単一 Datum のソート開始。</li>
+</ul>
+<h3>状態管理構造体</h3>
+<ul>
+<li><code>TuplesortClusterArg</code>: <code>CLUSTER</code> 実行時のインデックス情報や実行状態を保持。</li>
+<li><code>TuplesortIndexArg</code>: インデックスソート時のリレーション情報を保持。</li>
+<li><code>TuplesortDatumArg</code>: Datum ソート時の型情報を保持。</li>
+<li><code>BrinSortTuple</code>: BRIN インデックス用。タプル長をプレフィックスとして持つ構造体。</li>
+</ul>
+<h3>比較・I/O関数群</h3>
+<ul>
+<li><code>comparetup_xxx</code>: <code>SortTuple</code> 間の比較ロジック。</li>
+<li><code>writetup_xxx</code> / <code>readtup_xxx</code>: <code>LogicalTape</code> へのシリアライズ・デシリアライズ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BrinSortTuple</code></li>
+<li><code>TuplesortClusterArg</code></li>
+<li><code>TuplesortDatumArg</code></li>
+<li><code>TuplesortIndexArg</code></li>
+<li><code>TuplesortIndexBTreeArg</code></li>
+<li><code>TuplesortIndexHashArg</code></li>
+<li><code>tuplesort_begin_cluster</code></li>
+<li><code>tuplesort_begin_heap</code></li>
+<li><code>tuplesort_begin_index_brin</code></li>
+<li><code>tuplesort_begin_index_btree</code></li>
+<li><code>tuplesort_begin_index_gist</code></li>
+<li><code>tuplesort_begin_index_hash</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tuplesort_begin_xxx</code> が呼び出されると、<code>Tuplesortstate</code> が作成され、本ファイルの各関数ポインタがセットされます。 2. **投入**: <code>tuplesort_putxxx</code> 関数群が呼び出され、入力データが <code>SortTuple</code> 形式に変換されます。この際、<code>datum1</code> にソートキーの先頭値が格納され、必要に応じて略称キーが計算されます。 3. **ソート**: <code>tuplesort.c</code> 内のソートエンジンが、セットされた <code>comparetup</code> 関数を呼び出して比較を行います。 4. **I/O**: メモリ不足時、<code>writetup_xxx</code> が呼び出され、タプルが一時ファイルへ書き出されます。マージ時には <code>readtup_xxx</code> でメモリへ復元されます。 5. **取得**: <code>tuplesort_getxxx</code> が呼び出され、ソート済みデータが順次返されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: 各種インデックス（B-tree, GIN, BRIN等）のアクセスルーチン。</li>
+<li><code>utils/tuplesort.h</code>: ソートエンジンの公開インターフェース。</li>
+<li><code>utils/datum.h</code>: Datum 操作の基盤。</li>
+<li><code>executor/executor.h</code>: <code>CLUSTER</code> 実行時の式評価用。</li>
+<li><code>access/brin_tuple.h</code></li>
+<li><code>access/gin.h</code></li>
+<li><code>access/gin_tuple.h</code></li>
+<li><code>access/hash.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>tuplesort.c</code>: ソートエンジンのメインロジック。</li>
+<li><code>sortsupport.c</code>: 高速な比較のための <code>SortSupport</code> 構築。</li>
+<li><code>logtape.c</code>: 一時ファイルI/Oの低レベル管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>tuplesort_getxxx</code> で返されるタプルは、原則として <code>Tuplesortstate</code> が所有するメモリコンテキストに属します。呼び出し側が <code>copy=true</code> を指定しない限り、ソート状態の変更により無効化される可能性がある点に注意してください。</li>
+<li>**略称キー**: <code>haveDatum1</code> が真の場合、先頭キーの比較を高速化するために略称キーが利用されます。<code>comparetup_xxx_tiebreak</code> は、略称キーで同値と判定された場合の詳細な比較（完全比較）を担当します。</li>
+<li>**省略された詳細**: 本ファイルは各バリアントの「型固有のロジック」に特化しており、ソートアルゴリズム（クイックソートやマージソートの戦略）そのものは <code>tuplesort.c</code> に委譲されています。</li>
+<li>**エッジケース**: <code>comparetup_index_btree</code> 等では、インデックスのユニーク制約チェックや、TID（ItemPointer）によるタイブレーク処理が含まれており、単なるソート以上の整合性チェックを行っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__TuplesortClusterArg.html" target="wiki-view"><code>TuplesortClusterArg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__TuplesortIndexArg.html" target="wiki-view"><code>TuplesortIndexArg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__TuplesortIndexBTreeArg.html" target="wiki-view"><code>TuplesortIndexBTreeArg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__TuplesortIndexHashArg.html" target="wiki-view"><code>TuplesortIndexHashArg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__TuplesortDatumArg.html" target="wiki-view"><code>TuplesortDatumArg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__BrinSortTuple.html" target="wiki-view"><code>BrinSortTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_heap.html" target="wiki-view"><code>tuplesort_begin_heap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_cluster.html" target="wiki-view"><code>tuplesort_begin_cluster</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_index_btree.html" target="wiki-view"><code>tuplesort_begin_index_btree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_index_hash.html" target="wiki-view"><code>tuplesort_begin_index_hash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_index_gist.html" target="wiki-view"><code>tuplesort_begin_index_gist</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesortvariants_c__tuplesort_begin_index_brin.html" target="wiki-view"><code>tuplesort_begin_index_brin</code></a></li>
+</ul></body></html>

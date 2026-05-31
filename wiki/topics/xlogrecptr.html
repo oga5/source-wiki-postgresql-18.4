@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/xlogrecptr.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogRecPtr</h1>
+<h2>概念</h2>
+<p><code>XLogRecPtr</code> は、PostgreSQLのWAL（Write-Ahead Log）ストリーム内における特定の物理的・論理的なレコード位置を指し示すためのデータ型です。一般に **LSN（Log Sequence Number）** と呼ばれ、<code>src/include/access/xlogdefs.h</code> において <code>uint64</code>（64ビットの符号なし整数値）として定義されています。WALストリーム上の論理的なオフセットを表現するために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p><code>XLogRecPtr</code> は、トランザクションの永続性と一貫性を保証するためのコア機能において、進捗や位置を特定・追跡するための共通の識別子として機能します。WALの書き込み、読み込み、リカバリ、レプリケーション、および論理デコーディングなど、多くのモジュール間で位置情報を正確に共有・比較するために極めて重要です。また、データページが最後に更新された時点を識別するページヘッダ内のLSNとしても使用されます。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づき、以下のモジュールが <code>XLogRecPtr</code> の処理に関与しています。</p>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/backend/replication</code></li>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/common</code></li>
+<li><code>module:src/include/replication</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関与する主要なエンティティ（シンボル）は以下の通りです。</p>
+<ul>
+<li>**<code>symbol:src/include/access/xlogdefs.h#XLogRecPtr</code>**</li>
+<li><code>XLogRecPtr</code> の基本となる <code>uint64</code> の型定義。無効な位置を示す定数 <code>InvalidXLogRecPtr</code>（値 <code>0</code>）や、デバッグ出力用の <code>LSN_FORMAT_ARGS</code> マクロと深く関連しています。</li>
+<li>**<code>symbol:src/include/access/xlogreader.h#XLogRecPtr</code>**</li>
+<li>WALの読み込み状態を管理する <code>XLogReaderState</code> や、ページ読み込みコールバック関数（<code>XLogPageReadCB</code>）の引数・戻り値として使用されます。</li>
+<li>**<code>symbol:src/backend/access/transam/xlogprefetcher.c#XLogRecPtr</code>**</li>
+<li>WALの先読み処理において、先読みキュー（<code>LsnReadQueue</code>）内の各I/Oリクエストに関連付けられたWAL位置を保持するために使用されます。</li>
+<li>**<code>symbol:src/backend/replication/walreceiver.c#XLogRecPtr</code>** / **<code>symbol:src/include/replication/walreceiver.h#XLogRecPtr</code>**</li>
+<li>受信したWALの書き込み位置（<code>Write</code>）およびフラッシュ位置（<code>Flush</code>）を管理する <code>LogstreamResult</code> 構造体などで使用されます。</li>
+<li>**<code>symbol:src/include/common/parse_manifest.h#XLogRecPtr</code>**</li>
+<li>バックアップマニフェスト解析において、特定のタイムラインにおけるWAL範囲の開始位置（<code>start_lsn</code>）および終了位置（<code>end_lsn</code>）をコールバック関数に渡すために使用されます。</li>
+<li>**<code>symbol:src/include/replication/output_plugin.h#XLogRecPtr</code>**</li>
+<li>論理デコーディングのコールバック関数（<code>LogicalDecodeCommitCB</code> など）において、コミット時のLSN（<code>commit_lsn</code>）を受け取るために使用されます。</li>
+<li>**<code>symbol:src/include/replication/reorderbuffer.h#XLogRecPtr</code>**</li>
+<li><code>ReorderBuffer</code> 内でトランザクションのコミット順序を決定し、状態管理（<code>ReorderBufferTXN</code>）を行うための基準値として使用されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>WALの生成からレプリケーション、デコーディングに至る完全なエンドツーエンドの全体フローは、提供されたソースコードの抜粋範囲からはすべてが明らかになっておらず、未確定な部分があります。現時点で判明している部分的な流れは以下の通りです。</p>
+<p>1. **WALの生成と位置特定**: トランザクションの変更に伴いWALレコードが生成され、一意の <code>XLogRecPtr</code> が割り当てられます。 2. **WALの受信と永続化（スタンバイ側）**: <code>walreceiver</code> プロセスがプライマリからWALデータを受信し、<code>LogstreamResult</code> 構造体の <code>Write</code>（書き込み位置）および <code>Flush</code>（フラッシュ位置）を更新しながらディスクに書き込み・同期（<code>fsync</code>）を行います。 3. **WALの読み込みと先読み**: リカバリプロセスや解析ツールは <code>XLogReaderState</code> を用いてWALを順次読み込みます。この際、<code>xlogprefetcher.c</code> の <code>LsnReadQueue</code> を介して、必要なデータブロックの先読みI/Oが制御されます。 4. **論理デコーディングと出力**: <code>ReorderBuffer</code> が <code>XLogRecPtr</code>（コミットLSNなど）を基準にトランザクションの変更を整列し、出力プラグインのコールバック（<code>LogicalDecodeCommitCB</code> など）へ位置情報を引き渡します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**単調増加**: WALストリームの進行に伴い、生成される <code>XLogRecPtr</code> の値は単調増加します。</li>
+<li>**書き込みとフラッシュの順序関係**: <code>walreceiver.c</code> の <code>LogstreamResult</code> において、ディスクにフラッシュされた位置は書き込まれた位置を超えてはなりません（<code>Flush &lt;= Write</code>）。</li>
+<li>**無効値の定義**: 値 <code>0</code> は <code>InvalidXLogRecPtr</code> として定義され、未初期化または無効なWAL位置を示す不変の基準値として扱われます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効値（<code>InvalidXLogRecPtr</code>）の誤用**: 値が <code>0</code> である <code>InvalidXLogRecPtr</code> を有効なWAL位置として処理しようとすると、WALリーダーの読み取り失敗や予期せぬ動作を引き起こす原因になります。</li>
+<li>**WALの切り詰め（ローテーション）**: 参照している <code>XLogRecPtr</code> が指す古いWALセグメントが、チェックポイントなどの処理によって既に削除（切り詰め）されている場合、その位置へのアクセスはエラーとなります。</li>
+<li>**フォーマット出力時の注意**: <code>printf</code> などの関数で <code>XLogRecPtr</code> を出力する際は、直接整数値として出力するのではなく、必ず <code>LSN_FORMAT_ARGS</code> マクロを使用して <code>&quot;%X/%X&quot;</code> 形式でフォーマットする必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/access/xlogdefs.h</code>**: <code>XLogRecPtr</code> の基本定義、<code>InvalidXLogRecPtr</code>、および <code>LSN_FORMAT_ARGS</code> マクロの定義を確認できます。</li>
+<li>**<code>src/include/access/xlogreader.h</code>**: WALの読み込み状態管理（<code>XLogReaderState</code>）における <code>XLogRecPtr</code> の具体的な利用方法が記述されています。</li>
+<li>**<code>src/backend/replication/walreceiver.c</code>**: 受信したWALの書き込み・フラッシュ進捗管理（<code>LogstreamResult</code>）の実装詳細を確認できます。</li>
+<li>**<code>src/include/replication/reorderbuffer.h</code>**: 論理デコーディングにおけるトランザクションの整列とLSNの利用方法が記述されています。</li>
+</ul></body></html>

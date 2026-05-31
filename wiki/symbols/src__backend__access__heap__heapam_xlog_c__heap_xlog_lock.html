@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_lock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_xlog_lock</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_xlog.c:996</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページ上のタプルに対するロック操作のWALリプレイを実行し、必要に応じて可視性マップ（Visibility Map）の更新を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void heap_xlog_lock(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファおよび可視性マップを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> は <code>xl_heap_lock</code> 構造体を含む有効なWALレコードであること。</li>
+<li>ページ上のタプルが <code>offnum</code> に存在し、かつ <code>ItemIdIsNormal</code> であること（そうでない場合は <code>PANIC</code>）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **可視性マップの更新**: <code>xlrec-&gt;flags</code> に <code>XLH_LOCK_ALL_FROZEN_CLEARED</code> が設定されている場合、該当ブロックの可視性マップから <code>VISIBILITYMAP_ALL_FROZEN</code> ビットをクリアする。 2. **バッファの取得**: <code>XLogReadBufferForRedo</code> を呼び出し、ページが最新でない（<code>BLK_NEEDS_REDO</code>）場合にのみ以下の処理を行う。 3. **タプルヘッダーの更新**:</p>
+<ul>
+<li><code>t_infomask</code> からロック関連ビットおよび <code>HEAP_MOVED</code> をクリア。</li>
+<li><code>t_infomask2</code> から <code>HEAP_KEYS_UPDATED</code> をクリア。</li>
+<li><code>fix_infomask_from_infobits</code> を用いて、WALレコード内の情報に基づきマスクを再設定。</li>
+<p>4. **ロック状態の反映**:</p>
+<li><code>HEAP_XMAX_IS_LOCKED_ONLY</code> が真の場合、HOT更新フラグをクリアし、<code>t_ctid</code> を自己参照（自身のブロックとオフセット）に設定。</li>
+<li><code>xmax</code> をレコードの値で更新し、<code>cmax</code> を <code>FirstCommandId</code> に設定。</li>
+<p>5. **コミット**: ページのLSNを更新し、バッファをダーティとしてマークする。 6. **終了処理**: バッファが有効であればロックを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>heap_redo</code>（<code>src/backend/access/heap/heapam_xlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: </li>
+<li><code>XLogRecGetBlockTag</code>, <code>XLogRecGetData</code>（WAL解析）</li>
+<li><code>CreateFakeRelcacheEntry</code>, <code>FreeFakeRelcacheEntry</code>（リレーション管理）</li>
+<li><code>visibilitymap_pin</code>, <code>visibilitymap_clear</code>（可視性マップ操作）</li>
+<li><code>XLogReadBufferForRedo</code>, <code>PageGetItemId</code>, <code>PageGetItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>（バッファ管理）</li>
+<li><code>fix_infomask_from_infobits</code>, <code>HeapTupleHeaderClearHotUpdated</code>, <code>ItemPointerSet</code>, <code>HeapTupleHeaderSetXmax</code>, <code>HeapTupleHeaderSetCmax</code>（タプル操作）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_heap_lock</code>: WALレコードのデータ構造。</li>
+<li><code>XLogReaderState</code>: WAL読み取り状態。</li>
+<li><code>Buffer</code>, <code>Page</code>, <code>ItemId</code>, <code>HeapTupleHeader</code>: ヒープページおよびタプルの物理構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber(page) &lt; offnum</code> または <code>!ItemIdIsNormal(lp)</code> の場合、<code>PANIC</code> を発生させてリカバリを停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、ページが既に最新である場合でも、可視性マップの更新が必要な場合は処理を継続する設計となっている。</li>
+<li><code>fix_infomask_from_infobits</code> によるマスクの整合性維持が重要である。</li>
+</ul></body></html>

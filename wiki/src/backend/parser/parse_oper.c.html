@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_oper.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_oper.c</h1>
+<h2>概要</h2>
+<p>SQLクエリ内の演算子（<code>+</code>, <code>=</code>, <code>LIKE</code> など）を解決し、適切なシステムカタログ上の演算子定義（<code>pg_operator</code>）を特定するためのパーサーモジュールです。型変換が必要な場合の候補選択や、演算子キャッシュによるルックアップの高速化を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> の一部として、構文解析の後半段階で「演算子名」と「入力型」から「実行可能な関数ID」を導出します。<code>parse_expr.c</code> などから呼び出され、抽象構文木（AST）を構築する際の型整合性チェックと型キャストの挿入を支援します。</p>
+<h2>責務</h2>
+<ul>
+<li>**演算子解決**: 名前と引数型に基づき、最適な演算子を検索する。</li>
+<li>**型変換の調整**: 演算子の引数型と実際の入力型が異なる場合、<code>pg_cast</code> を参照して適切な型キャストを適用する。</li>
+<li>**キャッシュ管理**: 頻繁に行われる演算子検索を高速化するため、検索パスと引数型をキーとしたハッシュキャッシュを維持する。</li>
+<li>**エラー報告**: 演算子が見つからない、または曖昧（Ambiguous）な場合の詳細なエラーメッセージ生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>oper()</code>: 二項演算子の解決を行うメイン関数。</li>
+<li><code>left_oper()</code>: 単項（前置）演算子の解決を行う。</li>
+<li><code>make_op()</code>: 演算子式を構築し、必要に応じて引数への型キャストを挿入する。</li>
+<li><code>make_scalar_array_op()</code>: <code>ANY</code>/<code>ALL</code> 演算子（例: <code>x = ANY(array)</code>）の解決と構築を行う。</li>
+<li><code>OprCacheHash</code>: 演算子検索結果を保持するハッシュテーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InvalidateOprCacheCallBack</code></li>
+<li><code>LookupOperName</code></li>
+<li><code>LookupOperWithArgs</code></li>
+<li><code>OprCacheEntry</code></li>
+<li><code>OprCacheKey</code></li>
+<li><code>binary_oper_exact</code></li>
+<li><code>compatible_oper</code></li>
+<li><code>compatible_oper_opid</code></li>
+<li><code>get_sort_group_operators</code></li>
+<li><code>left_oper</code></li>
+<li><code>op_signature_string</code></li>
+<li><code>oper_select_candidate</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **キャッシュ検索**: <code>make_oper_cache_key</code> で現在の検索パスと引数型からキーを生成し、<code>OprCacheHash</code> を確認。ヒットすれば即座に <code>pg_operator</code> を返す。 2. **候補探索**: キャッシュミス時は <code>OpernameGetCandidates</code> で候補リストを取得。 3. **型適合性評価**: <code>oper_select_candidate</code> を呼び出し、入力型と候補の引数型を比較。型キャストで適合可能な候補を絞り込む。 4. **式構築**: <code>make_op</code> 内で <code>enforce_generic_type_consistency</code> を呼び出し、多相型（Polymorphic types）の整合性を確認後、<code>OpExpr</code> ノードを作成する。 5. **キャッシュ更新**: 解決結果を <code>make_oper_cache_entry</code> でキャッシュに保存する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_operator.h</code>, <code>catalog/pg_type.h</code>: システムカタログ定義。</li>
+<li><code>utils/syscache.h</code>, <code>utils/typcache.h</code>: システムキャッシュおよび型情報の取得。</li>
+<li><code>parser/parse_coerce.h</code>: 型キャストの判定と適用。</li>
+<li><code>parser/parse_func.h</code>: 関数候補の選択ロジックとの共有。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/parser/parse_oper.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/utils/cache/typcache.c</code>: 型に関連する演算子（<code>=</code>, <code>&lt;</code>, <code>&gt;</code>）のデフォルト取得に使用。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 本モジュールの関数を呼び出し、式全体の解析を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの無効化**: <code>pg_operator</code> や <code>pg_cast</code> が変更されると、<code>InvalidateOprCacheCallBack</code> が呼ばれ、キャッシュが全フラッシュされます。これは型キャストの追加が演算子の適合性に影響を与えるためです。</li>
+<li>**多相型**: <code>make_op</code> 内での <code>enforce_generic_type_consistency</code> は、<code>anyelement</code> などの多相型を扱う際に重要です。ここでの戻り値型決定が、後の実行計画作成に直結します。</li>
+<li>**デバッグ**: 演算子解決エラーが発生した際は、<code>op_signature_string</code> が生成するシグネチャを確認すると、どの型で不一致が起きているか特定しやすくなります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__OprCacheKey.html" target="wiki-view"><code>OprCacheKey</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__OprCacheEntry.html" target="wiki-view"><code>OprCacheEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__LookupOperName.html" target="wiki-view"><code>LookupOperName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__LookupOperWithArgs.html" target="wiki-view"><code>LookupOperWithArgs</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__get_sort_group_operators.html" target="wiki-view"><code>get_sort_group_operators</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__binary_oper_exact.html" target="wiki-view"><code>binary_oper_exact</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__oper_select_candidate.html" target="wiki-view"><code>oper_select_candidate</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__compatible_oper.html" target="wiki-view"><code>compatible_oper</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__compatible_oper_opid.html" target="wiki-view"><code>compatible_oper_opid</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__left_oper.html" target="wiki-view"><code>left_oper</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__op_signature_string.html" target="wiki-view"><code>op_signature_string</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_oper_c__InvalidateOprCacheCallBack.html" target="wiki-view"><code>InvalidateOprCacheCallBack</code></a></li>
+</ul></body></html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/port/sysv_shmem.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/port/sysv_shmem.c</h1>
+<h2>概要</h2>
+<p>System V 共有メモリ機能を利用して、PostgreSQL の共有メモリセグメントを管理する実装です。現代の PostgreSQL では、主要な共有メモリ領域は <code>mmap()</code> で確保し、System V 共有メモリはデータディレクトリのロックおよびプロセス間インターロック（生存確認）のための「シム（薄い層）」として利用するのが標準的です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/port</code> モジュールの一部として、OS 固有の共有メモリ API を抽象化します。PostgreSQL の共有メモリサブシステム（<code>storage/shmem.h</code>）が要求するインターフェースを、System V 準拠のシステム上で実現する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリの作成とアタッチ**: <code>shmget</code> および <code>shmat</code> を用いたセグメントの確保。</li>
+<li>**インターロックの提供**: 既存の共有メモリセグメントが、現在のデータディレクトリに関連するものか、また他プロセスがアタッチ中かを判定。</li>
+<li>**ライフサイクル管理**: <code>on_shmem_exit</code> を用いた、プロセス終了時のセグメントデタッチおよび削除処理。</li>
+<li>**Huge Pages のサポート**: <code>mmap</code> を使用する場合の Huge Page 設定とフラグ管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PGSharedMemoryCreate</code>: 共有メモリの初期化と作成を行うメインエントリポイント。</li>
+<li><code>PGSharedMemoryIsInUse</code>: 既存のセグメントが他プロセスによって使用中かを確認する。</li>
+<li><code>InternalIpcMemoryCreate</code>: <code>shmget</code> を呼び出し、セグメントを生成・アタッチする内部関数。</li>
+<li><code>IpcMemoryState</code>: セグメントの状態（アタッチ済み、外部のもの、未使用など）を分類する列挙型。</li>
+<li><code>UsedShmemSegAddr / UsedShmemSegID</code>: 現在のプロセスが使用しているセグメントの識別子とアドレス。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AnonymousShmemDetach</code></li>
+<li><code>CreateAnonymousSegment</code></li>
+<li><code>GetHugePageSize</code></li>
+<li><code>IpcMemoryDelete</code></li>
+<li><code>IpcMemoryDetach</code></li>
+<li><code>IpcMemoryId</code></li>
+<li><code>IpcMemoryKey</code></li>
+<li><code>PGSharedMemoryAttach</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>PGSharedMemoryCreate</code> が呼ばれると、データディレクトリの inode/device 番号をキーとしてセグメントを検索します。 2.  **作成**: <code>InternalIpcMemoryCreate</code> が <code>shmget</code> を試行します。成功すれば <code>on_shmem_exit</code> にデタッチ/削除用のコールバックを登録します。 3.  **インターロック**: <code>PGSharedMemoryAttach</code> が <code>shmctl(IPC_STAT)</code> を呼び出し、セグメントのメタデータ（<code>shm_nattch</code>）を確認して、他プロセスがアタッチしているかを判定します。 4.  **終了**: プロセス終了時、登録されたコールバックが <code>shmdt</code> や <code>shmctl(IPC_RMID)</code> を実行し、リソースを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>&lt;sys/shm.h&gt;</code>, <code>&lt;sys/ipc.h&gt;</code>: System V 共有メモリ API。</li>
+<li><code>&lt;sys/mman.h&gt;</code>: <code>mmap</code> / <code>munmap</code> による匿名共有メモリ用。</li>
+<li><code>storage/pg_shmem.h</code>: 共有メモリヘッダー構造体定義。</li>
+<li><code>storage/ipc.h</code>: プロセス間通信の共通定義。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>portability/mem.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/dsm.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/ipc.h</code></li>
+<li><code>sys/mman.h</code></li>
+<li><code>sys/shm.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/pidfile.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/shmem.c</code>: 共有メモリの論理的な管理を行う上位層。</li>
+<li><code>src/backend/storage/ipc/dsm.c</code>: 動的共有メモリ（DSM）の管理。</li>
+<li><code>src/backend/port/win32_shmem.c</code>: Windows 環境における同等の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**EXEC_BACKEND**: Windows や一部の環境で有効なこのフラグが立っている場合、<code>fork()</code> によるメモリ継承ができないため、<code>PGSharedMemoryReAttach</code> を用いた再アタッチ処理が必要になります。</li>
+<li>**匿名共有メモリ**: 現在の PostgreSQL は、System V 共有メモリを「ロック用」として使い、実際のデータ領域は <code>mmap</code> で確保するハイブリッド構成が一般的です。このため、<code>AnonymousShmem</code> 関連のコードが随所に存在します。</li>
+<li>**エラー処理**: <code>shmget</code> 失敗時の <code>EINVAL</code> や <code>EEXIST</code> は、単なるエラーではなく「既存セグメントの再利用」を判断するための重要なシグナルとして扱われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__IpcMemoryKey.html" target="wiki-view"><code>IpcMemoryKey</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__IpcMemoryId.html" target="wiki-view"><code>IpcMemoryId</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__IpcMemoryState.html" target="wiki-view"><code>IpcMemoryState</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__InternalIpcMemoryCreate.html" target="wiki-view"><code>InternalIpcMemoryCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__IpcMemoryDetach.html" target="wiki-view"><code>IpcMemoryDetach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__IpcMemoryDelete.html" target="wiki-view"><code>IpcMemoryDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__PGSharedMemoryIsInUse.html" target="wiki-view"><code>PGSharedMemoryIsInUse</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__PGSharedMemoryAttach.html" target="wiki-view"><code>PGSharedMemoryAttach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__GetHugePageSize.html" target="wiki-view"><code>GetHugePageSize</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__CreateAnonymousSegment.html" target="wiki-view"><code>CreateAnonymousSegment</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__AnonymousShmemDetach.html" target="wiki-view"><code>AnonymousShmemDetach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_shmem_c__PGSharedMemoryCreate.html" target="wiki-view"><code>PGSharedMemoryCreate</code></a></li>
+</ul></body></html>

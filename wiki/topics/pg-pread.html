@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-pread.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_pread</h1>
+<h2>概念</h2>
+<p><code>pg_pread</code> は、Windows環境においてPOSIX標準の <code>pread(2)</code> 関数をエミュレートするための関数です。ファイル記述子（<code>fd</code>）の現在のファイルポインタを変更することなく、指定されたオフセット（<code>offset</code>）からデータを直接読み取る機能を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのコアコード（SLRU、XLOGリーダー、バックアップ処理など）は、ファイルポインタの状態に依存せずに特定の位置からデータを読み取る <code>pread</code> の挙動に依存しています。Windows環境はネイティブでPOSIXの <code>pread</code> をサポートしていないため、<code>pg_pread</code> を通じてプラットフォーム間のI/O挙動の差異を吸収し、コードのポータビリティを確保するために極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include</code></li>
+<li><code>module:src/port</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/port.h#pg_pread</code>: 関数の宣言を提供します。</li>
+<li><code>symbol:src/port/win32pread.c#pg_pread</code>: Windows API（<code>ReadFile</code>）を用いた具体的なエミュレーション処理を実装しています。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: <code>src/backend/access/transam/slru.c</code> や <code>src/backend/access/transam/xlogreader.c</code> などの呼び出し元から、ファイル記述子、バッファ、サイズ、オフセットを指定して <code>pg_pread</code> が呼び出されます。 2. **ハンドル取得**: <code>_get_osfhandle(fd)</code> を使用して、Cランタイムのファイル記述子からWindowsネイティブのファイルハンドルを取得します。 3. **オフセット設定**: <code>OVERLAPPED</code> 構造体の <code>Offset</code> フィールドに指定された <code>offset</code> を設定します。 4. **読み取り実行**: <code>ReadFile</code> APIを呼び出し、<code>OVERLAPPED</code> 構造体を渡すことで、ファイルポインタを移動させずに指定位置からデータを読み取ります。 5. **結果の返却**:</p>
+<ul>
+<li>成功時は実際に読み取ったバイト数を返します。</li>
+<li><code>ReadFile</code> が失敗し、エラーコードが <code>ERROR_HANDLE_EOF</code> の場合は <code>0</code>（EOF）を返します。</li>
+<li>それ以外のエラーの場合は、<code>_dosmaperr</code> を用いてWindowsエラーコードをPOSIX準拠の <code>errno</code> に変換し、<code>-1</code> を返します。</li>
+</ul>
+<p>※なお、呼び出し元（<code>slru.c</code> や <code>xlogreader.c</code> など）における具体的なエラーハンドリングや、上位レイヤーから下位レイヤーに至る完全なエンドツーエンドの制御フローの詳細は、提供されたコンテキストからは未解明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**読み取りサイズ制限**: <code>size</code> は <code>1GB</code>（<code>1024 * 1024 * 1024</code> バイト）を超えることはできません。<code>DWORD</code> 型のオーバーフローを防ぐため、内部で <code>Min(size, 1024 * 1024 * 1024)</code> が適用され、自動的に切り詰められます。</li>
+<li>**有効なハンドル**: 引数として渡される <code>fd</code> は、<code>_get_osfhandle</code> によって有効なWindowsファイルハンドルに変換可能でなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ファイルポインタの非移動**: <code>pg_pread</code> はファイルポインタを更新しません。呼び出し側が「読み取りによってファイルポインタが進む」ことを期待している場合、意図しない挙動になります。</li>
+<li>**無効なファイル記述子**: <code>_get_osfhandle</code> が無効なハンドルを返した場合、関数は <code>errno</code> を <code>EBADF</code> に設定して <code>-1</code> を返します。</li>
+<li>**1GBを超えるサイズ指定**: 1GBを超えるサイズを指定した場合、エラーにはならず自動的に1GBに制限されて読み取られます。呼び出し側が一度に1GB以上の読み取りを期待している場合、部分的な読み取りとして処理されるため、ループ等での再試行が必要になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/port.h</code>: <code>pg_pread</code> の宣言。</li>
+<li><code>src/port/win32pread.c</code>: <code>pg_pread</code> の具体的な実装。</li>
+<li><code>src/port/win32pwrite.c</code>: <code>pg_pread</code> と対になる書き込み操作（<code>pg_pwrite</code>）の実装。</li>
+</ul></body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgxlog_c__spgRedoSplitTuple.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgRedoSplitTuple</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgxlog.c:450</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスのタプル分割操作を WAL リプレイ時に再現する。元のページからプレフィックスを削除し、新しいタプル（プレフィックスおよびポストフィックス）を適切なページへ配置することで、インデックスの論理構造を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgRedoSplitTuple(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象の WAL レコード）。</li>
+<li>**出力**: なし（副作用としてバッファページを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>WAL レコード内のタプルはアライメントされていないため、アクセス時に <code>memcpy</code> を用いてヘッダーをコピーする必要がある。</li>
+<li>リンク切れを防ぐため、ポストフィックス（子側）の更新を先に行い、その後に元のページ（親側）を更新する順序が守られる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WAL レコードから <code>spgxlogSplitTuple</code> 構造体およびプレフィックス・ポストフィックスのタプルデータを抽出する。 2. **ポストフィックスの処理**:</p>
+<ul>
+<li><code>xldata-&gt;postfixBlkSame</code> が偽の場合、対象ページを読み込み（新規作成または既存読み込み）、<code>addOrReplaceTuple</code> を用いてポストフィックスを挿入する。</li>
+<p>3. **元のページの処理**:</p>
+<li><code>xldata-&gt;offnumPrefix</code> にある既存タプルを削除する。</li>
+<li>新しいプレフィックスを <code>PageAddItem</code> で挿入する。</li>
+<li><code>xldata-&gt;postfixBlkSame</code> が真の場合は、同じページ内にポストフィックスも追加する。</li>
+<p>4. 各操作後、ページに LSN を設定し、バッファをダーティとしてマークする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>spg_redo</code>（<code>src/backend/access/spgist/spgxlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogInitBufferForRedo</code>, <code>SpGistInitBuffer</code>, <code>XLogReadBufferForRedo</code>, <code>BufferGetPage</code>, <code>addOrReplaceTuple</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>, <code>PageIndexTupleDelete</code>, <code>PageAddItem</code>, <code>elog</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgxlogSplitTuple</code>: 分割操作の詳細（オフセット番号やフラグ）を保持する WAL 構造体。</li>
+<li><code>SpGistInnerTupleData</code>: タプルのヘッダー情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が期待したオフセット番号を返さない場合、<code>elog(ERROR)</code> によりリプレイが中断される。</li>
+<li><code>XLogReadBufferForRedo</code> 等のバッファ操作関数が失敗した場合の挙動は、それら関数の仕様に依存する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はスタンバイサーバーでの整合性維持を目的としている。</li>
+<li><code>postfixBlkSame</code> フラグにより、ポストフィックスが元のページと同じページに配置されるか、別のページに配置されるかを切り替えている。</li>
+<li>ページ更新の順序（子から親へ）は、スタンバイ読み取り時の整合性を担保するために重要である。</li>
+</ul></body></html>

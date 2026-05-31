@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonfuncs.c</h1>
+<h2>概要</h2>
+<p><code>jsonfuncs.c</code> は、PostgreSQL の <code>json</code> および <code>jsonb</code> データ型に対する SQL レベルの操作関数を実装する中心的なファイルです。JSON 文書の走査、パス抽出、要素の取得、およびレコード型へのマッピング（<code>populate_record</code> 等）といった高度な処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、JSON 関連のロジックを抽象化・提供します。<code>json.c</code> や <code>jsonb.c</code> が低レベルなバイナリ表現やシリアライズを扱うのに対し、本ファイルは SQL 関数インターフェース（<code>PG_FUNCTION_ARGS</code>）と JSON 構造の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**JSON 走査と抽出**: <code>-&gt;</code>, <code>-&gt;&gt;</code>, <code>#&gt;</code>, <code>#&gt;&gt;</code> 演算子に対応するパス抽出ロジック。</li>
+<li>**レコード変換**: JSON/JSONB を PostgreSQL のレコード型（<code>RECORD</code>）や複合型へ変換する <code>populate_record</code> 関連機能。</li>
+<li>**集合操作**: <code>json_each</code>, <code>json_array_elements</code> 等のセットを返す関数（SRF）の実装。</li>
+<li>**JSON 変換・加工**: <code>json_strip_nulls</code> や値の変換（<code>transform_json_string_values</code>）などのユーティリティ。</li>
+<li>**エラーハンドリング**: JSON 解析時のコンテキスト報告および <code>ErrorSaveContext</code> を用いたソフトエラー処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理構造体</h3>
+<ul>
+<li><code>GetState</code>: <code>json_get*</code> 関数群の走査状態を保持。</li>
+<li><code>PopulateRecordsetState</code>: <code>json_populate_recordset</code> 等の SRF における状態管理。</li>
+<li><code>PopulateArrayContext</code>: JSON 配列から PostgreSQL 配列を構築する際のメタデータと次元管理。</li>
+<li><code>OkeysState</code>, <code>EachState</code>, <code>ElementsState</code>: 各 SRF の実行状態を保持。</li>
+</ul>
+<h3>変換・キャッシュ構造体</h3>
+<ul>
+<li><code>ColumnIOData</code> / <code>RecordIOData</code>: 複合型や配列の変換に必要な型情報と I/O 関数をキャッシュする構造体。</li>
+<li><code>JsValue</code> / <code>JsObject</code>: <code>json</code>（テキスト）と <code>jsonb</code>（バイナリ）の差異を吸収し、統一的に扱うためのラッパー。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>get_worker</code>: JSON パス抽出の共通ロジック。</li>
+<li><code>populate_record_field</code>: JSON 値を特定の PostgreSQL 型へ変換する再帰的関数。</li>
+<li><code>setPath</code>: <code>jsonb_set</code> や <code>jsonb_insert</code> におけるパス指定による JSONB 構造の変更。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlenState</code></li>
+<li><code>ColumnIOData</code></li>
+<li><code>EachState</code></li>
+<li><code>ElementsState</code></li>
+<li><code>GetState</code></li>
+<li><code>IterateJsonStringValuesState</code></li>
+<li><code>JHashState</code></li>
+<li><code>JsonHashEntry</code></li>
+<li><code>OkeysState</code></li>
+<li><code>ScalarIOData</code></li>
+<li><code>TransformJsonStringValuesState</code></li>
+<li><code>jsonb_get_element</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: <code>makeJsonLexContext</code> で入力テキストをトークン化し、<code>JsonSemAction</code>（セマンティックアクション）を定義して <code>pg_parse_json</code> を呼び出します。 2. **走査**: 各 SRF は <code>Tuplestore</code> を使用して結果を蓄積します。<code>jsonb</code> の場合は <code>JsonbIterator</code> を用いて直接走査します。 3. **変換**: <code>populate_record</code> 系関数は、JSON のキーと PostgreSQL の属性名を照合し、<code>prepare_column_cache</code> で取得した型情報に基づき <code>InputFunctionCall</code> を実行して <code>Datum</code> を生成します。 4. **エラー**: <code>pg_parse_json_or_errsave</code> を経由し、<code>escontext</code> が提供されていればエラーを保存、なければ <code>ereport</code> で即時終了します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/json.h</code>, <code>utils/jsonb.h</code>: JSON/JSONB 内部表現へのアクセス。</li>
+<li><code>common/jsonapi.h</code>: JSON 解析の基盤（レキサー）。</li>
+<li><code>utils/typcache.h</code>, <code>utils/lsyscache.h</code>: 型情報の動的取得。</li>
+<li><code>fmgr.h</code>, <code>funcapi.h</code>: SQL 関数インターフェースと SRF サポート。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/jsonfuncs.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/json.c</code>: JSON の基本的な入出力と検証。</li>
+<li><code>src/backend/utils/adt/jsonb.c</code>: JSONB のバイナリ操作とイテレータ。</li>
+<li><code>src/backend/utils/adt/jsonpath_exec.c</code>: より高度な JSONPath 実行エンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: SRF 実装では <code>Tuplestore</code> を使用し、<code>tmp_cxt</code>（一時メモリコンテキスト）を適宜リセットすることでメモリ消費を抑制しています。</li>
+<li>**再帰**: <code>populate_record_field</code> は再帰的に呼び出されるため、<code>check_stack_depth()</code> によるスタックオーバーフロー保護が行われています。</li>
+<li>**JSONB 優先**: 近年の PostgreSQL では <code>jsonb</code> が推奨されるため、<code>json</code>（テキスト）版の関数は内部的に <code>jsonb</code> へ変換して処理するケースが増えています。</li>
+<li>**省略**: 本ファイルは非常に巨大であるため、特定の型変換の詳細ロジックや、<code>jsonb_set</code> 内部の複雑なイテレータ操作の詳細は省略しています。これらは <code>jsonb.c</code> のイテレータ仕様に強く依存しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__OkeysState.html" target="wiki-view"><code>OkeysState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__IterateJsonStringValuesState.html" target="wiki-view"><code>IterateJsonStringValuesState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__TransformJsonStringValuesState.html" target="wiki-view"><code>TransformJsonStringValuesState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__GetState.html" target="wiki-view"><code>GetState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__AlenState.html" target="wiki-view"><code>AlenState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__EachState.html" target="wiki-view"><code>EachState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__ElementsState.html" target="wiki-view"><code>ElementsState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__JHashState.html" target="wiki-view"><code>JHashState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__JsonHashEntry.html" target="wiki-view"><code>JsonHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__ScalarIOData.html" target="wiki-view"><code>ScalarIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__ColumnIOData.html" target="wiki-view"><code>ColumnIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonfuncs_c__jsonb_get_element.html" target="wiki-view"><code>jsonb_get_element</code></a></li>
+</ul></body></html>

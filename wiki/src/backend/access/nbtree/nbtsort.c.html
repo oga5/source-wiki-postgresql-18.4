@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtsort.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtsort.c</h1>
+<h2>概要</h2>
+<p>B-tree インデックスのバルクロード（<code>CREATE INDEX</code>）を効率的に行うための実装です。ヒープから読み込んだタプルをソートし、リーフページから順次構築することで、ツリーをボトムアップに生成します。バッファキャッシュを介さず <code>smgr</code> を直接利用して物理ページを書き込むため、高速かつ WAL 効率が高いのが特徴です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムにおける「インデックス構築」フェーズを担当します。<code>nbtree.c</code> の <code>btbuild</code> エントリポイントから呼び出され、ソート済みデータから B-tree 構造を物理的に配置する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ソートとスプール**: <code>tuplesort.c</code> を利用したタプルのソートと、一意性チェックのための二重スプール管理。</li>
+<li>**ページ構築**: リーフページおよび内部ノードの動的生成と、ページ分割（ページが満杯になった際の親へのリンク追加）の制御。</li>
+<li>**並列処理の調整**: <code>ParallelContext</code> を用いた並列インデックス構築のライフサイクル管理（ワーカーの起動、同期、統計情報の集約）。</li>
+<li>**物理レイアウトの最適化**: フィルファクタに基づくページ充填率の制御、およびサフィックス切り詰めによるインデックスサイズの削減。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>構築状態管理</h3>
+<ul>
+<li><code>BTBuildState</code>: インデックス構築全体のコンテキスト。並列構築時はリーダープロセスが保持。</li>
+<li><code>BTSpool</code>: ソート対象のタプルを保持する構造体。一意性制約がある場合は死んだタプル用に <code>spool2</code> を使用。</li>
+<li><code>BTPageState</code>: 構築中の各レベルのページ状態。親レベルへのリンクやページ内のオフセットを管理。</li>
+<li><code>BTWriteState</code>: 物理書き込み時のグローバル状態。<code>BulkWriteState</code> を通じて <code>smgr</code> と連携。</li>
+</ul>
+<h3>並列処理</h3>
+<ul>
+<li><code>BTShared</code>: 共有メモリ上の状態。ワーカー間の同期、進捗、統計情報の集約に使用。</li>
+<li><code>BTLeader</code>: リーダープロセス専用の並列コンテキスト管理構造体。</li>
+<li><code>_bt_parallel_build_main</code>: 並列ワーカーのメインエントリポイント。</li>
+</ul>
+<h3>ページ操作</h3>
+<ul>
+<li><code>_bt_blnewpage</code>: 新規ページを <code>smgr</code> から取得し、B-tree ヘッダーを初期化。</li>
+<li><code>_bt_buildadd</code>: ページにタプルを追加。容量不足時はページ分割を行い、親レベルへ再帰的にリンクを追加。</li>
+<li><code>_bt_uppershutdown</code>: 構築完了時にルートページを確定させ、メタページを初期化。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BTBuildState</code></li>
+<li><code>BTLeader</code></li>
+<li><code>BTPageState</code></li>
+<li><code>BTShared</code></li>
+<li><code>BTSpool</code></li>
+<li><code>BTWriteState</code></li>
+<li><code>btbuild</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>btbuild</code> が <code>BTBuildState</code> を初期化し、<code>_bt_spools_heapscan</code> を呼び出す。 2. **スキャンとソート**: <code>table_index_build_scan</code> がヒープをスキャンし、<code>_bt_build_callback</code> を経由して <code>tuplesort</code> にタプルを投入。 3. **構築**: <code>_bt_leafbuild</code> が <code>tuplesort_performsort</code> を実行後、<code>_bt_load</code> を呼び出す。 4. **ページ書き込み**: <code>_bt_load</code> はソート済みタプルを <code>_bt_buildadd</code> に渡し、ページが溢れるたびに <code>_bt_pagestate</code> で新規ページを作成し、親レベルを構築する。 5. **終了**: <code>_bt_uppershutdown</code> が最上位レベルを処理し、メタページを書き込んで終了。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/bulk_write.h</code>: バッファキャッシュをバイパスした物理書き込み。</li>
+<li><code>utils/tuplesort.h</code>: インデックス構築用のソートエンジン。</li>
+<li><code>access/parallel.h</code>: 並列インデックス構築のための共有メモリ管理。</li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nbtinsert.c</code>: 通常の挿入処理。<code>nbtsort.c</code> はこれと類似したページレイアウト規則に従う。</li>
+<li><code>nbtdedup.c</code>: 重複排除ロジック。<code>_bt_sort_dedup_finish_pending</code> 等で利用。</li>
+<li><code>nbtpage.c</code>: ページ構造の定義と低レベル操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>_bt_blwritepage</code> を呼び出すと、ページバッファの所有権は <code>smgr</code> に移ります。</li>
+<li>**制約**: 本ファイルは FSM（空き領域マップ）を更新しません。構築後のインデックスは「満杯」状態から開始されるため、構築直後の VACUUM は不要です。</li>
+<li>**省略箇所**: 並列構築時の詳細なロック競合回避や、<code>tuplesort</code> 内部のメモリ管理の詳細は <code>tuplesort.c</code> に委譲されているため、本ファイルでは高レベルな調整のみを記述しています。</li>
+<li>**注意**: <code>_bt_buildadd</code> は再帰的に親レベルを構築しますが、これはツリーの高さが低い限りスタックオーバーフローのリスクは極めて低いです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTSpool.html" target="wiki-view"><code>BTSpool</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTShared.html" target="wiki-view"><code>BTShared</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTLeader.html" target="wiki-view"><code>BTLeader</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTBuildState.html" target="wiki-view"><code>BTBuildState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTPageState.html" target="wiki-view"><code>BTPageState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTWriteState.html" target="wiki-view"><code>BTWriteState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__btbuild.html" target="wiki-view"><code>btbuild</code></a></li>
+</ul></body></html>

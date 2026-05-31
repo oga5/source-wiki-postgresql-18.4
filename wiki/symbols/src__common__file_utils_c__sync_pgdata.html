@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__common__file_utils_c__sync_pgdata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>sync_pgdata</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/common/file_utils.c:98</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのデータディレクトリ全体を永続化（同期）し、クラッシュ後の整合性を保証します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void sync_pgdata(const char *pg_data,
+                 int serverVersion,
+                 DataDirSyncMethod sync_method,
+                 bool sync_data_files)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>pg_data</code>: データディレクトリのパス。</li>
+<li><code>serverVersion</code>: サーバーバージョン（<code>pg_xlog</code> と <code>pg_wal</code> の命名規則判定に使用）。</li>
+<li><code>sync_method</code>: 同期手法（<code>DATA_DIR_SYNC_METHOD_SYNCFS</code> または <code>DATA_DIR_SYNC_METHOD_FSYNC</code>）。</li>
+<li><code>sync_data_files</code>: <code>true</code> の場合、テーブルスペース等のデータファイルも同期対象に含める。</li>
+<li>出力: なし（成功時）。エラー発生時はログ出力またはプロセス終了。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_wal</code> がシンボリックリンクである場合、別途走査対象として処理される。</li>
+<li><code>sync_method</code> が <code>SYNCFS</code> の場合、環境が <code>HAVE_SYNCFS</code> をサポートしている必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>pg_wal</code> および <code>pg_tblspc</code> のパスを構築し、<code>pg_wal</code> がシンボリックリンクかどうかを <code>lstat</code> で判定する。 2. **同期処理の分岐**:</p>
+<ul>
+<li><code>DATA_DIR_SYNC_METHOD_SYNCFS</code>: <code>do_syncfs</code> を使用。データディレクトリ、テーブルスペース、およびシンボリックリンクである <code>pg_wal</code> に対してファイルシステム単位の同期を実行する。</li>
+<li><code>DATA_DIR_SYNC_METHOD_FSYNC</code>: <code>walkdir</code> を使用。</li>
+<li>オプションで <code>pre_sync_fname</code> を呼び出し、カーネルへ同期のヒントを通知する。</li>
+<li><code>fsync_fname</code> を呼び出し、各ファイルに対して <code>fsync</code> を実行する。<code>sync_data_files</code> が <code>false</code> の場合は <code>base</code> ディレクトリを除外する。</li>
+<p>3. **順序の保証**: <code>pg_wal</code> やテーブルスペースがシンボリックリンクの場合、メインの走査とは別に個別に同期処理を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>initdb</code>, <code>pg_basebackup</code>, <code>pg_checksums</code>, <code>pg_combinebackup</code>, <code>pg_rewind</code> 等のフロントエンドツール。</li>
+<li>呼び出し先: <code>do_syncfs</code>, <code>walkdir</code>, <code>pre_sync_fname</code>, <code>fsync_fname</code>, <code>lstat</code>, <code>opendir</code>, <code>readdir</code>, <code>closedir</code>, <code>psprintf</code>, <code>pfree</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DataDirSyncMethod</code>: 同期手法を定義する列挙型。</li>
+<li><code>struct dirent</code>: ディレクトリ走査に使用。</li>
+<li><code>struct stat</code>: ファイル属性の取得に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>syncfs</code> がサポートされていない環境で <code>SYNCFS</code> 手法を選択した場合、エラーを出力して終了する。</li>
+<li>ディレクトリのオープンや読み取りに失敗した場合、エラーログを出力する。</li>
+<li><code>pg_tblspc</code> 内のディレクトリが複数回 <code>fsync</code> される可能性があるが、これは許容される設計となっている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>FRONTEND</code> マクロが定義されている環境でのみ有効です。</li>
+<li><code>pg_wal</code> の命名変更（<code>pg_xlog</code> からの移行）を考慮したパス構築を行っています。</li>
+<li><code>fsync</code> の順序はクラッシュ耐性を維持するために重要であり、変更時はディレクトリのメタデータ永続化順序に注意してください。</li>
+</ul></body></html>

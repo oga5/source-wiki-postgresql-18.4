@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__postgres_fdw__connection_c__pgfdw_get_cleanup_result.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgfdw_get_cleanup_result</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/postgres_fdw/connection.c:1615</code></li>
+</ul>
+<h2>目的</h2>
+<p>リモートの PostgreSQL サーバーから送信される残りのクエリ結果を、タイムアウト制限付きで安全に読み取り、破棄または取得する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
+                              TimestampTz retrycanceltime,
+                              PGresult **result,
+                              bool *timed_out)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: リモート接続用の <code>PGconn</code> オブジェクト。</li>
+<li><code>endtime</code>: 処理を打ち切る絶対時刻。</li>
+<li><code>retrycanceltime</code>: キャンセル要求を再送する時刻。</li>
+<li>**出力**:</li>
+<li><code>result</code>: 最後に受信した <code>PGresult</code> を格納（成功時）。</li>
+<li><code>timed_out</code>: タイムアウトが発生したかどうかを示すフラグ。</li>
+<li>**戻り値**: 失敗（接続エラーまたはタイムアウト）した場合は <code>true</code>、成功した場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>PG_TRY</code> ブロック内で実行され、エラー発生時には <code>last_res</code> が確実に解放される。</li>
+<li>処理中に <code>CHECK_FOR_INTERRUPTS()</code> が呼び出され、割り込みが許容される。</li>
+<li><code>pgfdw_we_cleanup_result</code> が未初期化の場合、初回実行時に <code>WaitEventExtensionNew</code> で初期化される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>PQisBusy</code> が真の間、ループして入力を待機する。 2. 現在時刻が <code>endtime</code> を超えた場合、<code>timed_out</code> を設定して終了する。 3. 現在時刻が <code>retrycanceltime</code> を超えた場合、<code>libpqsrv_cancel</code> を呼び出し、再送間隔を指数的に増加させる。 4. <code>WaitLatchOrSocket</code> を使用して、ソケットの読み取り準備ができるまで待機する。 5. ソケットからデータが読み込める場合、<code>PQconsumeInput</code> で入力を消費する。 6. <code>PQgetResult</code> が <code>NULL</code> を返すまで結果を読み込み、直前の結果を <code>PQclear</code> で解放しながら最新の結果を保持する。 7. 終了時に <code>failed</code> が真であれば保持していた結果を解放し、偽であれば <code>result</code> に格納して呼び出し元へ渡す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/postgres_fdw/connection.c</code> 内の複数箇所（行1486, 1578付近）で、クリーンアップ処理の一部として呼び出される。</li>
+<li>**呼び出し先**: <code>PQisBusy</code>, <code>GetCurrentTimestamp</code>, <code>libpqsrv_cancel</code>, <code>TimestampTzPlusMilliseconds</code>, <code>TimestampDifferenceMilliseconds</code>, <code>WaitLatchOrSocket</code>, <code>ResetLatch</code>, <code>CHECK_FOR_INTERRUPTS</code>, <code>PQconsumeInput</code>, <code>PQgetResult</code>, <code>PQclear</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: <code>libpq</code> の接続ハンドル。</li>
+<li><code>PGresult</code>: クエリ結果を保持する構造体。</li>
+<li><code>TimestampTz</code>: PostgreSQL のタイムスタンプ型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PQconsumeInput</code> が失敗した場合、接続エラーとして <code>failed = true</code> を返す。</li>
+<li><code>endtime</code> に達した場合、<code>timed_out = true</code> となり、処理を中断する。</li>
+<li>割り込み（<code>CHECK_FOR_INTERRUPTS</code>）が発生した場合、<code>PG_CATCH</code> ブロックにより <code>last_res</code> が解放され、例外が再スローされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>postgres_fdw</code> における接続のクリーンアップ状態を管理する重要な関数である。</li>
+<li><code>retrycanceltime</code> の更新ロジックは、キャンセル要求の過度な発行を防ぐための指数バックオフを採用している。</li>
+<li><code>pgfdw_we_cleanup_result</code> はグローバルな待機イベント変数であり、競合や初期化順序に注意すること。</li>
+</ul></body></html>

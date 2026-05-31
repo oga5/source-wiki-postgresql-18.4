@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpython/plpy_exec.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/plpython/plpy_exec.c</h1>
+<h2>概要</h2>
+<p><code>plpy_exec.c</code> は、PostgreSQL の PL/Python における Python コード実行の心臓部です。SQL 関数やトリガーとして呼び出された Python コードの実行環境を構築し、PostgreSQL と Python 間のデータ変換、SPI（Server Programming Interface）を介したクエリ実行、およびエラーハンドリングを統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>plpy_procedure.c</code> がプロシージャの定義やキャッシュを管理するのに対し、本ファイルは実行時のコンテキスト（引数、戻り値、SRF 状態）を管理します。<code>plpy_spi.c</code> と連携してデータベース操作を行い、<code>plpy_typeio.c</code> を利用して型変換を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数実行:** <code>PLy_exec_function</code> を通じて、標準関数および集合を返す関数（SRF）の実行を制御する。</li>
+<li>**トリガー実行:** <code>PLy_exec_trigger</code> を通じて、トリガーデータの構築、Python への引き渡し、および戻り値（SKIP/MODIFY 等）の処理を行う。</li>
+<li>**引数管理:** 再帰呼び出しに対応するため、プロシージャのグローバル辞書内の引数状態をスタック（<code>PLySavedArgs</code>）で管理する。</li>
+<li>**リソース保護:** <code>PG_TRY/PG_CATCH</code> ブロックにより、Python 実行中のエラー発生時に SPI 接続の切断やメモリの解放を保証する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PLy_exec_function</code>: SQL 関数呼び出しのメインエントリーポイント。</li>
+<li><code>PLy_exec_trigger</code>: トリガー呼び出しのメインエントリーポイント。</li>
+<li><code>PLySRFState</code>: 集合を返す関数（SRF）のイテレータ状態を保持する構造体。</li>
+<li><code>PLy_global_args_push/pop</code>: 再帰呼び出し時に Python グローバル辞書の引数を退避・復元するスタック操作関数。</li>
+<li><code>PLy_procedure_call</code>: Python コードを評価し、エラー発生時に PostgreSQL のエラーとして伝播させるラッパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLy_function_build_args</code></li>
+<li><code>PLy_function_drop_args</code></li>
+<li><code>PLy_function_restore_args</code></li>
+<li><code>PLy_function_save_args</code></li>
+<li><code>PLy_global_args_pop</code></li>
+<li><code>PLy_global_args_push</code></li>
+<li><code>PLy_modify_tuple</code></li>
+<li><code>PLy_trigger_build_args</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化:** <code>PLy_global_args_push</code> で現在の引数状態をスタックに退避。 2.  **実行準備:** <code>PLy_function_build_args</code> または <code>PLy_trigger_build_args</code> で、PostgreSQL の <code>FunctionCallInfo</code> から Python オブジェクトを生成。 3.  **Python 実行:** <code>PLy_procedure_call</code> が <code>PyEval_EvalCode</code> を呼び出し、Python インタプリタ上でコードを実行。 4.  **結果変換:** 戻り値を <code>PLy_output_convert</code> で PostgreSQL の <code>Datum</code> に変換。 5.  **クリーンアップ:** <code>PG_FINALLY</code> または <code>PG_CATCH</code> ブロックで、SPI の終了処理、スタックのポップ、および Python オブジェクトの参照カウント（<code>Py_DECREF</code>）を適切に処理。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>executor/spi.h</code>: PostgreSQL のコア機能および SPI。</li>
+<li><code>plpy_procedure.h</code>: プロシージャ定義構造体。</li>
+<li><code>plpy_subxactobject.h</code>: サブトランザクション管理。</li>
+<li><code>plpy_util.h</code>, <code>plpy_elog.h</code>: ユーティリティおよびエラー報告。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>plpy_exec.h</code></li>
+<li><code>plpy_main.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>plpy_spi.c</code>: SPI を介した SQL 実行の詳細。</li>
+<li><code>plpy_typeio.c</code>: PostgreSQL 型と Python 型の相互変換ロジック。</li>
+<li><code>plpy_procedure.c</code>: プロシージャのコンパイルとキャッシュ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰呼び出し:** PL/Python は関数内で別の PL/Python 関数を呼ぶことが可能です。<code>PLy_global_args_push/pop</code> は、この再帰時にグローバル辞書 <code>proc-&gt;globals</code> が汚染されないようにするための重要なメカニズムです。</li>
+<li>**メモリ管理:** Python オブジェクトの参照カウント管理と PostgreSQL のメモリコンテキスト管理が混在しています。<code>PG_TRY</code> ブロック内での <code>Py_DECREF</code> 漏れはメモリリークに直結するため、<code>PG_CATCH</code> での解放処理が厳密に行われています。</li>
+<li>**SRF の挙動:** SRF は複数回呼び出されるため、<code>PLySRFState</code> を用いてイテレータの状態を保持しています。<code>MemoryContextRegisterResetCallback</code> を使用して、関数終了時に確実にイテレータが解放されるよう設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLySRFState.html" target="wiki-view"><code>PLySRFState</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_exec_function.html" target="wiki-view"><code>PLy_exec_function</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_exec_trigger.html" target="wiki-view"><code>PLy_exec_trigger</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_function_build_args.html" target="wiki-view"><code>PLy_function_build_args</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_function_save_args.html" target="wiki-view"><code>PLy_function_save_args</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_function_restore_args.html" target="wiki-view"><code>PLy_function_restore_args</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_function_drop_args.html" target="wiki-view"><code>PLy_function_drop_args</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_global_args_push.html" target="wiki-view"><code>PLy_global_args_push</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_global_args_pop.html" target="wiki-view"><code>PLy_global_args_pop</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_trigger_build_args.html" target="wiki-view"><code>PLy_trigger_build_args</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_modify_tuple.html" target="wiki-view"><code>PLy_modify_tuple</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_exec_c__PLy_procedure_call.html" target="wiki-view"><code>PLy_procedure_call</code></a></li>
+</ul></body></html>

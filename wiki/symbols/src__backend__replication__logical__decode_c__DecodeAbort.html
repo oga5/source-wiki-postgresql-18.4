@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__decode_c__DecodeAbort.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DecodeAbort</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/decode.c:837</code></li>
+</ul>
+<h2>目的</h2>
+<p>WAL（Write-Ahead Log）のトランザクションアボートレコードを処理し、論理デコーディングのコンテキストにおいて該当トランザクションの破棄またはロールバックを実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
+                        xl_xact_parsed_abort *parsed, TransactionId xid,
+                        bool two_phase)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ctx</code>: 論理デコーディングのコンテキスト。</li>
+<li><code>buf</code>: WAL レコードと LSN 範囲を保持するバッファ。</li>
+<li><code>parsed</code>: 解析済みのトランザクションアボート情報。</li>
+<li><code>xid</code>: アボート対象のトランザクション ID。</li>
+<li><code>two_phase</code>: 2フェーズコミット（2PC）のトランザクションかどうかを示すフラグ。</li>
+<li>**出力**: なし（副作用として <code>reorderbuffer</code> の状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>parsed</code> には有効なアボート時刻およびサブトランザクション情報が含まれている必要がある。</li>
+<li><code>ctx-&gt;reorder</code> が初期化されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メタデータ抽出**: レコードからオリジン情報（<code>origin_id</code>, <code>origin_lsn</code>）およびアボート時刻を特定する。 2. **フィルタリング判定**: <code>DecodeTXNNeedSkip</code> を呼び出し、当該トランザクションを処理対象とするか判定する。 3. **処理の分岐**:</p>
+<ul>
+<li><code>two_phase</code> が真かつスキップ対象外の場合: <code>ReorderBufferFinishPrepared</code> を呼び出し、準備済みトランザクションのロールバックを完了させる。</li>
+<li>それ以外の場合:</li>
+<li><code>parsed-&gt;subxacts</code> に含まれるすべてのサブトランザクションに対して <code>ReorderBufferAbort</code> を実行。</li>
+<li>メイントランザクション（<code>xid</code>）に対して <code>ReorderBufferAbort</code> を実行。</li>
+<p>4. **統計更新**: <code>UpdateDecodingStats</code> を呼び出し、デコーディング統計を更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/decode.c:270</code>（<code>LogicalDecodingProcessRecord</code> 内のディスパッチ処理から呼び出される）。</li>
+<li>**呼び出し先**:</li>
+<li><code>DecodeTXNNeedSkip</code></li>
+<li><code>ReorderBufferFinishPrepared</code></li>
+<li><code>ReorderBufferAbort</code></li>
+<li><code>UpdateDecodingStats</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogicalDecodingContext</code>: デコーディングの全体状態。</li>
+<li><code>XLogRecordBuffer</code>: WAL レコードの物理構造。</li>
+<li><code>xl_xact_parsed_abort</code>: アボートレコードの解析済みデータ。</li>
+<li><code>ReorderBuffer</code>: 変更を蓄積するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>two_phase</code> が真の場合、準備済みトランザクションの終了処理が行われるが、スキップ対象の場合は何も行われない。</li>
+<li>サブトランザクションが存在する場合、ループ処理によりすべてのアボートが順次適用される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>xact_decode</code> の一部として呼び出されることを想定している。</li>
+<li>2フェーズコミットの処理パスと通常のアボート処理パスが明確に分かれているため、変更時は両方の整合性に注意すること。</li>
+</ul></body></html>

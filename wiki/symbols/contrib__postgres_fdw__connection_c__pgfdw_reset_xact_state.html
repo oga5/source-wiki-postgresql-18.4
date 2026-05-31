@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__postgres_fdw__connection_c__pgfdw_reset_xact_state.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgfdw_reset_xact_state</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/postgres_fdw/connection.c:1372</code></li>
+</ul>
+<h2>目的</h2>
+<p>リモートサーバーとの接続状態（<code>ConnCacheEntry</code>）におけるトランザクション深度をリセットし、必要に応じて接続の破棄を行うことで、ローカルのトランザクション終了とリモート側の状態を同期させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgfdw_reset_xact_state(ConnCacheEntry *entry, bool toplevel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>entry</code>: 更新対象の接続キャッシュエントリへのポインタ。</li>
+<li><code>toplevel</code>: 現在のトランザクションがトップレベルであるかを示すフラグ。<code>true</code> の場合はトランザクション全体、<code>false</code> の場合はサブトランザクションの終了を意味する。</li>
+<li>戻り値: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>entry</code> は有効な <code>ConnCacheEntry</code> を指している必要がある。</li>
+<li><code>toplevel</code> が <code>true</code> の場合、<code>entry-&gt;xact_depth</code> は 0 にリセットされる。</li>
+<li><code>toplevel</code> が <code>false</code> の場合、<code>entry-&gt;xact_depth</code> はデクリメントされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>toplevel</code> が <code>true</code> の場合:</p>
+<ul>
+<li><code>entry-&gt;xact_depth</code> を 0 に設定する。</li>
+<li>以下のいずれかの条件に該当する場合、接続が正常なアイドル状態ではないと判断し、<code>disconnect_pg_server(entry)</code> を呼び出して接続を破棄する。</li>
+<li><code>PQstatus(entry-&gt;conn)</code> が <code>CONNECTION_OK</code> ではない。</li>
+<li><code>PQtransactionStatus(entry-&gt;conn)</code> が <code>PQTRANS_IDLE</code> ではない。</li>
+<li><code>entry-&gt;changing_xact_state</code> が真である。</li>
+<li><code>entry-&gt;invalidated</code> が真である。</li>
+<li><code>entry-&gt;keep_connections</code> が偽である。</li>
+<p>2. <code>toplevel</code> が <code>false</code> の場合:</p>
+<li><code>entry-&gt;xact_depth</code> を 1 減算する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>contrib/postgres_fdw/connection.c</code> 内の複数の箇所（<code>pgfdw_xact_callback</code> や <code>pgfdw_subxact_callback</code> 等のトランザクションイベントフックに関連する箇所）から呼び出される。</li>
+<li>呼び出し先: <code>disconnect_pg_server</code>（条件合致時）、<code>PQstatus</code>、<code>PQtransactionStatus</code>（libpq 関数）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ConnCacheEntry</code>: 接続状態、トランザクション深度、接続の有効性フラグを保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>entry-&gt;conn</code> が既に閉じられている、または無効な状態である場合、<code>PQstatus</code> 等の libpq 関数がエラーを返す可能性がある。</li>
+<li><code>xact_depth</code> が 0 の状態で <code>toplevel</code> が <code>false</code> として呼び出された場合の挙動については、ソースコード上での明示的なガードは確認できない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、ローカルのトランザクション終了時にリモート接続をクリーンな状態に戻すための重要なフックである。</li>
+<li>接続破棄の条件（<code>PQtransactionStatus</code> 等）は、リモートサーバーとの通信整合性を維持するために厳密に管理されている。変更時は <code>postgres_fdw</code> のトランザクション管理ロジックへの影響を考慮すること。</li>
+</ul></body></html>

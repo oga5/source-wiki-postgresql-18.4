@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__tablefunc__tablefunc_c__get_crosstab_tuplestore.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>get_crosstab_tuplestore</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/tablefunc/tablefunc.c:790</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQL クエリの結果セットを SPI (Server Programming Interface) 経由で取得し、指定されたハッシュテーブルに基づいてクロス集計（横持ち変換）を行い、結果を <code>Tuplestore</code> に格納して返却する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static Tuplestorestate *get_crosstab_tuplestore(
+    char *sql,
+    HTAB *crosstab_hash,
+    TupleDesc tupdesc,
+    bool randomAccess
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>sql</code>: 実行するソースデータ取得用クエリ。</li>
+<li><code>crosstab_hash</code>: カテゴリ名と属性インデックスを保持するハッシュテーブル。</li>
+<li><code>tupdesc</code>: 出力タプルの構造定義。</li>
+<li><code>randomAccess</code>: <code>Tuplestore</code> のランダムアクセス可否。</li>
+<li>**出力**:</li>
+<li>構築された <code>Tuplestorestate</code> へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>入力 SQL は最低 3 列（rowname, category, value）を返す必要がある。</li>
+<li>4 列以上の場合は、第 1 列が <code>rowname</code>、最後から 2 番目が <code>category</code>、最後が <code>value</code> として扱われる。</li>
+<li><code>crosstab_hash</code> にはカテゴリ情報が格納されている必要がある。</li>
+<li>出力タプルの列数は <code>(ソース列数 - 2) + カテゴリ数</code> と一致しなければならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>tuplestore_begin_heap</code> でストレージを初期化し、<code>SPI_connect</code> でクエリ実行環境を確立する。 2. <code>SPI_execute</code> で SQL を実行し、結果セットを走査する。 3. <code>rowname</code> が変化するたびに、蓄積された <code>values</code> 配列から <code>BuildTupleFromCStrings</code> を用いてタプルを生成し、<code>tuplestore_puttuple</code> で格納する。 4. 各行の <code>category</code> をハッシュテーブルで検索し、対応する列インデックスに <code>value</code> を配置する。 5. 最終行の処理後、<code>SPI_finish</code> を呼び出し、構築した <code>Tuplestorestate</code> を返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/tablefunc/tablefunc.c</code> 内の <code>crosstab_hash</code> 関数（683行目付近）。</li>
+<li>**呼び出し先**: <code>SPI_connect</code>, <code>SPI_execute</code>, <code>SPI_getvalue</code>, <code>SPI_finish</code>, <code>tuplestore_begin_heap</code>, <code>tuplestore_puttuple</code>, <code>BuildTupleFromCStrings</code>, <code>crosstab_HashTableLookup</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Tuplestorestate</code>: 結果セットを保持するメモリ/ディスク上の構造。</li>
+<li><code>HTAB</code>: カテゴリ管理用ハッシュテーブル。</li>
+<li><code>TupleDesc</code>: タプルのメタデータ。</li>
+<li><code>crosstab_cat_desc</code>: カテゴリ名と出力インデックスのマッピング情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ERRCODE_CARDINALITY_VIOLATION**: カテゴリハッシュが空の場合。</li>
+<li>**ERRCODE_INVALID_PARAMETER_VALUE**: ソースクエリの列数が 3 未満の場合。</li>
+<li>**ERRCODE_DATATYPE_MISMATCH**: 出力タプルの列数が計算値と一致しない場合。</li>
+<li>**SPI エラー**: <code>SPI_finish</code> が失敗した場合に <code>elog(ERROR)</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SPI</code> を使用するため、呼び出し元のクエリコンテキストに依存する。</li>
+<li><code>values</code> 配列のメモリ管理には <code>palloc0</code> を使用しており、行のフラッシュ時に <code>xpfree</code> で個別に解放している。</li>
+<li>入力 SQL の順序（<code>ORDER BY</code>）が正しくない場合、クロス集計結果が不完全になる可能性がある。</li>
+</ul></body></html>

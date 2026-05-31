@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_prewarm__autoprewarm_c__autoprewarm_main.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>autoprewarm_main</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pg_prewarm/autoprewarm.c:166</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのバックグラウンドワーカーとして、共有バッファ状態の永続化（ダンプ）と、サーバー起動時のバッファ再構築（プリウォーム）を管理するメインループを実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void autoprewarm_main(Datum main_arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>Datum main_arg</code>（バックグラウンドワーカーの引数）。</li>
+<li>**出力**: なし（関数は終了またはプロセス終了までループする）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>apw_state</code>（共有メモリ上の制御構造体）が初期化されていること。</li>
+<li>実行時に <code>SIGTERM</code>、<code>SIGHUP</code>、<code>SIGUSR1</code> に対するシグナルハンドラが設定されていること。</li>
+<li>既に別の <code>autoprewarm</code> ワーカーが稼働している場合、本関数は即座に終了する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: シグナルハンドラを設定し、共有メモリ領域へアタッチする。<code>before_shmem_exit</code> に <code>apw_detach_shmem</code> を登録する。 2. **排他制御**: 共有メモリ内の <code>bgworker_pid</code> を確認し、自身が唯一のリーダーワーカーであることを保証する。 3. **初回ロード**: 共有メモリが新規作成された場合、<code>apw_load_buffers()</code> を呼び出し、既存のダンプファイルからバッファ情報を読み込む。 4. **メインループ**: <code>ShutdownRequestPending</code> が真になるまで以下を繰り返す。</p>
+<ul>
+<li><code>SIGHUP</code> 受信時に設定ファイルを再読み込みする。</li>
+<li><code>autoprewarm_interval</code> に基づき、次回のダンプ時刻まで <code>WaitLatch</code> で待機する。</li>
+<li>待機時間が経過した場合、<code>apw_dump_now(true, false)</code> を呼び出し、現在のバッファ状態をファイルへ書き出す。</li>
+<p>5. **終了処理**: ループ終了時、シャットダウン要求が保留中でなければ <code>apw_dump_now(true, true)</code> を呼び出し、最終的な状態を保存する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: バックグラウンドワーカーの起動プロセス（<code>bgworker</code> フレームワーク経由）。</li>
+<li>**呼び出し先**: </li>
+<li><code>apw_init_shmem</code>, <code>apw_detach_shmem</code></li>
+<li><code>apw_load_buffers</code></li>
+<li><code>apw_dump_now</code></li>
+<li><code>ProcessConfigFile</code></li>
+<li><code>WaitLatch</code>, <code>ResetLatch</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>AutoPrewarmSharedState</code>（共有メモリ上の制御構造体）</li>
+<li><code>MyProcPid</code>（現在のプロセスID）</li>
+<li><code>MyLatch</code>（プロセス待機用ラッチ）</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**多重起動**: 既にワーカーが稼働している場合、ログを出力して終了する。</li>
+<li>**シャットダウン中の割り込み**: <code>apw_load_buffers()</code> 中にシャットダウン要求が発生した場合、不完全な状態でのダンプを防ぐため、ループ後の最終ダンプをスキップする。</li>
+<li>**間隔設定**: <code>autoprewarm_interval &lt;= 0</code> の場合、定期的なダンプを行わず、シャットダウン時のみダンプを行う待機モードへ移行する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリーダーワーカーとして動作する。個別のデータベースに対するプリウォーム処理は、本関数から起動される別のワーカー（<code>autoprewarm_database_main</code>）が担当する。</li>
+<li><code>apw_dump_now</code> の呼び出しは、共有メモリのロック状態やシャットダウンのタイミングに依存するため、変更時は排他制御の整合性に注意すること。</li>
+</ul></body></html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/xml2/xpath.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/xml2/xpath.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの<code>contrib/xml2</code>モジュールにおいて、<code>libxml2</code>を用いたDOMベースのXPath評価機能を提供するインターフェースです。XMLドキュメントに対するクエリ実行、ノードセットのテキスト変換、およびSPI（Server Programming Interface）を利用したテーブル関数を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/xml2</code>のコアエンジンとして機能します。XMLのパースからXPathのコンパイル、評価、結果のPostgreSQLデータ型への変換までを一元管理し、<code>xslt_proc.c</code>などの他ファイルが利用する共通の初期化・エラーハンドリング基盤を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**XPath評価**: <code>libxml2</code>のXPathエンジンをラップし、SQLから呼び出し可能な関数群（<code>xpath_nodeset</code>, <code>xpath_string</code>等）を実装する。</li>
+<li>**データ変換**: XMLノードセットやXPath評価結果を、PostgreSQLの<code>text</code>型へシリアライズする。</li>
+<li>**リソース管理**: <code>xpath_workspace</code>構造体を通じた、パース済みドキュメントやコンテキストのメモリ管理とクリーンアップ。</li>
+<li>**テーブル関数**: <code>xpath_table</code>を通じた、外部テーブルデータに対するXPathクエリのバッチ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>xpath_workspace</code>: 評価中のXMLドキュメント、XPathコンテキスト、結果オブジェクトを保持する管理構造体。</li>
+<li><code>pgxml_xpath()</code>: XPath評価のメインルーチン。<code>PG_TRY/CATCH</code>ブロック内で安全に評価を実行する。</li>
+<li><code>xpath_table()</code>: SPIを使用してテーブルからXMLを取得し、複数のXPathクエリを適用して結果をセットとして返す関数。</li>
+<li><code>pgxml_parser_init()</code>: <code>libxml2</code>の初期化とPostgreSQLのエラーハンドリングを統合する初期化関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cleanup_workspace</code></li>
+<li><code>pgxml_parser_init</code></li>
+<li><code>pgxml_result_to_text</code></li>
+<li><code>pgxml_texttoxmlchar</code></li>
+<li><code>pgxml_xpath</code></li>
+<li><code>xml_encode_special_chars</code></li>
+<li><code>xpath_bool</code></li>
+<li><code>xpath_list</code></li>
+<li><code>xpath_nodeset</code></li>
+<li><code>xpath_number</code></li>
+<li><code>xpath_string</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pgxml_parser_init</code>により<code>libxml2</code>のパーサーを準備。 2. **評価**: <code>pgxml_xpath</code>がXML文字列をDOMツリーに変換し、XPath式をコンパイルして評価を実行。 3. **変換**: <code>pgxml_result_to_text</code>が<code>xmlXPathObjectPtr</code>をPostgreSQLの<code>text</code>型に変換。ノードセットの場合は<code>pgxmlNodeSetToText</code>が再帰的にダンプを行う。 4. **終了**: <code>cleanup_workspace</code>により、<code>libxml2</code>のメモリ領域を解放し、<code>pg_xml_done</code>でエラーコンテキストを閉じる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>fmgr.h</code>, <code>utils/xml.h</code>: PostgreSQLのコア機能およびXMLサポート。</li>
+<li><code>executor/spi.h</code>: SQLクエリ実行のためのSPIインターフェース。</li>
+<li><code>libxml/*.h</code>: <code>libxml2</code>のDOMおよびXPath操作用ヘッダー。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>libxml/parserInternals.h</code></li>
+<li><code>libxml/tree.h</code></li>
+<li><code>libxml/xmlerror.h</code></li>
+<li><code>libxml/xmlmemory.h</code></li>
+<li><code>libxml/xpath.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/xml2/xslt_proc.c</code>: 本ファイルで定義された<code>pgxml_parser_init</code>を利用してXSLT処理を行う。</li>
+<li><code>src/backend/utils/adt/xml.c</code>: PostgreSQL本体のXMLサポート機能。本モジュールはこれとは別に<code>libxml2</code>を直接操作する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>libxml2</code>のオブジェクトはPostgreSQLのメモリコンテキストとは独立しているため、<code>cleanup_workspace</code>による明示的な解放が必須です。</li>
+<li>**エラーハンドリング**: <code>PG_TRY/CATCH</code>ブロック内で<code>libxml2</code>の操作を行うことで、パースエラー時にPostgreSQLの<code>elog(ERROR)</code>へ適切に遷移させています。</li>
+<li>**注意点**: <code>xpath_table</code>は非常に強力ですが、SPI経由でテーブルを読み込むため、大規模なデータセットに対してはパフォーマンスへの影響を考慮する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_workspace.html" target="wiki-view"><code>xpath_workspace</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__pgxml_parser_init.html" target="wiki-view"><code>pgxml_parser_init</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xml_encode_special_chars.html" target="wiki-view"><code>xml_encode_special_chars</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__pgxml_texttoxmlchar.html" target="wiki-view"><code>pgxml_texttoxmlchar</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_nodeset.html" target="wiki-view"><code>xpath_nodeset</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_list.html" target="wiki-view"><code>xpath_list</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_string.html" target="wiki-view"><code>xpath_string</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_number.html" target="wiki-view"><code>xpath_number</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__xpath_bool.html" target="wiki-view"><code>xpath_bool</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__pgxml_xpath.html" target="wiki-view"><code>pgxml_xpath</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__cleanup_workspace.html" target="wiki-view"><code>cleanup_workspace</code></a></li>
+<li><a href="../../symbols/contrib__xml2__xpath_c__pgxml_result_to_text.html" target="wiki-view"><code>pgxml_result_to_text</code></a></li>
+</ul></body></html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__buffer__localbuf_c__GetLocalVictimBuffer.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GetLocalVictimBuffer</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/buffer/localbuf.c:222</code></li>
+</ul>
+<h2>目的</h2>
+<p>一時テーブル用ローカルバッファが不足した際に、クロックスイープアルゴリズムを用いて置換対象となるバッファを選定し、再利用可能な状態にする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Buffer GetLocalVictimBuffer(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし</li>
+<li>**出力**: 再利用可能になったバッファの識別子（<code>Buffer</code> 型）を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>CurrentResourceOwner</code> が有効であること。</li>
+<li>ローカルバッファの全領域が使用中の場合、エラーが発生する。</li>
+<li>選択されたバッファがダーティな場合は、再利用前にディスクへフラッシュされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **クロックスイープ**: <code>nextFreeLocalBufId</code> を起点にバッファを走査する。 2. **使用カウントの減衰**: 参照カウントが 0 のバッファに対し、使用カウント（UsageCount）が 1 以上であれば減衰させ、走査を継続する。 3. **バッファの選定**: 使用カウントが 0 のバッファを発見した場合、<code>PinLocalBuffer</code> を実行してピン留めする。 4. **遅延メモリ確保**: バッファのデータ領域が未確保であれば、<code>GetLocalBufferStorage()</code> を呼び出して確保する。 5. **フラッシュと無効化**: 選択したバッファがダーティ（<code>BM_DIRTY</code>）であれば <code>FlushLocalBuffer</code> で書き出し、タグが有効（<code>BM_TAG_VALID</code>）であれば <code>InvalidateLocalBuffer</code> でハッシュテーブルから削除する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>LocalBufferAlloc</code> 内でバッファの割り当てが必要な際に呼び出される。</li>
+<li>**呼び出し先**: <code>GetLocalBufferDescriptor</code>, <code>PinLocalBuffer</code>, <code>GetLocalBufferStorage</code>, <code>FlushLocalBuffer</code>, <code>InvalidateLocalBuffer</code>, <code>pgstat_count_io_op</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LocalBufferDescriptors</code>: バッファメタデータを保持する配列。</li>
+<li><code>LocalRefCount</code>: 各バッファの参照カウント配列。</li>
+<li><code>BufferDesc</code>: バッファの状態（<code>state</code>）を管理する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**リソース枯渇**: 全てのローカルバッファがピン留めされており、走査を一周しても空きが見つからない場合、<code>ERRCODE_INSUFFICIENT_RESOURCES</code> でエラー終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はプロセスローカルなメモリ管理を行うため、共有バッファマネージャのようなロックは不要だが、<code>pg_atomic</code> を用いた状態更新が行われている点に注意すること。</li>
+<li>走査中に <code>BM_DIRTY</code> フラグを確認し、必要に応じて同期書き込みを行うため、I/O 負荷が発生する可能性がある。</li>
+</ul></body></html>

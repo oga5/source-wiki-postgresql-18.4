@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/tuplestorestate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Tuplestorestate</h1>
+<h2>概念</h2>
+<p><code>Tuplestorestate</code> は、PostgreSQLにおいてソートを伴わずに一時的にタプルを格納し、挿入された順序で再取得するための軽量な一時ストレージの内部状態を管理する構造体です。メモリ制限内でのタプル保持と、制限超過時の一時ファイル（<code>BufFile</code>）への自動的な退避を制御します。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**自動的なメモリ・ディスク管理**: 指定されたメモリ制限（<code>allowedMem</code> / <code>maxKBytes</code>）までは高速なメモリ上でタプルを保持し、超過した場合は自動的にディスクへ退避することで、メモリ不足を防ぎつつ大量のデータを透過的に扱えます。</li>
+<li>**柔軟な読み取り制御**: 複数の独立した読み取りポインタ（<code>TSReadPointer</code>）をサポートしており、前方・後方スキャンやリワインド（巻き戻し）が可能です。</li>
+<li>**カプセル化**: 外部モジュールに対しては不透明な（opaque）構造体として提供され、<code>TupleTableSlot</code> を介した抽象化されたデータ操作を実現します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/sort</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/sort/tuplestore.c#Tuplestorestate</code>**: 実際の構造体定義です。内部状態（<code>TupStoreStatus</code>）、メモリ内タプル配列（<code>memtuples</code>）、読み取りポインタ配列（<code>readptrs</code>）、一時ファイル（<code>BufFile</code>）、メモリ使用量（<code>availMem</code>, <code>allowedMem</code>）、およびタプル操作用関数ポインタ（<code>copytup</code>, <code>writetup</code>, <code>readtup</code>）などを保持します。</li>
+<li>**<code>symbol:src/include/utils/tuplestore.h#Tuplestorestate</code>**: 外部モジュール向けに公開される不透明な（opaque）構造体としての前方宣言です。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>tuplestore_begin_heap</code> などの初期化関数により <code>Tuplestorestate</code> が生成されます。 2. **タプルの挿入**: <code>tuplestore_puttupleslot</code> などを通じてタプルを受け取ります。</p>
+<ul>
+<li>初期状態（<code>TSS_INMEM</code>）では、タプルはメモリ内の <code>memtuples</code> 配列に保持されます。</li>
+<li>メモリ制限（<code>allowedMem</code>）を超過すると、全タプルを一時ファイル（<code>BufFile</code>）へ書き出し、<code>TSS_WRITEFILE</code> 状態へ移行します。</li>
+<p>3. **タプルの読み取り**: <code>tuplestore_gettupleslot</code> を通じて、メモリまたはディスクからタプルを返します。</p>
+<li>読み取りポインタごとに独立した位置が管理され、ディスク状態の場合は <code>BufFileSeek</code> を使用して対象位置へ移動します。</li>
+<p>4. **トリミング**: <code>tuplestore_trim</code> により、不要になった古いタプルをメモリから解放します。 5. **破棄**: <code>tuplestore_end()</code> によって構造体が破棄され、一時ファイルやメモリなどのリソースが解放されます。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**タプル形式の制限**: 格納されるタプルは <code>MinimalTuple</code> 形式であり、システム列（<code>ctid</code> 等）は保持されません。また、<code>copytup</code> でコピーされるタプルは、単一の <code>palloc</code> チャンクで表現される「フラット」な形式である必要があります。</li>
+<li>**メモリ管理の同期**: <code>availMem</code> は、メモリに格納されたタプルの実使用量と同期して正確に増減されなければなりません。</li>
+<li>**状態と配列の整合性**: <code>memtuples</code> 配列は <code>TSS_INMEM</code> 状態でのみ使用されます。</li>
+<li>**無効ポインタの回避**: <code>memtupdeleted</code> が正の値の場合、<code>memtuples</code> の先頭部分は無効なポインタを指しているため、アクセスしてはなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**直接アクセスの禁止**: <code>Tuplestorestate</code> は外部ヘッダ（<code>tuplestore.h</code>）では不透明（opaque）な構造体として定義されているため、外部モジュール（<code>contrib/amcheck</code> や <code>contrib/dblink</code> など）から直接メンバにアクセスすることはできず、必ず公開APIを経由する必要があります。</li>
+<li>**ディスク容量不足**: メモリ制限を超えてディスク（<code>BufFile</code>）へ退避する際、ディスク容量が不足していると書き込みエラーが発生します。</li>
+<li>**トリミングによるポインタ無効化**: <code>tuplestore_trim</code> を実行すると、呼び出し元が保持しているタプルポインタが無効化される可能性があります。</li>
+<li>**無効なスキャン**: 読み取りポインタの管理において、無効なポインタへのアクセスや範囲外のスキャンは未定義の動作を引き起こします。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/sort/tuplestore.c</code>：<code>Tuplestorestate</code> の具体的なメンバ定義、状態遷移（<code>TSS_INMEM</code>, <code>TSS_WRITEFILE</code> など）、および内部アルゴリズムが実装されています。</li>
+<li><code>src/include/utils/tuplestore.h</code>：外部モジュール向けに提供されている公開APIおよび不透明な構造体の宣言が定義されています。</li>
+</ul></body></html>

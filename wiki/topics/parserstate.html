@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/parserstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParserState</h1>
+<h2>概念</h2>
+<p><code>ParserState</code>（または <code>parser_state</code>）は、PostgreSQLのコードベースにおいて、テキストやソースコードの解析（パース）処理中に、現在の解析位置や構文状態を保持・管理するために用いられるデータ構造です。</p>
+<p>本トピックが対象とする範囲には、以下の2つの異なる文脈における状態管理構造体が含まれます。 1. **カスタムパーサーの解析状態管理**: PostgreSQLのテスト用カスタムパーサー（<code>test_parser</code>）において、解析対象のテキスト、長さ、および現在の走査位置を追跡する構造体。 2. **コード整形ツールの構文状態管理**: ソースコード整形ツール（<code>pg_bsd_indent</code>）において、インデントレベル、括弧のネスト、宣言の有無、コメントの配置などの構文解析状態を保持する構造体。</p>
+<h2>なぜ重要か</h2>
+<p>解析処理は本質的に状態を持つ（stateful）処理であり、トークンの切り出しや構文要素の判別を行うためには、現在どこまで解析が進んでいるか、あるいはどのような構文的文脈（宣言内、括弧内など）にあるかという情報を保持し続ける必要があります。</p>
+<ul>
+<li><code>test_parser</code> においては、ステートレスな関数呼び出し間で解析位置（<code>pos</code>）を維持し、一貫したトークン抽出を行うために不可欠です。</li>
+<li><code>pg_bsd_indent</code> においては、複雑なC言語ソースコードのインデントや整形ルールを適用するために、ネストレベルや直前のトークンなどの詳細な構文コンテキストを追跡する役割を担います。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/test/modules/test_parser</code></li>
+<li><code>module:src/tools/pg_bsd_indent</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/test/modules/test_parser/test_parser.c#ParserState</code>**:</li>
+<p>解析対象テキスト（<code>buffer</code>）、その長さ（<code>len</code>）、現在の解析位置（<code>pos</code>）を保持する <code>struct</code>。</p>
+<li>**<code>symbol:src/tools/pg_bsd_indent/indent_globs.h#parser_state</code>**:</li>
+<p>インデントレベル、スタック情報、括弧のネストレベル、各種フラグなど、コード整形に必要な膨大な状態を保持する <code>struct</code>。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>それぞれの文脈における処理の流れは以下の通りです。</p>
+<h3><code>test_parser</code> における流れ</h3>
+<p>1. **初期化**: <code>testprs_start</code> 関数が呼び出され、<code>palloc0</code> を用いて <code>ParserState</code> のメモリを確保し、解析対象テキストと長さを設定します。 2. **解析と更新**: <code>testprs_getlexeme</code> 関数が呼び出されるたびに、<code>ParserState</code> の <code>pos</code> を起点としてテキストを走査し、トークンを抽出して <code>pos</code> を進めます。 3. **終了処理**: 解析が完了すると、<code>testprs_end</code> 関数が呼び出され、<code>pfree</code> によって <code>ParserState</code> のメモリが解放されます。</p>
+<h3><code>pg_bsd_indent</code> における流れ</h3>
+<p>1. **状態の入力**: 構文解析器（<code>lexi.c</code> や <code>parse.c</code>）がトークンを解析し、その結果や行の属性をグローバルな <code>parser_state</code> インスタンス（<code>ps</code>）の各フィールドに書き込みます。 2. **状態の参照と出力**: <code>dump_line</code> や <code>pr_comment</code> などの関数が <code>ps</code> の状態を参照し、適切なインデントや整形ルールを適用してコードを出力します。 3. **状態の保存・復元**: <code>indent.c</code> などにおいて、必要に応じて <code>transient_state</code> へのコピーや、<code>state_stack</code> を用いた状態の退避・比較が行われます。</p>
+<p>※なお、これら2つのモジュール間を跨ぐような統合されたエンドツーエンドのフローは存在しません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>test_parser</code> の <code>ParserState</code>**:</li>
+<li><code>buffer</code> は解析対象のテキストを保持する有効なメモリ領域を指す必要があります。</li>
+<li><code>pos</code> は常に <code>0</code> 以上 <code>len</code> 以下の範囲内でなければなりません。</li>
+<li>**<code>pg_bsd_indent</code> の <code>parser_state</code>**:</li>
+<li>グローバルインスタンス <code>ps</code> は、プログラム全体で共有される単一の状態として扱われます。</li>
+<li><code>p_stack</code> や <code>il</code> などの内部スタック構造は、スタックポインタ <code>tos</code> によって厳密に管理される必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**<code>test_parser</code>**:</li>
+<li><code>buffer</code> が空（<code>len</code> が 0）の場合、解析ループは直ちに終了します。</li>
+<li>メモリ管理は PostgreSQL の <code>palloc</code> / <code>pfree</code> に依存しているため、ライフサイクル外での参照や解放漏れに注意する必要があります。</li>
+<li>**<code>pg_bsd_indent</code>**:</li>
+<li>古い BSD のコードベースに由来するため、現代的なカプセル化が行われておらず、グローバル変数として直接アクセスされます。フィールドを変更する際は、<code>indent.c</code> を含む全参照箇所への影響を考慮する必要があります。</li>
+<li><code>p_stack</code> (256), <code>il</code> (64), <code>cstk</code> (32), <code>paren_indents</code> (20) などの固定長配列のサイズを超えるネストが発生した場合の挙動は定義されておらず、スタックオーバーフローの危険性があります。また、<code>procname</code> は 100 文字に制限されています。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/test/modules/test_parser/test_parser.c</code></li>
+<li><code>src/tools/pg_bsd_indent/indent_globs.h</code></li>
+</ul></body></html>

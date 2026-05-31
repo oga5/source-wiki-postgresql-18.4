@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_trgm/trgm_regexp.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_trgm/trgm_regexp.c</h1>
+<h2>概要</h2>
+<p>正規表現検索をトライグラムインデックスで高速化するための変換エンジンです。正規表現を「トライグラムの論理グラフ」に変換し、インデックスによる一次絞り込み（フィルタリング）を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_trgm</code> モジュールにおいて、正規表現演算子（<code>~</code> など）がインデックスを使用する際のバックエンドを担います。正規表現エンジンが生成する非決定性有限オートマトン（NFA）を、トライグラムベースの遷移グラフへ再構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**NFA 解析**: PostgreSQL の正規表現ライブラリから状態遷移と文字クラス（Color）を抽出。</li>
+<li>**グラフ変換**: 文字クラスベースの NFA を、トライグラムをラベルとする「拡張グラフ」へ変換。</li>
+<li>**最適化と簡略化**: 検索コストを抑えるため、高頻度トライグラムの削除や状態の統合を行い、グラフをコンパクトに圧縮。</li>
+<li>**マッチング判定**: インデックスから取得した候補に対し、グラフを用いて正規表現との整合性を判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>グラフ変換・管理</h3>
+<ul>
+<li><code>TrgmNFA</code>: 変換プロセス全体を保持するメイン構造体。</li>
+<li><code>TrgmState</code>: 拡張グラフの各状態。<code>arcs</code>（遷移）と <code>enterKeys</code>（到達可能な状態キー）を保持。</li>
+<li><code>TrgmPackedGraph</code>: 最終的な圧縮済みグラフ。インデックススキャン時に <code>trigramsMatchGraph</code> で使用。</li>
+</ul>
+<h3>変換ロジック</h3>
+<ul>
+<li><code>createTrgmNFA()</code>: 公開インターフェース。正規表現からトライグラムのリストと <code>TrgmPackedGraph</code> を生成。</li>
+<li><code>transformGraph()</code>: NFA を拡張グラフへ変換するメインループ。</li>
+<li><code>selectColorTrigrams()</code>: ペナルティに基づいて不要なトライグラムを削除し、グラフを簡略化。</li>
+<li><code>packGraph()</code>: 最終的な実行用構造体へのシリアライズ。</li>
+</ul>
+<h3>判定ロジック</h3>
+<ul>
+<li><code>trigramsMatchGraph()</code>: インデックスから得られたトライグラムの集合が、正規表現のグラフを満たすか判定する実行エンジン。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ColorTrgm</code></li>
+<li><code>ColorTrgmInfo</code></li>
+<li><code>TrgmArc</code></li>
+<li><code>TrgmArcInfo</code></li>
+<li><code>TrgmColor</code></li>
+<li><code>TrgmColorInfo</code></li>
+<li><code>TrgmNFA</code></li>
+<li><code>TrgmPackedArc</code></li>
+<li><code>TrgmPrefix</code></li>
+<li><code>TrgmState</code></li>
+<li><code>TrgmStateKey</code></li>
+<li><code>trgm_mb_char</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コンパイル**: <code>RE_compile</code> で正規表現を NFA に変換。 2. **色抽出**: <code>getColorInfo</code> で文字クラス（Color）情報を取得。 3. **グラフ構築**: <code>transformGraph</code> が幅優先探索を行い、トライグラムをラベルとした状態遷移グラフを生成。 4. **簡略化**: <code>selectColorTrigrams</code> がトライグラムの出現頻度（ペナルティ）に基づき、グラフを <code>WISH_TRGM_PENALTY</code> 以下に収まるよう状態統合・削除。 5. **パッキング**: <code>packGraph</code> でメモリ効率の良い配列形式に変換。 6. **判定**: インデックススキャン時、<code>trigramsMatchGraph</code> がビットマップ（<code>check[]</code>）を受け取り、グラフ上のパスを探索してマッチングの可否を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>regex/regexport.h</code>: PostgreSQL 正規表現ライブラリの内部構造へのアクセス。</li>
+<li><code>trgm.h</code>: 共通のトライグラム定義および <code>TrgmPackedGraph</code> 構造体。</li>
+<li><code>utils/hsearch.h</code>: グラフ構築時の状態管理（ハッシュテーブル）。</li>
+<li><code>utils/memutils.h</code>: 変換プロセスで大量に生成される一時オブジェクトのメモリ管理。</li>
+<li><code>catalog/pg_collation_d.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tsearch/ts_locale.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>trgm_op.c</code>: トライグラムの生成・ハッシュ化ロジック。</li>
+<li><code>trgm_gist.c</code> / <code>trgm_gin.c</code>: 本ファイルで生成されたグラフをインデックススキャンで利用する各インデックス実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 変換処理は <code>createTrgmNFA</code> 内で一時的なメモリコンテキストを作成して行われます。複雑な正規表現では大量のメモリを消費するため、<code>MAX_EXPANDED_STATES</code> 等の定数で上限を設けています。</li>
+<li>**不完全性**: この変換は「偽陽性（False Positive）」を許容する損失的変換です。インデックスによる絞り込み後、必ずヒープ上の実データに対して正規表現による再チェック（Recheck）が必要です。</li>
+<li>**デバッグ**: <code>TRGM_REGEXP_DEBUG</code> を有効にすると、<code>/tmp</code> に Graphviz 形式のグラフファイルが出力されます。アルゴリズムの挙動を追う際に非常に有用です。</li>
+<li>**制約**: 非常に複雑な正規表現や、トライグラムの数が <code>MAX_TRGM_COUNT</code> を超える場合は変換に失敗し、インデックスが使用されません（シーケンシャルスキャンへフォールバック）。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__trgm_mb_char.html" target="wiki-view"><code>trgm_mb_char</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmColorInfo.html" target="wiki-view"><code>TrgmColorInfo</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmColor.html" target="wiki-view"><code>TrgmColor</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmPrefix.html" target="wiki-view"><code>TrgmPrefix</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__ColorTrgm.html" target="wiki-view"><code>ColorTrgm</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmStateKey.html" target="wiki-view"><code>TrgmStateKey</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmState.html" target="wiki-view"><code>TrgmState</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmArc.html" target="wiki-view"><code>TrgmArc</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmArcInfo.html" target="wiki-view"><code>TrgmArcInfo</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__ColorTrgmInfo.html" target="wiki-view"><code>ColorTrgmInfo</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmNFA.html" target="wiki-view"><code>TrgmNFA</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_regexp_c__TrgmPackedArc.html" target="wiki-view"><code>TrgmPackedArc</code></a></li>
+</ul></body></html>

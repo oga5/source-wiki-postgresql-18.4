@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/jumblestate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>JumbleState</h1>
+<h2>概念</h2>
+<p><code>JumbleState</code> は、PostgreSQL においてクエリの構造的な同一性を識別するためのフィンガープリント（Query ID）を生成するプロセス（クエリジャンブル）において、その作業状態や中間データを保持するための構造体です。クエリツリーを走査しながら、ノード情報や定数の位置情報を収集・記録するコンテキストとして機能します。</p>
+<h2>なぜ重要か</h2>
+<p>クエリの正規化や統計情報の収集（例えば <code>pg_stat_statements</code> 拡張など）において、具体的な定数リテラルの値が異なっていても、構造的に同じクエリであれば同一の Query ID として識別する必要があります。<code>JumbleState</code> は、クエリツリーから定数リテラルの位置（<code>clocations</code>）を抽出してマスクし、構造情報のみからハッシュ値を計算するための中核的なデータ構造として重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/nodes</code></li>
+<li><code>module:src/include/parser</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/nodes/queryjumble.h#JumbleState</code>**: 構造体の実体定義。<code>jumble</code> バッファ、定数位置情報（<code>clocations</code>）、NULLノードの遅延処理用カウンタ（<code>pending_nulls</code>）などのメンバを保持します。</li>
+<li>**<code>symbol:src/include/parser/analyze.h#JumbleState</code>**: <code>post_parse_analyze_hook_type</code> などの解析フックで参照されるための <code>typedef</code> 宣言。実体は <code>nodes/queryjumble.h</code> に定義されています。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. クエリの解析完了後、<code>post_parse_analyze_hook</code> などを介して <code>JumbleState</code> が初期化され、処理に渡されます。 2. クエリツリー（<code>Query</code>）の再帰的な走査が行われ、ノードの型や構造情報が <code>JumbleState</code> の <code>jumble</code> バッファに書き込まれます。 3. 走査中に定数リテラルが検出されると、その位置と長さが <code>clocations</code> 配列に記録されます。 4. NULL ノードの連続は <code>pending_nulls</code> を用いて遅延処理され、バッファへの書き込みが最適化されます。 5. 最終的なバッファ内容に基づいてクエリのフィンガープリント（Query ID）が計算され、定数情報を除外した正規化クエリの生成などに利用されます。</p>
+<p>*注意: 走査処理の具体的な関数群や、ハッシュ計算アルゴリズムの厳密な実装詳細など、エンドツーエンドの完全な制御フローは提供された情報からは未だすべて明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**定数マスクの整合性**: <code>clocations</code> 配列は、クエリ内の定数リテラルを正確にマスクするために、検出された定数の位置と長さを正しく保持しなければなりません。</li>
+<li>**NULLノードの遅延フラッシュ**: <code>pending_nulls</code> はハッシュ化の効率化のための遅延処理機構であり、後続の追加処理や最終ハッシュ計算の前に適切にフラッシュされる必要があります。</li>
+<li>**パラメータ再割り当ての制御**: <code>has_squashed_lists</code> が真（<code>true</code>）の場合、リスト圧縮による番号の欠落を回避するため、クエリが提供するパラメータ番号を無視して再割り当てを行う必要があります。</li>
+<li>**アサーション検証**: <code>USE_ASSERT_CHECKING</code> が有効な場合、<code>total_jumble_len</code> を用いてバッファに追加されたバイト数の整合性が検証されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**定義と宣言の分離**: <code>JumbleState</code> の実体定義は <code>src/include/nodes/queryjumble.h</code> にありますが、<code>src/include/parser/analyze.h</code> でも宣言されています。構造体に変更を加える場合は、両方のファイルの影響を確認する必要があります。</li>
+<li>**NULLポインタ参照**: フック関数（<code>post_parse_analyze_hook</code> など）が呼び出された際、<code>JumbleState</code> が <code>NULL</code> であるか、あるいは適切に初期化されていない状態で参照された場合の挙動は呼び出し側の実装（<code>pg_stat_statements</code> など）に依存するため、ハンドリングに注意が必要です。</li>
+<li>**統計情報コマンドとの混同**: <code>src/backend/commands/analyze.c</code>（テーブルの統計情報を収集する <code>ANALYZE</code> コマンド）は、クエリのフィンガープリント生成を行う本機能とは無関係であるため、混同しないようにしてください。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/nodes/queryjumble.h</code> (構造体の詳細なメンバ定義)</li>
+<li><code>src/include/parser/analyze.h</code> (解析フックにおける <code>JumbleState</code> の参照)</li>
+</ul></body></html>

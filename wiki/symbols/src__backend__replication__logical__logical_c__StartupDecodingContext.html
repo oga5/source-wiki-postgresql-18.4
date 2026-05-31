@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__logical_c__StartupDecodingContext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>StartupDecodingContext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/logical.c:151</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディング処理に必要なメモリコンテキスト、WALリーダー、再構築バッファ、および出力プラグインのコールバックラッパーを初期化し、<code>LogicalDecodingContext</code> を構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>LogicalDecodingContext *StartupDecodingContext(
+    List *output_plugin_options,
+    XLogRecPtr start_lsn,
+    TransactionId xmin_horizon,
+    bool need_full_snapshot,
+    bool fast_forward,
+    bool in_create,
+    XLogReaderRoutine *xl_routine,
+    LogicalOutputPluginWriterPrepareWrite prepare_write,
+    LogicalOutputPluginWriterWrite do_write,
+    LogicalOutputPluginWriterUpdateProgress update_progress
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>output_plugin_options</code>: プラグインに渡すオプションリスト。</li>
+<li><code>start_lsn</code>, <code>xmin_horizon</code>: デコーディング開始位置とトランザクションの整合性境界。</li>
+<li><code>fast_forward</code>: 変更を生成せずWALをスキップするモードのフラグ。</li>
+<li><code>xl_routine</code>: WAL読み取り用のルーチン定義。</li>
+<li><code>prepare_write</code>, <code>do_write</code>, <code>update_progress</code>: 出力処理用のコールバック関数。</li>
+<li>**出力**: 初期化済みの <code>LogicalDecodingContext</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MyReplicationSlot</code> が有効であること。</li>
+<li><code>fast_forward</code> が <code>false</code> の場合、出力プラグインがロード可能であること。</li>
+<li>トランザクションブロック外で呼び出された場合、現在のプロセスが <code>PROC_IN_LOGICAL_DECODING</code> としてマークされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 専用のメモリコンテキストを作成し、<code>LogicalDecodingContext</code> を割り当てる。 2. <code>fast_forward</code> モードでなければ <code>LoadOutputPlugin</code> を実行し、プラグインの存在を確認する。 3. トランザクション外であれば、<code>ProcArrayLock</code> を取得して現在のプロセスを論理デコーディング中として登録する。 4. <code>XLogReaderAllocate</code> でWALリーダーを初期化する。 5. <code>ReorderBufferAllocate</code> で変更蓄積用バッファを確保し、<code>SnapshotBuilder</code> を初期化する。 6. <code>begin</code>, <code>change</code>, <code>commit</code> 等の各コールバックを、エラーコンテキストを付与するラッパー関数（<code>*_cb_wrapper</code>）でラップして設定する。 7. ストリーミングおよび2フェーズコミットのサポート状況を判定し、対応するラッパーを設定する。 8. 出力用コールバックとオプションをコンテキストに格納し、作成したコンテキストを返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>CreateInitDecodingContext</code></li>
+<li><code>CreateDecodingContext</code></li>
+<li>**呼び出し先**:</li>
+<li><code>AllocSetContextCreate</code>, <code>palloc0</code>, <code>MemoryContextSwitchTo</code></li>
+<li><code>LoadOutputPlugin</code></li>
+<li><code>XLogReaderAllocate</code></li>
+<li><code>ReorderBufferAllocate</code></li>
+<li><code>AllocateSnapshotBuilder</code></li>
+<li><code>makeStringInfo</code></li>
+<li>各種ラッパー関数（<code>begin_cb_wrapper</code> 等）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogicalDecodingContext</code>: デコーディングの状態を保持するメイン構造体。</li>
+<li><code>ReplicationSlot</code>: 現在のレプリケーションスロット情報。</li>
+<li><code>ReorderBuffer</code>: トランザクション変更の蓄積用バッファ。</li>
+<li><code>XLogReaderRoutine</code>: WAL読み取りインターフェース。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ不足時: <code>XLogReaderAllocate</code> が失敗した場合、<code>ereport(ERROR, ...)</code> により中断される。</li>
+<li>プラグイン不在時: <code>LoadOutputPlugin</code> が失敗した場合、エラーが発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ReorderBuffer</code> のコールバックをラッパー関数で上書きすることで、エラー発生時にどのプラグインのどの処理で失敗したかを特定可能にしている。</li>
+<li><code>streaming</code> および <code>twophase</code> のフラグは、コールバックの有無に基づいて動的に決定される。</li>
+<li><code>fast_forward</code> モード時はプラグインのロードをスキップするため、プラグインの検証は行われない点に注意すること。</li>
+</ul></body></html>

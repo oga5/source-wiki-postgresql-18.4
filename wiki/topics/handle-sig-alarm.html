@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/handle-sig-alarm.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>handle_sig_alarm</h1>
+<h2>概念</h2>
+<p><code>handle_sig_alarm</code> は、PostgreSQL のバックエンドプロセスおよびクライアントツールである <code>pgbench</code> において、<code>SIGALRM</code> シグナルを受信した際に起動されるシグナルハンドラです。主に、登録されたタイムアウトタスクの期限切れを検知し、対応するハンドラを実行して次のタイマーを再スケジュールする役割を担います。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL のバックエンドでは、デッドロック検出（<code>CheckDeadLock</code>）や各種タイムアウト制御など、時間経過に伴う非同期処理を正確に実行する必要があります。<code>handle_sig_alarm</code> は、カーネルからの <code>SIGALRM</code> を契機として、これらのタイムアウトタスクを遅滞なく、かつ安全に実行・管理するための基盤を提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/misc</code></li>
+<li><code>module:src/bin/pgbench</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/utils/misc/timeout.c#handle_sig_alarm</code>（バックエンド側のシグナルハンドラ関数）</li>
+<li><code>symbol:src/bin/pgbench/pgbench.c#handle_sig_alarm</code>（<code>pgbench</code> 側のシグナルハンドラ関数。詳細な振る舞いは未詳）</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>バックエンド（<code>timeout.c</code>）における処理の流れは以下の通りです：</p>
+<p>1. **シグナル受信**: カーネルから <code>SIGALRM</code> が送信され、<code>handle_sig_alarm</code> が起動します。 2. **割り込み制御と起床**: <code>HOLD_INTERRUPTS()</code> によりハンドラ内の割り込みを禁止し、<code>SetLatch(MyLatch)</code> を呼び出して待機中のプロセスを起床させます。 3. **アラームの一時停止**: <code>signal_pending</code> フラグを <code>false</code> にリセットし、<code>alarm_enabled</code> が有効な場合は <code>disable_alarm()</code> でタイマーを一時停止します。 4. **タスクの実行**: <code>active_timeouts</code> 配列を走査し、現在時刻を過ぎているタスクを順次取り出して <code>timeout_handler()</code> コールバックを実行します。繰り返しが必要なタスクは次回の期限を計算して再登録します。 5. **再スケジュール**: <code>schedule_alarm(now)</code> を呼び出して次回のタイマーを予約し、<code>RESUME_INTERRUPTS()</code> で割り込みを許可して終了します。</p>
+<p>※ <code>pgbench</code> 側における <code>handle_sig_alarm</code> の具体的なエンドツーエンドの流れや、バックエンド側との連携の有無については、提供された情報からは不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**割り込みの保護**: ハンドラ実行中は <code>HOLD_INTERRUPTS()</code> と <code>RESUME_INTERRUPTS()</code> によって割り込み状態が適切に保護されている必要があります。</li>
+<li>**ソート済みのタスクリスト**: <code>active_timeouts</code> 配列は、常に期限順にソートされていなければなりません。</li>
+<li>**シグナル保留フラグのリセット**: <code>signal_pending</code> は、<code>alarm_enabled</code> の状態に関わらずハンドラ実行時に必ずリセットされます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不適切な大域脱出**: ハンドラ内で <code>elog(FATAL)</code> や <code>longjmp</code> を呼び出すと、タイムアウト管理の内部状態（<code>active_timeouts</code> やロック状態など）に不整合を招くため、避ける必要があります。</li>
+<li>**実行時間の肥大化**: ハンドラ内から <code>CheckDeadLock</code> のような重い処理が呼び出される可能性があり、ハンドラ自体の実行時間が長くなることを考慮する必要があります。大幅な遅延が発生した場合は、現在時刻を基準に次回の期限を再計算するなどのケアが必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/misc/timeout.c</code>（バックエンドにおけるタイムアウト管理の実装詳細）</li>
+<li><code>src/bin/pgbench/pgbench.c</code>（<code>pgbench</code> におけるアラームハンドラの役割と実装）</li>
+</ul></body></html>

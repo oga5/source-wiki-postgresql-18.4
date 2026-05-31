@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/logicalfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/logicalfuncs.c</h1>
+<h2>概要</h2>
+<p>論理デコーディング機能および論理レプリケーションスロットを、SQLインターフェース経由で操作するためのサポート関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> モジュールにおいて、ユーザーや管理者がSQLコマンド（<code>pg_logical_slot_get_changes</code> 等）を通じてWALの変更内容を抽出したり、メッセージをWALに挿入したりするためのフロントエンド層として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**変更の抽出**: SQL関数を通じて、指定したレプリケーションスロットからWALの変更内容を読み取り、結果セット（Tuplestore）として返却する。</li>
+<li>**スロット管理**: 読み取り位置の更新（確認）や、スロットのダーティフラグ管理を行う。</li>
+<li>**メッセージ挿入**: ユーザー定義のメッセージをWALに書き込むためのインターフェース提供。</li>
+<li>**出力変換**: 出力プラグインが生成したデータを、テキストまたはバイナリ形式でSQLの戻り値として整形する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_logical_slot_get_changes_guts</code>: 変更抽出ロジックの核となる内部関数。<code>get/peek</code> および <code>text/binary</code> の全バリエーションを統合管理する。</li>
+<li><code>DecodingOutputState</code>: 出力プラグインから受け取ったデータを一時的に保持し、SQLの戻り値（Tuplestore）へ変換するための状態構造体。</li>
+<li><code>LogicalOutputWrite</code>: 出力プラグインの書き込みコールバック。<code>DecodingOutputState</code> を介してデータを <code>tuplestore</code> に格納する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LogicalOutputPrepareWrite</code></li>
+<li><code>pg_logical_emit_message_bytea</code></li>
+<li><code>pg_logical_emit_message_text</code></li>
+<li><code>pg_logical_slot_get_binary_changes</code></li>
+<li><code>pg_logical_slot_get_changes</code></li>
+<li><code>pg_logical_slot_peek_binary_changes</code></li>
+<li><code>pg_logical_slot_peek_changes</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pg_logical_slot_get_changes_guts</code> が引数を解析し、<code>DecodingOutputState</code> を初期化して <code>Tuplestore</code> を準備する。 2. **コンテキスト作成**: <code>CreateDecodingContext</code> を呼び出し、WAL読み取り用のコールバック（<code>read_local_xlog_page</code> 等）と出力用のコールバック（<code>LogicalOutputWrite</code>）を登録する。 3. **デコーディングループ**: <code>XLogReadRecord</code> でWALを順次読み込み、<code>LogicalDecodingProcessRecord</code> を通じて各レコードを処理する。 4. **出力**: 処理されたデータは <code>LogicalOutputWrite</code> を経由して <code>Tuplestore</code> に蓄積される。 5. **終了処理**: 読み取り位置を更新（<code>confirm</code> が真の場合）し、コンテキストを解放して終了する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/logical.h</code>, <code>replication/decode.h</code>: 論理デコーディングのコア構造とAPI。</li>
+<li><code>access/xlogutils.h</code>: WAL読み取りおよびリカバリ状態の確認。</li>
+<li><code>utils/tuplestore.h</code> (間接的): 結果セットの構築。</li>
+<li><code>fmgr.h</code>, <code>funcapi.h</code>: PostgreSQLのSQL関数インターフェース。</li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/message.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/decode.c</code>: WALレコードのデコード処理の実体。</li>
+<li><code>src/backend/replication/logical/reorderbuffer.c</code>: トランザクションの変更内容を保持・管理するバッファ。</li>
+<li><code>src/backend/replication/logical/logical.c</code>: 論理デコーディングのコンテキスト管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「SQLインターフェース」の実装に特化しています。論理デコーディングの核心的なWAL解析ロジックを理解したい場合は、<code>decode.c</code> や <code>reorderbuffer.c</code> を先に参照してください。</li>
+<li><code>pg_logical_slot_get_changes_guts</code> 内の <code>PG_TRY/PG_CATCH</code> ブロックは、エラー発生時にシステムキャッシュを適切にクリアし、リソースリークを防ぐために重要です。</li>
+<li><code>CurrentResourceOwner</code> の退避と復元は、論理デコーディング中のトランザクション管理に伴う副作用を抑えるための定型的な回避策（kluge）です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__DecodingOutputState.html" target="wiki-view"><code>DecodingOutputState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__LogicalOutputPrepareWrite.html" target="wiki-view"><code>LogicalOutputPrepareWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__LogicalOutputWrite.html" target="wiki-view"><code>LogicalOutputWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_slot_get_changes_guts.html" target="wiki-view"><code>pg_logical_slot_get_changes_guts</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_slot_get_changes.html" target="wiki-view"><code>pg_logical_slot_get_changes</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_slot_peek_changes.html" target="wiki-view"><code>pg_logical_slot_peek_changes</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_slot_get_binary_changes.html" target="wiki-view"><code>pg_logical_slot_get_binary_changes</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_slot_peek_binary_changes.html" target="wiki-view"><code>pg_logical_slot_peek_binary_changes</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_emit_message_bytea.html" target="wiki-view"><code>pg_logical_emit_message_bytea</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__logicalfuncs_c__pg_logical_emit_message_text.html" target="wiki-view"><code>pg_logical_emit_message_text</code></a></li>
+</ul></body></html>

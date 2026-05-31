@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_process_all_indexes.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>parallel_vacuum_process_all_indexes</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/vacuumparallel.c:610</code></li>
+</ul>
+<h2>目的</h2>
+<p>VACUUM 処理におけるインデックスのバルク削除またはクリーンアップフェーズにおいて、並列実行環境を構築し、ワーカープロセスを起動してインデックス処理を分散実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void parallel_vacuum_process_all_indexes(ParallelVacuumState *pvs, int num_index_scans, bool vacuum)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>pvs</code>: 並列 VACUUM の状態を保持する <code>ParallelVacuumState</code> 構造体へのポインタ。</li>
+<li><code>num_index_scans</code>: 現在のインデックススキャン回数。</li>
+<li><code>vacuum</code>: <code>true</code> の場合はバルク削除フェーズ、<code>false</code> の場合はクリーンアップフェーズとして動作する。</li>
+<li>出力: なし（副作用としてインデックスの処理および統計情報の更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本関数はリーダープロセスからのみ呼び出されること（<code>!IsParallelWorker()</code> をアサート）。</li>
+<li>各インデックスのステータスは、処理開始時に <code>PARALLEL_INDVAC_STATUS_INITIAL</code> であること。</li>
+<li>処理終了時には、すべてのインデックスが <code>PARALLEL_INDVAC_STATUS_COMPLETED</code> に遷移していること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>vacuum</code> フラグに基づき、実行するフェーズ（バルク削除またはクリーンアップ）を決定し、必要なワーカー数を計算する。 2. **状態設定**: 全インデックスのステータスを更新し、各インデックスが並列処理可能か（<code>parallel_vacuum_index_is_parallel_safe</code>）を判定してマークする。 3. **並列実行準備**: 並列インデックス処理カウンタをリセットし、必要に応じて <code>ReinitializeParallelDSM</code> および <code>ReinitializeParallelWorkers</code> を呼び出してワーカーを起動する。 4. **コスト管理**: 共有コストベースの遅延制御（<code>VacuumSharedCostBalance</code>）を有効化する。 5. **インデックス処理**:</p>
+<ul>
+<li>リーダーのみが処理可能なインデックスを <code>parallel_vacuum_process_unsafe_indexes</code> で処理。</li>
+<li>並列安全なインデックスを <code>parallel_vacuum_process_safe_indexes</code> で処理（リーダーも参加）。</li>
+<p>6. **同期**: ワーカーの終了を待ち、統計情報（バッファ/WAL使用量）を集約する。 7. **終了処理**: インデックスのステータスを初期状態に戻し、共有コストバランスを無効化する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/commands/vacuumparallel.c</code> 内の <code>parallel_vacuum_bulkdel_all_indexes</code> および <code>parallel_vacuum_cleanup_all_indexes</code>。</li>
+<li>呼び出し先: <code>parallel_vacuum_index_is_parallel_safe</code>, <code>ReinitializeParallelDSM</code>, <code>ReinitializeParallelWorkers</code>, <code>LaunchParallelWorkers</code>, <code>parallel_vacuum_process_unsafe_indexes</code>, <code>parallel_vacuum_process_safe_indexes</code>, <code>WaitForParallelWorkersToFinish</code>, <code>InstrAccumParallelQuery</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelVacuumState</code>: 並列 VACUUM の全体状態。</li>
+<li><code>PVIndStats</code>: 各インデックスの処理状態および並列実行可否。</li>
+<li><code>PVShared</code>: 共有メモリ上の制御情報（インデックスカウンタ、コストバランス等）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>インデックス処理が完了していない場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>ワーカー内でエラーが発生した場合、<code>parallel_vacuum_error_callback</code> が呼び出される（本関数自体はエラーハンドリングの枠組みの中で実行される）。</li>
+<li>ワーカー数が 0 の場合、リーダーのみで全インデックスを処理する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>vacuum</code> フェーズと <code>cleanup</code> フェーズの両方で再利用されるため、フェーズごとのワーカー数計算ロジックに注意すること。</li>
+<li>共有コストバランスの有効化・無効化のタイミングは、ワーカーの起動および終了と密接に関連しているため、変更時は同期処理を確認すること。</li>
+</ul></body></html>

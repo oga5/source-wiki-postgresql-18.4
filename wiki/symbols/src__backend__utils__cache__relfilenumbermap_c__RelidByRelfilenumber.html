@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__cache__relfilenumbermap_c__RelidByRelfilenumber.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelidByRelfilenumber</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/cache/relfilenumbermap.c:140</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたテーブルスペースとファイル番号（<code>relfilenumber</code>）から、対応するリレーションの OID（<code>relid</code>）を逆引きします。キャッシュを利用して検索コストを削減し、存在しない場合はカタログ検索を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Oid RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>reltablespace</code>: 検索対象のテーブルスペース OID。<code>MyDatabaseTableSpace</code> の場合は <code>0</code> に正規化されます。</li>
+<li><code>relfilenumber</code>: 検索対象のファイル番号。</li>
+<li>**出力**: </li>
+<li>対応するリレーションの <code>Oid</code>。見つからない場合は <code>InvalidOid</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>RelfilenumberMapHash</code> が初期化されていない場合、内部で <code>InitializeRelfilenumberMap()</code> が呼び出されます。</li>
+<li>一時テーブル（<code>RELPERSISTENCE_TEMP</code>）は検索対象から除外されます。</li>
+<li>検索結果（<code>InvalidOid</code> を含む）はキャッシュに格納されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **キャッシュ検索**: <code>RelfilenumberMapHash</code> を検索し、ヒットすればその <code>relid</code> を即座に返します。 2. **カタログ検索（ミス時）**:</p>
+<ul>
+<li><code>reltablespace</code> が <code>GLOBALTABLESPACE_OID</code> の場合: <code>RelationMapFilenumberToOid</code> を使用して解決します。</li>
+<li>それ以外の場合: <code>pg_class</code> に対して <code>ClassTblspcRelfilenodeIndexId</code> インデックスを用いたスキャンを実行します。</li>
+<li>カタログ検索でも見つからない場合: <code>RelationMapFilenumberToOid</code>（非共有）を試行します。</li>
+<p>3. **キャッシュ更新**: 検索結果をハッシュテーブルに登録し、呼び出し元へ返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>contrib/pg_prewarm/autoprewarm.c</code></li>
+<li><code>src/backend/replication/logical/reorderbuffer.c</code></li>
+<li><code>src/backend/utils/adt/dbsize.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>InitializeRelfilenumberMap</code></li>
+<li><code>hash_search</code></li>
+<li><code>RelationMapFilenumberToOid</code></li>
+<li><code>table_open</code> / <code>table_close</code></li>
+<li><code>systable_beginscan</code> / <code>systable_getnext</code> / <code>systable_endscan</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RelfilenumberMapKey</code>: 検索キー（テーブルスペースとファイル番号）。</li>
+<li><code>RelfilenumberMapEntry</code>: キャッシュエントリ（OID を保持）。</li>
+<li><code>RelfilenumberMapHash</code>: キャッシュを保持するハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**重複**: カタログ検索中に予期せぬ重複が見つかった場合、<code>elog(ERROR)</code> を発生させます。</li>
+<li>**キャッシュ破損**: キャッシュ登録時に既にエントリが存在する場合、<code>elog(ERROR)</code> を発生させます。</li>
+<li>**一時テーブル**: 一時テーブルは検索対象外であり、キャッシュにも反映されません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>負のキャッシュ（<code>InvalidOid</code> の保存）を行っているため、存在しないファイル番号に対する繰り返し検索もキャッシュヒットします。</li>
+<li><code>pg_class</code> を開く処理がキャッシュ無効化を誘発する可能性があるため、キャッシュへの登録はカタログ検索完了後に行う設計になっています。</li>
+</ul></body></html>

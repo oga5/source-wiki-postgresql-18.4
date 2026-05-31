@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_visibility/pg_visibility.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_visibility/pg_visibility.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの可視性マップ（Visibility Map: VM）の内容を検査・表示するための拡張機能を提供します。主に、VMのビット状態と実際のページ上のタプル状態の整合性を検証し、デバッグや破損調査を支援するSQL関数群を実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pg_visibility</code> モジュールの中心的な実装ファイルです。PostgreSQLの内部ストレージ構造（VMフォーク）に直接アクセスし、ユーザーがSQL経由でVMのメタデータやページレベルの可視性を確認できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**VM情報の抽出**: 指定されたリレーションの各ブロックにおけるVMビット（all-visible, all-frozen）の取得。</li>
+<li>**整合性チェック**: VMのビット状態と、実際のヒープページ上のタプル状態を比較し、不整合（破損）を検出する。</li>
+<li>**VMのメンテナンス**: 必要に応じてVMフォークを切り詰める（truncate）機能の提供。</li>
+<li>**安全なスキャン**: <code>ReadStream</code> を活用し、バッファキャッシュを汚染せずに効率的な全ページ走査を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_visibility_map</code>, <code>pg_visibility</code>: VMビットおよびページレベルの可視性を返す関数。</li>
+<li><code>pg_check_frozen</code>, <code>pg_check_visible</code>: VMビットと実データが矛盾するタプル（TID）を特定する関数。</li>
+<li><code>collect_visibility_data</code>: リレーション全体のVM状態をメモリ上に収集する内部関数。</li>
+<li><code>collect_corrupt_items</code>: 破損の可能性があるタプルを探索するメインロジック。</li>
+<li><code>vbits</code>, <code>corrupt_items</code>: 収集したデータを保持するための構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetStrictOldestNonRemovableTransactionId</code></li>
+<li><code>collect_corrupt_items_read_stream_private</code></li>
+<li><code>pg_truncate_visibility_map</code></li>
+<li><code>pg_visibility_map_rel</code></li>
+<li><code>pg_visibility_map_summary</code></li>
+<li><code>pg_visibility_rel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **関数呼び出し**: ユーザーがSQL関数を実行すると、<code>relation_open</code> で対象リレーションをロックします。 2. **データ収集**: <code>collect_visibility_data</code> または <code>collect_corrupt_items</code> が呼び出されます。これらは <code>ReadStream</code> を使用してリレーションの全ブロックを順次読み込みます。 3. **VM検証**: <code>visibilitymap_get_status</code> でVMビットを取得し、必要に応じて <code>BufferGetPage</code> でヒープページを読み込みます。 4. **整合性判定**: <code>tuple_all_visible</code> や <code>heap_tuple_needs_eventual_freeze</code> を用いて、VMビットが示す状態と実際のタプル状態を比較します。 5. **結果返却**: 収集したデータは <code>FuncCallContext</code> を通じて、SRF（Set-Returning Function）としてユーザーに返されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/visibilitymap.h</code>: VMビットの読み取りと操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とページロック。</li>
+<li><code>storage/read_stream.h</code>: 効率的なシーケンシャルスキャン。</li>
+<li><code>access/heapam.h</code>: ヒープタプルの解析と <code>HeapTupleSatisfiesVacuum</code> による可視性判定。</li>
+<li><code>catalog/pg_type.h</code>, <code>funcapi.h</code>: SQL関数インターフェースの定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/heap/visibilitymap.c</code>: VMの基盤となる実装。</li>
+<li><code>src/backend/storage/smgr/smgr.c</code>: ストレージマネージャによるフォーク操作。</li>
+<li><code>src/backend/access/heap/heapam_visibility.c</code>: タプルの可視性判定ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**誤検知の回避**: <code>GetStrictOldestNonRemovableTransactionId</code> は、通常の <code>GetOldestNonRemovableTransactionId</code> よりも厳格な（保守的な）XID horizonを計算します。これは、破損チェックにおいて「誤った破損報告（偽陽性）」を避けるための設計です。</li>
+<li>**パフォーマンス**: 本機能は全ページを走査するため、巨大なテーブルに対して実行するとI/O負荷が高まります。<code>ReadStream</code> によるバッファアクセス戦略が適用されていますが、実行時は注意が必要です。</li>
+<li>**ロック**: <code>pg_truncate_visibility_map</code> は <code>AccessExclusiveLock</code> を必要とします。また、他の関数は <code>AccessShareLock</code> を使用し、実行中にVMビットが変更される可能性を考慮した実装になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__vbits.html" target="wiki-view"><code>vbits</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__corrupt_items.html" target="wiki-view"><code>corrupt_items</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__collect_corrupt_items_read_stream_private.html" target="wiki-view"><code>collect_corrupt_items_read_stream_private</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_visibility_map.html" target="wiki-view"><code>pg_visibility_map</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_visibility.html" target="wiki-view"><code>pg_visibility</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_visibility_map_rel.html" target="wiki-view"><code>pg_visibility_map_rel</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_visibility_rel.html" target="wiki-view"><code>pg_visibility_rel</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_visibility_map_summary.html" target="wiki-view"><code>pg_visibility_map_summary</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_check_frozen.html" target="wiki-view"><code>pg_check_frozen</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_check_visible.html" target="wiki-view"><code>pg_check_visible</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__pg_truncate_visibility_map.html" target="wiki-view"><code>pg_truncate_visibility_map</code></a></li>
+<li><a href="../../symbols/contrib__pg_visibility__pg_visibility_c__GetStrictOldestNonRemovableTransactionId.html" target="wiki-view"><code>GetStrictOldestNonRemovableTransactionId</code></a></li>
+</ul></body></html>

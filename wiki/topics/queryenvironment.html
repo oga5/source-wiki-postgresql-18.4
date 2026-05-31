@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/queryenvironment.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>QueryEnvironment</h1>
+<h2>概念</h2>
+<p><code>QueryEnvironment</code> は、クエリの解析（Planning/Parsing）や実行時に、システムカタログには存在しない一時的な名前付きリレーション（**Ephemeral Named Relation: ENR**）を保持・管理するためのコンテナ（データ構造）です。これにより、トリガーの遷移テーブル（Transition Tables）などの動的なデータをクエリ内から透過的に参照できるようになります。</p>
+<h2>なぜ重要か</h2>
+<p>カタログに永続化されていない一時的なデータを、クエリの解析（<code>analyze</code>）や実行計画の生成・説明（<code>explain</code>）のプロセスにおいて、名前を指定して動的に参照・解決できるようにするために不可欠です。</p>
+<p>また、本構造体は外部に対して不透明（Opaque）な型として設計されています。これにより、内部の管理ロジック（現在は単純なリスト構造）を将来的にハッシュテーブル等へ変更・最適化する際にも、呼び出し側のコードに影響を与えないカプセル化が実現されています。</p>
+<h2>関与するモジュール</h2>
+<p>本機能には以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/utils/misc</code>（実体定義および管理ロジックの実装）</li>
+<li><code>module:src/include/utils</code>（外部向けAPIおよび不透明型の定義）</li>
+<li><code>module:src/include/commands</code>（<code>EXPLAIN</code> 等のコマンド処理における参照）</li>
+</ul>
+<p>また、呼び出し元として <code>src/backend/parser</code>（解析処理）や <code>contrib</code> モジュール（<code>pg_stat_statements</code>, <code>pg_overexplain</code>, <code>sepgsql</code>）が関与します。</p>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/misc/queryenvironment.c#QueryEnvironment</code>**</li>
+<p>構造体の実体定義です。内部に ENR を保持するための線形リスト <code>List *namedRelList</code> を持ちます。</p>
+<li>**<code>symbol:src/include/utils/queryenvironment.h#QueryEnvironment</code>**</li>
+<p>外部公開用のヘッダー定義です。<code>typedef struct QueryEnvironment QueryEnvironment;</code> として不透明な型として宣言されています。</p>
+<li>**<code>symbol:src/include/commands/explain.h#QueryEnvironment</code>**</li>
+<p><code>EXPLAIN</code> コマンドや解析プロセスにおいて、環境情報（コンテキスト）として参照するための構造体宣言です。</p>
+<li>**<code>EphemeralNamedRelation</code> / <code>EphemeralNamedRelationMetadata</code>**</li>
+<p><code>QueryEnvironment</code> によって管理される、一時リレーションの実体およびメタデータ（名前、型、<code>TupleDesc</code> など）です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>クエリ実行のライフサイクルにおける完全なエンドツーエンドの流れ（すべての ENR の生成から完全な破棄にいたる全貌）は、提供されたモジュール情報だけでは完全には明らかになっていませんが、以下の部分的な流れがサポートされています。</p>
+<p>1. **生成**: <code>create_queryEnv()</code> を呼び出すことで <code>QueryEnvironment</code> が生成され、通常はクエリ実行のライフサイクルに紐付いたメモリコンテキストに保持されます。 2. **登録**: <code>register_ENR()</code> を介して、一時データ（ENR）を環境（<code>namedRelList</code>）に追加します。 3. **解決・検索**: クエリの解析や実行計画生成の過程で <code>get_ENR()</code> や <code>get_visible_ENR_metadata()</code> を呼び出し、名前を指定してリストを線形探索し、該当する ENR を取得します。 4. **メタデータ取得**: <code>ENRMetadataGetTupDesc()</code> を通じて、カタログ参照が必要な場合は自動解決して <code>TupleDesc</code> を提供します。 5. **削除**: <code>unregister_ENR()</code> により、環境から特定の ENR を削除します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**カプセル化の維持**: <code>QueryEnvironment</code> の内部構造（<code>namedRelList</code> など）は <code>src/backend/utils/misc/queryenvironment.c</code> 内でのみアクセス可能であり、外部からは必ずポインタ（不透明な型）として扱われなければなりません。</li>
+<li>**ロック取得の前提**: <code>ENRMetadataGetTupDesc</code> が呼び出される時点で、対象リレーションに対する適切なロックが既に取得されている必要があります（内部で <code>table_open</code> に <code>NoLock</code> を指定してアクセスするため）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**線形探索によるパフォーマンス低下**: 現在の実装は <code>List</code> を用いた単純な線形探索であるため、登録される ENR の数が非常に多い場合、検索パフォーマンスが低下する可能性があります。</li>
+<li>**ロック不足による予期せぬ動作**: メタデータ取得時に適切なロックが保持されていない場合、予期せぬ動作を引き起こす可能性があります。</li>
+<li>**NULL ポインタのハンドリング**: 構造体はポインタとして各関数に渡されるため、呼び出し側での適切な NULL チェックに依存します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/utils/misc/queryenvironment.c</code>**</li>
+<p><code>QueryEnvironment</code> の具体的な構造体定義と、<code>register_ENR</code> や <code>get_ENR</code> などの管理ロジックの実装。</p>
+<li>**<code>src/include/utils/queryenvironment.h</code>**</li>
+<p>外部公開されている API（<code>create_queryEnv</code>、<code>get_visible_ENR_metadata</code> など）のプロトタイプ宣言。</p>
+<li>**<code>src/include/commands/explain.h</code>**</li>
+<p><code>EXPLAIN</code> コマンドやフック（<code>ExplainOneQuery_hook_type</code>）における <code>QueryEnvironment</code> の利用方法の宣言。</p>
+</ul></body></html>

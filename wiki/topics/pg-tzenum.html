@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-tzenum.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_tzenum</h1>
+<h2>概念</h2>
+<p><code>pg_tzenum</code> は、PostgreSQLにおいて利用可能なタイムゾーンをファイルシステムから再帰的に列挙（走査）するためのイテレータ状態を保持する構造体です。ヘッダーファイル <code>src/include/pgtime.h</code> では不透明な（opaque）ハンドルとして宣言され、実装ファイル <code>src/timezone/pgtz.c</code> で具体的なメンバが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>タイムゾーンの列挙処理において、呼び出し側に内部構造を隠蔽（カプセル化）しつつ、ファイルシステムのディレクトリ階層を再帰的に走査するイテレータのコンテキスト（現在のディレクトリ深さ、ディレクトリ記述子、ベースパス長など）を安全に維持・管理するために重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include</code></li>
+<li><code>module:src/timezone</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/pgtime.h#pg_tzenum</code> : 外部公開用の不透明なハンドル構造体定義。</li>
+<li><code>symbol:src/timezone/pgtz.c#pg_tzenum</code> : ディレクトリ記述子や走査状態を保持する具体的な構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し側（<code>src/backend/utils/adt/datetime.c</code> など）が <code>pg_tzenumerate_start()</code> を呼び出します。これにより <code>palloc0</code> を用いて <code>pg_tzenum</code> 構造体が確保・初期化され、走査が開始されます。 2. **走査**: 呼び出し側が <code>pg_tzenumerate_next()</code> を繰り返し呼び出します。この関数は <code>pg_tzenum</code> 内の <code>dirdesc</code>（ディレクトリハンドル）等を用いてファイルシステムを再帰的に走査し、タイムゾーンファイルが見つかるたびに内部の <code>tz</code> フィールド（<code>pg_tz</code> 構造体）へのポインタを返します。列挙の終端に達すると <code>NULL</code> を返します。 3. **終了処理**: 走査完了後、呼び出し側が <code>pg_tzenumerate_end()</code> を呼び出します。これにより、保持しているディレクトリハンドルのクローズやメモリの解放が行われます。</p>
+<p>*注意: 呼び出し元である <code>datetime.c</code> における具体的な利用目的の全貌や、ファイルシステム上の探索ロジックの完全なエンドツーエンドのフローは、提供された情報からは未だ明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**カプセル化の維持**: 外部モジュールからは <code>pg_tzenum</code> の内部構造に直接アクセスしてはならず、提供される API（<code>pg_tzenumerate_start()</code>, <code>pg_tzenumerate_next()</code>, <code>pg_tzenumerate_end()</code>）を介してのみ操作しなければなりません。</li>
+<li>**リソースの解放**: <code>pg_tzenumerate_start()</code> で確保されたリソース（メモリ、ディレクトリ記述子）は、必ず <code>pg_tzenumerate_end()</code> を呼び出して解放しなければなりません。</li>
+<li>**階層制限**: ディレクトリの走査深さは <code>MAX_TZDIR_DEPTH</code> を超えてはなりません（<code>dirdesc</code> および <code>dirname</code> 配列のサイズ制限）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**生存期間の誤り**: <code>pg_tzenumerate_next()</code> が返す <code>pg_tz</code> 構造体へのポインタは、<code>pg_tzenum</code> 内部の <code>tz</code> フィールドを指しています。そのため、イテレータが終了（<code>pg_tzenumerate_end()</code> が呼ばれた後）した後にこのポインタを参照すると、無効なメモリ領域へのアクセスとなります。</li>
+<li>**メモリコンテキストへの依存**: <code>palloc</code> を使用して構造体が確保されるため、呼び出し側のメモリコンテキストの寿命に依存します。</li>
+<li>**階層の深さ制限**: タイムゾーンのディレクトリ構造が <code>MAX_TZDIR_DEPTH</code> を超える深さを持つ場合、走査が制限されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/pgtime.h</code> (API 定義と不透明な構造体の宣言)</li>
+<li><code>src/timezone/pgtz.c</code> (構造体の実体定義とイテレータ関数の実装)</li>
+</ul></body></html>

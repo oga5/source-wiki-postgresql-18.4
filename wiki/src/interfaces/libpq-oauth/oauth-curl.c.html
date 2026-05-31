@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq-oauth/oauth-curl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq-oauth/oauth-curl.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL クライアントライブラリ <code>libpq</code> における OAuth 2.0 Device Authorization Grant (RFC 8628) の実装の中核を担います。<code>libcurl</code> を利用した非同期 HTTP 通信を <code>libpq</code> の接続ポーリングループに統合し、Discovery からトークン取得までのステートマシンを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq-oauth</code> モジュールにおける「通信エンジン」です。<code>oauth-utils.c</code> が提供する <code>libpq</code> とのシム層を介して、接続状態やエラー情報を <code>PGconn</code> に反映させます。<code>libcurl</code> のマルチハンドルをラップし、OS 固有の I/O 多重化プリミティブ（<code>epoll</code> または <code>kqueue</code>）を用いて、非同期かつ非ブロッキングな認証フローを実現します。</p>
+<h2>責務</h2>
+<ul>
+<li>**OAuth ステートマシン管理**: <code>OAuthStep</code> に基づき、Discovery、デバイス認可、トークンポーリングの各フェーズを遷移。</li>
+<li>**非同期 I/O 統合**: <code>libcurl</code> のソケットイベントとタイマーイベントを <code>epoll</code>/<code>kqueue</code> に集約し、<code>libpq</code> のポーリングループと同期。</li>
+<li>**JSON 解析**: <code>common/jsonapi.h</code> を利用し、認可サーバーからのレスポンスを型安全にパース。</li>
+<li>**エラーハンドリング**: 通信エラー、プロトコルエラー、JSON 解析エラーを <code>PQExpBuffer</code> に集約し、<code>libpq</code> のエラーメッセージとして出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ステートマシン管理</h3>
+<ul>
+<li><code>enum OAuthStep</code>: 認証フローの現在地（INIT, DISCOVERY, DEVICE_AUTHORIZATION, TOKEN_REQUEST, WAIT_INTERVAL）。</li>
+<li><code>struct async_ctx</code>: 認証フローの全コンテキスト。<code>CURLM</code> ハンドル、ソケット多重化用ディスクリプタ、解析済みデータ構造を保持。</li>
+</ul>
+<h3>データ構造と解放</h3>
+<ul>
+<li><code>struct provider</code>, <code>struct device_authz</code>, <code>struct token</code>: 認可サーバーのメタデータおよび OAuth レスポンスを保持。各構造体に対応する <code>free_*</code> 関数がメモリ管理を担う。</li>
+</ul>
+<h3>公開 API</h3>
+<ul>
+<li><code>pg_fe_run_oauth_flow()</code>: 認証フローのメインエントリポイント。<code>PGconn</code> を引数に取り、ポーリング状態を返す。</li>
+<li><code>pg_fe_cleanup_oauth_flow()</code>: 認証完了またはエラー時に、<code>async_ctx</code> と関連リソースを解放。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>OAuthStep</code></li>
+<li><code>async_ctx</code></li>
+<li><code>device_authz</code></li>
+<li><code>free_device_authz</code></li>
+<li><code>free_provider</code></li>
+<li><code>free_token</code></li>
+<li><code>free_token_error</code></li>
+<li><code>json_field</code></li>
+<li><code>oauth_parse</code></li>
+<li><code>provider</code></li>
+<li><code>token</code></li>
+<li><code>token_error</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pg_fe_run_oauth_flow</code> が <code>initialize_curl</code> を呼び出し、<code>libcurl</code> をスレッドセーフに初期化。 2. **駆動**: <code>pg_fe_run_oauth_flow_impl</code> が <code>async_ctx-&gt;step</code> に基づき、<code>start_*</code> 関数でリクエストをキューイングし、<code>drive_request</code> で <code>libcurl</code> のマルチハンドルをポンプする。 3. **イベントループ**: <code>register_socket</code> / <code>register_timer</code> が <code>libcurl</code> からの要求を <code>epoll</code>/<code>kqueue</code> に反映。<code>comb_multiplexer</code> がイベントの整合性を維持。 4. **データフロー**: <code>append_data</code> がレスポンスを <code>async_ctx-&gt;work_data</code> に蓄積し、<code>parse_oauth_json</code> が定義済みの <code>json_field</code> 配列に従って構造体へマッピングする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libcurl</code>: HTTP 通信の全般。</li>
+<li><code>sys/epoll.h</code> / <code>sys/event.h</code>: I/O 多重化。</li>
+<li><code>common/jsonapi.h</code>: JSON 解析。</li>
+<li><code>oauth-utils.h</code>: <code>libpq</code> 内部構造へのアクセス（動的ビルド時）。</li>
+<li><code>curl/curl.h</code></li>
+<li><code>fe-auth-oauth.h</code></li>
+<li><code>libpq-int.h</code></li>
+<li><code>math.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>oauth-curl.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/timerfd.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>oauth-curl.h</code>: 公開 API 定義。</li>
+<li><code>oauth-utils.c</code>: <code>libpq</code> との連携用ブリッジ関数群。</li>
+<li><code>fe-auth-oauth.h</code>: 認証フローで利用する共通型定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>async_ctx</code> は <code>PGconn</code> の <code>sasl_state</code> に紐付き、<code>pg_fe_cleanup_oauth_flow</code> によって所有権が解放されます。</li>
+<li>**エラーパス**: <code>actx_error</code> マクロでエラーをバッファリングし、<code>PGRES_POLLING_FAILED</code> を返すことで <code>libpq</code> にエラーを伝播させます。</li>
+<li>**エッジケース**: <code>slow_down</code> レスポンス受信時のポーリング間隔の動的延長や、<code>kqueue</code> 使用時のレベルトリガー維持のための <code>comb_multiplexer</code> 実装など、プラットフォーム依存の複雑な制御が含まれます。</li>
+<li>**省略箇所**: 本ファイルは <code>libcurl</code> の詳細なオプション設定や JSON 解析の再帰的な深さ制限など、RFC 準拠のための細かいバリデーションを多く含みます。これらはコードの堅牢性を高めるために意図的に詳細に記述されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__provider.html" target="wiki-view"><code>provider</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__free_provider.html" target="wiki-view"><code>free_provider</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__device_authz.html" target="wiki-view"><code>device_authz</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__free_device_authz.html" target="wiki-view"><code>free_device_authz</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__token_error.html" target="wiki-view"><code>token_error</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__free_token_error.html" target="wiki-view"><code>free_token_error</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__token.html" target="wiki-view"><code>token</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__free_token.html" target="wiki-view"><code>free_token</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__OAuthStep.html" target="wiki-view"><code>OAuthStep</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__async_ctx.html" target="wiki-view"><code>async_ctx</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__json_field.html" target="wiki-view"><code>json_field</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq-oauth__oauth-curl_c__oauth_parse.html" target="wiki-view"><code>oauth_parse</code></a></li>
+</ul></body></html>

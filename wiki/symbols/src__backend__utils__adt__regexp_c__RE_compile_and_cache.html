@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__adt__regexp_c__RE_compile_and_cache.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RE_compile_and_cache</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/adt/regexp.c:140</code></li>
+</ul>
+<h2>目的</h2>
+<p>正規表現のコンパイル結果をキャッシュし、同一のパターン・フラグ・照合順序（collation）を持つ要求に対して再コンパイルを回避することで、正規表現処理のオーバーヘッドを削減する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>regex_t *RE_compile_and_cache(text *text_re, int cflags, Oid collation)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>text_re</code>: コンパイル対象の正規表現パターン（<code>text</code>型）。</li>
+<li><code>cflags</code>: POSIX正規表現コンパイルフラグ。</li>
+<li><code>collation</code>: 照合順序（Oid）。</li>
+<li>**出力**:</li>
+<li>コンパイル済み正規表現オブジェクトへのポインタ（<code>regex_t *</code>）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>キャッシュは「自己組織化リスト」として実装されており、最も頻繁に使用されるエントリがリストの先頭に配置される。</li>
+<li>キャッシュの最大保持数（<code>MAX_CACHED_RES</code>）はデフォルトで32。</li>
+<li>コンパイルされた正規表現は <code>RegexpCacheMemoryContext</code> に保持され、バックエンドの生存期間中維持される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **キャッシュ検索**: キャッシュ配列を先頭から走査し、パターン文字列、フラグ、照合順序が一致するエントリを探す。一致した場合はそのエントリをリストの先頭に移動し、即座に返す。 2. **初期化**: 初回呼び出し時に <code>RegexpCacheMemoryContext</code> を作成する。 3. **コンパイル**: 一致するものがない場合、入力パターンを <code>pg_wchar</code> に変換し、<code>pg_regcomp</code> を呼び出してコンパイルする。 4. **メモリ管理**: コンパイル失敗時はエラーを報告する。成功時は専用のメモリコンテキストを作成し、パターンを格納する。 5. **キャッシュ更新**: キャッシュが上限に達している場合、最も古い（末尾の）エントリを破棄する。新しいエントリをリストの先頭に挿入し、メモリコンテキストを <code>RegexpCacheMemoryContext</code> の配下に再配置する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/utils/adt/regexp.c</code> 内の各正規表現関数（<code>regexp_match</code>, <code>regexp_replace</code> 等）。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>（<code>textregexreplace</code> 等）。</li>
+<li>**呼び出し先**:</li>
+<li><code>pg_regcomp</code>（正規表現コンパイル）。</li>
+<li><code>pg_regerror</code>（エラーメッセージ生成）。</li>
+<li><code>MemoryContext</code> 関連関数（<code>AllocSetContextCreate</code>, <code>MemoryContextDelete</code> 等）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>regex_t</code>: POSIX正規表現エンジンが使用するコンパイル済みパターン構造体。</li>
+<li><code>cached_re_str</code>: キャッシュされた正規表現、フラグ、照合順序、および関連するメモリコンテキストを保持する構造体。</li>
+<li><code>RegexpCacheMemoryContext</code>: キャッシュされた正規表現を格納するための永続的なメモリコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**コンパイル失敗**: <code>pg_regcomp</code> が <code>REG_OKAY</code> 以外を返した場合、<code>ereport(ERROR, ...)</code> によりトランザクションが中断される。</li>
+<li>**キャッシュ制限**: <code>MAX_CACHED_RES</code> を超える新しいパターンが要求された場合、最も古いエントリが削除される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>RegexpCacheMemoryContext</code> を使用してメモリを管理しているため、キャッシュされた正規表現はバックエンド終了まで解放されない。</li>
+<li>キャッシュミスが頻発する環境では、<code>MAX_CACHED_RES</code> の制限により頻繁な再コンパイルが発生する可能性がある。</li>
+</ul></body></html>

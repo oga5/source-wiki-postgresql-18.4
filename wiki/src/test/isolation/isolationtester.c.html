@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/test/isolation/isolationtester.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/test/isolation/isolationtester.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の分離レベルテストを実行するためのテストハーネスです。<code>.spec</code> ファイルで定義されたセッションとステップの順列（Permutation）を読み込み、複数のデータベース接続を並行して制御・監視することで、トランザクションの競合やデッドロックの挙動を検証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/test/isolation</code> モジュールの中核であり、<code>isolation_main.c</code> が呼び出すテスト実行ロジックを担います。<code>isolationtester.h</code> で定義されたデータ構造を基に、テスト仕様の解析から実行、結果の出力までを完結させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**テスト仕様の検証**: <code>check_testspec</code> により、ステップ名の一意性やブロック条件の整合性を確認し、実行可能な状態にリンクを構築します。</li>
+<li>**並行実行制御**: 複数の <code>libpq</code> 接続を管理し、各ステップの実行状態を監視します。</li>
+<li>**ブロッキング検出**: <code>pg_isolation_test_session_is_blocked</code> を利用して、セッションがロック待ち状態にあるかを判定します。</li>
+<li>**タイムアウト管理**: 各ステップの実行時間を監視し、デッドロックやハングアップ時にクエリをキャンセルまたは強制終了します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>IsoConnInfo</code>: 各セッションの接続状態、アクティブなステップ、受信した通知数を保持する構造体。</li>
+<li><code>run_permutation</code>: 指定された順列に従い、セットアップからステップ実行、ティアダウンまでの一連の流れを制御する関数。</li>
+<li><code>try_complete_step</code>: ステップの完了を待機、またはブロック条件（<code>PermutationStepBlocker</code>）が満たされるまでポーリングを行う関数。</li>
+<li><code>PREP_WAITING</code>: ロック待ち状態を判定するためのプリペアドステートメント名。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_testspec</code></li>
+<li><code>disconnect_atexit</code></li>
+<li><code>run_all_permutations</code></li>
+<li><code>run_all_permutations_recurse</code></li>
+<li><code>run_named_permutations</code></li>
+<li><code>run_testspec</code></li>
+<li><code>step_bsearch_cmp</code></li>
+<li><code>step_qsort_cmp</code></li>
+<li><code>try_complete_steps</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main</code> で接続を確立し、各セッションに <code>application_name</code> を設定。ロック判定用のクエリを準備します。 2. **順列生成**: <code>run_testspec</code> が明示的な順列があればそれを、なければ <code>run_all_permutations</code> で全順列を生成します。 3. **ステップ実行**: <code>run_permutation</code> が各ステップを <code>PQsendQuery</code> で非同期に発行し、<code>try_complete_steps</code> を通じて完了を待ちます。 4. **ポーリング**: <code>try_complete_step</code> 内で <code>select()</code> を使用し、ロック待ちや通知（<code>NOTICE</code>）の到着を監視します。ブロック条件が解除されるまでループし、条件が満たされたら結果を取得します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>libpq-fe.h</code>: PostgreSQL クライアントライブラリ。</li>
+<li><code>isolationtester.h</code>: テスト仕様のデータ構造定義。</li>
+<li><code>sys/select.h</code>, <code>sys/time.h</code>: 非同期 I/O 監視およびタイムアウト処理用。</li>
+<li><code>pqexpbuffer.h</code>: クエリ構築用バッファ。</li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>pg_getopt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/test/isolation/isolation_main.c</code>: プログラムのエントリポイント。</li>
+<li><code>src/test/isolation/specparse.y</code>: <code>.spec</code> ファイルを解析し <code>TestSpec</code> 構造体を生成するパーサー。</li>
+<li><code>src/backend/utils/misc/isolation_test_helper.c</code>: <code>pg_isolation_test_session_is_blocked</code> 関数を提供し、バックエンド側からロック状態を可視化します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ブロック条件**: ステップ間の依存関係は <code>PermutationStepBlocker</code> で定義されます。<code>PSB_NUM_NOTICES</code> は特定の通知数に達するまで待機する強力な同期手段です。</li>
+<li>**タイムアウト**: <code>PG_TEST_TIMEOUT_DEFAULT</code> 環境変数でタイムアウト時間を調整可能です。デフォルトは 360 秒です。</li>
+<li>**デバッグ**: <code>isolationtester</code> は <code>stdout</code> にテスト結果を書き出します。<code>NOTICE</code> メッセージはセッション名でプレフィックスされるため、ログからどのセッションが何をしているかを追跡可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__IsoConnInfo.html" target="wiki-view"><code>IsoConnInfo</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__disconnect_atexit.html" target="wiki-view"><code>disconnect_atexit</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__check_testspec.html" target="wiki-view"><code>check_testspec</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__run_testspec.html" target="wiki-view"><code>run_testspec</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__run_all_permutations.html" target="wiki-view"><code>run_all_permutations</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__run_all_permutations_recurse.html" target="wiki-view"><code>run_all_permutations_recurse</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__run_named_permutations.html" target="wiki-view"><code>run_named_permutations</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__step_qsort_cmp.html" target="wiki-view"><code>step_qsort_cmp</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__step_bsearch_cmp.html" target="wiki-view"><code>step_bsearch_cmp</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__run_permutation.html" target="wiki-view"><code>run_permutation</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__try_complete_steps.html" target="wiki-view"><code>try_complete_steps</code></a></li>
+<li><a href="../../../symbols/src__test__isolation__isolationtester_c__try_complete_step.html" target="wiki-view"><code>try_complete_step</code></a></li>
+</ul></body></html>

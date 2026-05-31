@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_upgrade__parallel_c__parallel_transfer_all_new_dbs.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>parallel_transfer_all_new_dbs</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_upgrade/parallel.c:171</code></li>
+</ul>
+<h2>目的</h2>
+<p>データベースのアップグレードにおけるテーブルスペースのデータ転送処理を、OSの並列化メカニズム（Unix系ではプロセス、Windows系ではスレッド）を利用して並列実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void parallel_transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
+                                   char *old_pgdata, char *new_pgdata,
+                                   char *old_tablespace)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>old_db_arr</code>, <code>new_db_arr</code>: データベース情報の配列。</li>
+<li><code>old_pgdata</code>, <code>new_pgdata</code>: 旧および新のデータディレクトリパス。</li>
+<li><code>old_tablespace</code>: 対象のテーブルスペース名（NULL可）。</li>
+<li>**出力**: なし（副作用として並列ジョブの起動または同期実行を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>user_opts.jobs</code> が 1 以下の場合は並列化せず、同期的に <code>transfer_all_new_dbs</code> を呼び出す。</li>
+<li>Windows環境では、<code>thread_handles</code> および <code>transfer_thread_args</code> が未初期化の場合、<code>user_opts.jobs</code> 分のメモリを確保する。</li>
+<li>並列実行時は、<code>parallel_jobs</code> がジョブ上限に達している場合、いずれかのジョブが完了するまでブロックする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ジョブ数チェック**: <code>user_opts.jobs &lt;= 1</code> ならば直ちに <code>transfer_all_new_dbs</code> を実行。 2. **リソース回収**: <code>reap_child(false)</code> を呼び出し、完了済みのジョブを回収。 3. **負荷制御**: <code>parallel_jobs &gt;= user_opts.jobs</code> の場合、<code>reap_child(true)</code> でジョブ完了を待機。 4. **実行準備**: <code>fflush(NULL)</code> で標準入出力をフラッシュ。 5. **並列実行**:</p>
+<ul>
+<li>**Unix系**: <code>fork()</code> を実行。子プロセスで <code>transfer_all_new_dbs</code> を呼び出し、<code>_exit(0)</code> で終了。</li>
+<li>**Windows系**: <code>transfer_thread_args</code> に引数をコピーし、<code>_beginthreadex</code> で <code>win32_transfer_all_new_dbs</code> を起動。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_upgrade/relfilenumber.c</code> 内の複数箇所から呼び出されている。</li>
+<li>**呼び出し先**:</li>
+<li><code>transfer_all_new_dbs</code> (同期実行時および子プロセス内)</li>
+<li><code>reap_child</code></li>
+<li><code>win32_transfer_all_new_dbs</code> (Windowsスレッド起動時)</li>
+<li><code>pg_fatal</code> (エラー発生時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DbInfoArr</code>: データベース情報配列。</li>
+<li><code>transfer_thread_arg</code>: Windows環境でのスレッド間引数受け渡し用構造体。</li>
+<li><code>parallel_jobs</code>: 現在実行中のジョブ数を保持するグローバル変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>fork()</code> が失敗した場合、<code>pg_fatal</code> を呼び出しプロセスを停止する。</li>
+<li>Windows環境で <code>_beginthreadex</code> が失敗した場合、<code>pg_fatal</code> を呼び出しプロセスを停止する。</li>
+<li>Windows環境では、<code>user_opts.jobs</code> が <code>MAXIMUM_WAIT_OBJECTS</code>（64）を超える場合、OSの制限により動作が制約される可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>Windows環境では、スレッド間で引数構造体を安全に受け渡すため、<code>transfer_thread_args</code> のメモリ管理に注意すること。</li>
+<li><code>_exit(0)</code> を使用しているのは、子プロセス終了時に <code>atexit()</code> 関数が二重実行されるのを防ぐためである。</li>
+</ul></body></html>

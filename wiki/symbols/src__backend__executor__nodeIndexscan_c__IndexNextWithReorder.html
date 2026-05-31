@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeIndexscan_c__IndexNextWithReorder.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>IndexNextWithReorder</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeIndexscan.c:168</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックススキャンにおいて、インデックスが提供する順序が不完全な場合や、<code>ORDER BY</code> 句の再評価が必要な場合に、<code>pairingheap</code> を用いてタプルの順序を正しく並べ替えて返却する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static TupleTableSlot *IndexNextWithReorder(IndexScanState *node);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>IndexScanState *node</code>（スキャン状態を保持するノード構造体）</li>
+<li>**出力**: <code>TupleTableSlot *</code>（順序が保証された次のタプル、またはスキャン終了時は空のスロット）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>前方スキャンのみサポートされる（<code>indexorderdir</code> および <code>es_direction</code> が前方であること）。</li>
+<li>インデックススキャンが並列実行される場合、またはシリアル実行される場合の両方に対応する。</li>
+<li><code>pairingheap</code> 内のタプルは <code>palloc</code> されたコピーである必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: スキャン記述子（<code>scandesc</code>）が未初期化の場合、<code>index_beginscan</code> および <code>index_rescan</code> を実行する。 2. **再ソートキューの確認**: <code>pairingheap</code> が空でない場合、先頭要素の <code>ORDER BY</code> 値が最後に返した値以下であれば、キューからポップして返却する。 3. **インデックスからの取得**: <code>index_getnext_slot</code> でタプルを取得する。 4. **再評価**:</p>
+<ul>
+<li>インデックスが損失性（<code>xs_recheck</code>）の場合、<code>ExecQualAndReset</code> でフィルタリングを行う。</li>
+<li><code>ORDER BY</code> の再チェックが必要な場合、<code>EvalOrderByExpressions</code> で値を再計算し、インデックスが返した値と照合する。</li>
+<p>5. **キューイング**: 順序が不正確な場合、またはキュー内に優先度の高いタプルが存在する場合は、タプルを <code>pairingheap</code> にプッシュし、次のループへ進む。 6. **返却**: 順序が確定したタプルを <code>TupleTableSlot</code> に格納して返却する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecIndexScan</code>（<code>ExecScanAccessMtd</code> 経由での呼び出しが確認されている）。</li>
+<li>**呼び出し先**: <code>index_beginscan</code>, <code>index_rescan</code>, <code>index_getnext_slot</code>, <code>pairingheap_first</code>, <code>reorderqueue_pop</code>, <code>reorderqueue_push</code>, <code>ExecQualAndReset</code>, <code>EvalOrderByExpressions</code>, <code>cmp_orderbyvals</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexScanState</code>: スキャンノードの状態管理。</li>
+<li><code>ReorderTuple</code>: 再ソート用キューに格納されるタプル構造体。</li>
+<li><code>pairingheap</code>: 順序保証のための優先度付きキュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**順序エラー**: インデックスが返した順序が期待値より小さい場合、<code>elog(ERROR, &quot;index returned tuples in wrong order&quot;)</code> を発生させる。</li>
+<li>**スキャン終了**: インデックスからタプルが取得できず、かつキューも空になった場合、<code>ExecClearTuple</code> を返して終了する。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、処理中にクエリのキャンセル要求を検知する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ORDER BY</code> 句の再評価が必要な複雑なインデックススキャンを処理する。</li>
+<li><code>pairingheap</code> の操作は <code>reorderqueue_pop</code> / <code>reorderqueue_push</code> を介して行われるため、キューの整合性を維持すること。</li>
+<li>インデックスが損失性である場合の再チェックロジックは、<code>xs_recheck</code> フラグに依存している。</li>
+</ul></body></html>

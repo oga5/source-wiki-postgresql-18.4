@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeTidscan_c__TidNext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TidNext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeTidscan.c:311</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>TidScan</code> ノードにおいて、指定された TID（Tuple Identifier）リストに基づき、リレーションからタプルを順次フェッチする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *TidNext(TidScanState *node)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>TidScanState *node</code>（スキャン状態を保持するノード構造体）</li>
+<li>**出力**: フェッチに成功した場合は該当タプルを格納した <code>TupleTableSlot</code>、スキャン終了時は <code>ExecClearTuple</code> によりクリアされたスロット。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>初回呼び出し時に <code>node-&gt;tss_TidList</code> が <code>NULL</code> の場合、<code>TidListEval</code> が呼び出され、TID リストが生成・ソートされる。</li>
+<li>スキャン方向（順方向/逆方向）に応じて <code>node-&gt;tss_TidPtr</code> が適切に管理される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回実行時に <code>TidListEval</code> を呼び出し、対象 TID の配列を構築する。 2. **ポインタ更新**: スキャン方向に基づき、現在のインデックス <code>tss_TidPtr</code> を進める（または戻す）。 3. **フェッチループ**:</p>
+<ul>
+<li><code>tss_TidPtr</code> が有効範囲内である限りループする。</li>
+<li><code>tss_isCurrentOf</code> が真の場合、<code>table_tuple_get_latest_tid</code> を呼び出し、最新の TID を取得する。</li>
+<li><code>table_tuple_fetch_row_version</code> を呼び出し、タプルを取得する。成功すればそのスロットを返す。</li>
+<li>失敗した場合はインデックスを更新し、<code>CHECK_FOR_INTERRUPTS()</code> を実行して次の TID へ進む。</li>
+<p>4. **終了**: 全ての TID を走査してもタプルが見つからない場合、<code>ExecClearTuple</code> を実行して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: ソースコード上での直接的な呼び出し元は明示されていないが、<code>ExecScanAccessMtd</code> 経由で実行される設計となっている。</li>
+<li>**呼び出し先**: <code>TidListEval</code>, <code>table_tuple_get_latest_tid</code>, <code>table_tuple_fetch_row_version</code>, <code>ExecClearTuple</code>, <code>CHECK_FOR_INTERRUPTS</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TidScanState</code>: スキャン実行時の状態を保持する構造体。</li>
+<li><code>ItemPointerData</code>: TID を格納するデータ型。</li>
+<li><code>TupleTableSlot</code>: タプルを保持するスロット。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**TID 無効**: <code>table_tuple_fetch_row_version</code> が偽を返す場合、その TID はスキップされる。</li>
+<li>**スキャン終了**: <code>tss_TidPtr</code> がリストの範囲外となった場合、スキャンは終了する。</li>
+<li>**割り込み**: ループ内で <code>CHECK_FOR_INTERRUPTS()</code> が呼び出され、クエリキャンセル等の割り込みに対応する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>WHERE CURRENT OF</code> 句の処理が含まれており、カーソルに関連付けられた TID の動的な解決を行うため、通常の <code>ctid</code> 比較とは異なる挙動を示す。</li>
+<li>TID リストのソートは I/O 効率に直結するため、リスト生成ロジックを変更する際は注意が必要である。</li>
+</ul></body></html>

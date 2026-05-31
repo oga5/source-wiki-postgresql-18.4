@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/joinpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/joinpath.c</h1>
+<h2>概要</h2>
+<p><code>joinpath.c</code> は、PostgreSQL オプティマイザにおいて、2 つの結合対象リレーション（<code>RelOptInfo</code>）から可能な結合パス（<code>Path</code>）を生成・評価する中心的なモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、<code>add_paths_to_joinrel</code> を通じて結合リレーションのパスリストを構築します。<code>joinrels.c</code> が結合順序を決定するのに対し、本ファイルは決定された結合順序に対して、具体的にどのようなアルゴリズム（Nestloop, Mergejoin, Hashjoin）で結合を実行するのが最適かを検討します。</p>
+<h2>責務</h2>
+<ul>
+<li>**結合パスの生成**: Nestloop, Mergejoin, Hashjoin の各アルゴリズムに基づいたパスを生成し、コスト評価を行う。</li>
+<li>**パスの選別**: <code>add_path</code> / <code>add_partial_path</code> を呼び出し、コストやパラメータ化の観点で劣るパスを排除する。</li>
+<li>**特殊な結合の処理**: <code>JOIN_SEMI</code>, <code>JOIN_ANTI</code>, <code>JOIN_UNIQUE_INNER/OUTER</code> などの特殊な結合タイプに対するコスト補正やパス生成。</li>
+<li>**並列結合のサポート**: パラレルクエリ実行のための <code>partial_path</code> 生成。</li>
+<li>**拡張性**: <code>set_join_pathlist_hook</code> を提供し、外部拡張が結合パス生成プロセスに介入できるようにする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>add_paths_to_joinrel</code>: 本ファイルのメインエントリポイント。結合リレーションに対するすべてのパス生成ロジックを統括する。</li>
+<li><code>try_nestloop_path</code> / <code>try_mergejoin_path</code> / <code>try_hashjoin_path</code>: 各結合アルゴリズムのパスを生成し、<code>add_path</code> を試みるヘルパー関数。</li>
+<li><code>set_join_pathlist_hook</code>: 外部モジュールが結合パス生成をカスタマイズするためのフック。</li>
+<li><code>JoinPathExtraData</code>: 結合処理中に必要なメタデータ（<code>SpecialJoinInfo</code> や <code>restrictlist</code> など）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>allow_star_schema_join</code></li>
+<li><code>extract_lateral_vars_from_PHVs</code></li>
+<li><code>get_memoize_path</code></li>
+<li><code>have_unsafe_outer_join_ref</code></li>
+<li><code>paraminfo_get_equal_hashops</code></li>
+<li><code>try_partial_hashjoin_path</code></li>
+<li><code>try_partial_mergejoin_path</code></li>
+<li><code>try_partial_nestloop_path</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>add_paths_to_joinrel</code> が呼び出され、<code>JoinPathExtraData</code> を初期化。 2. **事前準備**: 結合タイプに応じた一意性（<code>inner_unique</code>）の判定や、マージ結合用の句の選択を行う。 3. **パス生成の試行**:</p>
+<ul>
+<li><code>sort_inner_and_outer</code> / <code>match_unsorted_outer</code>: Mergejoin のパスを生成。</li>
+<li><code>hash_inner_and_outer</code>: Hashjoin のパスを生成。</li>
+<li><code>try_nestloop_path</code>: Nestloop のパスを生成。</li>
+<p>4. **拡張**: FDW（外部データラッパー）のパス生成や、フックによる外部パスの追加を許可。 5. **評価**: 各関数内で <code>add_path</code> を呼び出し、既存のパスとのコスト比較を経て <code>joinrel-&gt;pathlist</code> が更新される。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス生成および操作の基本定義。</li>
+<li><code>optimizer/cost.h</code>: コスト見積もりのための関数群。</li>
+<li><code>optimizer/restrictinfo.h</code>: 結合条件（<code>RestrictInfo</code>）の管理。</li>
+<li><code>nodes/nodeFuncs.h</code>: ノードツリーの操作。</li>
+<li><code>executor/executor.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>math.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/path/joinrels.c</code>: 結合順序の決定ロジック。</li>
+<li><code>src/backend/optimizer/path/costsize.c</code>: 結合コストの計算ロジック。</li>
+<li><code>src/backend/optimizer/plan/createplan.c</code>: ここで生成された <code>Path</code> を実際の <code>Plan</code> ノードへ変換する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは非常に複雑な条件分岐（特に <code>JOIN_FULL</code> や <code>JOIN_UNIQUE</code> 関連）を含みます。まずは <code>add_paths_to_joinrel</code> の全体的な流れを追い、その後に各結合アルゴリズム（Nestloop/Merge/Hash）の <code>try_</code> 関数を読むのが効率的です。</li>
+<li><code>PATH_PARAM_BY_REL</code> などのマクロは、パスが特定のリレーションに依存しているか（パラメータ化されているか）を判定する重要なユーティリティです。</li>
+<li><code>Memoize</code> パスの生成ロジック（<code>get_memoize_path</code>）は、Nested Loop のコストを劇的に改善する可能性があるため、最近の PostgreSQL の最適化において重要度が増しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__add_paths_to_joinrel.html" target="wiki-view"><code>add_paths_to_joinrel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__allow_star_schema_join.html" target="wiki-view"><code>allow_star_schema_join</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__have_unsafe_outer_join_ref.html" target="wiki-view"><code>have_unsafe_outer_join_ref</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__paraminfo_get_equal_hashops.html" target="wiki-view"><code>paraminfo_get_equal_hashops</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__extract_lateral_vars_from_PHVs.html" target="wiki-view"><code>extract_lateral_vars_from_PHVs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__get_memoize_path.html" target="wiki-view"><code>get_memoize_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_nestloop_path.html" target="wiki-view"><code>try_nestloop_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_partial_nestloop_path.html" target="wiki-view"><code>try_partial_nestloop_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_mergejoin_path.html" target="wiki-view"><code>try_mergejoin_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_partial_mergejoin_path.html" target="wiki-view"><code>try_partial_mergejoin_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_hashjoin_path.html" target="wiki-view"><code>try_hashjoin_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinpath_c__try_partial_hashjoin_path.html" target="wiki-view"><code>try_partial_hashjoin_path</code></a></li>
+</ul></body></html>

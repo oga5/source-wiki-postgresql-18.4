@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/generation.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/generation.c</h1>
+<h2>概要</h2>
+<p><code>generation.c</code> は、PostgreSQL のメモリ管理サブシステムにおける「世代別（Generational）」メモリコンテキストの実装です。寿命が近いオブジェクト（タプルなど）をグループ化して管理する用途に最適化されており、FIFO（先入れ先出し）に近いメモリ割り当て・解放パターンにおいて高い効率を発揮します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>MemoryContext</code> インターフェースを実装する特殊なコンテキストの一つです。<code>aset.c</code>（標準的なアロケータ）が汎用的なメモリ管理を行うのに対し、本モジュールは特定のライフサイクルを持つオブジェクト群を効率的に処理し、メモリの断片化を抑制しつつ、ブロック単位での再利用を促進します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ブロック管理**: <code>malloc()</code> で確保したメモリブロックを <code>dlist</code> で管理し、必要に応じて新規ブロックの割り当てや解放を行う。</li>
+<li>**チャンクの再利用**: ブロック内の全チャンクが解放された際、そのブロックを即座に <code>free()</code> せず、<code>freeblock</code> として保持し、次回の割り当て要求に再利用する。</li>
+<li>**ライフサイクル管理**: コンテキストの作成、リセット、削除、およびチャンクの割り当て・解放・再割り当て（<code>palloc</code>, <code>pfree</code>, <code>repalloc</code>）の実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GenerationContext</code>: コンテキストのメイン構造体。ブロックリストと再利用用の <code>freeblock</code> を保持。</li>
+<li><code>GenerationBlock</code>: メモリの管理単位。複数の <code>MemoryChunk</code> を含む。</li>
+<li><code>GenerationAlloc</code>: チャンクを割り当てるメイン関数。</li>
+<li><code>GenerationFree</code>: チャンクを解放し、ブロックが空になれば再利用または解放を行う。</li>
+<li><code>KeeperBlock</code>: コンテキスト作成時に同時に確保される最初のブロック。コンテキスト削除時まで生存する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GenerationAllocLarge</code></li>
+<li><code>GenerationBlockFree</code></li>
+<li><code>GenerationBlockFreeBytes</code></li>
+<li><code>GenerationBlockInit</code></li>
+<li><code>GenerationContextCreate</code></li>
+<li><code>GenerationDelete</code></li>
+<li><code>GenerationPointer</code></li>
+<li><code>GenerationReset</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て**: <code>GenerationAlloc</code> が呼び出されると、現在のブロックに空きがあるか確認します。空きがない場合、<code>freeblock</code> があればそれを再利用し、なければ新規ブロックを確保します。 2. **解放**: <code>GenerationFree</code> はチャンクを解放し、ブロック内の空きカウンタを更新します。ブロック内の全チャンクが解放された場合、そのブロックが <code>KeeperBlock</code> でなければ <code>free()</code> します（<code>freeblock</code> が空なら、それを <code>freeblock</code> として保存します）。 3. **リセット**: <code>GenerationReset</code> は全ブロックを走査し、<code>KeeperBlock</code> 以外を解放または初期化して、コンテキストを初期状態に戻します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>lib/ilist.h</code>: ブロック管理用の双方向リスト。</li>
+<li><code>utils/memutils.h</code>, <code>utils/memutils_internal.h</code>: メモリコンテキストの共通インターフェースと内部構造。</li>
+<li><code>utils/memutils_memorychunk.h</code>: チャンクヘッダーの操作。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作ユーティリティ。</li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの基盤となる実装。</li>
+<li><code>src/backend/utils/mmgr/aset.c</code>: 汎用的なメモリコンテキスト実装（比較対象）。</li>
+<li><code>src/backend/utils/mmgr/memdebug.c</code>: メモリデバッグ機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**FIFO への最適化**: このコンテキストは、割り当て順と解放順が近い場合に最も効率的です。ランダムな解放が頻発する用途には向きません。</li>
+<li>**KeeperBlock の扱い**: コンテキストヘッダーと同一の <code>malloc</code> チャンク内に配置されるため、コンテキストの寿命と同期します。</li>
+<li>**Valgrind 連携**: <code>VALGRIND_MAKE_MEM_NOACCESS</code> 等のマクロを多用しており、メモリの不正アクセスを厳密に検知する設計になっています。コードを読む際は、これらのマクロがメモリの有効性をどう制御しているかに注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationBlock.html" target="wiki-view"><code>GenerationBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationPointer.html" target="wiki-view"><code>GenerationPointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationContext.html" target="wiki-view"><code>GenerationContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationContextCreate.html" target="wiki-view"><code>GenerationContextCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationReset.html" target="wiki-view"><code>GenerationReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationDelete.html" target="wiki-view"><code>GenerationDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationAllocLarge.html" target="wiki-view"><code>GenerationAllocLarge</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationAlloc.html" target="wiki-view"><code>GenerationAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationBlockInit.html" target="wiki-view"><code>GenerationBlockInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationBlockFreeBytes.html" target="wiki-view"><code>GenerationBlockFreeBytes</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationBlockFree.html" target="wiki-view"><code>GenerationBlockFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__generation_c__GenerationFree.html" target="wiki-view"><code>GenerationFree</code></a></li>
+</ul></body></html>

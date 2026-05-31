@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/info.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/info.c</h1>
+<h2>概要</h2>
+<p><code>info.c</code> は、<code>pg_upgrade</code> において新旧両方の PostgreSQL クラスタからメタデータ（データベース、テーブル、インデックス、論理レプリケーションスロットの情報）を収集し、それらをマッピングするためのサポート関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> の中核となるデータ収集層です。<code>pg_upgrade.c</code> や <code>check.c</code> がクラスタのアップグレード可否を判断したり、実際の移行処理を実行したりする際に必要な「どのオブジェクトがどこに存在するか」というカタログ情報を供給します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メタデータ収集**: システムカタログ（<code>pg_database</code>, <code>pg_class</code>, <code>pg_index</code> 等）をクエリし、クラスタ内の全オブジェクト情報を構造体に格納する。</li>
+<li>**マッピング生成**: 新旧クラスタ間で対応するテーブルやインデックスを OID ベースで照合し、ファイルレベルの移行マップ（<code>FileNameMap</code>）を作成する。</li>
+<li>**論理スロット管理**: PostgreSQL 17 以降のクラスタにおいて、論理レプリケーションスロットの移行可否判定と情報保持を行う。</li>
+<li>**リソース管理**: 収集したメタデータ構造体のメモリ解放およびデバッグ用の出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gen_db_file_maps()</code>: 新旧クラスタの <code>RelInfo</code> 配列を比較し、ファイル移行のためのマッピングを作成する主要関数。</li>
+<li><code>get_db_rel_and_slot_infos()</code>: クラスタ情報を取得するための高レベルなエントリーポイント。</li>
+<li><code>DbInfo</code>, <code>RelInfo</code>: データベースおよびリレーションの情報を保持する主要なデータ構造。</li>
+<li><code>FileNameMap</code>: ファイル移行時に使用される、新旧のパスと OID を結びつける構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>count_old_cluster_logical_slots</code></li>
+<li><code>create_rel_filename_map</code></li>
+<li><code>gen_db_file_maps</code></li>
+<li><code>get_db_infos</code></li>
+<li><code>get_db_rel_and_slot_infos</code></li>
+<li><code>get_old_cluster_logical_slot_infos_query</code></li>
+<li><code>get_rel_infos_query</code></li>
+<li><code>get_subscription_count</code></li>
+<li><code>get_template0_info</code></li>
+<li><code>process_old_cluster_logical_slot_infos</code></li>
+<li><code>process_rel_infos</code></li>
+<li><code>report_unmatched_relation</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>get_db_rel_and_slot_infos()</code> が呼び出され、<code>UpgradeTask</code> を通じてクエリが実行されます。 2.  **クエリ実行**: <code>get_rel_infos_query()</code> が生成する複雑な CTE クエリにより、テーブル、TOAST テーブル、インデックスが OID 順に取得されます。 3.  **処理**: <code>process_rel_infos()</code> コールバックが結果セットを走査し、<code>RelInfo</code> 構造体に格納します。この際、文字列の重複排除を行いメモリ効率を最適化します。 4.  **照合**: <code>gen_db_file_maps()</code> が新旧の <code>RelInfo</code> を走査し、OID が一致するものをペアリングします。不一致がある場合は <code>report_unmatched_relation()</code> で警告またはエラーを出力します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
+<li><code>access/transam.h</code>: トランザクション関連の定数。</li>
+<li><code>catalog/pg_class_d.h</code>: システムカタログの定義。</li>
+<li><code>pg_upgrade.h</code>: モジュール共通の構造体定義とグローバル変数。</li>
+<li><code>pqexpbuffer.h</code>: 動的文字列バッファ操作。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/pg_upgrade.c</code>: このファイルで収集された情報を利用してアップグレードのメインフローを制御します。</li>
+<li><code>src/bin/pg_upgrade/relfilenumber.c</code>: ファイルノード番号の管理に関連します。</li>
+<li><code>src/bin/pg_upgrade/task.c</code>: <code>UpgradeTask</code> の実行基盤を提供します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**OID 順序の重要性**: <code>get_rel_infos_query()</code> は結果を OID 順にソートします。これにより、<code>gen_db_file_maps()</code> での照合処理が $O(N)$ の線形走査で完了するよう設計されています。</li>
+<li>**メモリ管理**: <code>process_rel_infos()</code> 内で <code>nspname</code> や <code>tablespace</code> の文字列ポインタを再利用するロジックがあります。これは多数のテーブルを持つクラスタでのメモリ消費を抑えるための工夫です。</li>
+<li>**論理スロット**: PG17 未満のクラスタでは論理スロットの移行がサポートされていないため、このファイル内の関連ロジックはバージョンチェックによって条件分岐しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__gen_db_file_maps.html" target="wiki-view"><code>gen_db_file_maps</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__create_rel_filename_map.html" target="wiki-view"><code>create_rel_filename_map</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__report_unmatched_relation.html" target="wiki-view"><code>report_unmatched_relation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_db_rel_and_slot_infos.html" target="wiki-view"><code>get_db_rel_and_slot_infos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_template0_info.html" target="wiki-view"><code>get_template0_info</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_db_infos.html" target="wiki-view"><code>get_db_infos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_rel_infos_query.html" target="wiki-view"><code>get_rel_infos_query</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__process_rel_infos.html" target="wiki-view"><code>process_rel_infos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_old_cluster_logical_slot_infos_query.html" target="wiki-view"><code>get_old_cluster_logical_slot_infos_query</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__process_old_cluster_logical_slot_infos.html" target="wiki-view"><code>process_old_cluster_logical_slot_infos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__count_old_cluster_logical_slots.html" target="wiki-view"><code>count_old_cluster_logical_slots</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__info_c__get_subscription_count.html" target="wiki-view"><code>get_subscription_count</code></a></li>
+</ul></body></html>

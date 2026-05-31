@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__optimizer__prep__prepunion_c__recurse_set_operations.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>recurse_set_operations</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/optimizer/prep/prepunion.c:208</code></li>
+</ul>
+<h2>目的</h2>
+<p>集合演算（<code>UNION</code>, <code>INTERSECT</code>, <code>EXCEPT</code>）のクエリツリーを再帰的に走査し、各ノードに対応する物理的な実行パス（<code>RelOptInfo</code>）を構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static RelOptInfo *recurse_set_operations(Node *setOp, PlannerInfo *root,
+                                          SetOperationStmt *parentOp,
+                                          List *colTypes, List *colCollations,
+                                          List *refnames_tlist,
+                                          List **pTargetList,
+                                          bool *istrivial_tlist)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>setOp</code>: 処理対象のノード（<code>RangeTblRef</code> または <code>SetOperationStmt</code>）。</li>
+<li><code>root</code>: 現在のクエリレベルの <code>PlannerInfo</code>。</li>
+<li><code>parentOp</code>: 親の集合演算ノード（サブクエリのプランニング時に伝播）。</li>
+<li><code>colTypes</code>, <code>colCollations</code>: 集合演算結果に要求される型と照合順序。</li>
+<li><code>refnames_tlist</code>: 参照名解決用のターゲットリスト。</li>
+<li>**出力**:</li>
+<li>戻り値: 構築された <code>RelOptInfo</code>。</li>
+<li><code>pTargetList</code>: 決定されたターゲットリスト。</li>
+<li><code>istrivial_tlist</code>: ターゲットリストが自明（変換不要）かどうかを示すフラグ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>check_stack_depth()</code> を呼び出し、再帰的なネストによるスタックオーバーフローを防止する。</li>
+<li><code>RangeTblRef</code> の場合、サブクエリ内に他の集合演算ノードへの外部参照が含まれていないことを保証する。</li>
+<li><code>SetOperationStmt</code> の場合、生成されたパスのターゲットリストが要求された型・照合順序と一致しない場合は、<code>Result</code> ノードによる射影（Projection）を適用する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **末端ノード (<code>RangeTblRef</code>)**:</p>
+<ul>
+<li><code>build_simple_rel</code> で <code>RelOptInfo</code> を作成。</li>
+<li><code>subquery_planner</code> を呼び出し、サブクエリのパスを生成。</li>
+<li><code>generate_setop_tlist</code> を用いて、集合演算に必要なターゲットリストを構築。</li>
+<p>2. **中間ノード (<code>SetOperationStmt</code>)**:</p>
+<li><code>op-&gt;op</code> が <code>SETOP_UNION</code> なら <code>generate_union_paths</code> を、それ以外なら <code>generate_nonunion_paths</code> を呼び出し、子ノードのパスを結合。</li>
+<li>戻り値のターゲットリストが要求と一致しない場合、<code>apply_projection_to_path</code> または <code>create_projection_path</code> を用いて射影を適用。</li>
+<li><code>postprocess_setop_rel</code> を呼び出し、コスト計算と最適パスの選択を行う。</li>
+<p>3. **エラー処理**: 未知のノード型が渡された場合は <code>elog(ERROR)</code> を発生させる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>plan_set_operations</code>（<code>src/backend/optimizer/prep/prepunion.c</code>）</li>
+<li>再帰的に自身を呼び出す（<code>SetOperationStmt</code> の左右の子ノード処理）。</li>
+<li>**呼び出し先**:</li>
+<li><code>subquery_planner</code>, <code>build_simple_rel</code>, <code>generate_setop_tlist</code>, <code>generate_union_paths</code>, <code>generate_nonunion_paths</code>, <code>apply_projection_to_path</code>, <code>create_projection_path</code>, <code>postprocess_setop_rel</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RelOptInfo</code>: 集合演算の結果として生成されるパス情報を保持。</li>
+<li><code>SetOperationStmt</code>: 集合演算の論理構造。</li>
+<li><code>PlannerInfo</code>: プランニング中のクエリ状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**スタックオーバーフロー**: 集合演算が過度にネストされている場合、<code>check_stack_depth()</code> によりエラーとなる。</li>
+<li>**外部参照**: サブクエリ内に予期せぬ外部参照がある場合、<code>elog(ERROR)</code> で停止する。</li>
+<li>**未知のノード**: <code>setOp</code> が <code>RangeTblRef</code> でも <code>SetOperationStmt</code> でもない場合、<code>elog(ERROR)</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>istrivial_tlist</code> は初期値として <code>true</code> に設定されるが、処理過程で更新される。</li>
+<li><code>varno 0</code> を使用した射影は、<code>setrefs.c</code> での <code>fix_upper_expr</code> との整合性を保つための特殊な実装である。</li>
+<li><code>generate_setop_tlist</code> の呼び出し時に <code>varno</code> を 0 に設定する箇所は、射影ノードの生成ロジックと密接に関連している。</li>
+</ul></body></html>

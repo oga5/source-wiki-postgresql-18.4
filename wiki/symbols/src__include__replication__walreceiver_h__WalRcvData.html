@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__walreceiver_h__WalRcvData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalRcvData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/walreceiver.h:57</code></li>
+</ul>
+<h2>目的</h2>
+<p>スタンバイサーバーにおけるWALレシーバープロセスの状態を共有メモリ上で管理するための構造体です。プロセス間での受信位置の共有、状態遷移の制御、およびプライマリサーバーとの通信パラメータの保持を担います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct {
+    ProcNumber procno;
+    pid_t pid;
+    WalRcvState walRcvState;
+    ConditionVariable walRcvStoppedCV;
+    pg_time_t startTime;
+    XLogRecPtr receiveStart;
+    TimeLineID receiveStartTLI;
+    XLogRecPtr flushedUpto;
+    TimeLineID receivedTLI;
+    XLogRecPtr latestChunkStart;
+    TimestampTz lastMsgSendTime;
+    TimestampTz lastMsgReceiptTime;
+    XLogRecPtr latestWalEnd;
+    TimestampTz latestWalEndTime;
+    char conninfo[MAXCONNINFO];
+    char sender_host[NI_MAXHOST];
+    int sender_port;
+    char slotname[NAMEDATALEN];
+    bool is_temp_slot;
+    bool ready_to_display;
+    slock_t mutex;
+    pg_atomic_uint64 writtenUpto;
+    sig_atomic_t force_reply;
+} WalRcvData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: スタートアッププロセスが <code>receiveStart</code> や <code>receiveStartTLI</code> を設定し、ストリーミングの開始位置を指示します。</li>
+<li>**出力**: WALレシーバーが受信したWALをディスクへ書き込むたびに <code>flushedUpto</code> が更新され、スタートアッププロセスがリプレイ可能な位置を把握するために参照されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ上に配置されるため、構造体内の変数（<code>writtenUpto</code> を除く）へのアクセスには <code>mutex</code> によるロックが必須です。</li>
+<li><code>writtenUpto</code> はアトミック操作によりロックなしで読み取り可能ですが、データ整合性の保証には使用できません。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **起動**: スタートアッププロセスが共有メモリを更新し、WALレシーバーを起動します。 2. **受信と更新**: WALレシーバーはプライマリからWALを取得し、<code>flushedUpto</code> を更新します。 3. **進捗監視**: <code>latestChunkStart</code> を通じて、スタートアッププロセスは受信の遅延状況を監視可能です。 4. **終了**: <code>SIGTERM</code> 等のシグナルにより <code>walRcvState</code> が <code>STOPPING</code> に遷移し、プロセスが終了します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walreceiver.c</code> および <code>src/backend/replication/walreceiverfuncs.c</code> 内の各関数が、共有メモリ上の <code>WalRcvData</code> インスタンス（<code>WalRcv</code>）を参照・更新しています。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalRcvState</code>: プロセスのライフサイクル状態（<code>STREAMING</code>, <code>WAITING</code>, <code>STOPPED</code> 等）。</li>
+<li><code>XLogRecPtr</code>: WALの論理位置情報。</li>
+<li><code>ConditionVariable</code>: プロセス間同期に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>conninfo</code> は接続後にセキュリティ保護のため上書き（clobber）されます。</li>
+<li><code>writtenUpto</code> は書き込み後に進められますが、データ整合性目的の読み取りには適さないため、厳密な整合性が必要な場合は <code>mutex</code> で保護された <code>flushedUpto</code> を使用する必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に存在するため、フィールドの追加や変更を行う際はアライメントとロックの粒度に注意してください。</li>
+<li><code>writtenUpto</code> はロックなしで読み取れる設計ですが、あくまで進捗の目安として利用してください。</li>
+</ul></body></html>

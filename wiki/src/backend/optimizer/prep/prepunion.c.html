@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/prep/prepunion.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/prep/prepunion.c</h1>
+<h2>概要</h2>
+<p><code>prepunion.c</code> は、SQL の集合演算（<code>UNION</code>, <code>INTERSECT</code>, <code>EXCEPT</code>）をプランニングするための中心的なモジュールです。クエリ内の集合演算ツリーを走査し、各ノードに対して適切な実行パス（<code>Append</code>, <code>MergeAppend</code>, <code>SetOp</code>, <code>RecursiveUnion</code> など）を生成します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/prep</code> モジュールの一部として、クエリの論理的な集合演算構造を物理的な実行プランへと変換する役割を担います。<code>planner()</code> が呼び出す <code>grouping_planner</code> からの依頼を受け、集合演算のサブクエリを個別にプランニングし、それらを結合するパスを構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**集合演算の再帰的プランニング**: <code>SetOperationStmt</code> ツリーを再帰的に辿り、各階層で最適なパスを決定する。</li>
+<li>**パスの生成**: 集合演算の種類に応じて、<code>Append</code>（<code>UNION ALL</code>）、<code>SetOp</code>（<code>INTERSECT</code>/<code>EXCEPT</code>）、<code>RecursiveUnion</code>（再帰的 <code>UNION</code>）のパスを生成する。</li>
+<li>**ターゲットリストの管理**: 集合演算の各入力間でデータ型や照合順序（Collation）を整合させるためのターゲットリスト（<code>tlist</code>）を生成・調整する。</li>
+<li>**子ノードの最適化**: 集合演算の子となるサブクエリに対して、親の要求に応じたソート順やグループ化の情報を伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>plan_set_operations</code>: 本ファイルのメインエントリポイント。集合演算ツリーのプランニングを開始する。</li>
+<li><code>recurse_set_operations</code>: 集合演算ツリーを再帰的に処理する中核関数。</li>
+<li><code>generate_union_paths</code>: <code>UNION</code> / <code>UNION ALL</code> のパス生成を担当。</li>
+<li><code>generate_nonunion_paths</code>: <code>INTERSECT</code> / <code>EXCEPT</code> のパス生成を担当。</li>
+<li><code>build_setop_child_paths</code>: 子サブクエリに対して、集合演算に有用なパス（ソート済みパスなど）を構築する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>generate_append_tlist</code></li>
+<li><code>generate_recursion_path</code></li>
+<li><code>generate_setop_grouplist</code></li>
+<li><code>generate_setop_tlist</code></li>
+<li><code>plan_union_children</code></li>
+<li><code>postprocess_setop_rel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. <code>plan_set_operations</code> が <code>root-&gt;parse-&gt;setOperations</code> を取得し、再帰処理を開始。 2. <code>recurse_set_operations</code> がツリーを辿り、末端の <code>RangeTblRef</code>（サブクエリ）に到達すると <code>subquery_planner</code> を呼び出して子クエリをプランニング。 3. 各集合演算ノードで <code>generate_union_paths</code> または <code>generate_nonunion_paths</code> を呼び出し、子ノードから返されたパスを結合。 4. 最終的に <code>RelOptInfo</code>（<code>UPPERREL_SETOP</code>）にパスが追加され、<code>postprocess_setop_rel</code> でコスト計算と最適パスの選択が行われる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>makefuncs.h</code>, <code>nodeFuncs.h</code>（ノード操作）</li>
+<li><code>optimizer/</code>: <code>paths.h</code>, <code>pathnode.h</code>, <code>planner.h</code>, <code>tlist.h</code>（プランニングの基盤）</li>
+<li><code>catalog/pg_type.h</code>: 型情報の参照</li>
+<li><code>parser/parse_coerce.h</code>: 型変換処理</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/plan/planner.c</code>: 本モジュールを呼び出す上位のプランナ。</li>
+<li><code>src/backend/optimizer/prep/prepjointree.c</code>: <code>UNION ALL</code> の単純なケース（Append Relation）を扱う際に連携する。</li>
+<li><code>src/backend/executor/nodeSetOp.c</code>: ここで生成された <code>SetOp</code> ノードを実行するエグゼキュータ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「集合演算」という名前ですが、再帰的 <code>UNION</code> もここで処理されます。</li>
+<li><code>varno 0</code> を持つ <code>Var</code> ノードが生成されることがありますが、これは集合演算の出力列を指すための特殊な慣習です。</li>
+<li><code>trivial_tlist</code> フラグは、入力と出力の型が完全に一致しており、追加の変換処理が不要であることを示す重要な最適化ヒントです。</li>
+<li>複雑な集合演算のネストはスタックオーバーフローを引き起こす可能性があるため、<code>check_stack_depth()</code> が随所で呼び出されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__plan_set_operations.html" target="wiki-view"><code>plan_set_operations</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__recurse_set_operations.html" target="wiki-view"><code>recurse_set_operations</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_recursion_path.html" target="wiki-view"><code>generate_recursion_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__build_setop_child_paths.html" target="wiki-view"><code>build_setop_child_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_union_paths.html" target="wiki-view"><code>generate_union_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_nonunion_paths.html" target="wiki-view"><code>generate_nonunion_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__plan_union_children.html" target="wiki-view"><code>plan_union_children</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__postprocess_setop_rel.html" target="wiki-view"><code>postprocess_setop_rel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_setop_tlist.html" target="wiki-view"><code>generate_setop_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_append_tlist.html" target="wiki-view"><code>generate_append_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepunion_c__generate_setop_grouplist.html" target="wiki-view"><code>generate_setop_grouplist</code></a></li>
+</ul></body></html>

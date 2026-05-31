@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/jsonlexcontext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>JsonLexContext</h1>
+<h2>概念</h2>
+<p><code>JsonLexContext</code> は、PostgreSQLにおけるJSONデータの字句解析（Lexical Analysis）プロセスにおいて、現在の解析状態、入力バッファ、進捗、およびエラー情報を一元管理するための構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>JSONのパース処理は、バックエンド（サーバー側）とフロントエンド（クライアント側、例えばlibpqなど）の両方で共通して必要とされます。<code>JsonLexContext</code> は、入力文字列のポインタや長さ、現在のトークン位置、ネストの深さ（<code>lex_level</code>）、エラーメッセージなどを保持し、インクリメンタル（増分）解析やエスケープ処理の有無に応じた柔軟なメモリ管理を可能にします。これにより、一貫したJSON解析インターフェースが提供され、メモリリークを防ぎつつ効率的なパースが実現されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/common</code></li>
+<li><code>module:src/include/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/common/jsonapi.h#JsonLexContext</code>**: 解析状態、入力バッファ、トークン情報、エラーメッセージなどを保持するメイン構造体。</li>
+<li>**<code>symbol:src/common/jsonapi.c#freeJsonLexContext</code>**: <code>JsonLexContext</code> に関連付けられたリソース（文字列バッファやインクリメンタル解析用スタックなど）を安全に解放し、メモリリークを防ぐための関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化と設定**: 呼び出し元（<code>src/backend/utils/adt/json.c</code>、<code>jsonb.c</code>、<code>jsonfuncs.c</code> など）が <code>JsonLexContext</code> をインスタンス化し、入力文字列（<code>input</code>）、長さ（<code>input_length</code>）、および各種フラグ（<code>incremental</code> や <code>need_escapes</code> など）を設定します。 2. **字句解析の実行**: <code>jsonapi.c</code> 内の解析ロジック（<code>pg_parse_json</code> など）が <code>JsonLexContext</code> を操作し、入力ストリームから順次 JSON トークンを切り出し、<code>token_type</code> や <code>lex_level</code> を更新しながら、<code>JsonSemAction</code> コールバック関数と連携して解析を進めます。 3. **リソースの解放**: 解析処理の終了時、またはエラー発生時に、呼び出し元が <code>freeJsonLexContext</code> を呼び出します。これにより、コンテキスト内の文字列バッファ（<code>strval</code>、<code>errormsg</code>）や、インクリメンタル解析用の状態（<code>inc_state</code>、<code>pstack</code>）が適切に解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**行番号の開始**: <code>line_number</code> は必ず 1 から開始されます。</li>
+<li>**エスケープ処理とバッファ**: <code>need_escapes</code> が <code>true</code> の場合のみ、デコードされた文字列を格納する <code>strval</code> が使用されます。</li>
+<li>**安全な解放**: <code>freeJsonLexContext</code> に <code>NULL</code> またはメモリ不足を示す特殊な静的ポインタ <code>failed_oom</code> が渡された場合、関数は何もせず安全に復帰しなければなりません。</li>
+<li>**構造体の処理フラグ**: <code>JSONLEX_FREE_STRUCT</code> フラグが設定されている場合は構造体自体も解放されますが、設定されていない場合は構造体の中身がゼロクリアされます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ消費の増大**: <code>need_escapes</code> を <code>true</code> に設定すると、文字列のデコード処理が行われるためメモリ消費量が増加します。不要な場合は <code>false</code> に設定することが推奨されます。</li>
+<li>**トークンの所有権管理**: 長期実行プロセスにおいて、コールバックに渡される文字列トークンの解放責任を誤るとメモリリークの原因となります。<code>setJsonLexContextOwnsTokens</code> の設定により、パーサー側に所有権を適切に委譲する必要があります。</li>
+<li>**フロントエンドとバックエンドの差異**: 本構造体および関連関数はバックエンドとフロントエンドの両方で利用されます。メモリ管理には <code>FREE</code> マクロが使用され、環境（<code>palloc</code> / <code>malloc</code>）に応じて抽象化されているため、変更時には両環境への影響を考慮しなければなりません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/common/jsonapi.h</code>: <code>JsonLexContext</code> 構造体の定義と、保持される各フィールドの詳細。</li>
+<li><code>src/common/jsonapi.c</code>: <code>freeJsonLexContext</code> の実装、および <code>JsonLexContext</code> を操作する具体的な字句解析ロジック。</li>
+</ul></body></html>

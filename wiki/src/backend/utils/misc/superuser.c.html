@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/misc/superuser.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/misc/superuser.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるユーザーのスーパーユーザー権限判定を一元管理するモジュールです。直接 <code>pg_authid</code> システムカタログを参照するのではなく、本ファイルが提供する関数を経由することで、キャッシュの利用やシングルユーザーモード時の例外処理を透過的に行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/misc</code> ディレクトリ内に位置し、認証・認可サブシステムの一部として機能します。権限チェックのパフォーマンスを向上させるためのキャッシュ層を提供し、システムカタログの変更を監視する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限判定の抽象化**: <code>superuser()</code> および <code>superuser_arg()</code> を通じて、呼び出し元にスーパーユーザー権限の有無を返却する。</li>
+<li>**キャッシュ管理**: 直近の判定結果を保持し、頻繁なシステムカタログ検索を回避する。</li>
+<li>**無効化処理**: <code>pg_authid</code> の変更を検知し、キャッシュを適切にフラッシュする。</li>
+<li>**ブートストラップ保護**: シングルユーザーモード（<code>!IsUnderPostmaster</code>）において、管理者ユーザーが削除された場合でもシステムがロックアウトされないよう保護する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>superuser()</code>: 現在のセッションユーザーの権限を判定する。</li>
+<li><code>superuser_arg(Oid roleid)</code>: 指定されたロールIDの権限を判定する。</li>
+<li><code>last_roleid</code> / <code>last_roleid_is_super</code>: 直近の判定結果を保持する静的キャッシュ変数。</li>
+<li><code>RoleidCallback()</code>: システムキャッシュの無効化イベントをトリガーにキャッシュをクリアするコールバック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RoleidCallback</code></li>
+<li><code>superuser</code></li>
+<li><code>superuser_arg</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **判定要求**: <code>superuser_arg</code> が呼び出される。 2. **キャッシュ確認**: <code>last_roleid</code> が一致すれば即座に結果を返す。 3. **例外処理**: シングルユーザーモードかつ <code>BOOTSTRAP_SUPERUSERID</code> の場合は <code>true</code> を返す。 4. **カタログ検索**: <code>SearchSysCache1</code> を使用して <code>pg_authid</code> から <code>rolsuper</code> 属性を取得する。 5. **コールバック登録**: 初回実行時に <code>CacheRegisterSyscacheCallback</code> を呼び出し、<code>AUTHOID</code> キャッシュの変更監視を有効化する。 6. **キャッシュ更新**: 取得した結果を <code>last_roleid</code> に保存し、次回以降の高速化に備える。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>catalog/pg_authid.h</code>: <code>pg_authid</code> システムカタログの構造定義。</li>
+<li><code>utils/syscache.h</code>: システムキャッシュ検索およびコールバック登録機能。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化イベントの処理。</li>
+<li><code>miscadmin.h</code>: <code>IsUnderPostmaster</code> や <code>GetUserId</code> 等の管理用関数。</li>
+<li><code>access/htup_details.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_authid.h</code>: ロール情報の定義。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: 本ファイルが利用するシステムキャッシュの基盤実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**直接参照の禁止**: コードベース全体において、<code>pg_authid.rolsuper</code> を直接参照することは推奨されません。必ず本ファイルの関数を使用してください。これは、シングルユーザーモードでの緊急アクセス経路を維持するためです。</li>
+<li>**キャッシュの生存期間**: キャッシュはプロセスローカルです。<code>RoleidCallback</code> はシステムカタログの更新を検知してキャッシュを無効化しますが、これはあくまで「そのプロセス内での」キャッシュクリアです。</li>
+<li>**パフォーマンス**: 頻繁に権限チェックが行われる環境では、このキャッシュ機構が重要な役割を果たします。デバッグ時には <code>last_roleid</code> の状態に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__misc__superuser_c__superuser.html" target="wiki-view"><code>superuser</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__superuser_c__superuser_arg.html" target="wiki-view"><code>superuser_arg</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__superuser_c__RoleidCallback.html" target="wiki-view"><code>RoleidCallback</code></a></li>
+</ul></body></html>

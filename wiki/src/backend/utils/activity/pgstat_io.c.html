@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_io.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_io.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるI/O統計情報の収集と管理を担うモジュールです。バックエンドごとのI/O操作（読み取り、書き込み、拡張、fsync等）の回数、バイト数、および所要時間を追跡します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgstat</code> サブシステムの一部として、I/O統計に特化した実装を提供します。統計情報のアクセスやストレージ実装の詳細を <code>pgstat.c</code> から分離し、I/O固有のロジックをカプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計の集計**: 各バックエンドプロセス内でのI/O操作を <code>PendingIOStats</code> に一時蓄積する。</li>
+<li>**共有メモリへのフラッシュ**: 蓄積された統計を共有メモリ上のグローバルな統計領域へ定期的に書き出す。</li>
+<li>**バリデーション**: バックエンドタイプ、オブジェクト、コンテキストの組み合わせに基づき、不正な統計記録を排除する。</li>
+<li>**メタデータ管理**: I/Oオブジェクトやコンテキストの名称解決、および統計リセット処理の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PendingIOStats</code>: 現在のバックエンドで未フラッシュのI/O統計を保持する静的変数。</li>
+<li><code>pgstat_count_io_op()</code>: I/O操作の回数とバイト数を記録する主要なインターフェース。</li>
+<li><code>pgstat_count_io_op_time()</code>: I/O操作の回数・バイト数に加え、実行時間を計測・記録する。</li>
+<li><code>pgstat_io_flush_cb()</code>: 蓄積された統計を共有メモリへ同期するコールバック関数。</li>
+<li><code>pgstat_tracks_io_op()</code>: 特定の操作が統計対象として妥当かを判定するルールエンジン。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgstat_bktype_io_stats_valid</code></li>
+<li><code>pgstat_count_io_op</code></li>
+<li><code>pgstat_count_io_op_time</code></li>
+<li><code>pgstat_fetch_stat_io</code></li>
+<li><code>pgstat_flush_io</code></li>
+<li><code>pgstat_get_io_context_name</code></li>
+<li><code>pgstat_get_io_object_name</code></li>
+<li><code>pgstat_io_flush_cb</code></li>
+<li><code>pgstat_io_init_shmem_cb</code></li>
+<li><code>pgstat_io_reset_all_cb</code></li>
+<li><code>pgstat_io_snapshot_cb</code></li>
+<li><code>pgstat_prepare_io_time</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **記録**: 各バックエンドがI/O実行時に <code>pgstat_count_io_op</code> 等を呼び出し、ローカルの <code>PendingIOStats</code> を更新します。 2. **時間計測**: <code>pgstat_prepare_io_time</code> で開始時刻を記録し、操作終了後に <code>pgstat_count_io_op_time</code> で差分を計算して蓄積します。 3. **フラッシュ**: <code>pgstat_io_flush_cb</code> が呼び出されると、ローカルの統計を共有メモリ上の <code>PgStat_BktypeIO</code> 構造体に加算し、ローカル変数をリセットします。 4. **スナップショット**: <code>pgstat_io_snapshot_cb</code> により、共有メモリ上の統計がスナップショットへコピーされ、統計ビュー（<code>pg_stat_io</code>）の基盤となります。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/instrument.h</code>: <code>instr_time</code> 等の計測用ユーティリティ。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理に関連する統計更新用。</li>
+<li><code>utils/pgstat_internal.h</code>: 統計サブシステムの内部構造体と共有メモリ定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計サブシステムのメインエントリポイント。</li>
+<li><code>src/backend/utils/activity/pgstat_shmem.c</code>: 統計情報の共有メモリ管理。</li>
+<li><code>src/include/pgstat.h</code>: 統計関連の公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**統計の妥当性**: <code>pgstat_tracks_io_op</code> は非常に多くの条件分岐を含みます。新しいバックエンドタイプやI/O操作を追加する際は、この関数で統計が正しくフィルタリングされるか確認してください。</li>
+<li>**パフォーマンス**: <code>pgstat_count_io_op</code> は頻繁に呼び出されるため、オーバーヘッドを最小限にする設計になっています。</li>
+<li>**ロック**: 共有メモリへのフラッシュ時には <code>LWLock</code> を使用して排他制御を行いますが、<code>nowait</code> オプションにより非ブロッキングなフラッシュもサポートされています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_bktype_io_stats_valid.html" target="wiki-view"><code>pgstat_bktype_io_stats_valid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_count_io_op.html" target="wiki-view"><code>pgstat_count_io_op</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_prepare_io_time.html" target="wiki-view"><code>pgstat_prepare_io_time</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_count_io_op_time.html" target="wiki-view"><code>pgstat_count_io_op_time</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_fetch_stat_io.html" target="wiki-view"><code>pgstat_fetch_stat_io</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_flush_io.html" target="wiki-view"><code>pgstat_flush_io</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_io_flush_cb.html" target="wiki-view"><code>pgstat_io_flush_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_get_io_context_name.html" target="wiki-view"><code>pgstat_get_io_context_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_get_io_object_name.html" target="wiki-view"><code>pgstat_get_io_object_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_io_init_shmem_cb.html" target="wiki-view"><code>pgstat_io_init_shmem_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_io_reset_all_cb.html" target="wiki-view"><code>pgstat_io_reset_all_cb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_io_c__pgstat_io_snapshot_cb.html" target="wiki-view"><code>pgstat_io_snapshot_cb</code></a></li>
+</ul></body></html>

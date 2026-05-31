@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>modules/src__bin__pg_upgrade.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>src/bin/pg_upgrade</h1>
+<h2>システム内での役割</h2>
+<p><code>src/bin/pg_upgrade</code> は、PostgreSQL のメジャーバージョンアップグレードを自動化するためのツールです。旧バージョンのデータディレクトリから新バージョンへ、物理的なデータ移行（ハードリンク、コピー、クローン）およびスキーマの再構築を安全に行うための司令塔として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**互換性検証**: アップグレード前後のクラスタ間で、バイナリ、データ型、システムカタログの整合性を網羅的にチェックする。</li>
+<li>**データ移行のオーケストレーション**: 物理ファイルの転送モード（link/copy/clone）の管理と、並列処理による移行の高速化。</li>
+<li>**スキーマ再構築**: <code>pg_dump</code> と <code>pg_restore</code> を活用し、メタデータとスキーマを新クラスタへ引き継ぐ。</li>
+<li>**環境の整合性維持**: WAL、XID、テーブルスペース、論理レプリケーションスロット等のメタデータを新環境へ適切に移行する。</li>
+</ul>
+<h2>このモジュールのファイル</h2>
+<ul>
+<li><code>pg_upgrade.c</code>: メインエントリーポイントと全体フローの制御。</li>
+<li><code>check.c</code>: アップグレード前の互換性検証ロジック。</li>
+<li><code>dump.c</code>: <code>pg_dump</code> を用いたスキーマ抽出。</li>
+<li><code>info.c</code>: クラスタのメタデータ（DB、テーブル、スロット）の収集とマッピング。</li>
+<li><code>relfilenumber.c</code>: ファイルシステムレベルのデータ移行とディレクトリ入れ替え。</li>
+<li><code>file.c</code>: OS 依存のファイル操作（コピー、リンク、クローン）と可視性マップ変換。</li>
+<li><code>server.c</code>: <code>pg_ctl</code> を介したサーバーの起動・停止・接続管理。</li>
+<li><code>exec.c</code>: 外部コマンド実行と環境検証。</li>
+<li><code>parallel.c</code>: 並列実行の管理と OS 抽象化。</li>
+<li><code>task.c</code>: データベースごとの非同期タスク実行フレームワーク。</li>
+<li><code>option.c</code>: コマンドライン引数と環境変数の解析。</li>
+<li><code>controldata.c</code>: <code>pg_control</code> ファイルの解析と検証。</li>
+<li><code>tablespace.c</code>: テーブルスペースのパス管理。</li>
+<li><code>function.c</code>: 共有ライブラリのロード可否検証。</li>
+<li><code>version.c</code>: バージョン固有の移行要件処理。</li>
+<li><code>util.c</code>: ログ出力やクリーンアップ等の汎用ユーティリティ。</li>
+<li><code>pg_upgrade.h</code>: 共通データ構造と定数定義。</li>
+</ul>
+<h2>主要なデータ構造</h2>
+<ul>
+<li><code>ClusterInfo</code>: 旧・新クラスタのメタデータ（パス、ポート、制御データ）を保持する中心的な構造体。</li>
+<li><code>FileNameMap</code>: 旧クラスタの物理ファイルと新クラスタの対応関係を管理する構造体。</li>
+<li><code>RelInfo</code> / <code>RelInfoArr</code>: データベース内のリレーション情報を保持する構造体。</li>
+<li><code>UpgradeTask</code> / <code>UpgradeTaskSlot</code>: 並列クエリ実行のための非同期タスク管理構造体。</li>
+<li><code>UserOpts</code>: ユーザー指定の実行オプション（転送モード、並列数等）。</li>
+</ul>
+<h2>主なフロー</h2>
+<p>1. **初期化**: 引数解析と環境検証。 2. **事前チェック**: <code>check.c</code> により新旧クラスタの互換性を検証。 3. **ダンプ準備**: <code>dump.c</code> で旧クラスタのスキーマを抽出。 4. **新クラスタ準備**: <code>pg_resetwal</code> 等で新クラスタの初期化。 5. **データ移行**: <code>relfilenumber.c</code> が <code>FileNameMap</code> に基づき物理ファイルを転送。 6. **スキーマ復元**: <code>pg_restore</code> でスキーマを再構築。 7. **最終化**: 論理スロットの移行とクリーンアップ。</p>
+<h2>外部依存</h2>
+<ul>
+<li><code>libpq</code>: データベース接続およびクエリ実行。</li>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド共通定義。</li>
+<li><code>fe_utils</code>: 文字列操作やオプション解析ユーティリティ。</li>
+<li>OS システムコール: <code>link</code>, <code>ioctl</code> (reflink), <code>fork</code>, <code>select</code> 等。</li>
+</ul>
+<h2>内部構成</h2>
+<p>本モジュールは単一のディレクトリで構成され、サブモジュールは存在しません。各 <code>.c</code> ファイルが特定の責務（検証、実行、情報収集など）を分担するフラットな構成です。</p>
+<h2>推奨読書順</h2>
+<p>1. <code>pg_upgrade.h</code> (全体像の把握) 2. <code>pg_upgrade.c</code> (メインフロー) 3. <code>check.c</code> (事前検証) 4. <code>info.c</code> (メタデータ収集) 5. <code>relfilenumber.c</code> (データ移行) 6. <code>task.c</code> (並列実行基盤) 7. <code>server.c</code> (サーバー制御) 8. <code>exec.c</code> (外部コマンド実行) 9. <code>file.c</code> (低レベルファイル操作) 10. <code>option.c</code> (設定解析) 11. <code>dump.c</code> (スキーマダンプ) 12. <code>controldata.c</code> (制御データ解析) 13. <code>tablespace.c</code> (テーブルスペース管理) 14. <code>function.c</code> (ライブラリ検証) 15. <code>version.c</code> (バージョン固有処理) 16. <code>parallel.c</code> (並列管理) 17. <code>util.c</code> (ユーティリティ)</p>
+<h2>未解決の問い</h2>
+<ul>
+<li>LLM ベースのモジュール合成を追加した後で、責務とフローを精緻化する。</li>
+</ul></body></html>

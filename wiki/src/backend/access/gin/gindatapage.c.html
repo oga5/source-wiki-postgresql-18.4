@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/gindatapage.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/gindatapage.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、GIN（Generalized Inverted Index）の「ポスティングツリー（Posting Tree）」におけるページ操作を担うモジュールです。ポスティングツリーは、大量のTID（Tuple Identifier）リストを効率的に格納するためのB-tree構造であり、本ファイルはリーフページおよび内部ノードの挿入、分割、バキューム、WAL記録の生成を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおいて、<code>ginbtree.c</code> が提供する汎用B-tree操作インターフェースを実装する「データページ専用の具象レイヤー」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ポスティングリストの管理**: リーフページ内の圧縮されたTIDリストの展開、マージ、再圧縮。</li>
+<li>**ページ分割と再配置**: 挿入時にページ容量を超過した場合の分割処理（<code>dataSplitPageInternal</code> 等）。</li>
+<li>**WAL生成**: ページ更新時の整合性を保証するためのWALレコード（<code>ginxlogRecompressDataLeaf</code> 等）の構築。</li>
+<li>**バキューム処理**: 不要なTIDの削除と、それに伴うページ内の再圧縮・断片化解消。</li>
+<li>**検索補助**: 内部ノードにおける適切な子ノードの探索（<code>dataLocateItem</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ページ操作・挿入</h3>
+<ul>
+<li><code>GinDataLeafPageGetItems</code>: リーフページからTIDを復元して取得。</li>
+<li><code>dataBeginPlaceToPage</code>: 挿入前の準備（分割判定、ワークスペース確保）。</li>
+<li><code>dataExecPlaceToPage</code>: 挿入の実行（クリティカルセクション内でのページ更新）。</li>
+<li><code>GinDataPageAddPostingItem</code>: 内部ノードへの <code>PostingItem</code> 追加。</li>
+</ul>
+<h3>構造体・状態管理</h3>
+<ul>
+<li><code>disassembledLeaf</code>: リーフページをメモリ上で操作するために分解した状態保持構造体。</li>
+<li><code>leafSegmentInfo</code>: リーフページ内の各セグメント（圧縮単位）のメタデータと変更アクション（INSERT/DELETE/REPLACE等）。</li>
+</ul>
+<h3>バキューム・WAL</h3>
+<ul>
+<li><code>ginVacuumPostingTreeLeaf</code>: ポスティングツリーのリーフページに対するバキューム処理。</li>
+<li><code>computeLeafRecompressWALData</code>: 変更されたリーフページを再構築するためのWALデータを生成。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GinDataLeafPageGetItems</code></li>
+<li><code>GinDataLeafPageGetItemsToTbm</code></li>
+<li><code>GinDataPageAddPostingItem</code></li>
+<li><code>GinPageDeletePostingItem</code></li>
+<li><code>createPostingTree</code></li>
+<li><code>dataFindChildPtr</code></li>
+<li><code>dataGetLeftMostPage</code></li>
+<li><code>dataIsMoveRight</code></li>
+<li><code>dataLeafPageGetUncompressed</code></li>
+<li><code>dataLocateItem</code></li>
+<li><code>disassembledLeaf</code></li>
+<li><code>leafSegmentInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入フロー**: <code>ginInsertItemPointers</code> が起点となり、<code>ginFindLeafPage</code> で対象ページを特定。<code>dataBeginPlaceToPageLeaf</code> がページを <code>disassembledLeaf</code> 構造体に分解し、<code>addItemsToLeaf</code> でTIDをマージ。<code>leafRepackItems</code> で圧縮セグメントを再配置し、必要に応じて分割。最後に <code>dataExecPlaceToPageLeaf</code> で物理ページを更新。 2. **WALフロー**: ページ更新前に <code>computeLeafRecompressWALData</code> が変更内容をシリアライズし、<code>XLogRegisterBufData</code> を介してWALに書き込む。 3. **バキュームフロー**: <code>disassembleLeaf</code> でページを分解し、各セグメントに対して <code>ginVacuumItemPointers</code> を適用。変更があれば <code>dataPlaceToPageLeafRecompress</code> でページを再構築。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GINの内部構造体定義。</li>
+<li><code>access/ginxlog.h</code>: GIN専用のWALレコード定義。</li>
+<li><code>lib/ilist.h</code>: セグメント管理用の双方向リスト。</li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ginbtree.c</code>: 本ファイルの関数を呼び出す汎用B-treeロジック。</li>
+<li><code>ginpostinglist.c</code>: TIDリストの圧縮・展開アルゴリズムの実装。</li>
+<li><code>ginxlog.c</code>: 本ファイルが生成するWALレコードのリカバリ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>disassembledLeaf</code> 構造体は <code>palloc</code> を多用します。ページ分割や再圧縮時にはメモリ消費量が増大するため注意が必要です。</li>
+<li>**レイアウト**: GINのリーフページは「圧縮されたセグメント」の集合体です。<code>GinPostingListSegmentMaxSize</code> などの定数が、検索効率と挿入負荷のバランスを決定します。</li>
+<li>**制約**: 内部ノードの分割は <code>dataSplitPageInternal</code> で行われますが、リーフページとは異なり、単純な <code>PostingItem</code> の配列として扱われます。</li>
+<li>**未実装・簡略化**: バキューム時にセグメントが小さくなっても、即座に再圧縮は行わず、次回の挿入時に遅延して再圧縮する設計になっています。これはパフォーマンス最適化のためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__disassembledLeaf.html" target="wiki-view"><code>disassembledLeaf</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__leafSegmentInfo.html" target="wiki-view"><code>leafSegmentInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__GinDataLeafPageGetItems.html" target="wiki-view"><code>GinDataLeafPageGetItems</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__GinDataLeafPageGetItemsToTbm.html" target="wiki-view"><code>GinDataLeafPageGetItemsToTbm</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__dataLeafPageGetUncompressed.html" target="wiki-view"><code>dataLeafPageGetUncompressed</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__dataIsMoveRight.html" target="wiki-view"><code>dataIsMoveRight</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__dataLocateItem.html" target="wiki-view"><code>dataLocateItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__dataFindChildPtr.html" target="wiki-view"><code>dataFindChildPtr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__dataGetLeftMostPage.html" target="wiki-view"><code>dataGetLeftMostPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__GinDataPageAddPostingItem.html" target="wiki-view"><code>GinDataPageAddPostingItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__GinPageDeletePostingItem.html" target="wiki-view"><code>GinPageDeletePostingItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__gindatapage_c__createPostingTree.html" target="wiki-view"><code>createPostingTree</code></a></li>
+</ul></body></html>

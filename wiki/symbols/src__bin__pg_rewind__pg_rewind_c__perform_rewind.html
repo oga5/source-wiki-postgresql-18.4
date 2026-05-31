@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_rewind__pg_rewind_c__perform_rewind.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>perform_rewind</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_rewind/pg_rewind.c:554</code></li>
+</ul>
+<h2>目的</h2>
+<p>同期計画（<code>filemap</code>）に基づき、ソースシステムからターゲットシステムへデータファイルおよび変更されたページを転送・適用し、ターゲットの制御ファイルを更新してリカバリ可能な状態にする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void perform_rewind(filemap_t *filemap, rewind_source *source,
+                           XLogRecPtr chkptrec, TimeLineID chkpttli,
+                           XLogRecPtr chkptredo)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>filemap</code>: 同期対象のファイル操作リスト。</li>
+<li><code>source</code>: データ取得元（ローカルまたは libpq）。</li>
+<li><code>chkptrec</code>, <code>chkpttli</code>, <code>chkptredo</code>: 共通チェックポイントの WAL 位置情報。</li>
+<li>**出力**: なし（副作用としてターゲットディレクトリのファイル更新および制御ファイルの書き換えを行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>ターゲットシステムはクリーンに停止していること。</li>
+<li><code>filemap</code> には実行すべきアクションが決定済みであること。</li>
+<li><code>source</code> は有効な接続状態であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ファイル操作の実行**: <code>filemap</code> 内の全エントリを走査し、変更されたページブロックの転送（<code>queue_fetch_range</code>）およびファイル単位のアクション（コピー、切り詰め、削除、作成）をキューイングする。 2. **データ転送**: <code>source-&gt;finish_fetch</code> を呼び出し、キューイングされた範囲転送を完了させる。 3. **制御ファイルの同期**: ソースから最新の制御ファイルを取得し、整合性を検証する。 4. **リカバリ設定**: <code>backup_label</code> を生成し、ターゲットの制御ファイルを <code>DB_IN_ARCHIVE_RECOVERY</code> 状態に更新して、適切な <code>minRecoveryPoint</code> を設定する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_rewind/pg_rewind.c</code> 内の <code>main</code> 関数から呼び出される。</li>
+<li>**呼び出し先**: <code>source</code> インターフェース（<code>queue_fetch_range</code>, <code>queue_fetch_file</code>, <code>finish_fetch</code>, <code>fetch_file</code>）、<code>file_ops.c</code>（<code>truncate_target_file</code>, <code>remove_target</code>, <code>create_target</code>, <code>close_target_file</code>, <code>update_controlfile</code>）、<code>progress_report</code>、<code>createBackupLabel</code>、<code>digestControlFile</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>filemap_t</code>: 同期計画を保持する構造体。</li>
+<li><code>rewind_source</code>: ソースシステムへのアクセス抽象化レイヤー。</li>
+<li><code>ControlFileData</code>: PostgreSQL の制御ファイル構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>FILE_ACTION_UNDECIDED</code> に遭遇した場合、<code>pg_fatal</code> で異常終了する。</li>
+<li>ソースシステムが実行中に変更された場合（ローカルソース時）、<code>pg_fatal</code> で異常終了する。</li>
+<li>ターゲットの制御ファイル更新時に <code>dry_run</code> が有効な場合は書き込みをスキップする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はターゲットのデータディレクトリを直接変更する破壊的な操作を含む。</li>
+<li>ソースがスタンバイサーバーの場合、<code>minRecoveryPoint</code> の計算ロジックがプロダクションサーバーと異なるため注意が必要。</li>
+</ul></body></html>

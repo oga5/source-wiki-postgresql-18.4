@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__waiteventset_c__InitializeWaitEventSupport.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitializeWaitEventSupport</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/waiteventset.c:240</code></li>
+</ul>
+<h2>目的</h2>
+<p>プロセス起動時に、OS 固有のイベント通知メカニズム（セルフパイプ、<code>signalfd</code>、または <code>kqueue</code>）を初期化し、シグナルハンドラによる起床を可能にするための基盤を構築します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void InitializeWaitEventSupport(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし</li>
+<li>出力: なし（副作用としてグローバルなファイル記述子やシグナル設定を更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>プロセス起動時に一度だけ呼び出されることを想定しています。</li>
+<li>子プロセスが親プロセスから継承した古いパイプや <code>signalfd</code> を保持している場合、それらを適切にクローズしてリソースを解放します。</li>
+<li><code>fd.c</code> によるファイル記述子の管理（<code>ReserveExternalFD</code> / <code>ReleaseExternalFD</code>）と整合性を保つ必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>コンパイル時のフラグに応じて以下のいずれかの処理を行います。 1. **<code>WAIT_USE_SELF_PIPE</code>**:</p>
+<ul>
+<li><code>pipe()</code> でパイプを作成し、読み込み側と書き込み側の両方を非ブロッキングかつ <code>FD_CLOEXEC</code> に設定します。</li>
+<li><code>latch_sigurg_handler</code> を <code>SIGURG</code> シグナルに割り当てます。</li>
+<p>2. **<code>WAIT_USE_SIGNALFD</code>**:</p>
+<li><code>signalfd()</code> を使用して <code>SIGURG</code> を受信するように設定し、非ブロッキングかつ <code>FD_CLOEXEC</code> で開きます。</li>
+<li><code>SIGURG</code> をシグナルマスクから除外します。</li>
+<p>3. **<code>WAIT_USE_KQUEUE</code>**:</p>
+<li><code>SIGURG</code> を無視するように設定します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/postmaster/postmaster.c</code></li>
+<li><code>src/backend/utils/init/miscinit.c</code></li>
+<li>**呼び出し先**: </li>
+<li><code>pipe()</code>, <code>fcntl()</code>, <code>close()</code>, <code>signalfd()</code>, <code>pqsignal()</code>, <code>ReserveExternalFD()</code>, <code>ReleaseExternalFD()</code> 等のシステムコールおよび内部関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>selfpipe_readfd</code>, <code>selfpipe_writefd</code>, <code>selfpipe_owner_pid</code> (セルフパイプ使用時)</li>
+<li><code>signal_fd</code> (<code>signalfd</code> 使用時)</li>
+<li><code>UnBlockSig</code> (シグナルマスク)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>pipe()</code> や <code>signalfd()</code> の呼び出しが失敗した場合、<code>elog(FATAL, ...)</code> を呼び出しプロセスを終了させます。</li>
+<li>子プロセスにおいて、親から継承した古いファイル記述子が適切にクローズされない場合、リソースリークが発生する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はプラットフォーム依存のコードを多く含むため、OS ごとのイベント通知の仕組み（<code>epoll</code> vs <code>kqueue</code> vs <code>poll</code>）を理解した上で修正してください。</li>
+<li><code>fd.c</code> の管理下にあるファイル記述子を扱うため、<code>ReserveExternalFD</code> の呼び出し回数と <code>close</code> の整合性に注意してください。</li>
+</ul></body></html>

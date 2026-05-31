@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32__signal_c__pgwin32_dispatch_queued_signals.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgwin32_dispatch_queued_signals</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/win32/signal.c:119</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows環境において、キューイングされたシグナルをメインスレッドで安全に処理し、対応するシグナルハンドラを実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>void pgwin32_dispatch_queued_signals(void)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし（グローバルなシグナルキュー <code>pg_signal_queue</code> および <code>pg_signal_array</code> を参照）</li>
+<li>出力: なし（副作用としてシグナルハンドラの実行およびキューの更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pgwin32_signal_event</code> が初期化されていること。</li>
+<li><code>pg_signal_crit_sec</code> クリティカルセクションによる排他制御下で実行される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_signal_crit_sec</code> を取得し、<code>UNBLOCKED_SIGNAL_QUEUE()</code> を用いてブロックされていないシグナルを特定する。 2. キュー内の各シグナルに対し、以下の処理を繰り返す：</p>
+<ul>
+<li>シグナルハンドラを取得し、<code>SIG_DFL</code> の場合はデフォルトハンドラを適用する。</li>
+<li>キューから当該シグナルをクリアする。</li>
+<li>ハンドラが有効（<code>SIG_ERR</code>, <code>SIG_IGN</code>, <code>SIG_DFL</code> 以外）な場合：</li>
+<li>クリティカルセクションを一時的に解放する。</li>
+<li><code>sigprocmask</code> でシグナルマスクを適用し、ハンドラを実行する。</li>
+<li>再度 <code>sigprocmask</code> でマスクを復元し、クリティカルセクションを再取得する。</li>
+<li>ハンドラ実行による状態変化を考慮し、ループを再開する。</li>
+<p>3. 全ての処理終了後、<code>pgwin32_signal_event</code> をリセットし、クリティカルセクションを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: </li>
+<li><code>src/backend/port/win32/signal.c</code> (複数箇所)</li>
+<li><code>src/backend/port/win32/socket.c</code> (複数箇所)</li>
+<li><code>src/backend/port/win32_sema.c</code></li>
+<li><code>src/backend/storage/ipc/waiteventset.c</code> (複数箇所)</li>
+<li>呼び出し先: </li>
+<li><code>EnterCriticalSection</code> / <code>LeaveCriticalSection</code></li>
+<li><code>sigprocmask</code></li>
+<li><code>ResetEvent</code></li>
+<li>登録されたシグナルハンドラ関数</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_signal_queue</code>: 受信済みシグナルのビットマスク。</li>
+<li><code>pg_signal_array</code>: <code>sigaction</code> 構造体の配列。</li>
+<li><code>pgwin32_signal_event</code>: シグナル到着通知用イベントオブジェクト。</li>
+<li><code>pg_signal_crit_sec</code>: 同期用クリティカルセクション。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ハンドラ実行中にシグナルマスクやキューが変更された場合、ループを再開して整合性を保つ。</li>
+<li><code>pgwin32_signal_event</code> が NULL の場合、<code>Assert</code> により停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメインスレッドの待機ポイント（<code>CHECK_FOR_INTERRUPTS</code> 等）から呼び出されることを想定している。</li>
+<li>ハンドラ実行中のクリティカルセクション解放は、デッドロック防止のために必須である。</li>
+</ul></body></html>

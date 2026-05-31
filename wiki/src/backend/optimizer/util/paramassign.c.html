@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/paramassign.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/paramassign.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのクエリ最適化フェーズにおいて、実行時に使用される <code>PARAM_EXEC</code> スロットの割り当てと管理を行う関数群を提供します。主にサブクエリやネストループ結合において、上位レベルから下位レベルへ値を渡すためのパラメータIDを生成・追跡します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>optimizer/util</code> モジュールの一部として、プラン作成（<code>createplan.c</code> 等）の過程で必要となる実行時パラメータのインフラを提供します。プランナーが保持する <code>PlannerInfo</code> 構造体内のパラメータ管理用リストを操作し、実行エンジンが正しく値を参照できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**PARAM_EXEC スロットの管理**: <code>root-&gt;glob-&gt;paramExecTypes</code> を通じて、実行時に必要なパラメータの型情報を保持する。</li>
+<li>**パラメータの重複排除**: 同一の <code>Var</code> や <code>PlaceHolderVar</code> が複数回参照される場合、可能な限り既存の <code>PARAM_EXEC</code> ID を再利用する。</li>
+<li>**ネストループパラメータの追跡**: <code>root-&gt;curOuterParams</code> を管理し、ネストループ結合の右側で必要となる上位レベルの値を特定・供給する。</li>
+<li>**特殊パラメータの割り当て**: 値の受け渡しではなく、実行時のシグナリング（再帰的結合やEvalPlanQualなど）に使用されるIDを確保する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>replace_outer_var</code> / <code>replace_outer_placeholdervar</code>: 上位レベルの変数を <code>PARAM_EXEC</code> に置換し、必要に応じて <code>plan_params</code> に登録する。</li>
+<li><code>replace_nestloop_param_var</code>: ネストループ結合用に変数をパラメータ化し、<code>curOuterParams</code> に登録する。</li>
+<li><code>identify_current_nestloop_params</code>: ネストループの左側で供給可能なパラメータを特定し、リストから抽出する。</li>
+<li><code>generate_new_exec_param</code>: 新規の <code>PARAM_EXEC</code> ID を発行し、型情報を登録する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>assign_param_for_placeholdervar</code></li>
+<li><code>assign_param_for_var</code></li>
+<li><code>process_subquery_nestloop_params</code></li>
+<li><code>replace_nestloop_param_placeholdervar</code></li>
+<li><code>replace_outer_agg</code></li>
+<li><code>replace_outer_grouping</code></li>
+<li><code>replace_outer_merge_support</code></li>
+<li><code>replace_outer_returning</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **置換要求**: プランナーが下位ノードを構築する際、上位レベルの変数（<code>Var</code> や <code>PlaceHolderVar</code>）に遭遇すると、<code>replace_outer_*</code> 系関数を呼び出します。 2. **ID 割り当て**: 既存の <code>plan_params</code> リストを検索し、一致するものがあればその ID を返します。なければ新規に <code>PARAM_EXEC</code> ID を発行し、<code>root-&gt;glob-&gt;paramExecTypes</code> に型情報を追加します。 3. **ネストループ処理**: ネストループ結合の構築時、<code>identify_current_nestloop_params</code> が <code>curOuterParams</code> をスキャンし、現在の結合ノードで解決可能なパラメータを抽出してプランノードに付与します。 4. **永続化**: <code>paramExecTypes</code> はプラン全体で共有され、一度割り当てられた ID は削除されません。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: ノード操作用ユーティリティ。</li>
+<li><code>nodes/plannodes.h</code>: <code>Param</code>, <code>NestLoopParam</code> 等のプランノード定義。</li>
+<li><code>optimizer/paramassign.h</code>: 公開インターフェース定義。</li>
+<li><code>optimizer/placeholder.h</code>: <code>PlaceHolderVar</code> 関連の処理。</li>
+<li><code>rewrite/rewriteManip.h</code>: 変数のレベル調整等の操作。</li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/optimizer/pathnodes.h</code>: <code>PlannerInfo</code> や <code>PlannerParamItem</code> の定義。</li>
+<li><code>src/backend/optimizer/plan/createplan.c</code>: 本ファイルの関数を呼び出し、実際にプランノードを生成する主要な消費者。</li>
+<li><code>src/backend/executor/execExpr.c</code>: 実行時に <code>PARAM_EXEC</code> スロットを読み取る側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**重複排除の限界**: <code>plan_params</code> や <code>curOuterParams</code> は、サブクエリやネストループの処理が完了するとリセットされます。そのため、異なるサブクエリ間で同じ変数を参照しても、それぞれ個別の <code>PARAM_EXEC</code> ID が割り当てられることがあります。</li>
+<li>**nullingrels の扱い**: <code>identify_current_nestloop_params</code> 内での <code>nullingrels</code> の更新は、外結合の最適化に伴う複雑な調整であり、このファイルにおける最も繊細なロジックの一つです。</li>
+<li>**デバッグ**: <code>PARAM_EXEC</code> ID の不整合は実行時のクラッシュや誤った結果を招くため、<code>root-&gt;glob-&gt;paramExecTypes</code> の内容と実際の <code>Param</code> ノードの ID が一致しているか確認することが重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__assign_param_for_var.html" target="wiki-view"><code>assign_param_for_var</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_var.html" target="wiki-view"><code>replace_outer_var</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__assign_param_for_placeholdervar.html" target="wiki-view"><code>assign_param_for_placeholdervar</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_placeholdervar.html" target="wiki-view"><code>replace_outer_placeholdervar</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_agg.html" target="wiki-view"><code>replace_outer_agg</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_grouping.html" target="wiki-view"><code>replace_outer_grouping</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_merge_support.html" target="wiki-view"><code>replace_outer_merge_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_outer_returning.html" target="wiki-view"><code>replace_outer_returning</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_nestloop_param_var.html" target="wiki-view"><code>replace_nestloop_param_var</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__replace_nestloop_param_placeholdervar.html" target="wiki-view"><code>replace_nestloop_param_placeholdervar</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__process_subquery_nestloop_params.html" target="wiki-view"><code>process_subquery_nestloop_params</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__paramassign_c__identify_current_nestloop_params.html" target="wiki-view"><code>identify_current_nestloop_params</code></a></li>
+</ul></body></html>

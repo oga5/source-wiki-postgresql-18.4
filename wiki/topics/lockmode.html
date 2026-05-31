@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/lockmode.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LOCKMODE</h1>
+<h2>概念</h2>
+<p><code>LOCKMODE</code> は、PostgreSQLにおいてロックの種類を識別・管理するための仕組みであり、コンテキストに応じて以下の2つの側面を持ちます。</p>
+<p>1. **ロック種別の識別子（typedef）**: <code>src/include/storage/lockdefs.h</code> で定義される <code>int</code> のエイリアスです。低レベルロック機構において、ロックの競合判定や管理状態を決定するための整数型として機能します。 2. **タプルロックのマッピング構造体（struct）**: <code>src/backend/access/heap/heapam.c</code> で定義される静的構造体です。タプルロックの強度（<code>LockTupleMode</code>）に対応する heavyweight lock（<code>LOCKMODE</code> 型の <code>hwlock</code>）や、複数トランザクション状態（<code>MultiXactStatus</code>）をマッピングするために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p><code>LOCKMODE</code> は、PostgreSQLの同時実行制御（MVCCやロック管理）の基盤を支える重要な要素です。</p>
+<ul>
+<li>**低レベルロックの共通言語**: フロントエンドとバックエンド間で共有可能な最小限の定義として設計されており、システム全体で一貫したロック種別の識別を可能にします。</li>
+<li>**タプルロックの解決**: ヒープアクセス（<code>heapam.c</code>）において、要求されたタプルロックの強度を適切な heavyweight lock やトランザクション状態へと変換・解決するための静的ルックアップテーブルの要素として機能します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/heap</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/storage/lockdefs.h#LOCKMODE</code> (typedef)**: ロックの種類を識別する整数型。</li>
+<li>**<code>symbol:src/backend/access/heap/heapam.c#LOCKMODE</code> (struct)**: タプルロック強度と heavyweight lock 等のマッピング情報を保持する静的構造体。</li>
+<li>**<code>tupleLockExtraInfo</code>** (<code>heapam.c</code> 内の静的テーブル): 上記の <code>LOCKMODE</code> 構造体が格納される参照テーブル。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>ロック取得に関する完全なエンドツーエンドの制御フローは、提供された情報からはすべて明らかになっていません。しかし、判明している部分的な流れは以下の通りです。</p>
+<p>1. **タプルロックの要求**: タプルに対するロック取得時（<code>heap_acquire_tuplock</code> 等の呼び出し時）、要求されたロック強度（<code>LockTupleMode</code>）に基づいて <code>heapam.c</code> 内の静的テーブル <code>tupleLockExtraInfo</code> が参照されます。 2. **ロックモードの解決**: テーブル内の <code>LOCKMODE</code> 構造体メンバ（<code>hwlock</code>）をルックアップすることで、対応する heavyweight lock の種類や複数トランザクション状態（<code>lockstatus</code>, <code>updstatus</code>）が解決されます。 3. **低レベルロックの取得**: 解決された <code>LOCKMODE</code>（整数型）は、低レベルロック管理関数（<code>LockAcquire</code> 等）の引数として渡され、実際の競合判定やロックテーブルの管理状態決定に使用されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**値の範囲**: <code>LOCKMODE</code> 型の変数は、<code>NoLock</code>（値: 0）から <code>MaxLockMode</code> までの範囲の値をとります。</li>
+<li>**標準モードの定義**: 8つの標準ロックモード（<code>AccessShareLock</code> ～ <code>AccessExclusiveLock</code>）が定義されています。</li>
+<li>**静的マッピング**: <code>heapam.c</code> 内の <code>LOCKMODE</code> 構造体およびそれを含む <code>tupleLockExtraInfo</code> テーブルは静的に定義されており、実行時に変更されることはありません。</li>
+<li>**エイリアス関係**: <code>InplaceUpdateTupleLock</code> は <code>ExclusiveLock</code> のエイリアスとして扱われます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**範囲外の値**: <code>MaxLockMode</code> を超える値を指定した場合の挙動は、ロック管理関数の実装に依存します。ロックモードを新規追加する際は、<code>MaxLockMode</code> の更新が必須です。</li>
+<li>**マッピングの不整合**: <code>heapam.c</code> 内の <code>tupleLockExtraInfo</code> 配列とセットで管理されているため、ロックモードの追加や変更を行う際は、このマッピングテーブルの整合性を手動で確認・更新する必要があります。無効なロックモードが指定された場合、参照ロジックで不整合が生じる可能性があります。</li>
+<li>**ヘッダーの制約**: <code>src/include/storage/lockdefs.h</code> はフロントエンドコードからも参照されるため、バックエンド固有の複雑な構造体や関数を含めないように保守する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/storage/lockdefs.h</code>：<code>LOCKMODE</code> の型定義や標準ロックモードの定義。</li>
+<li><code>src/backend/access/heap/heapam.c</code>：<code>tupleLockExtraInfo</code> テーブルおよびタプルロック関連関数（<code>heap_acquire_tuplock</code> など）の実装。</li>
+</ul></body></html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32_shmem_c__PGSharedMemoryCreate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PGSharedMemoryCreate</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/port/win32_shmem.c:206</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows 環境において、PostgreSQL の共有メモリセグメントを新規作成し、プロセスのアドレス空間にマッピングする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>PGShmemHeader *PGSharedMemoryCreate(Size size, PGShmemHeader **shim)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>size</code>: 要求する共有メモリのサイズ（バイト単位）。</li>
+<li><code>shim</code>: <code>PGShmemHeader</code> へのポインタを格納する出力用引数。</li>
+<li>**出力**:</li>
+<li>成功時: マッピングされた共有メモリの先頭アドレス（<code>PGShmemHeader</code> 型）。</li>
+<li>失敗時: <code>elog(FATAL)</code> によりプロセスを終了。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>size</code> は <code>PGShmemHeader</code> を格納するのに十分な大きさであること（<code>Assert</code> で検証）。</li>
+<li><code>huge_pages</code> 設定が有効な場合、OS の「メモリ内のページをロック」権限が必要。</li>
+<li>共有メモリ領域の断片化を防ぐため、<code>VirtualAlloc</code> による保護領域（<code>ShmemProtectiveRegion</code>）の確保が先行して行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **保護領域の確保**: <code>VirtualAlloc</code> で <code>PROTECTIVE_REGION_SIZE</code> 分のメモリを予約。 2. **Huge Pages 設定**: <code>huge_pages</code> が有効な場合、<code>SEC_LARGE_PAGES</code> を使用し、必要に応じてサイズを調整。 3. **セグメント作成**: <code>CreateFileMapping</code> を呼び出し、共有メモリセグメントを作成。既存の場合は最大10回までリトライ（1秒間隔）。 4. **ハンドル継承**: <code>DuplicateHandle</code> を使用して、子プロセスに継承可能なハンドルを作成。 5. **マッピング**: <code>MapViewOfFileEx</code> を使用して、共有メモリをプロセスのアドレス空間にマッピング。 6. **初期化**: マッピングされた領域の先頭に <code>PGShmemHeader</code> を配置し、<code>creatorPID</code> を設定。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/ipc/ipci.c</code> の <code>CreateSharedMemoryAndSemaphores</code> から呼び出されることが確認されている。</li>
+<li>**呼び出し先**: <code>GetSharedMemName</code>, <code>GetLargePageMinimum</code>, <code>EnableLockPagesPrivilege</code>, <code>CreateFileMapping</code>, <code>DuplicateHandle</code>, <code>MapViewOfFileEx</code>, <code>getpid</code> 等の Windows API および内部関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGShmemHeader</code>: 共有メモリの先頭に配置される管理構造体。</li>
+<li><code>UsedShmemSegAddr</code>: 現在使用中の共有メモリのベースアドレスを保持するグローバル変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**リソース不足**: <code>CreateFileMapping</code> が <code>ERROR_NO_SYSTEM_RESOURCES</code> を返した場合、Huge Pages を無効化して再試行するロジックがある。</li>
+<li>**競合**: 既に同名の共有メモリが存在し、解放されない場合は <code>FATAL</code> エラーとなる。</li>
+<li>**権限不足**: Huge Pages 使用時に権限がない場合、設定に応じてエラーまたは警告が発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>Windows のアドレス空間の断片化を避けるため、<code>ShmemProtectiveRegion</code> の予約処理は必須である。</li>
+<li><code>CreateFileMapping</code> のリトライ処理は、前回のプロセスが完全に終了していないケースを考慮した暫定的な実装である。</li>
+<li><code>hdr-&gt;creatorPID</code> の設定順序は、他プロセスがヘッダーを誤認しないよう慎重に制御されている。</li>
+</ul></body></html>

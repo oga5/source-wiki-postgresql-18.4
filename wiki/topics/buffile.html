@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/buffile.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BufFile</h1>
+<h2>概念</h2>
+<p><code>BufFile</code> は、OSのファイルサイズ制限や単一ファイル記述子の制約を回避するために、複数の物理ファイル（セグメント）から構成される論理的に単一の巨大なバッファ付きファイルを表現するデータ構造およびAPIです。一時的なデータ保持（ソート、ハッシュ結合、GiSTインデックス構築など）のために、効率的なバッファリング付きI/Oインターフェースを提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLでは、クエリ実行中にメモリ（<code>work_mem</code> など）に収まらない大量のデータを一時的にディスクに退避させる必要があります。<code>BufFile</code> は、以下の理由から重要です： 1. **OS制限の回避**: 物理ファイルを自動的に分割（デフォルトで1GBごと）することで、OSのファイルサイズ制限を回避します。 2. **I/O効率の向上**: <code>PGAlignedBlock</code> を用いた内部バッファリングにより、物理的なI/O回数を削減します。 3. **リソース管理の統合**: <code>ResourceOwner</code> や <code>FileSet</code> と連携し、トランザクション終了時の自動クリーンアップや並列クエリ間での一時ファイル共有を安全に行うことができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>struct BufFile</code>** (<code>symbol:src/backend/storage/file/buffile.c#BufFile</code>): 物理ファイル記述子の配列（<code>files</code>）、現在のセグメント（<code>curFile</code>）、セグメント内オフセット（<code>curOffset</code>）、バッファ（<code>buffer</code>）などを保持する、論理ファイルを表現する構造体。</li>
+<li>**<code>typedef struct BufFile BufFile</code>** (<code>symbol:src/include/storage/buffile.h#BufFile</code>): 外部モジュールに対して内部構造を隠蔽する不透明な型定義。</li>
+<li>**<code>BufFileClose</code>** (<code>symbol:src/backend/storage/file/buffile.c#BufFileClose</code>): バッファ内の未書き込みデータをフラッシュし、すべての物理ファイルをクローズして、関連するメモリリソースを解放する関数。</li>
+<li>**<code>BufFileRead</code> / <code>BufFileWrite</code>** (<code>symbol:src/backend/storage/file/buffile.c#BufFileRead</code>, <code>symbol:src/backend/storage/file/buffile.c#BufFileWrite</code>): メモリバッファを介してデータの読み書きを行う関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたソースコード情報からは、<code>BufFile</code> の作成（<code>BufFileCreateTemp</code> など）から読み書き、そしてクローズに至る完全なエンドツーエンドの制御フローの全容は完全には記述されていません。 ただし、提供された情報から以下の部分的な流れが判明しています：</p>
+<p>1. **初期化**: <code>BufFileCreateTemp</code> などの関数により、<code>palloc</code> を介して <code>BufFile</code> 構造体がメモリ上に確保・初期化されます。 2. **書き込みとセグメント分割**: <code>BufFileWrite</code> を介してデータが書き込まれます。物理ファイルサイズが <code>MAX_PHYSICAL_FILESIZE</code>（1GB）に達すると、自動的に新しい物理ファイルセグメントが作成・オープンされ、論理的なストリームが継続されます。 3. **読み込み**: <code>BufFileRead</code> を介して、内部バッファ（<code>PGAlignedBlock</code>）を利用しながら効率的にデータが読み込まれます。 4. **クローズと解放**: <code>BufFileClose</code> が呼び出されると、まず <code>BufFileFlush</code> により未書き込みデータが物理ファイルにフラッシュされ、その後、各物理ファイルが <code>FileClose</code> によりクローズされ、最後に <code>BufFile</code> 構造体とファイル配列が <code>pfree</code> により解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**セグメントサイズの一貫性**: 最後の物理ファイルを除くすべての物理ファイルセグメントは、正確に <code>MAX_PHYSICAL_FILESIZE</code>（1GB）の長さを持つ必要があります。</li>
+<li>**メモリコンテキストへの依存**: <code>BufFile</code> 構造体は <code>palloc</code> によって割り当てられるため、その寿命は割り当てられたメモリコンテキストに依存します。</li>
+<li>**リソース管理**: 一時ファイルのリソース管理を適切に行うため、<code>resowner</code>（ResourceOwner）が適切に設定されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**リソースリーク**: <code>BufFileClose</code> を明示的に呼び出さない場合、仮想ファイル記述子がリークする可能性があります。トランザクション終了時やエラー発生時に確実にクローズされるよう、<code>ResourceOwner</code> による管理が必要です。</li>
+<li>**並列実行時の注意**: 並列クエリ環境で一時ファイルを共有する場合は、直接操作するのではなく、必ず <code>FileSet</code> を介した API を使用する必要があります。</li>
+<li>**ファイル結合時の「穴」**: <code>BufFileAppend</code> は物理セグメントのリストを連結するだけでデータコピーを行わないため、ファイル間に「穴」が生じる可能性がある点に注意が必要です。</li>
+<li>**型変換**: <code>BufFileSeek</code> などのシーク操作では、論理的なオフセットを <code>int</code> と <code>off_t</code> で管理しているため、巨大なファイルを操作する際の型変換に留意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/file/buffile.c</code>: <code>BufFile</code> の具体的な構造体定義や、<code>BufFileClose</code> などの主要な操作関数の実装が記述されています。</li>
+<li><code>src/include/storage/buffile.h</code>: 外部モジュール向けに提供されている <code>BufFile</code> の不透明な型定義やAPI宣言が記述されています。</li>
+</ul></body></html>

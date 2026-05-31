@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_mark_page_halfdead.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>btree_xlog_mark_page_halfdead</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtxlog.c:716</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスのページを「ハーフデッド（half-dead）」状態にマークする WAL リプレイ処理を実行します。これは、削除対象のサブツリーの親ページを更新し、対象のリーフページを再初期化してハーフデッドフラグを立てる一連の操作を再現します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>info</code>: WAL レコードのサブタイプ情報。</li>
+<li><code>record</code>: リプレイ対象の WAL レコードデータ。</li>
+<li>出力: なし（副作用としてバッファの更新とディスクへの書き込み準備を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リカバリ中であるため、インデックスに対する並行更新は発生しない前提で動作します。</li>
+<li>ページごとのロック取得・解放で整合性が保たれるものとします。</li>
+<li>対象ページが空であるか、削除プロセスの一部であることを前提とします。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **親ページの更新**:</p>
+<ul>
+<li><code>XLogReadBufferForRedo</code> を使用して親ページを読み込みます。</li>
+<li>親ページ内のダウンリンクを右隣接ページへ付け替え、不要になったエントリを <code>PageIndexTupleDelete</code> で削除します。</li>
+<li>更新後のページをダーティとしてマークし、ロックを解放します。</li>
+<p>2. **リーフページの再初期化**:</p>
+<li><code>XLogInitBufferForRedo</code> を使用して対象のリーフページを初期化します。</li>
+<li>ページフラグに <code>BTP_HALF_DEAD | BTP_LEAF</code> を設定し、左右の隣接ブロック情報を記録します。</li>
+<li><code>BTreeTupleSetTopParent</code> を用いて、トップ親ページを指すダミーのハイキー（high key）をページに追加します。</li>
+<li>最終的にページをダーティとしてマークし、ロックを解放します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/nbtree/nbtxlog.c</code> 内の <code>btree_redo</code> 関数から、WAL レコードタイプに応じて呼び出されます。</li>
+<li>**呼び出し先**: <code>XLogReadBufferForRedo</code>, <code>XLogInitBufferForRedo</code>, <code>_bt_pageinit</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code> 等のバッファ管理およびページ操作関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_btree_mark_page_halfdead</code>: WAL レコードの構造体。</li>
+<li><code>BTPageOpaque</code>: B-tree ページヘッダーのメタデータ。</li>
+<li><code>IndexTupleData</code>: インデックス内のタプル構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合、ダミーハイキーの追加失敗として <code>elog(ERROR)</code> を発生させます。</li>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、親ページの更新処理はスキップされます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリ専用のロジックであり、通常のインデックス操作とは異なり、ページ間のロックを跨ぐ必要がないため、個別のロック・アンロック処理で完結しています。</li>
+<li><code>BTP_HALF_DEAD</code> フラグの付与は、インデックスの物理的な削除プロセスにおける重要な中間状態です。</li>
+</ul></body></html>

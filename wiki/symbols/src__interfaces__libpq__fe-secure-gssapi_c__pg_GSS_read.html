@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__interfaces__libpq__fe-secure-gssapi_c__pg_GSS_read.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_GSS_read</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/interfaces/libpq/fe-secure-gssapi.c:265</code></li>
+</ul>
+<h2>目的</h2>
+<p>GSSAPI で暗号化された通信路からデータを読み取り、復号して呼び出し元に提供する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ssize_t pg_GSS_read(PGconn *conn, void *ptr, size_t len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: 接続状態を保持する <code>PGconn</code> 構造体。</li>
+<li><code>ptr</code>: 復号後のデータを格納するバッファ。</li>
+<li><code>len</code>: 読み取りを要求するバイト数。</li>
+<li>**出力**:</li>
+<li>成功時: 実際に読み取られたバイト数（<code>ssize_t</code>）。</li>
+<li>失敗時: <code>-1</code> を返し、<code>errno</code> を設定する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conn-&gt;gctx</code> が有効な GSSAPI セキュリティコンテキストであること。</li>
+<li>通信路はメッセージ指向であり、各パケットには <code>uint32</code> の長さヘッダーが付与されていること。</li>
+<li>復号されたデータは <code>PqGSSResultBuffer</code> に一時保持され、呼び出し元へ順次コピーされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>PqGSSResultBuffer</code> に未読データがある場合、それを優先的に <code>ptr</code> へコピーして戻る。 2. バッファが空の場合、<code>pqsecure_raw_read</code> を用いてネットワークからパケット長（<code>uint32</code>）を読み取る。 3. パケット長を確認後、ペイロード全体が揃うまで <code>pqsecure_raw_read</code> を繰り返す。 4. <code>gss_unwrap</code> を呼び出し、受信データを復号する。 5. 復号結果が機密性（confidentiality）を欠く場合はエラーとする。 6. 復号されたデータを <code>PqGSSResultBuffer</code> に格納し、呼び出し元へコピーして終了する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/interfaces/libpq/fe-secure.c</code>（<code>pg_GSS_read</code> を呼び出す上位のセキュリティ抽象化層）。</li>
+<li>**呼び出し先**: <code>pqsecure_raw_read</code>（低レベルソケット読み取り）、<code>gss_unwrap</code>（GSSAPI 復号）、<code>gss_release_buffer</code>（GSSAPI バッファ解放）、<code>pg_GSS_error</code>（エラー報告）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: 接続状態および GSSAPI コンテキスト（<code>gctx</code>）を保持。</li>
+<li><code>PqGSSRecvBuffer</code>: 受信した暗号化パケットを一時保持するバッファ。</li>
+<li><code>PqGSSResultBuffer</code>: 復号後のデータを保持するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**パケットサイズ超過**: 受信したパケット長が <code>PQ_GSS_MAX_PACKET_SIZE</code> を超える場合、<code>EIO</code> を設定し <code>-1</code> を返す。</li>
+<li>**復号失敗**: <code>gss_unwrap</code> が <code>GSS_S_COMPLETE</code> 以外を返した場合、エラー報告を行い <code>EIO</code> を設定して <code>-1</code> を返す。</li>
+<li>**機密性欠如**: <code>conf_state</code> が 0 の場合、<code>EIO</code> を設定して <code>-1</code> を返す。</li>
+<li>**部分読み取り**: ネットワークからデータが完全に届いていない場合、<code>EWOULDBLOCK</code> を設定して <code>-1</code> を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は非同期 I/O を前提としており、部分的な読み取りが発生した場合は呼び出し元が再試行を行う必要がある。</li>
+<li><code>PqGSSResultBuffer</code> の管理は本関数内で行われるため、バッファポインタの更新（<code>PqGSSResultNext</code> 等）に注意すること。</li>
+<li><code>gss_unwrap</code> 後の <code>gss_release_buffer</code> によるメモリ解放は必須であり、エラーパスを含めて適切に処理されていることを確認すること。</li>
+</ul></body></html>

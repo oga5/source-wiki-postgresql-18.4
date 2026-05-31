@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/tablespace.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/tablespace.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のテーブルスペース（Tablespace）管理コマンドを実装するファイルです。テーブルスペースは、データベースオブジェクト（テーブルやインデックス）のデータファイルを格納するファイルシステム上のディレクトリを抽象化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、DDL（<code>CREATE TABLESPACE</code>, <code>DROP TABLESPACE</code>, <code>ALTER TABLESPACE</code>）の実行ロジックを提供します。また、GUC 変数 <code>default_tablespace</code> や <code>temp_tablespaces</code> の検証・管理を行い、WAL リプレイ時の物理ディレクトリ操作も担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 実行**: テーブルスペースの作成・削除・名前変更・オプション変更の処理。</li>
+<li>**物理管理**: <code>$PGDATA/pg_tblspc</code> 配下のシンボリックリンク作成と、各テーブルスペース内のディレクトリ構造（バージョンディレクトリおよびデータベース別サブディレクトリ）の管理。</li>
+<li>**WAL リプレイ**: <code>tblspc_redo</code> を通じて、プライマリで行われたテーブルスペース操作をスタンバイ側で再現する。</li>
+<li>**GUC 管理**: 一時テーブルスペースの検証および <code>fd.c</code> への設定伝播。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CreateTableSpace</code>, <code>DropTableSpace</code>: DDL のメインエントリポイント。</li>
+<li><code>TablespaceCreateDbspace</code>: データベース作成時に、テーブルスペース内にデータベース固有のサブディレクトリを作成する。</li>
+<li><code>create_tablespace_directories</code>, <code>destroy_tablespace_directories</code>: 物理的なディレクトリ構造の構築と破棄を行う内部関数。</li>
+<li><code>default_tablespace</code>, <code>temp_tablespaces</code>: ユーザーが設定可能なテーブルスペース関連の GUC 変数。</li>
+<li><code>tblspc_redo</code>: WAL リプレイ時に呼び出されるリソースマネージャ関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterTableSpaceOptions</code></li>
+<li><code>GetDefaultTablespace</code></li>
+<li><code>PrepareTempTablespaces</code></li>
+<li><code>RenameTableSpace</code></li>
+<li><code>directory_is_empty</code></li>
+<li><code>remove_tablespace_symlink</code></li>
+<li><code>temp_tablespaces_extra</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL 実行時**: <code>CreateTableSpace</code> 等が <code>pg_tablespace</code> カタログを更新し、その後 <code>create_tablespace_directories</code> を呼び出して物理的なシンボリックリンクとディレクトリを作成します。 2. **WAL リプレイ時**: <code>tblspc_redo</code> が WAL レコードを読み取り、<code>create_tablespace_directories</code> または <code>destroy_tablespace_directories</code> を呼び出して、スタンバイ側のファイルシステムをプライマリと同期させます。 3. **一時ファイル**: <code>PrepareTempTablespaces</code> が <code>temp_tablespaces</code> GUC を解析し、現在のトランザクションで使用する一時テーブルスペースのリストを <code>fd.c</code> に渡します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_tablespace.h</code>: システムカタログ定義。</li>
+<li><code>storage/fd.h</code>: ファイル記述子管理および一時テーブルスペース設定用。</li>
+<li><code>access/xloginsert.h</code>, <code>access/xlogutils.h</code>: WAL 記録用。</li>
+<li><code>utils/guc_hooks.h</code>: GUC 変数の検証フック用。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/tablespace.h</code>: 本ファイルのヘッダー。XLOG レコード構造体などが定義されています。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: WAL リプレイの全体的な制御。</li>
+<li><code>src/backend/storage/file/fd.c</code>: テーブルスペースを利用した実際のファイル I/O 処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**シンボリックリンク**: PostgreSQL は <code>$PGDATA/pg_tblspc/</code> に OID 名のシンボリックリンクを置き、実際のデータディレクトリを指し示します。Windows 環境ではジャンクションポイントが利用されます。</li>
+<li>**ロック**: <code>TablespaceCreateLock</code> は、テーブルスペースの作成や削除、データベースディレクトリの作成が競合しないように保護するために使用されます。</li>
+<li>**WAL リプレイの注意点**: <code>destroy_tablespace_directories</code> は、ディレクトリが空でない場合にエラーを投げるか、リトライを試みます。これは、スタンバイ側で一時ファイルが残っている可能性があるためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__TablespaceCreateDbspace.html" target="wiki-view"><code>TablespaceCreateDbspace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__CreateTableSpace.html" target="wiki-view"><code>CreateTableSpace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__DropTableSpace.html" target="wiki-view"><code>DropTableSpace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__create_tablespace_directories.html" target="wiki-view"><code>create_tablespace_directories</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__destroy_tablespace_directories.html" target="wiki-view"><code>destroy_tablespace_directories</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__directory_is_empty.html" target="wiki-view"><code>directory_is_empty</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__remove_tablespace_symlink.html" target="wiki-view"><code>remove_tablespace_symlink</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__RenameTableSpace.html" target="wiki-view"><code>RenameTableSpace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__AlterTableSpaceOptions.html" target="wiki-view"><code>AlterTableSpaceOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__GetDefaultTablespace.html" target="wiki-view"><code>GetDefaultTablespace</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__temp_tablespaces_extra.html" target="wiki-view"><code>temp_tablespaces_extra</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablespace_c__PrepareTempTablespaces.html" target="wiki-view"><code>PrepareTempTablespaces</code></a></li>
+</ul></body></html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_bloom.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_bloom.c</h1>
+<h2>概要</h2>
+<p>BRIN（Block Range Index）アクセスメソッドにおいて、ページ範囲内の値をブルームフィルタ（Bloom Filter）として要約する演算子クラスの実装です。等価性検索（<code>=</code>）を効率化するために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/brin</code> モジュールの一部として、特定の列に対する要約戦略を提供します。他のBRIN戦略（MinMaxなど）と比較して、値の分布が不規則なデータに対しても等価性検索の絞り込みを可能にします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ブルームフィルタの管理**: ページ範囲ごとのブルームフィルタの初期化、値の追加、および包含判定。</li>
+<li>**ハッシュ化**: 入力値を型固有のハッシュ関数で <code>uint32</code> に変換し、さらにブルームフィルタ用のハッシュを生成。</li>
+<li>**パラメータ最適化**: ページ範囲内の推定値数と許容誤判定率に基づき、フィルタサイズを動的に決定。</li>
+<li>**演算子クラスの統合**: BRINのインデックス構築、スキャン、および要約の結合（Union）に必要なインターフェースの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BloomFilter</code>: ブルームフィルタの構造体。ビットマップとハッシュ関数数などを保持。</li>
+<li><code>bloom_add_value</code>: フィルタに値を追加する関数。</li>
+<li><code>bloom_contains_value</code>: フィルタ内に値が存在するかを判定する関数。</li>
+<li><code>brin_bloom_consistent</code>: スキャンキーとフィルタを照合し、ページ範囲をスキップすべきか判定する関数。</li>
+<li><code>brin_bloom_union</code>: 2つのブルームフィルタをビット単位のOR演算で結合する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BloomOpaque</code></li>
+<li><code>BloomOptions</code></li>
+<li><code>bloom_filter_size</code></li>
+<li><code>bloom_init</code></li>
+<li><code>brin_bloom_add_value</code></li>
+<li><code>brin_bloom_get_ndistinct</code></li>
+<li><code>brin_bloom_opcinfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>brin_bloom_opcinfo</code> でインデックスのメタデータを設定。 2. **構築**: <code>brin_bloom_add_value</code> が呼び出されると、<code>bloom_init</code> でフィルタを生成し、<code>hash_bytes_uint32_extended</code> を用いて値をハッシュ化してビットを立てる。 3. **検索**: <code>brin_bloom_consistent</code> がスキャンキーを受け取り、同様にハッシュを計算してフィルタ内のビットを確認。すべてのビットが立っていれば <code>true</code> を返し、スキャン対象とする。 4. **マージ**: <code>brin_bloom_union</code> が異なるページ範囲の要約を統合し、インデックスの圧縮や更新を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>math.h</code>: 基本定義と数学関数。</li>
+<li><code>access/brin.h</code>, <code>access/brin_internal.h</code>: BRINサブシステムのコア定義。</li>
+<li><code>common/hashfn.h</code>: 値のハッシュ化に使用。</li>
+<li><code>access/reloptions.h</code>: インデックスのオプション（誤判定率など）の定義。</li>
+<li><code>access/brin_page.h</code></li>
+<li><code>access/brin_tuple.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/brin/brin.c</code>: BRINのメインロジック。</li>
+<li><code>src/backend/access/brin/brin_minmax.c</code>: 他のBRIN戦略の例。</li>
+<li><code>src/include/access/brin_tuple.h</code>: BRINタプルの構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ハッシュ戦略**: 本実装は「Less Hashing, Same Performance」論文に基づき、2つのハッシュ関数から複数のハッシュ値を生成する手法を採用しています。</li>
+<li>**サイズ制限**: ブルームフィルタは1つのインデックスページ（8kB）に収まる必要があります。<code>BloomMaxFilterSize</code> を超える場合はエラーとなります。</li>
+<li>**誤判定率**: <code>false_positive_rate</code> オプションで調整可能です。値を小さくすると精度は上がりますが、フィルタサイズが大きくなり、インデックスのメリットが損なわれる可能性があるため注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__BloomOptions.html" target="wiki-view"><code>BloomOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__BloomFilter.html" target="wiki-view"><code>BloomFilter</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__bloom_filter_size.html" target="wiki-view"><code>bloom_filter_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__bloom_init.html" target="wiki-view"><code>bloom_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__bloom_add_value.html" target="wiki-view"><code>bloom_add_value</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__bloom_contains_value.html" target="wiki-view"><code>bloom_contains_value</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__BloomOpaque.html" target="wiki-view"><code>BloomOpaque</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__brin_bloom_opcinfo.html" target="wiki-view"><code>brin_bloom_opcinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__brin_bloom_get_ndistinct.html" target="wiki-view"><code>brin_bloom_get_ndistinct</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__brin_bloom_add_value.html" target="wiki-view"><code>brin_bloom_add_value</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__brin_bloom_consistent.html" target="wiki-view"><code>brin_bloom_consistent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_bloom_c__brin_bloom_union.html" target="wiki-view"><code>brin_bloom_union</code></a></li>
+</ul></body></html>

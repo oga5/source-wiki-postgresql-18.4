@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_noprune.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>lazy_scan_noprune</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/vacuumlazy.c:2238</code></li>
+</ul>
+<h2>目的</h2>
+<p>クリーンアップロックが取得できない場合に、ヒープページを物理的に変更（Pruning/Freezing）することなく、統計情報の収集とデッドタプルの追跡のみを行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool lazy_scan_noprune(LVRelState *vacrel, Buffer buf, BlockNumber blkno, Page page, bool *has_lpdead_items);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>vacrel</code>: VACUUM実行状態を保持する <code>LVRelState</code> 構造体。</li>
+<li><code>buf</code>: 対象ページのバッファ。</li>
+<li><code>blkno</code>: 対象ページのブロック番号。</li>
+<li><code>page</code>: 対象ページのポインタ。</li>
+<li><code>has_lpdead_items</code>: LP_DEADアイテムの有無を返す出力用ポインタ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 処理が成功した場合は <code>true</code>。Aggressive VACUUMにおいて凍結が必要なタプルが存在し、かつロック取得が必要な場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>BufferGetBlockNumber(buf) == blkno</code> であること。</li>
+<li>呼び出し側は対象ページに対する共有ロックを保持している必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. ページ内の全オフセットを走査し、各タプルの状態を確認する。 2. <code>ItemIdIsDead</code> なアイテムを <code>deadoffsets</code> に記録する。 3. <code>heap_tuple_should_freeze</code> を用いて凍結が必要か判定する。</p>
+<ul>
+<li><code>vacrel-&gt;aggressive</code> が有効で凍結が必要な場合、即座に <code>false</code> を返し、呼び出し側に <code>lazy_scan_prune</code> への切り替えを促す。</li>
+<p>4. <code>HeapTupleSatisfiesVacuum</code> を用いてタプルの可視性を判定し、ライブタプル数やデッドタプル数をカウントする。 5. 処理終了後、<code>vacrel-&gt;NewRelfrozenXid</code> および <code>vacrel-&gt;NewRelminMxid</code> を更新する。 6. インデックスが存在する場合、見つかった <code>LP_DEAD</code> アイテムを <code>dead_items_add</code> で記録する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>lazy_scan_heap</code>（<code>src/backend/access/heap/vacuumlazy.c</code> 内のヒープスキャンループ）。</li>
+<li>**呼び出し先**: <code>PageGetMaxOffsetNumber</code>, <code>PageGetItemId</code>, <code>ItemIdIsUsed</code>, <code>ItemIdIsRedirected</code>, <code>ItemIdIsDead</code>, <code>heap_tuple_should_freeze</code>, <code>ItemPointerSet</code>, <code>PageGetItem</code>, <code>RelationGetRelid</code>, <code>HeapTupleSatisfiesVacuum</code>, <code>dead_items_add</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LVRelState</code>: VACUUM全体の制御状態。</li>
+<li><code>HeapTupleData</code>: ヒープタプルのメタデータ。</li>
+<li><code>ItemIdData</code>: ページ内のアイテム識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**Aggressive VACUUM時の制約**: 凍結が必要なタプルが存在し、かつ <code>vacrel-&gt;aggressive</code> が真の場合、本関数は処理を完遂できず <code>false</code> を返す。</li>
+<li>**インデックスなしのケース**: インデックスが存在しない場合、<code>LP_DEAD</code> アイテムは <code>missed_dead_tuples</code> として計上される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は「Pruningを行わない」という性質上、ページ内の <code>LP_DEAD</code> アイテムを即座に <code>LP_UNUSED</code> にはしない。これらは後続のインデックス掃除フェーズで処理されるか、次回のVACUUMまで持ち越される。</li>
+<li><code>lazy_scan_prune</code> とのロジックの乖離を避けるため、タプルのカウント処理は両者で一貫させる必要がある。</li>
+</ul></body></html>

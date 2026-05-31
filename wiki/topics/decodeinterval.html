@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/decodeinterval.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DecodeInterval</h1>
+<h2>概念</h2>
+<p><code>DecodeInterval</code> は、PostgreSQLにおいて時間間隔（interval）を表す文字列トークンのリストを解析し、年、月、日、時、分、秒などの各単位に分解して、<code>struct tm</code> および小数秒（<code>fsec_t</code>）に格納するための関数です。</p>
+<h2>なぜ重要か</h2>
+<p>この関数は、ユーザーや外部アプリケーションから入力された多様なフォーマットの時間間隔文字列を、システムが内部的に処理可能な構造体データへと正確に変換する役割を担っています。PostgreSQLのバックエンドとクライアント側ライブラリ（ECPG）の両方で同様の解析ロジックを共有・維持するために重要なコンポーネントです。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/interfaces/ecpg/pgtypeslib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/interfaces/ecpg/pgtypeslib/interval.c#DecodeInterval</code> : ECPGクライアントライブラリ側で時間間隔のデコードを行う関数。</li>
+<li><code>symbol:src/backend/utils/adt/datetime.c#DecodeInterval</code> : バックエンド側で時間間隔のデコードを行う関数（詳細な内部仕様は本コンテキストでは未定義）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>ECPG（<code>pgtypeslib</code>）における具体的な処理の流れは以下の通りです：</p>
+<p>1. **初期化**: <code>ClearPgTm(tm, fsec)</code> を呼び出し、出力先となる <code>struct tm</code> および <code>fsec_t</code> をクリアします。 2. **逆順走査**: 入力されたトークンリスト（<code>field</code>）を末尾から先頭に向かって（<code>nf - 1</code> から <code>0</code> へ）逆順に走査します。 3. **トークン解析**: 各トークンの型（<code>ftype</code>）に応じて処理を分岐します。</p>
+<ul>
+<li><code>DTK_TIME</code>: <code>DecodeTime</code> を呼び出して時刻情報を分解します。</li>
+<li><code>DTK_TZ</code>: タイムゾーン形式を判定し、必要に応じて符号を反転させます。</li>
+<li><code>DTK_DATE</code> / <code>DTK_NUMBER</code>: 数値として解析し、<code>YEAR-MONTH</code> 形式や小数を含む形式を処理します。</li>
+<p>4. **値の蓄積**: 解析された各単位の値を <code>tm</code> 構造体の各フィールドおよび <code>fsec</code> に加算します。 5. **調整**: <code>AdjustFractSeconds</code> などの補助関数を用いて、単位間の繰り上げ・繰り下げを調整します。 6. **結果の返却**: 成功時は <code>0</code> を返し、<code>dtype</code> に <code>DTK_DELTA</code> を設定します。</p>
+</ul>
+<p>なお、バックエンド側（<code>src/backend/utils/adt/datetime.c</code>）における <code>DecodeInterval</code> の具体的なエンドツーエンドの流れや呼び出し関係については、提供された情報からは不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の必須性**: 解析処理を開始する前に、必ず <code>ClearPgTm(tm, fsec)</code> を呼び出して出力先を初期化する必要があります。</li>
+<li>**逆順処理**: トークンリストの走査は必ず末尾（<code>nf - 1</code>）から先頭（<code>0</code>）に向かって行われます。</li>
+<li>**コンパイルオプションの制限**: 浮動小数点演算の精度を維持するため、<code>-ffast-math</code> コンパイルオプションを使用してビルドしてはなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**構造体の違い**: バックエンド側では <code>struct pg_tm</code> が使用されるのに対し、ECPG側（<code>pgtypeslib</code>）では標準の <code>struct tm</code> が使用されるため、移植やコードの参照時には構造体の型定義の違いに注意する必要があります。</li>
+<li>**ハードコードされたスタイル**: ECPGの実装においては、<code>IntervalStyle</code> が <code>INTSTYLE_POSTGRES_VERBOSE</code> にハードコードされています。</li>
+<li>**オーバーフローとフォーマットエラー**: <code>strtoint</code> による範囲外数値の検出（<code>DTERR_FIELD_OVERFLOW</code>）や、月数が <code>MONTHS_PER_YEAR</code>（12）以上の場合のオーバーフロー、不正な文字列フォーマット（<code>DTERR_BAD_FORMAT</code>）による解析失敗に注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/ecpg/pgtypeslib/interval.c</code> : ECPGにおける <code>DecodeInterval</code> の具体的な実装と、呼び出し元（<code>1032</code> 行目付近）の処理。</li>
+<li><code>src/backend/utils/adt/datetime.c</code> : バックエンド側における <code>DecodeInterval</code> の実装。</li>
+</ul></body></html>

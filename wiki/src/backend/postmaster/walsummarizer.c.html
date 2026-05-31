@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/walsummarizer.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/walsummarizer.c</h1>
+<h2>概要</h2>
+<p>WALサマライザーは、WAL（Write-Ahead Log）を継続的にスキャンし、どのブロックがどのリレーションフォークで変更されたかを記録する「WALサマリーファイル」を生成するバックグラウンドプロセスです。このサマリーは、インクリメンタルバックアップの効率化に利用されます。また、設定された保持期間を過ぎた古いサマリーファイルの削除も担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として動作する補助プロセスです。サーバーの起動時に <code>postmaster</code> によってフォークされ、共有メモリを介して他のプロセス（主にバックアップ関連）と連携します。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALの継続的スキャン**: <code>XLogReader</code> を使用してWALを読み込み、変更されたブロック情報を <code>BlockRefTable</code> に蓄積する。</li>
+<li>**サマリーファイルの生成**: 蓄積した情報を定期的にファイルシステムへ書き出し、永続化する。</li>
+<li>**ライフサイクル管理**: タイムライン切り替えの追跡、およびWALの保持状況に応じた古いサマリーファイルのクリーンアップ。</li>
+<li>**プロセス間通信**: 共有メモリ (<code>WalSummarizerData</code>) を通じて、現在のサマリー進捗状況を公開し、必要に応じて他のプロセスを待機・起床させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ管理</h3>
+<ul>
+<li><code>WalSummarizerData</code>: サマリーの進捗（LSN/TLI）、プロセスID、および待機用CVを保持する共有メモリ構造体。</li>
+<li><code>WalSummarizerShmemInit</code>: 共有メモリの初期化とアタッチ。</li>
+<li><code>GetWalSummarizerState</code>: 外部プロセスがサマリーの進捗状況を取得するためのアクセサ。</li>
+</ul>
+<h3>プロセス制御</h3>
+<ul>
+<li><code>WalSummarizerMain</code>: プロセスのメインループ。シグナル処理、エラーハンドリング、サマリー生成ループを統括。</li>
+<li><code>WakeupWalSummarizer</code>: サマライザーを起床させるためのシグナル送信。</li>
+<li><code>WaitForWalSummarization</code>: 指定したLSNまでサマリーが生成されるのを待機する同期関数。</li>
+</ul>
+<h3>サマリー生成ロジック</h3>
+<ul>
+<li><code>SummarizeWAL</code>: 指定範囲のWALを読み込み、サマリーファイルを生成するコア関数。</li>
+<li><code>SummarizeDbaseRecord</code> / <code>SummarizeSmgrRecord</code> / <code>SummarizeXactRecord</code>: 特定のWALレコードタイプに応じたブロック参照テーブルの更新。</li>
+<li><code>summarizer_read_local_xlog_page</code>: <code>XLogReader</code> 用のページ読み込みコールバック。WALの末尾に達した際の待機ロジックを含む。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetLatestLSN</code></li>
+<li><code>GetOldestUnsummarizedLSN</code></li>
+<li><code>GetWalSummarizerState</code></li>
+<li><code>ProcessWalSummarizerInterrupts</code></li>
+<li><code>SummarizerReadLocalXLogPrivate</code></li>
+<li><code>WaitForWalSummarization</code></li>
+<li><code>WakeupWalSummarizer</code></li>
+<li><code>WalSummarizerData</code></li>
+<li><code>WalSummarizerMain</code></li>
+<li><code>WalSummarizerShmemInit</code></li>
+<li><code>WalSummarizerShmemSize</code></li>
+<li><code>WalSummarizerShutdown</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>WalSummarizerMain</code> が起動し、<code>GetOldestUnsummarizedLSN</code> を呼び出してサマリー開始位置を特定。 2. **ループ**:</p>
+<ul>
+<li><code>ProcessWalSummarizerInterrupts</code> でシグナルと設定変更を処理。</li>
+<li><code>MaybeRemoveOldWalSummaries</code> で不要なサマリーを削除。</li>
+<li><code>SummarizeWAL</code> を呼び出し、WALをレコード単位で解析。</li>
+<li><code>BlockRefTable</code> に変更ブロックを記録し、一定量溜まるとファイルへ書き出し。</li>
+<p>3. **待機**: WALの末尾に達した場合、<code>summarizer_wait_for_wal</code> を呼び出し、バックオフアルゴリズムに基づいてラッチ待機を行う。 4. **同期**: <code>WaitForWalSummarization</code> を呼び出したプロセスは、<code>summary_file_cv</code> を介してサマライザーの進捗を監視する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xlog_internal.h</code>: WAL読み込みと解析の基盤。</li>
+<li><code>backup/walsummary.h</code>, <code>common/blkreftable.h</code>: サマリーファイル形式とブロック参照テーブルの管理。</li>
+<li><code>storage/shmem.h</code>, <code>storage/lwlock.h</code>: 共有メモリと排他制御。</li>
+<li><code>postmaster/auxprocess.h</code>: 補助プロセスとしての共通基盤。</li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>commands/dbcommands_xlog.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/walsummarizer.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/backup/walsummary.c</code>: サマリーファイルの物理的な読み書きロジック。</li>
+<li><code>src/common/blkreftable.c</code>: ブロック参照テーブルのデータ構造操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>WalSummarizerData</code> は共有メモリ上に配置され、<code>WALSummarizerLock</code> で保護されます。</li>
+<li>**エラーハンドリング**: <code>sigsetjmp</code> を使用してエラーからの復帰を実装しています。エラー発生時は10秒間待機してから再試行する設計です。</li>
+<li>**パフォーマンス**: <code>summarizer_wait_for_wal</code> は、WALの生成頻度に応じて待機時間を動的に調整（1〜30秒）します。</li>
+<li>**制約**: <code>summarize_wal</code> が無効な場合、プロセスは即座に終了します。また、<code>wal_level=minimal</code> のWALはサマリー生成の対象外となります。</li>
+<li>**省略箇所**: 本ファイル内の <code>XLogReader</code> の詳細な内部実装や、<code>BlockRefTable</code> の具体的なビットマップ操作アルゴリズムについては、関連ファイル（<code>blkreftable.c</code> 等）を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WalSummarizerData.html" target="wiki-view"><code>WalSummarizerData</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__SummarizerReadLocalXLogPrivate.html" target="wiki-view"><code>SummarizerReadLocalXLogPrivate</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WalSummarizerShmemSize.html" target="wiki-view"><code>WalSummarizerShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WalSummarizerShmemInit.html" target="wiki-view"><code>WalSummarizerShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WalSummarizerMain.html" target="wiki-view"><code>WalSummarizerMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__GetWalSummarizerState.html" target="wiki-view"><code>GetWalSummarizerState</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__GetOldestUnsummarizedLSN.html" target="wiki-view"><code>GetOldestUnsummarizedLSN</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WakeupWalSummarizer.html" target="wiki-view"><code>WakeupWalSummarizer</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WaitForWalSummarization.html" target="wiki-view"><code>WaitForWalSummarization</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__WalSummarizerShutdown.html" target="wiki-view"><code>WalSummarizerShutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__GetLatestLSN.html" target="wiki-view"><code>GetLatestLSN</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__walsummarizer_c__ProcessWalSummarizerInterrupts.html" target="wiki-view"><code>ProcessWalSummarizerInterrupts</code></a></li>
+</ul></body></html>

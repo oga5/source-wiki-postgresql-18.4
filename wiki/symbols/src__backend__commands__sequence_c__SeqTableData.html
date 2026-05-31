@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__sequence_c__SeqTableData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SeqTableData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/commands/sequence.c:76</code></li>
+</ul>
+<h2>目的</h2>
+<p>セッション内において、特定のシーケンスに対する現在のキャッシュ状態（最後に払い出した値およびプリフェッチ済みの値）を保持し、<code>nextval()</code> 呼び出し時のパフォーマンスを最適化するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct SeqTableData
+{
+    Oid            relid;           /* pg_class OID (ハッシュキー) */
+    RelFileNumber  filenumber;      /* 最後に確認したリレーションファイル番号 */
+    LocalTransactionId lxid;        /* 最後にシーケンス操作を行ったトランザクション */
+    bool           last_valid;      /* &quot;last&quot; 値が有効か */
+    int64          last;            /* nextval で最後に返した値 */
+    int64          cached;          /* nextval 用にキャッシュ済みの最終値 */
+    int64          increment;       /* シーケンスの増分値 */
+} SeqTableData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: シーケンスのOIDをキーとしてハッシュテーブル（<code>seqhashtab</code>）に格納されます。</li>
+<li>**出力**: <code>nextval_internal</code> 等の関数が、この構造体を参照してシーケンスの現在値を更新し、呼び出し元へ値を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>increment</code> フィールドは、<code>nextval_internal()</code> が初めて呼び出されるまで 0 に初期化されます。</li>
+<li><code>last != cached</code> の場合、キャッシュ内にまだ使用可能な値が残っていることを示します。</li>
+<li>シーケンスはヒープとして扱われますが、<code>VACUUM</code> の対象外です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回アクセス時に <code>init_sequence</code> がハッシュテーブルを検索し、存在しない場合はエントリを作成します。 2. **値の払い出し**: <code>nextval()</code> 呼び出し時、キャッシュに空きがあれば即座に値を返します。 3. **プリフェッチ**: キャッシュが枯渇した場合、<code>read_seq_tuple</code> を介してディスクから最新状態を読み込み、<code>SEQ_LOG_VALS</code>（32）個分の値を確保してWALを記録します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/sequence.c</code> 内のシーケンス管理関数群。</li>
+<li>**呼び出し先**: 具体的な関数呼び出し関係はソースコードの断片からは特定できません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SeqTable</code>: <code>SeqTableData *</code> 型のポインタ。</li>
+<li><code>seqhashtab</code>: セッション内でアクセスされたシーケンスを追跡するハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>nextval()</code> はトランザクションのロールバックに関わらず値を消費します。</li>
+<li><code>ALTER SEQUENCE</code> による変更は、物理ファイルを再作成することでトランザクションの原子性を保証します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体はセッションローカルなキャッシュであるため、プロセス間での状態共有は行われません。</li>
+<li><code>last_used_seq</code> ポインタを介して、直近に使用されたエントリへの高速アクセスが行われる場合があります。</li>
+</ul></body></html>

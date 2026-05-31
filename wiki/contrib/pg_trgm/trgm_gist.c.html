@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_trgm/trgm_gist.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_trgm/trgm_gist.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の <code>pg_trgm</code> 拡張における GiST インデックスのサポートを実装するソースファイルです。文字列のトリグラム（3文字の連続）に基づいたインデックス構造の構築、検索、および最適化ロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_trgm</code> モジュールにおいて、GiST インデックスの演算子クラス（<code>gist_trgm_ops</code>）のバックエンドとして機能します。GIN インデックスが転置インデックスとして機能するのに対し、本ファイルは GiST の木構造を用いた近傍検索やパターンマッチングを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスの圧縮と展開**: <code>gtrgm_compress</code> / <code>decompress</code> によるインデックスキーの最適化。</li>
+<li>**検索の整合性判定**: <code>gtrgm_consistent</code> による、インデックスノードが検索条件を満たすかの判定。</li>
+<li>**距離計算**: <code>gtrgm_distance</code> による類似度検索（k-NN）のサポート。</li>
+<li>**木構造の維持**: <code>gtrgm_union</code>、<code>gtrgm_same</code>、<code>gtrgm_penalty</code>、<code>gtrgm_picksplit</code> を通じた GiST 木のバランス調整とノード管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TrgmGistOptions</code>: インデックス作成時に指定可能なオプション（<code>siglen</code>）を保持する構造体。</li>
+<li><code>gtrgm_consistent_cache</code>: 検索時の CPU コストを抑えるため、抽出済みトリグラムや正規表現グラフをキャッシュする構造体。</li>
+<li><code>gtrgm_consistent</code>: 検索クエリとインデックスノードの署名（シグネチャ）を比較する中核関数。</li>
+<li><code>gtrgm_picksplit</code>: GiST 木の分割時に、ノード間の重なりを最小化する分割アルゴリズム。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CACHESIGN</code></li>
+<li><code>SPLITCOST</code></li>
+<li><code>cnt_sml_sign_common</code></li>
+<li><code>gtrgm_alloc</code></li>
+<li><code>gtrgm_compress</code></li>
+<li><code>gtrgm_decompress</code></li>
+<li><code>gtrgm_distance</code></li>
+<li><code>gtrgm_in</code></li>
+<li><code>gtrgm_out</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **インデックス構築**: <code>gtrgm_compress</code> が入力文字列からトリグラムを生成し、ビットベクトル（シグネチャ）にハッシュ化して格納します。 2. **検索**: <code>gtrgm_consistent</code> が呼び出されると、まず <code>fcinfo-&gt;flinfo-&gt;fn_extra</code> を通じてキャッシュを確認します。キャッシュがない場合、クエリからトリグラムを抽出し、戦略（LIKE, RegExp, Similarity）に応じてインデックスノードのビットベクトルと照合します。 3. **距離計算**: <code>gtrgm_distance</code> は類似度演算子（<code>%</code> など）に対し、インデックスキーとクエリの距離を計算し、近傍順に結果を返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>access/reloptions.h</code>: インデックスオプションの定義。</li>
+<li><code>access/stratnum.h</code>: 演算子戦略番号の定義。</li>
+<li><code>trgm.h</code>: トリグラムのデータ構造と共通関数。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作（popcount 等）。</li>
+<li><code>fmgr.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>trgm_op.c</code>: トリグラムの抽出や類似度計算のロジックが実装されており、本ファイルから頻繁に呼び出されます。</li>
+<li><code>trgm_gin.c</code>: 同じく <code>pg_trgm</code> の GIN インデックス実装。比較対象として参照されます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの挙動**: <code>gtrgm_consistent</code> や <code>gtrgm_distance</code> は <code>fn_extra</code> を使用してクエリのトリグラムをキャッシュしますが、正規表現グラフの扱いに注意が必要です。現在の実装では、インデックスの再スキャン時にキャッシュがリークする可能性がある旨のコメントが残されています。</li>
+<li>**シグネチャの性質**: GiST インデックスはビットベクトルによる近似検索を行うため、<code>recheck</code> フラグが <code>true</code> になるケースが多いです。これはインデックスが「候補」を絞り込み、最終的な判定はヒープ上の実データで行うことを意味します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__TrgmGistOptions.html" target="wiki-view"><code>TrgmGistOptions</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_consistent_cache.html" target="wiki-view"><code>gtrgm_consistent_cache</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_in.html" target="wiki-view"><code>gtrgm_in</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_out.html" target="wiki-view"><code>gtrgm_out</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_alloc.html" target="wiki-view"><code>gtrgm_alloc</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_compress.html" target="wiki-view"><code>gtrgm_compress</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_decompress.html" target="wiki-view"><code>gtrgm_decompress</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__cnt_sml_sign_common.html" target="wiki-view"><code>cnt_sml_sign_common</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_consistent.html" target="wiki-view"><code>gtrgm_consistent</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__gtrgm_distance.html" target="wiki-view"><code>gtrgm_distance</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__CACHESIGN.html" target="wiki-view"><code>CACHESIGN</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_gist_c__SPLITCOST.html" target="wiki-view"><code>SPLITCOST</code></a></li>
+</ul></body></html>

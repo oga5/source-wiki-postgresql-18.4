@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/pg_basebackup.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/pg_basebackup.c</h1>
+<h2>概要</h2>
+<p><code>pg_basebackup.c</code> は、PostgreSQL の物理バックアップを取得するためのメインツールです。サーバーからレプリケーションプロトコル経由でデータディレクトリおよび WAL をストリーミング受信し、ローカルファイルシステムへの書き込みや tar アーカイブの生成を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_basebackup</code> サブシステムの中心的なオーケストレーターです。<code>streamutil.c</code> で確立された接続を利用し、<code>receivelog.c</code> や <code>astreamer</code> フレームワークと連携して、バックアップのライフサイクル（接続、コマンド発行、データ受信、永続化、終了処理）を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バックアップ制御**: <code>BASE_BACKUP</code> コマンドの発行と、サーバーからのストリーム（データおよびマニフェスト）の解析。</li>
+<li>**ストリームパイプラインの構築**: <code>astreamer</code> を用いて、受信データの展開、圧縮、リカバリ設定の注入、および tar アーカイブの生成を動的に構成。</li>
+<li>**WAL ストリーミングの並列実行**: バックアップと並行して WAL を受信するためのバックグラウンドプロセス（Unix）またはスレッド（Windows）の管理。</li>
+<li>**ディレクトリ管理**: バックアップ先ディレクトリの検証、作成、およびエラー発生時のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>ArchiveStreamState</code>: <code>ReceiveArchiveStream</code> 中のテーブルスペース、圧縮設定、およびマニフェスト処理の状態を保持。</li>
+<li><code>TablespaceList</code>: <code>-T</code> オプションで指定されたテーブルスペースのパス置換マッピングを管理。</li>
+<li><code>logstreamer_param</code>: WAL 受信プロセスに渡される接続情報やストリーミング設定。</li>
+</ul>
+<h3>ストリーム処理</h3>
+<ul>
+<li><code>CreateBackupStreamer</code>: ユーザー指定のオプションに基づき、<code>astreamer</code> パイプライン（展開、圧縮、注入など）を構築するファクトリ関数。</li>
+<li><code>ReceiveArchiveStreamChunk</code>: サーバーから受信した <code>COPY</code> データの各チャンクを解析し、適切な処理（アーカイブ、マニフェスト、進捗報告）へディスパッチする。</li>
+</ul>
+<h3>制御フロー</h3>
+<ul>
+<li><code>BaseBackup</code>: バックアップ処理のメインロジック。サーバーとのネゴシエーション、WAL ストリーミングの開始、データ受信ループの実行を行う。</li>
+<li><code>LogStreamerMain</code>: WAL 受信プロセス/スレッドのエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ArchiveStreamState</code></li>
+<li><code>CompressionLocation</code></li>
+<li><code>CreateBackupStreamer</code></li>
+<li><code>IncludeWal</code></li>
+<li><code>LogStreamerMain</code></li>
+<li><code>StartLogStreamer</code></li>
+<li><code>TablespaceList</code></li>
+<li><code>TablespaceListCell</code></li>
+<li><code>WriteDataCallback</code></li>
+<li><code>WriteManifestState</code></li>
+<li><code>WriteTarState</code></li>
+<li><code>logstreamer_param</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main</code> 関数が引数を解析し、<code>GetConnection</code> でサーバーと接続。 2. **バックアップ開始**: <code>BaseBackup</code> が <code>BASE_BACKUP</code> コマンドを送信。サーバーからテーブルスペース情報と開始 LSN を取得。 3. **WAL ストリーミング**: <code>StartLogStreamer</code> がバックグラウンドプロセスを起動。<code>reached_end_position</code> を通じて、メインプロセスから終了 LSN を受け取るまで WAL を受信し続ける。 4. **データ受信**: <code>ReceiveArchiveStream</code> が <code>COPY</code> プロトコルをループで読み込み、<code>ReceiveArchiveStreamChunk</code> が各チャンクを <code>astreamer</code> パイプラインへ流す。 5. **永続化**: <code>astreamer</code> がデータをファイルシステムへ書き込み、最後に <code>sync_dir_recurse</code> 等でディスクへのフラッシュを保証。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>astreamer_inject.h</code>: バックアップストリームへのリカバリ設定注入用。</li>
+<li><code>receivelog.h</code>: WAL ストリーミングの基盤。</li>
+<li><code>streamutil.h</code>: 接続管理およびレプリケーションユーティリティ。</li>
+<li><code>common/file_utils.h</code>: ディレクトリ操作（<code>rmtree</code>, <code>pg_mkdir_p</code>）。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>common/compression.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/recovery_gen.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/select.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>zlib.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>receivelog.c</code>: WAL 受信の具体的な実装。</li>
+<li><code>astreamer_*.c</code>: <code>astreamer</code> フレームワークの各フィルタ実装（展開、圧縮、tar 処理）。</li>
+<li><code>walmethods.c</code>: WAL の保存先（ディレクトリ/tar）の抽象化。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>ArchiveStreamState</code> や <code>logstreamer_param</code> はスタックまたは <code>pg_malloc0</code> で確保され、処理終了時に適切に解放されます。</li>
+<li>**エラーパス**: <code>pg_fatal</code> を多用しており、エラー発生時は即座に終了します。<code>atexit</code> で登録された <code>cleanup_directories_atexit</code> が、失敗したバックアップのディレクトリを削除します。</li>
+<li>**プラットフォーム差異**: <code>bgpipe</code> を用いたプロセス間通信（Unix）と、共有メモリ/フラグを用いたスレッド間通信（Windows）で WAL ストリーミングの同期ロジックが異なります。</li>
+<li>**制限事項**: <code>astreamer</code> パイプラインの構築は複雑であり、特定の組み合わせ（例：圧縮済み tar へのマニフェスト注入）はサポートされていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__TablespaceListCell.html" target="wiki-view"><code>TablespaceListCell</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__TablespaceList.html" target="wiki-view"><code>TablespaceList</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__ArchiveStreamState.html" target="wiki-view"><code>ArchiveStreamState</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__WriteTarState.html" target="wiki-view"><code>WriteTarState</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__WriteManifestState.html" target="wiki-view"><code>WriteManifestState</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__WriteDataCallback.html" target="wiki-view"><code>WriteDataCallback</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__IncludeWal.html" target="wiki-view"><code>IncludeWal</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__CompressionLocation.html" target="wiki-view"><code>CompressionLocation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__logstreamer_param.html" target="wiki-view"><code>logstreamer_param</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__LogStreamerMain.html" target="wiki-view"><code>LogStreamerMain</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__StartLogStreamer.html" target="wiki-view"><code>StartLogStreamer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_basebackup_c__CreateBackupStreamer.html" target="wiki-view"><code>CreateBackupStreamer</code></a></li>
+</ul></body></html>

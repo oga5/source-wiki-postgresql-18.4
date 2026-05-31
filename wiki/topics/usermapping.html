@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/usermapping.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>UserMapping</h1>
+<h2>概念</h2>
+<p><code>UserMapping</code> は、PostgreSQLの外部データラッパー（FDW）において、ローカルデータベースのユーザー（ロール）と、外部サーバー（Foreign Server）上の接続・認証用ユーザー情報を紐付けるためのメタデータ、およびそれを表すデータ構造です。</p>
+<h2>なぜ重要か</h2>
+<p>外部サーバーへの接続や認証パラメータ（パスワードなど）を決定するために不可欠な要素です。<code>contrib/postgres_fdw</code> や <code>contrib/dblink</code> などのモジュールが、リモートサーバーに対して適切な権限と認証情報を用いて安全に接続を確立するために使用されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/commands</code></li>
+<li><code>module:src/backend/foreign</code></li>
+<li><code>module:src/include/foreign</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/foreign/foreign.h#UserMapping</code>: ユーザーマッピング情報を保持するメモリ上の構造体。</li>
+<li><code>symbol:src/backend/commands/foreigncmds.c#CreateUserMapping</code>: <code>CREATE USER MAPPING</code> SQL文の実行時に、システムカタログ <code>pg_user_mapping</code> にマッピングを作成する関数。</li>
+<li><code>symbol:src/backend/foreign/foreign.c#GetUserMapping</code>: 指定されたユーザーと外部サーバーに対応するマッピング情報をシステムカタログから取得し、<code>UserMapping</code> 構造体として返却する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **定義と作成**:</p>
+<ul>
+<li>管理者またはユーザーが <code>CREATE USER MAPPING</code> SQL文を実行すると、<code>src/backend/tcop/utility.c</code> を経由して <code>CreateUserMapping</code> が呼び出されます。</li>
+<li><code>CreateUserMapping</code> は、対象サーバーの存在と権限を検証し、FDWのバリデーター関数を用いてオプションを検証・変換（<code>transformGenericOptions</code>）した上で、システムカタログ <code>pg_user_mapping</code> に新しいタプルを挿入します。</li>
+<p>2. **接続時の取得と利用**:</p>
+<li><code>postgres_fdw</code> や <code>dblink</code> が外部サーバーへ接続する際、<code>GetUserMapping</code> を呼び出します。</li>
+<li><code>GetUserMapping</code> は <code>USERMAPPINGUSERSERVER</code> システムキャッシュを検索し、該当するユーザーのマッピングを取得します。個別ユーザーのマッピングが存在しない場合は、<code>PUBLIC</code>（<code>InvalidOid</code>）のマッピングを再検索します。</li>
+<li>取得したカタログ情報から <code>UserMapping</code> 構造体を構築し、オプションを <code>untransformRelOptions</code> で <code>DefElem</code> リストに変換して呼び出し元に返却します。</li>
+<li>呼び出し元（FDW等）はこのオプションを解析し、リモート接続の確立に使用します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**一意性の制約**: 同一のユーザーと同一の外部サーバーの組み合わせに対するユーザーマッピングは、システム内で一意でなければなりません（<code>CreateUserMapping</code> 内で重複チェックが行われます）。</li>
+<li>**フォールバック動作**: 特定のユーザーに対するマッピングが存在しない場合、<code>InvalidOid</code> を用いて <code>PUBLIC</code> ユーザー向けのマッピングが検索されます。</li>
+<li>**メモリ管理**: <code>GetUserMapping</code> が返却する <code>UserMapping</code> 構造体はシステムキャッシュのコピーであり、呼び出し側で適切にメモリ管理（解放など）を行う必要があります。また、構造体への変更はカタログへ自動的に反映されません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**重複エラー**: 同一ユーザー・サーバーの組み合わせが既に存在する場合、<code>IF NOT EXISTS</code> 指定がない限り <code>CreateUserMapping</code> は <code>ERRCODE_DUPLICATE_OBJECT</code> エラーを発生させます。</li>
+<li>**未定義エラー**: 指定されたユーザーおよび <code>PUBLIC</code> のいずれにもマッピングが定義されていない場合、<code>GetUserMapping</code> は <code>ERRCODE_UNDEFINED_OBJECT</code> エラーを発生させます。</li>
+<li>**カタログスキーマへの依存**: <code>UserMapping</code> は <code>pg_user_mapping</code> カタログに直接依存しているため、カタログスキーマが変更された場合は <code>SysCacheGetAttr</code> の属性インデックス（<code>Anum_pg_user_mapping_umoptions</code> など）の整合性を保つ必要があります。</li>
+<li>**拡張機能との非互換**: ユーザーマッピングは現在、拡張機能（Extension）のメンバーとして扱われない仕様となっています。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/foreign/foreign.h</code>: <code>UserMapping</code> 構造体の定義とフィールド構成。</li>
+<li><code>src/backend/commands/foreigncmds.c</code>: <code>CreateUserMapping</code> によるカタログ挿入とバリデーションのロジック。</li>
+<li><code>src/backend/foreign/foreign.c</code>: <code>GetUserMapping</code> によるシステムキャッシュ検索と構造体構築のロジック。</li>
+</ul></body></html>

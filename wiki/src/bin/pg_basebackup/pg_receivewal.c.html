@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/pg_receivewal.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/pg_receivewal.c</h1>
+<h2>概要</h2>
+<p><code>pg_receivewal</code> は、PostgreSQL サーバーからストリーミングされる WAL（Write-Ahead Log）データをリアルタイムで受信し、ローカルのファイルシステムに保存するためのクライアントツールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_basebackup</code> モジュールの一部として、物理バックアップやレプリケーションの運用を支援します。<code>receivelog.c</code> が提供する汎用的なストリーミング機能を呼び出し、ローカルのディレクトリ管理や圧縮処理を統合する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>サーバーへのレプリケーション接続の確立と維持。</li>
+<li>ローカルディレクトリ内の既存 WAL ファイルの走査と、ストリーミング開始位置の自動決定。</li>
+<li>受信した WAL データのローカル保存（GZIP/LZ4 圧縮対応）。</li>
+<li>レプリケーションスロットの作成・削除管理。</li>
+<li>接続断時の再試行制御および終了シグナルの処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>StreamLog()</code>: ストリーミングのメインループを制御する関数。</li>
+<li><code>FindStreamingStart()</code>: 既存の WAL ファイルを解析し、どこから受信を再開すべきかを決定する。</li>
+<li><code>is_xlogfilename()</code>: ファイル名が WAL セグメントであるか、また圧縮や部分書き込み状態かを判定する。</li>
+<li><code>stop_streaming()</code>: 指定された LSN に到達したか、あるいは終了シグナルを受信したかを判定するコールバック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FindStreamingStart</code></li>
+<li><code>StreamLog</code></li>
+<li><code>close_destination_dir</code></li>
+<li><code>disconnect_atexit</code></li>
+<li><code>get_destination_dir</code></li>
+<li><code>is_xlogfilename</code></li>
+<li><code>main</code></li>
+<li><code>sigexit_handler</code></li>
+<li><code>stop_streaming</code></li>
+<li><code>usage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 引数を解析し、サーバーへの接続を確立。<code>RetrieveWalSegSize</code> で WAL セグメントサイズを取得。 2. **開始位置特定**: <code>FindStreamingStart</code> がディレクトリを走査。既存の最新セグメントを特定し、そこから受信を開始する。 3. **ストリーミング**: <code>ReceiveXlogStream</code> を呼び出し、サーバーから WAL を受信。<code>walmethods.c</code> を介してディスクへ書き込む。 4. **ループ**: 接続が切断された場合、<code>noloop</code> オプションが有効でなければ <code>RECONNECT_SLEEP_TIME</code> 待機後に再接続を試みる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: サーバーとの通信用。</li>
+<li><code>receivelog.h</code>: WAL ストリーミングのコアロジック。</li>
+<li><code>streamutil.h</code>: 接続管理や WAL セグメントサイズ取得などの共通ユーティリティ。</li>
+<li><code>lz4frame.h</code> / <code>zlib.h</code>: 圧縮機能の実装。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/receivelog.c</code>: ストリーミングプロトコルの詳細実装。</li>
+<li><code>src/bin/pg_basebackup/walmethods.c</code>: ファイルシステムへの書き込み抽象化レイヤー。</li>
+<li><code>src/bin/pg_basebackup/streamutil.c</code>: 接続確立や認証の共通処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**WAL セグメントの整合性**: <code>FindStreamingStart</code> は、圧縮された WAL ファイルの末尾を読み取ってサイズを検証する複雑なロジックを含んでいます。この部分は将来的な圧縮アルゴリズム追加時に注意が必要です。</li>
+<li>**シグナル処理**: <code>SIGINT</code>/<code>SIGTERM</code> は <code>time_to_stop</code> フラグを立てることで、安全な終了を保証します。</li>
+<li>**同期書き込み**: <code>--synchronous</code> オプションは、書き込みの安全性を高めますが、パフォーマンスに影響を与える可能性があるため、運用環境に合わせて選択してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__disconnect_atexit.html" target="wiki-view"><code>disconnect_atexit</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__usage.html" target="wiki-view"><code>usage</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__is_xlogfilename.html" target="wiki-view"><code>is_xlogfilename</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__stop_streaming.html" target="wiki-view"><code>stop_streaming</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__get_destination_dir.html" target="wiki-view"><code>get_destination_dir</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__close_destination_dir.html" target="wiki-view"><code>close_destination_dir</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__FindStreamingStart.html" target="wiki-view"><code>FindStreamingStart</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__StreamLog.html" target="wiki-view"><code>StreamLog</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__sigexit_handler.html" target="wiki-view"><code>sigexit_handler</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_receivewal_c__main.html" target="wiki-view"><code>main</code></a></li>
+</ul></body></html>

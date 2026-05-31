@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlogfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogfuncs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのWAL（Write-Ahead Log）管理機能に対するSQLインターフェースを提供します。ユーザーや管理者がSQL関数を通じてWALの状態確認、バックアップの制御、リカバリの操作を行うためのエントリポイントを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、外部（SQL層）と内部（WAL管理層）を繋ぐブリッジの役割を果たします。<code>xlog.c</code> や <code>xlogrecovery.c</code> が提供する低レベルなWAL操作関数をラップし、PostgreSQLの関数呼び出し規約（<code>PG_FUNCTION_ARGS</code>）に従って公開します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バックアップ制御**: オンラインバックアップの開始（<code>pg_backup_start</code>）および終了（<code>pg_backup_stop</code>）の管理。</li>
+<li>**WAL操作**: WALセグメントの強制切り替えや、リストアポイントの作成。</li>
+<li>**リカバリ制御**: スタンバイサーバーの昇格（<code>pg_promote</code>）や、リカバリのポーズ/レジューム操作。</li>
+<li>**情報取得**: 現在のWAL挿入・書き込み・フラッシュ位置の取得、およびWALファイル名の解析。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_backup_start</code> / <code>pg_backup_stop</code>: オンラインバックアップのライフサイクルを管理する関数。</li>
+<li><code>pg_switch_wal</code>: 現在のWALセグメントを強制的に切り替える関数。</li>
+<li><code>pg_promote</code>: スタンバイサーバーをプライマリへ昇格させる関数。</li>
+<li><code>pg_wal_replay_pause</code> / <code>pg_wal_replay_resume</code>: リカバリ処理の停止・再開を制御する関数。</li>
+<li><code>backup_state</code>: セッション内で実行中のバックアップ状態を保持する静的変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pg_create_restore_point</code></li>
+<li><code>pg_current_wal_flush_lsn</code></li>
+<li><code>pg_current_wal_insert_lsn</code></li>
+<li><code>pg_current_wal_lsn</code></li>
+<li><code>pg_get_wal_replay_pause_state</code></li>
+<li><code>pg_last_wal_receive_lsn</code></li>
+<li><code>pg_last_wal_replay_lsn</code></li>
+<li><code>pg_log_standby_snapshot</code></li>
+<li><code>pg_walfile_name_offset</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **関数呼び出し**: SQLから関数が呼ばれると、まず <code>RecoveryInProgress()</code> 等のチェックを行い、現在のサーバー状態が操作に適しているか検証します。 2. **内部処理への委譲**: 検証後、<code>xlog.c</code> や <code>xlogrecovery.c</code> 等のコアモジュールが提供する関数を呼び出します。 3. **状態管理**: バックアップ関連の関数では、<code>backupcontext</code>（メモリコンテキスト）を使用して、バックアップ終了まで必要な情報を保持します。 4. **結果返却**: 取得したLSN（Log Sequence Number）や状態を <code>PG_RETURN_LSN</code> や <code>PG_RETURN_DATUM</code> マクロを用いてSQL層へ返却します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog_internal.h</code>, <code>access/xlogrecovery.h</code>: WALおよびリカバリの内部API。</li>
+<li><code>storage/standby.h</code>: スタンバイサーバー関連の制御。</li>
+<li><code>utils/pg_lsn.h</code>: LSNデータ型の操作。</li>
+<li><code>funcapi.h</code>: SQL関数インターフェースの構築。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xlogbackup.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xlog.c</code>: WAL管理のメインロジック。</li>
+<li><code>src/backend/access/transam/xlogbackup.c</code>: バックアップ処理の具体的な実装。</li>
+<li><code>src/backend/access/transam/xlogrecovery.c</code>: リカバリ処理の制御。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の関数は、多くが <code>RecoveryInProgress()</code> チェックを行っています。リカバリ中か否かで実行可能な関数が厳密に分かれているため、新しい関数を追加する際は既存のチェックパターンを参考にしてください。</li>
+<li>バックアップ関連の関数はセッションを跨がないため、<code>backupcontext</code> の管理（作成・リセット・削除）が重要です。エラー発生時のメモリリークを防ぐための設計になっています。</li>
+<li><code>pg_promote</code> は <code>kill(PostmasterPid, SIGUSR1)</code> を使用してポストマスターにシグナルを送ることで昇格をトリガーします。この非同期的な仕組みを理解することが重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_backup_start.html" target="wiki-view"><code>pg_backup_start</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_backup_stop.html" target="wiki-view"><code>pg_backup_stop</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_switch_wal.html" target="wiki-view"><code>pg_switch_wal</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_log_standby_snapshot.html" target="wiki-view"><code>pg_log_standby_snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_create_restore_point.html" target="wiki-view"><code>pg_create_restore_point</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_current_wal_lsn.html" target="wiki-view"><code>pg_current_wal_lsn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_current_wal_insert_lsn.html" target="wiki-view"><code>pg_current_wal_insert_lsn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_current_wal_flush_lsn.html" target="wiki-view"><code>pg_current_wal_flush_lsn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_last_wal_receive_lsn.html" target="wiki-view"><code>pg_last_wal_receive_lsn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_last_wal_replay_lsn.html" target="wiki-view"><code>pg_last_wal_replay_lsn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_walfile_name_offset.html" target="wiki-view"><code>pg_walfile_name_offset</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogfuncs_c__pg_get_wal_replay_pause_state.html" target="wiki-view"><code>pg_get_wal_replay_pause_state</code></a></li>
+</ul></body></html>

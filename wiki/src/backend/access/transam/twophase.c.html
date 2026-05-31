@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/twophase.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/twophase.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの「2フェーズコミット（2PC）」をサポートする中核モジュールです。<code>PREPARE TRANSACTION</code> で保留されたトランザクションの永続化、状態管理、およびリカバリ時の再構築を担います。トランザクションの状態は共有メモリ上の配列と、必要に応じて <code>pg_twophase</code> ディレクトリ内のファイルに保持されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールの一部として、トランザクションのライフサイクル管理（<code>xact.c</code>）とWAL管理（<code>xlog.c</code>）を橋渡しします。2PCトランザクションは、通常のトランザクションとは異なり、コミット/アボートの指示が後から来るため、その間の状態を永続化する責務を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**状態管理**: 準備済みトランザクション（GXACT）の共有メモリ管理と、GID（Global Transaction ID）の競合チェック。</li>
+<li>**永続化**: 準備済みトランザクションのメタデータとリソースマネージャ（RMGR）データをWALまたはディスクファイルへ書き出し。</li>
+<li>**リカバリ**: クラッシュリカバリ時やスタンバイモードにおける、準備済みトランザクションの再構築とロックの再獲得。</li>
+<li>**ライフサイクル制御**: <code>PREPARE</code> から <code>COMMIT PREPARED</code> / <code>ROLLBACK PREPARED</code> までの状態遷移の保護。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ管理</h3>
+<ul>
+<li><code>TwoPhaseState</code>: 2PCの全状態を保持する共有メモリ上の構造体。</li>
+<li><code>GlobalTransactionData</code>: 個々の準備済みトランザクションを表現する構造体。</li>
+<li><code>max_prepared_xacts</code>: 準備済みトランザクションの最大数を制御するGUC変数。</li>
+</ul>
+<h3>ライフサイクル・状態遷移</h3>
+<ul>
+<li><code>MarkAsPreparing</code>: GIDを予約し、トランザクションを準備状態へ移行させる。</li>
+<li><code>MarkAsPrepared</code>: 準備済みトランザクションを有効化し、<code>ProcArray</code> に登録する。</li>
+<li><code>LockGXact</code>: 準備済みトランザクションをコミット/アボートするためにロックする。</li>
+<li><code>FinishPreparedTransaction</code>: <code>COMMIT PREPARED</code> または <code>ROLLBACK PREPARED</code> を実行するメイン関数。</li>
+</ul>
+<h3>リカバリ・永続化</h3>
+<ul>
+<li><code>StartPrepare</code> / <code>EndPrepare</code>: 2PC状態ファイルの構築とWALへの書き出し。</li>
+<li><code>CheckPointTwoPhase</code>: チェックポイント時に、メモリ上の準備済みトランザクションをディスクへフラッシュする。</li>
+<li><code>restoreTwoPhaseData</code>: リカバリ開始時に <code>pg_twophase</code> ディレクトリをスキャンし状態を復元する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtAbort_Twophase</code></li>
+<li><code>AtProcExit_Twophase</code></li>
+<li><code>GlobalTransactionData</code></li>
+<li><code>PostPrepare_Twophase</code></li>
+<li><code>StateFileChunk</code></li>
+<li><code>TwoPhaseFileHeader</code></li>
+<li><code>TwoPhaseRecordOnDisk</code></li>
+<li><code>TwoPhaseShmemInit</code></li>
+<li><code>TwoPhaseShmemSize</code></li>
+<li><code>TwoPhaseStateData</code></li>
+<li><code>Working_State</code></li>
+<li><code>xllist</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **Prepare**: <code>StartPrepare</code> で状態ファイルをメモリ上に構築し、<code>EndPrepare</code> でWALへ書き出し、<code>MarkAsPrepared</code> で <code>ProcArray</code> に登録して永続化を完了させる。 2. **Commit/Abort**: <code>FinishPreparedTransaction</code> が呼ばれると、WALまたはディスクから状態データを読み込み、<code>ProcessRecords</code> を介して各リソースマネージャのコールバック（<code>twophase_postcommit_callbacks</code> 等）を実行し、リソースを解放する。 3. **Checkpoint**: <code>CheckPointTwoPhase</code> は、WAL上の準備レコードが古い場合に、そのデータをディスクファイルへ書き出し、<code>ondisk</code> フラグを立てる。 4. **Recovery**: <code>restoreTwoPhaseData</code> がディスク上のファイルを読み込み、<code>RecoverPreparedTransactions</code> が各リソースマネージャのリカバリコールバックを呼び出してロックを再構築する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xloginsert.h</code>: WAL書き込みと読み込み。</li>
+<li><code>storage/lwlock.h</code>: <code>TwoPhaseStateLock</code> による共有メモリの保護。</li>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: 準備済みトランザクションを「実行中」として扱うためのダミーPGPROC管理。</li>
+<li><code>access/twophase_rmgr.h</code>: 2PCの各リソースマネージャのコールバック定義。</li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlogreader.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/md.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/twophase.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xact.c</code>: 通常のトランザクション処理との連携。</li>
+<li><code>src/backend/access/transam/twophase_rmgr.c</code>: 2PCに対応した各リソースマネージャの具体的な処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>GlobalTransactionData</code> は共有メモリ上に配置され、<code>TwoPhaseStateLock</code> によって保護されます。</li>
+<li>**レイアウト**: 2PC状態ファイルは <code>TWOPHASE_MAGIC</code> で始まるバイナリ形式で、ヘッダー、サブトランザクションID配列、リソースマネージャデータ、CRCの順で構成されます。</li>
+<li>**エッジケース**: <code>max_prepared_xacts</code> が0の場合、2PC機能は完全に無効化されます。</li>
+<li>**浅い領域**: 本ファイルは2PCの「管理」に特化しており、各リソースマネージャ（インデックス、ヒープ等）が具体的に何を準備するかは、各RMGRのコールバック関数に委ねられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__GlobalTransactionData.html" target="wiki-view"><code>GlobalTransactionData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__TwoPhaseStateData.html" target="wiki-view"><code>TwoPhaseStateData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__TwoPhaseShmemSize.html" target="wiki-view"><code>TwoPhaseShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__TwoPhaseShmemInit.html" target="wiki-view"><code>TwoPhaseShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__AtProcExit_Twophase.html" target="wiki-view"><code>AtProcExit_Twophase</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__AtAbort_Twophase.html" target="wiki-view"><code>AtAbort_Twophase</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__PostPrepare_Twophase.html" target="wiki-view"><code>PostPrepare_Twophase</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__Working_State.html" target="wiki-view"><code>Working_State</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__TwoPhaseFileHeader.html" target="wiki-view"><code>TwoPhaseFileHeader</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__TwoPhaseRecordOnDisk.html" target="wiki-view"><code>TwoPhaseRecordOnDisk</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__StateFileChunk.html" target="wiki-view"><code>StateFileChunk</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__twophase_c__xllist.html" target="wiki-view"><code>xllist</code></a></li>
+</ul></body></html>

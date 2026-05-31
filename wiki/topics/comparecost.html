@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/comparecost.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>comparecost</h1>
+<h2>概念</h2>
+<p><code>comparecost</code> は、PostgreSQL の GiST (Generalized Search Tree) インデックスの実装において、ページ分割（split）処理中に使用される比較関数です。この関数は、分割候補のコスト情報を保持する <code>SPLITCOST</code> 構造体の配列を、標準ライブラリの <code>qsort</code> を用いて昇順にソートするために設計されています。</p>
+<h2>なぜ重要か</h2>
+<p>GiST インデックスのページが一杯になり分割が必要となった際、インデックスの検索効率を維持するためには、最も適切な（コストの低い）分割方法を選択する必要があります。<code>comparecost</code> は、算出された複数の分割候補のコストを比較し、ソートするための標準的な比較ロジックを提供することで、最適なページ分割の決定を支えています。</p>
+<h2>関与するモジュール</h2>
+<p>本関数は、以下の複数の拡張（contrib）モジュールおよびコアのデータ型サポートモジュールにまたがって個別に定義されています。</p>
+<ul>
+<li><code>module:contrib/hstore</code></li>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:contrib/pg_trgm</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>各モジュールにおける <code>comparecost</code> の具体的な定義箇所は以下の通りです。</p>
+<ul>
+<li><code>symbol:contrib/hstore/hstore_gist.c#comparecost</code></li>
+<li><code>symbol:contrib/intarray/_int_gist.c#comparecost</code></li>
+<li><code>symbol:contrib/intarray/_intbig_gist.c#comparecost</code></li>
+<li><code>symbol:contrib/ltree/_ltree_gist.c#comparecost</code></li>
+<li><code>symbol:contrib/pg_trgm/trgm_gist.c#comparecost</code></li>
+<li><code>symbol:src/backend/utils/adt/tsgistidx.c#comparecost</code></li>
+<li><code>symbol:src/backend/utils/adt/tsquery_gist.c#comparecost</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **コスト計算と格納**: GiST ページ分割処理の過程で、各分割パターンのコストが計算され、<code>SPLITCOST</code> 構造体の配列に格納されます。 2. **ソートの実行**: 各モジュールの分割処理関数（例: <code>qsort</code> の呼び出し元）から <code>qsort</code> が呼び出され、比較関数として <code>comparecost</code> が渡されます。 3. **比較ロジックの適用**: <code>comparecost</code> は、与えられた2つの <code>SPLITCOST</code> 構造体の <code>cost</code> メンバを比較します。</p>
+<ul>
+<li><code>tsquery_gist.c</code> では、安全な比較のために <code>pg_cmp_s32</code> が内部で呼び出されます。</li>
+<li><code>_ltree_gist.c</code> などでは、単純な減算（<code>a-&gt;cost - b-&gt;cost</code>）または直接比較が行われます。</li>
+<p>4. **最適分割の選択**: ソートされた配列に基づき、最もコストの低い分割方法が選択され、実際のページ分割が実行されます。</p>
+</ul>
+<p>*注意: 各モジュールにおける <code>qsort</code> 呼び出し元の具体的な関数名や、インデックス挿入・構築の全体的なライフサイクルにおける詳細なエンドツーエンドのフローは、提供されたシンボル情報からは完全には特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**型キャストの前提**: 入力引数 <code>a</code> および <code>b</code> は、<code>const void *</code> 型として受け取りますが、内部で必ず <code>SPLITCOST</code> 構造体へのポインタにキャスト可能でなければなりません。</li>
+<li>**構造体の要件**: 対象となる <code>SPLITCOST</code> 構造体は、比較可能な <code>cost</code> メンバを保持している必要があります。</li>
+<li>**比較の一貫性**: <code>qsort</code> の仕様に基づき、<code>a &lt; b</code> の場合は負、<code>a == b</code> の場合は <code>0</code>、<code>a &gt; b</code> の場合は正の整数を返す必要があります。</li>
+</ul>
+<p>*注意: システム全体におけるその他の不変条件や、コスト値の範囲に関する制約は、提供された情報からは未確定です。*</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**コードの重複**: <code>comparecost</code> は複数のファイルで個別に <code>static</code> 関数として定義されています。そのため、比較ロジックの共通化や最適化を行う際には、すべての定義箇所（<code>hstore_gist.c</code>, <code>_int_gist.c</code>, <code>_intbig_gist.c</code>, <code>_ltree_gist.c</code>, <code>trgm_gist.c</code>, <code>tsgistidx.c</code>, <code>tsquery_gist.c</code>）を同期して修正する必要があります。</li>
+<li>**オーバーフローのリスク**: <code>_ltree_gist.c</code> のように <code>a-&gt;cost - b-&gt;cost</code> の減算結果を直接返す実装では、コスト値の範囲によっては整数オーバーフローが発生する危険性があります（<code>tsquery_gist.c</code> のように <code>pg_cmp_s32</code> を使用する方が安全です）。</li>
+<li>**NULL ポインタ**: 引数に対する <code>NULL</code> チェックは行われないため、不正なポインタが渡された場合は未定義動作（セグメンテーションフォールトなど）を引き起こします。</li>
+</ul>
+<h2>次に読む場所</h2>
+<p>各モジュールにおける具体的な実装や、<code>SPLITCOST</code> 構造体の定義を確認するには、以下のファイルを参照してください。</p>
+<ul>
+<li><code>contrib/hstore/hstore_gist.c</code></li>
+<li><code>contrib/intarray/_int_gist.c</code></li>
+<li><code>contrib/intarray/_intbig_gist.c</code></li>
+<li><code>contrib/ltree/_ltree_gist.c</code></li>
+<li><code>contrib/pg_trgm/trgm_gist.c</code></li>
+<li><code>src/backend/utils/adt/tsgistidx.c</code></li>
+<li><code>src/backend/utils/adt/tsquery_gist.c</code></li>
+</ul></body></html>

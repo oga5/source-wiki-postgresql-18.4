@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/costsize.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/costsize.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL クエリプランナにおけるコスト見積もりの中心的なモジュールです。物理的な実行パス（<code>Path</code>）の実行コスト（<code>startup_cost</code>, <code>total_cost</code>）およびカーディナリティ（<code>rows</code>）を算出する関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、プランナが生成した各 <code>Path</code> ノードに対して、実行コストモデルに基づいた評価を行います。この評価結果は、<code>add_path()</code> 等で最適な実行計画を選択するための判断基準となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**コスト計算**: スキャン（Seq, Index, Bitmap, Tid, Subquery, Function 等）、結合（NestLoop, Merge, Hash）、およびソート・集約操作のコスト算出。</li>
+<li>**カーディナリティ見積もり**: 制限条件や結合条件に基づく行数の推定と、妥当な範囲へのクランプ（<code>clamp_row_est</code>）。</li>
+<li>**並列実行コストの調整**: 並列ワーカー数やリーダーの参加率を考慮したコストと行数の補正。</li>
+<li>**メモリ制約の評価**: <code>work_mem</code> を超える場合のディスク I/O コストの加算。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コストモデル定数</h3>
+<ul>
+<li><code>seq_page_cost</code>, <code>random_page_cost</code>: I/O コストの基本単位。</li>
+<li><code>cpu_tuple_cost</code>, <code>cpu_index_tuple_cost</code>, <code>cpu_operator_cost</code>: CPU 処理コストの基本単位。</li>
+<li><code>parallel_tuple_cost</code>, <code>parallel_setup_cost</code>: 並列実行時のオーバーヘッド。</li>
+</ul>
+<h3>コスト計算関数（主要なファミリー）</h3>
+<ul>
+<li>**スキャン系**: <code>cost_seqscan</code>, <code>cost_index</code>, <code>cost_bitmap_heap_scan</code>, <code>cost_tidscan</code>。</li>
+<li>**結合系**: <code>initial_cost_nestloop</code>, <code>final_cost_nestloop</code>, <code>initial_cost_mergejoin</code>, <code>final_cost_mergejoin</code>, <code>initial_cost_hashjoin</code>, <code>final_cost_hashjoin</code>。</li>
+<li>**操作系**: <code>cost_sort</code>, <code>cost_incremental_sort</code>, <code>cost_agg</code>, <code>cost_windowagg</code>, <code>cost_material</code>。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>clamp_row_est()</code>: 行数見積もりを <code>1</code> から <code>MAXIMUM_ROWCOUNT</code> の範囲に収める。</li>
+<li><code>cost_qual_eval()</code>: 条件式（<code>WHERE</code> 句等）の評価コストを算出。</li>
+<li><code>get_parallel_divisor()</code>: 並列実行時のワーカー数とリーダー参加率から除数を算出。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>clamp_cardinality_to_long</code></li>
+<li><code>clamp_row_est</code></li>
+<li><code>clamp_width_est</code></li>
+<li><code>cost_gather</code></li>
+<li><code>cost_gather_merge</code></li>
+<li><code>cost_index</code></li>
+<li><code>cost_qual_eval_context</code></li>
+<li><code>cost_samplescan</code></li>
+<li><code>cost_seqscan</code></li>
+<li><code>extract_nonindex_conditions</code></li>
+<li><code>get_indexpath_pages</code></li>
+<li><code>index_pages_fetched</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: プランナが <code>Path</code> を生成する過程で、対応する <code>cost_XXX</code> 関数を呼び出します。 2. **入力**: <code>Path</code> 構造体および関連する <code>RelOptInfo</code> や <code>ParamPathInfo</code> が渡されます。 3. **計算**:</p>
+<ul>
+<li>ページアクセス数と CPU 処理回数を算出。</li>
+<li><code>get_tablespace_page_costs</code> 等で物理デバイスの特性を反映。</li>
+<li><code>cost_qual_eval</code> で条件式のコストを加算。</li>
+<p>4. **出力**: 計算結果を <code>path-&gt;startup_cost</code>, <code>path-&gt;total_cost</code>, <code>path-&gt;rows</code> に書き込みます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/cost.h</code>: コスト計算のインターフェース定義。</li>
+<li><code>optimizer/pathnode.h</code>: <code>Path</code> 構造体定義。</li>
+<li><code>utils/lsyscache.h</code>, <code>utils/selfuncs.h</code>: 統計情報や選択率の取得。</li>
+<li><code>access/amapi.h</code>: インデックスアクセスメソッドのコスト見積もりインターフェース。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tsmapi.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>executor/nodeHash.h</code></li>
+<li><code>executor/nodeMemoize.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/spccache.h</code></li>
+<li><code>utils/tuplesort.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/path/clausesel.c</code>: 選択率（Selectivity）の計算ロジック。</li>
+<li><code>src/backend/optimizer/path/joinpath.c</code>: 結合パス生成のメインロジック。</li>
+<li><code>src/backend/executor/nodeHash.c</code>: ハッシュテーブルのサイズ見積もりロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**歴史的背景**: 多くの関数が <code>Path</code> を入力として受け取りつつ、内部で必要な情報を個別の引数として要求する設計になっています。これは過去の設計の名残であり、現在のコードベースでは冗長に見える場合があります。</li>
+<li>**メモリ所有権**: 本モジュールは計算結果を <code>Path</code> 構造体に書き込むだけであり、メモリの割り当てや解放は行いません。</li>
+<li>**精度**: コストモデルはヒューリスティックな近似であり、特に複雑な結合や並列実行時の見積もりには限界があります。<code>MAXIMUM_ROWCOUNT</code> によるクランプは、<code>double</code> 型のオーバーフローを防ぐための安全策です。</li>
+<li>**省略された詳細**: <code>cost_rescan</code> 等の内部ヘルパー関数は、特定のプランノードの再スキャンコストを算出するためのものであり、プランナの最適化フェーズで重要な役割を果たしますが、本ページでは主要なコスト計算関数に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_qual_eval_context.html" target="wiki-view"><code>cost_qual_eval_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__clamp_row_est.html" target="wiki-view"><code>clamp_row_est</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__clamp_width_est.html" target="wiki-view"><code>clamp_width_est</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__clamp_cardinality_to_long.html" target="wiki-view"><code>clamp_cardinality_to_long</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_seqscan.html" target="wiki-view"><code>cost_seqscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_samplescan.html" target="wiki-view"><code>cost_samplescan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_gather.html" target="wiki-view"><code>cost_gather</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_gather_merge.html" target="wiki-view"><code>cost_gather_merge</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__cost_index.html" target="wiki-view"><code>cost_index</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__extract_nonindex_conditions.html" target="wiki-view"><code>extract_nonindex_conditions</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__index_pages_fetched.html" target="wiki-view"><code>index_pages_fetched</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__costsize_c__get_indexpath_pages.html" target="wiki-view"><code>get_indexpath_pages</code></a></li>
+</ul></body></html>

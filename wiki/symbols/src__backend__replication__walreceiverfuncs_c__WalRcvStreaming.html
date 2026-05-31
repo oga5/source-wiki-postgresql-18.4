@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiverfuncs_c__WalRcvStreaming.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalRcvStreaming</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiverfuncs.c:126</code></li>
+</ul>
+<h2>目的</h2>
+<p>WALレシーバープロセスが現在ストリーミング中、またはストリーミング開始・再開の準備中であるかを判定し、リカバリプロセスに状態を通知する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool WalRcvStreaming(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし（共有メモリ上の <code>WalRcv</code> 構造体を参照）</li>
+<li>**出力**: <code>bool</code> 型。WALレシーバーが稼働中（<code>WALRCV_STREAMING</code>）、開始中（<code>WALRCV_STARTING</code>）、または再開中（<code>WALRCV_RESTARTING</code>）であれば <code>true</code> を返し、それ以外（<code>WALRCV_STOPPED</code> 等）であれば <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>共有メモリ上の <code>WalRcv</code> 構造体へのアクセスは、<code>mutex</code> スピンロックによって保護される。</li>
+<li>起動から一定時間（<code>WALRCV_STARTUP_TIMEOUT</code>）経過しても <code>WALRCV_STARTING</code> 状態が継続している場合、本関数は自動的に状態を <code>WALRCV_STOPPED</code> へ遷移させる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 共有メモリの <code>WalRcv</code> 構造体から現在の状態と開始時刻をスピンロック保護下で取得する。 2. 状態が <code>WALRCV_STARTING</code> であり、かつ <code>WALRCV_STARTUP_TIMEOUT</code> を超過している場合：</p>
+<ul>
+<li>再度スピンロックを取得し、状態を <code>WALRCV_STOPPED</code> に更新する。</li>
+<li>状態遷移が発生した場合は <code>walRcvStoppedCV</code> をブロードキャストし、待機中のプロセスに通知する。</li>
+<p>3. 最終的な状態が <code>WALRCV_STREAMING</code>、<code>WALRCV_STARTING</code>、または <code>WALRCV_RESTARTING</code> のいずれかであれば <code>true</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/access/transam/xlogrecovery.c</code> (リカバリプロセスにおける状態確認およびアサーション)</li>
+<li>**呼び出し先**:</li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>ConditionVariableBroadcast</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalRcvData</code>: 共有メモリ上のレシーバー状態管理構造体。</li>
+<li><code>WalRcvState</code>: レシーバーの状態（<code>WALRCV_STARTING</code>, <code>WALRCV_STREAMING</code>, <code>WALRCV_RESTARTING</code>, <code>WALRCV_STOPPED</code> 等）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**タイムアウト**: 起動処理が長引いた場合、本関数が自律的に停止状態へ遷移させる。</li>
+<li>**競合**: スピンロックにより、状態取得と更新時のデータ競合は回避される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は単なる状態確認だけでなく、タイムアウト監視という副作用を持つ。</li>
+<li><code>WALRCV_STARTUP_TIMEOUT</code> を超えた場合に <code>WALRCV_STOPPED</code> へ遷移させる処理は、WALレシーバーが起動に失敗した際にリカバリプロセスが永久待機に陥ることを防ぐ重要な安全装置である。</li>
+</ul></body></html>

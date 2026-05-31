@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/indxpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/indxpath.c</h1>
+<h2>概要</h2>
+<p><code>indxpath.c</code> は、PostgreSQL プランナにおいて、特定のテーブル（<code>RelOptInfo</code>）に対して利用可能なインデックスを特定し、それらを用いた物理的な <code>Path</code>（<code>IndexPath</code> や <code>BitmapHeapPath</code>）を生成する責務を負うモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、論理的なクエリ条件（<code>RestrictInfo</code> や <code>EquivalenceClass</code>）を物理的なインデックススキャン操作に変換する役割を担います。<code>allpaths.c</code> から呼び出され、生成されたパスは <code>RelOptInfo</code> の <code>pathlist</code> に追加されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス適合性判定**: クエリの制限条件（<code>WHERE</code>）や結合条件が、インデックスのキーや述語（<code>indpred</code>）と一致するかを判定。</li>
+<li>**パス生成**:</li>
+<li>**Plain IndexScan**: 単一のインデックスを用いたスキャン。</li>
+<li>**Parameterized IndexScan**: 結合条件を利用した、外部リレーションに依存するスキャン。</li>
+<li>**Bitmap Scan**: 複数のインデックスを組み合わせて（AND/OR）ビットマップを作成し、ヒープをスキャンする手法。</li>
+<li>**コスト見積もり**: インデックススキャンの実行コストを算出し、最適なパスの組み合わせを選択。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>IndexClauseSet</code>: インデックスの各カラムに対して適合する条件式（<code>IndexClause</code>）を保持するコンテナ。</li>
+<li><code>PathClauseUsage</code>: ビットマップスキャンのコスト評価時に、使用された条件式を追跡するための構造体。</li>
+<li><code>OrArgIndexMatch</code>: <code>OR</code> 条件の引数をグループ化し、効率的にインデックス適合を判定するための補助構造。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>create_index_paths()</code>: 本ファイルのメインエントリポイント。リレーションに対する全インデックスを走査し、パス生成を統括する。</li>
+<li><code>build_index_paths()</code>: 特定のインデックスと条件セットから <code>IndexPath</code> を生成する。</li>
+<li><code>generate_bitmap_or_paths()</code>: <code>OR</code> 条件を解析し、<code>BitmapOrPath</code> を生成する。</li>
+<li><code>choose_bitmap_and()</code>: 複数のビットマップパスから、コスト最小となる <code>BitmapAndPath</code> を構築する。</li>
+<li><code>match_clause_to_indexcol()</code>: 条件式がインデックスカラムに適合するかを判定するディスパッチャ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>IndexClauseSet</code></li>
+<li><code>IsBooleanOpfamily</code></li>
+<li><code>OrArgIndexMatch</code></li>
+<li><code>PathClauseUsage</code></li>
+<li><code>ScanTypeControl</code></li>
+<li><code>consider_index_join_clauses</code></li>
+<li><code>consider_index_join_outer_rels</code></li>
+<li><code>create_index_paths</code></li>
+<li><code>ec_member_matches_arg</code></li>
+<li><code>eclass_already_used</code></li>
+<li><code>get_index_paths</code></li>
+<li><code>get_join_index_paths</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>create_index_paths</code> がリレーションの全インデックスをループ。 2. **条件マッチング**: <code>match_restriction_clauses_to_index</code> 等で、インデックスキーに適合する条件を <code>IndexClauseSet</code> に収集。 3. **パス構築**:</p>
+<ul>
+<li><code>get_index_paths</code> が適合条件に基づき <code>IndexPath</code> を生成。</li>
+<li>結合条件がある場合、<code>consider_index_join_clauses</code> がパラメータ化されたパスを生成。</li>
+<p>4. **ビットマップ最適化**: <code>generate_bitmap_or_paths</code> で <code>OR</code> を処理し、<code>choose_bitmap_and</code> で複数のインデックス条件を AND 結合してコストを最適化。 5. **登録**: 生成されたパスを <code>add_path</code> でリレーションの候補リストに追加。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス生成の基本インターフェース。</li>
+<li><code>catalog/pg_am.h</code>, <code>catalog/pg_amop.h</code>: インデックスアクセスメソッドおよび演算子族の定義。</li>
+<li><code>optimizer/restrictinfo.h</code>: クエリ条件のメタデータ。</li>
+<li><code>utils/selfuncs.h</code>: 選択率（Selectivity）計算用。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>math.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>allpaths.c</code>: パス生成の全体的な制御フロー。</li>
+<li><code>costsize.c</code>: インデックススキャンのコスト計算モデル。</li>
+<li><code>equivclass.c</code>: 等価クラスを用いたインデックス適合条件の推論。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PlannerInfo</code> のメモリコンテキスト（<code>planner_cxt</code>）上で動作するため、個別のメモリ解放は不要ですが、大量のパス生成時にはメモリ消費に注意が必要です。</li>
+<li>**制約**: <code>IndexClauseSet</code> は <code>INDEX_MAX_KEYS</code>（通常 32）までのカラムしか扱えません。</li>
+<li>**省略された詳細**: 本ファイルは非常に広範な条件マッチングロジック（<code>match_opclause_to_indexcol</code> 等）を含みますが、これらは演算子族やサポート関数（<code>prosupport</code>）の仕様に強く依存しており、個別の演算子ごとの詳細は各 AM（Access Method）の実装に委ねられています。</li>
+<li>**性能**: <code>choose_bitmap_and</code> は O(N^2) のヒューリスティックを用いており、インデックスが多い場合に計算コストが増大する可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__ScanTypeControl.html" target="wiki-view"><code>ScanTypeControl</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html" target="wiki-view"><code>IndexClauseSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__PathClauseUsage.html" target="wiki-view"><code>PathClauseUsage</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__ec_member_matches_arg.html" target="wiki-view"><code>ec_member_matches_arg</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__create_index_paths.html" target="wiki-view"><code>create_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_clauses.html" target="wiki-view"><code>consider_index_join_clauses</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_outer_rels.html" target="wiki-view"><code>consider_index_join_outer_rels</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__get_join_index_paths.html" target="wiki-view"><code>get_join_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__eclass_already_used.html" target="wiki-view"><code>eclass_already_used</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__get_index_paths.html" target="wiki-view"><code>get_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__OrArgIndexMatch.html" target="wiki-view"><code>OrArgIndexMatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__IsBooleanOpfamily.html" target="wiki-view"><code>IsBooleanOpfamily</code></a></li>
+</ul></body></html>

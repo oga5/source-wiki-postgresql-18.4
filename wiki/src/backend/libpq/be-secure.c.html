@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/be-secure.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/be-secure.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLバックエンドにおけるクライアントとのセキュアな通信（SSL/TLSおよびGSSAPI暗号化）を抽象化するインターフェース層です。通信プロトコルの詳細を隠蔽し、上位レイヤーに対して一貫した読み書き操作を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/libpq</code> モジュールにおいて、通信の「セキュリティ層」の最上位に位置します。具体的な暗号化実装（OpenSSLやGSSAPI）と、通信の基盤であるソケット操作の仲介役を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**抽象化**: SSL/TLS、GSSAPI、または平文通信を透過的に切り替える。</li>
+<li>**セッション管理**: セキュアな接続の初期化、確立、および終了処理。</li>
+<li>**I/O制御**: ブロッキングI/Oにおける待機イベント（WaitEvent）の管理と、割り込み処理の統合。</li>
+<li>**設定管理**: SSL関連のGUC（Grand Unified Configuration）変数の保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>secure_read</code> / <code>secure_write</code>: 通信方式に応じて適切な読み書き関数を呼び出すメインインターフェース。</li>
+<li><code>secure_open_server</code>: SSLハンドシェイクを開始し、接続を確立する。</li>
+<li><code>secure_raw_read</code> / <code>secure_raw_write</code>: 暗号化を介さない、生のソケットI/O操作。</li>
+<li><code>Port</code>: 通信状態や暗号化フラグを保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>secure_close</code></li>
+<li><code>secure_destroy</code></li>
+<li><code>secure_initialize</code></li>
+<li><code>secure_loaded_verify_locations</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>secure_initialize</code> が起動時に呼ばれ、SSLライブラリのコンテキストを準備します。 2. **接続確立**: <code>secure_open_server</code> が呼び出されると、バッファ内の未処理データを処理した後、<code>be_tls_open_server</code> 等へ委譲してハンドシェイクを行います。 3. **I/O処理**: <code>secure_read</code>/<code>write</code> は以下のフローで動作します。</p>
+<ul>
+<li>暗号化が有効なら <code>be_tls_read</code>/<code>write</code> を呼び出す。</li>
+<li><code>EWOULDBLOCK</code> 等で待機が必要な場合、<code>WaitEventSet</code> を使用してポストマスターの死活監視や割り込み（Latch）を待ち受ける。</li>
+<li>成功またはエラー時に割り込み処理（<code>ProcessClientReadInterrupt</code>）を再実行する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq/libpq.h</code>: <code>Port</code> 構造体および通信関連の定義。</li>
+<li><code>utils/wait_event.h</code>: <code>WaitEventSet</code> を用いたI/O待機管理。</li>
+<li><code>utils/injection_point.h</code>: テスト用の注入ポイント。</li>
+<li>標準ネットワークヘッダ (<code>sys/socket.h</code>, <code>netinet/in.h</code> 等): ソケット操作用。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>be-secure-openssl.c</code>: OpenSSLを用いた具体的なTLS実装。</li>
+<li><code>be-secure-gssapi.c</code>: GSSAPIによる暗号化実装。</li>
+<li><code>pqcomm.c</code>: 通信の基盤となる低レベルなソケット操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「ラッパー」です。具体的な暗号化ロジックを探している場合は <code>be-secure-openssl.c</code> を参照してください。</li>
+<li><code>secure_read</code>/<code>write</code> 内の <code>retry</code> ループと <code>WaitEventSet</code> の組み合わせは、PostgreSQLの非同期的な割り込み処理（シグナルやクエリキャンセル）を正しく扱うための重要なパターンです。</li>
+<li><code>raw_buf</code> は、SSLハンドシェイク開始前に読み込まれてしまった平文データを保持するためのバッファであり、接続確立時に適切に消費される必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_initialize.html" target="wiki-view"><code>secure_initialize</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_destroy.html" target="wiki-view"><code>secure_destroy</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_loaded_verify_locations.html" target="wiki-view"><code>secure_loaded_verify_locations</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_open_server.html" target="wiki-view"><code>secure_open_server</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_close.html" target="wiki-view"><code>secure_close</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_read.html" target="wiki-view"><code>secure_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_raw_read.html" target="wiki-view"><code>secure_raw_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_write.html" target="wiki-view"><code>secure_write</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure_c__secure_raw_write.html" target="wiki-view"><code>secure_raw_write</code></a></li>
+</ul></body></html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/joinrels.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/joinrels.c</h1>
+<h2>概要</h2>
+<p><code>joinrels.c</code> は、PostgreSQLのクエリ最適化プロセスにおいて、どのリレーション（<code>RelOptInfo</code>）を結合すべきかを決定し、結合リレーションを構築するための中心的なロジックを担います。主に動的計画法による結合探索の各ステップを制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> モジュールにおいて、結合の「探索」と「構築」の境界に位置します。<code>allpaths.c</code> が呼び出す結合探索のメインループを支え、結合の正当性検証や、結合後のパス生成（<code>joinpath.c</code> への委譲）を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**結合探索の制御**: 動的計画法の各レベルにおいて、結合可能なリレーションのペアを特定する。</li>
+<li>**結合の正当性検証**: <code>join_is_legal</code> を通じて、外部結合（Outer Join）や <code>LATERAL</code> 参照、<code>IN/EXISTS</code> 句による制約を考慮し、結合順序が論理的に正しいかを確認する。</li>
+<li>**結合リレーションの構築**: 結合条件や制約に基づき、新しい <code>RelOptInfo</code> を生成または既存のものを取得する。</li>
+<li>**パーティション結合のサポート**: パーティション化されたテーブル同士の結合を、各パーティション単位の結合に分解する「Partitionwise Join」の実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>join_search_one_level</code>: 結合探索の1ステップを実行するメイン関数。</li>
+<li><code>make_join_rel</code>: 2つのリレーションを結合するための <code>RelOptInfo</code> を生成する。</li>
+<li><code>join_is_legal</code>: 結合がクエリの制約（Outer Joinの順序など）に違反していないかを判定する。</li>
+<li><code>try_partitionwise_join</code>: パーティション単位の結合を試みるためのエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>add_outer_joins_to_relids</code></li>
+<li><code>has_join_restriction</code></li>
+<li><code>has_legal_joinclause</code></li>
+<li><code>have_join_order_restriction</code></li>
+<li><code>init_dummy_sjinfo</code></li>
+<li><code>is_dummy_rel</code></li>
+<li><code>make_rels_by_clause_joins</code></li>
+<li><code>make_rels_by_clauseless_joins</code></li>
+<li><code>populate_joinrel_with_paths</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **探索開始**: <code>join_search_one_level</code> が呼び出され、現在の結合レベルで可能なペアを走査する。 2. **ペアの特定**: 結合条件（<code>joininfo</code>）や制約（<code>has_join_restriction</code>）に基づき、結合候補を抽出する。 3. **正当性チェック**: <code>join_is_legal</code> が呼び出され、<code>SpecialJoinInfo</code> リストを参照して、その結合が許可されているか、また結合タイプ（Inner, Left, Semi等）を決定する。 4. **構築**: <code>build_join_rel</code> を経て <code>RelOptInfo</code> を作成し、<code>populate_joinrel_with_paths</code> でパスを生成する。 5. **再帰/反復**: 成功した結合結果は <code>root-&gt;join_rel_level</code> に格納され、次レベルの探索に利用される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>: <code>RelOptInfo</code> や <code>Path</code> 構造体の定義。</li>
+<li><code>optimizer/paths.h</code>: 結合パス生成のためのインターフェース。</li>
+<li><code>partitioning/partbounds.h</code>: パーティション境界の計算と管理。</li>
+<li><code>optimizer/joininfo.h</code>: 結合制約情報の定義。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/path/joinpath.c</code>: 結合リレーションに対する具体的なパス（NestLoop, HashJoin, MergeJoin）の生成ロジック。</li>
+<li><code>src/backend/optimizer/util/relnode.c</code>: <code>RelOptInfo</code> の基本的な操作。</li>
+<li><code>src/backend/optimizer/plan/initsplan.c</code>: <code>SpecialJoinInfo</code> の初期化とクエリ全体の結合制約の準備。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、PostgreSQLのオプティマイザが「どの順序で結合するか」を決定する際の最も複雑な制約チェックを含んでいます。</li>
+<li><code>join_is_legal</code> は非常に複雑ですが、これはSQLの外部結合や <code>LATERAL</code> 参照が結合順序を厳しく制限するためです。</li>
+<li>「Bushy Plan」（結合木が左右に広がる形）の生成もこのファイルで制御されています。パフォーマンス上の理由から、結合条件がない場合はBushy Planを避けるヒューリスティックが組み込まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__join_search_one_level.html" target="wiki-view"><code>join_search_one_level</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__make_rels_by_clause_joins.html" target="wiki-view"><code>make_rels_by_clause_joins</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__make_rels_by_clauseless_joins.html" target="wiki-view"><code>make_rels_by_clauseless_joins</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__join_is_legal.html" target="wiki-view"><code>join_is_legal</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__init_dummy_sjinfo.html" target="wiki-view"><code>init_dummy_sjinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__make_join_rel.html" target="wiki-view"><code>make_join_rel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__add_outer_joins_to_relids.html" target="wiki-view"><code>add_outer_joins_to_relids</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__populate_joinrel_with_paths.html" target="wiki-view"><code>populate_joinrel_with_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__have_join_order_restriction.html" target="wiki-view"><code>have_join_order_restriction</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__has_join_restriction.html" target="wiki-view"><code>has_join_restriction</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__has_legal_joinclause.html" target="wiki-view"><code>has_legal_joinclause</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__joinrels_c__is_dummy_rel.html" target="wiki-view"><code>is_dummy_rel</code></a></li>
+</ul></body></html>

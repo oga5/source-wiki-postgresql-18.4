@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/rewrite/rewriteDefine.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/rewrite/rewriteDefine.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける「書き換えルール（Rewrite Rule）」の定義、更新、および管理を行うためのバックエンドルーチンを提供します。ユーザーが発行する <code>CREATE RULE</code> や <code>ALTER RULE</code> コマンドの実行を担い、システムカタログ <code>pg_rewrite</code> への永続化と整合性チェックを統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/rewrite</code> モジュールにおいて、ルール定義のライフサイクル管理を担当します。ルールが適用される対象リレーション（テーブルやビュー）の整合性を保ちつつ、カタログ操作とリレーションキャッシュ（relcache）の無効化を調整する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ルール定義の永続化**: <code>CREATE RULE</code> の解析結果を <code>pg_rewrite</code> に挿入または更新する。</li>
+<li>**整合性検証**: ルール定義時に、対象リレーションの型（ビュー、テーブル等）や、ルールアクション（<code>SELECT</code>, <code>INSERT</code> 等）がルールとして妥当かを検証する。</li>
+<li>**依存関係の管理**: ルールと対象リレーション、およびルール内で参照されるオブジェクト間の依存関係を <code>pg_depend</code> に記録する。</li>
+<li>**実行状態の制御**: ルールの有効/無効化（<code>EnableDisableRule</code>）や名前変更（<code>RenameRewriteRule</code>）を処理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DefineQueryRewrite</code>: ルール作成のメインエントリポイント。解析済みのクエリを受け取り、カタログ登録と整合性チェックを行う。</li>
+<li><code>InsertRule</code>: <code>pg_rewrite</code> への実際の挿入・更新を行う低レベル関数。</li>
+<li><code>checkRuleResultList</code>: ビューの <code>SELECT</code> ルールや <code>RETURNING</code> 句が対象リレーションのスキーマと一致するかを検証する。</li>
+<li><code>setRuleCheckAsUser</code>: ルール内のクエリツリーを走査し、権限チェック用のユーザーIDを伝播させる。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DefineRule</code></li>
+<li><code>EnableDisableRule</code></li>
+<li><code>RangeVarCallbackForRenameRule</code></li>
+<li><code>RenameRewriteRule</code></li>
+<li><code>setRuleCheckAsUser_Query</code></li>
+<li><code>setRuleCheckAsUser_walker</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析と検証**: <code>DefineRule</code> がパーサーを呼び出し、<code>DefineQueryRewrite</code> へ処理を委譲します。 2. **ロックと権限確認**: 対象リレーションに <code>AccessExclusiveLock</code> を取得し、所有者権限やシステムカタログへの変更可否をチェックします。 3. **ルール妥当性チェック**: <code>checkRuleResultList</code> を使用して、ターゲットリストの型や列名がリレーションと適合するかを確認します。 4. **カタログ更新**: <code>InsertRule</code> が <code>pg_rewrite</code> を更新し、<code>recordDependencyOn</code> で依存関係を構築します。 5. **キャッシュ無効化**: <code>SetRelationRuleStatus</code> や <code>CacheInvalidateRelcache</code> を呼び出し、全バックエンドに対してルール変更を通知します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_rewrite.h</code>: システムカタログ <code>pg_rewrite</code> の定義。</li>
+<li><code>rewrite/rewriteManip.h</code>: ルール操作のためのユーティリティ関数。</li>
+<li><code>utils/rel.h</code> / <code>utils/syscache.h</code>: リレーションキャッシュおよびシステムキャッシュへのアクセス。</li>
+<li><code>access/table.h</code>: テーブルアクセスの抽象化レイヤー。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteDefine.h</code></li>
+<li><code>rewrite/rewriteSupport.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: 定義されたルールを実際にクエリ実行時に適用するロジック。</li>
+<li><code>src/backend/rewrite/rewriteRemove.c</code>: ルールの削除処理。</li>
+<li><code>src/backend/parser/parse_utilcmd.c</code>: <code>CREATE RULE</code> 文の構文解析と変換。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの重要性**: ルール定義はカタログを書き換えるため、対象リレーションに対して厳格な <code>AccessExclusiveLock</code> を必要とします。これは同時実行中のクエリとの競合を防ぐためです。</li>
+<li>**ON SELECT ルールの特殊性**: <code>ON SELECT</code> ルールはビューの定義そのものであり、他のルールとは異なる厳格な制約（名前が <code>_RETURN</code> であること、単一の <code>SELECT</code> アクションであること等）が課されます。</li>
+<li>**キャッシュの無効化**: ルールを変更した後は、必ず <code>CacheInvalidateRelcache</code> を呼び出す必要があります。これを怠ると、他のバックエンドが古いルール定義を参照し続け、システムが不安定になります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__InsertRule.html" target="wiki-view"><code>InsertRule</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__DefineRule.html" target="wiki-view"><code>DefineRule</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__DefineQueryRewrite.html" target="wiki-view"><code>DefineQueryRewrite</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__checkRuleResultList.html" target="wiki-view"><code>checkRuleResultList</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__setRuleCheckAsUser.html" target="wiki-view"><code>setRuleCheckAsUser</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__setRuleCheckAsUser_walker.html" target="wiki-view"><code>setRuleCheckAsUser_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__setRuleCheckAsUser_Query.html" target="wiki-view"><code>setRuleCheckAsUser_Query</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__EnableDisableRule.html" target="wiki-view"><code>EnableDisableRule</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__RangeVarCallbackForRenameRule.html" target="wiki-view"><code>RangeVarCallbackForRenameRule</code></a></li>
+<li><a href="../../../symbols/src__backend__rewrite__rewriteDefine_c__RenameRewriteRule.html" target="wiki-view"><code>RenameRewriteRule</code></a></li>
+</ul></body></html>

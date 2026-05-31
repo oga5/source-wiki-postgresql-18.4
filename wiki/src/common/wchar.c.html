@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/wchar.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/wchar.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL がサポートする多様なマルチバイト文字エンコーディング（EUC, UTF-8, SJIS, Big5 等）を抽象化し、文字の長さ計算、表示幅計算、および妥当性検証を行うためのコアライブラリです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> 内で、文字列処理の基盤を提供します。バックエンドとフロントエンド（<code>libpq</code> 等）の両方から参照され、エンコーディング固有の差異を <code>pg_wchar_table</code> というディスパッチテーブルを通じて統一的なインターフェースに変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**エンコーディング抽象化**: 各エンコーディングの操作関数をテーブル化し、統一的な API を提供。</li>
+<li>**文字操作**: マルチバイト文字列の長さ（バイト数）および表示幅（カラム数）の算出。</li>
+<li>**妥当性検証**: 文字列が指定されたエンコーディングとして正当かどうかの検証（セキュリティ上の不正なバイト列の排除）。</li>
+<li>**変換支援**: <code>pg_wchar</code>（UCS-4）と各エンコーディング間の相互変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ディスパッチテーブル</h3>
+<ul>
+<li><code>pg_wchar_table</code>: 各エンコーディングの <code>mblen</code>, <code>dsplen</code>, <code>verifychar</code>, <code>verifystr</code> などの関数ポインタを保持する構造体配列。</li>
+</ul>
+<h3>公開 API（エンコーディング汎用）</h3>
+<ul>
+<li><code>pg_encoding_mblen</code>: 文字列のバイト長を返す。</li>
+<li><code>pg_encoding_dsplen</code>: 文字列の表示幅を返す。</li>
+<li><code>pg_encoding_verifymbchar</code>: 単一文字の妥当性を検証。</li>
+<li><code>pg_encoding_verifymbstr</code>: 文字列全体の妥当性を検証し、有効なバイト数を返す。</li>
+<li><code>pg_encoding_max_length</code>: 特定エンコーディングの最大文字バイト数を取得。</li>
+</ul>
+<h3>内部ヘルパー（UTF-8 高速化）</h3>
+<ul>
+<li><code>utf8_advance</code>: シフトベースの DFA を用いて UTF-8 の状態遷移を計算。</li>
+<li><code>pg_utf8_islegal</code>: RFC3629 に基づく UTF-8 の正当性チェック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>mbinterval</code></li>
+<li><code>pg_ascii2wchar_with_len</code></li>
+<li><code>pg_ascii_dsplen</code></li>
+<li><code>pg_ascii_mblen</code></li>
+<li><code>pg_euc2wchar_with_len</code></li>
+<li><code>pg_euc_dsplen</code></li>
+<li><code>pg_euc_mblen</code></li>
+<li><code>pg_eucjp2wchar_with_len</code></li>
+<li><code>pg_eucjp_dsplen</code></li>
+<li><code>pg_eucjp_mblen</code></li>
+<li><code>pg_euckr2wchar_with_len</code></li>
+<li><code>pg_euckr_mblen</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ディスパッチ**: 公開 API は <code>pg_wchar_table</code> を参照し、<code>encoding</code> ID に応じて適切な関数を呼び出します。 2. **検証フロー**: <code>verifystr</code> 系関数は、文字列を走査し、各文字の <code>verifychar</code> を呼び出します。不正なバイト列に遭遇した時点で処理を中断し、そこまでのオフセットを返します。 3. **UTF-8 高速化**: <code>pg_utf8_verifystr</code> は、SIMD 的なアプローチ（<code>STRIDE_LENGTH</code>）で ASCII 部分をスキップし、マルチバイト部分のみを DFA で処理する最適化を行っています。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>mb/pg_wchar.h</code>: <code>pg_wchar</code> 型およびエンコーディング定数の定義。</li>
+<li><code>utils/ascii.h</code>: ASCII 判定等のユーティリティ。</li>
+<li><code>common/unicode_nonspacing_table.h</code> / <code>common/unicode_east_asian_fw_table.h</code>: <code>ucs_wcwidth</code> で使用する Unicode プロパティテーブル。</li>
+<li><code>c.h</code></li>
+<li><code>limits.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/mb/pg_wchar.h</code>: エンコーディング定義のヘッダー。</li>
+<li><code>src/common/unicode_norm.c</code>: Unicode 正規化処理。</li>
+<li><code>src/backend/utils/mb/conv.c</code>: エンコーディング変換の具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: 本ファイル内の関数はメモリの割り当てを行いません。呼び出し側が十分なバッファを確保する必要があります（特に <code>to</code> バッファ）。</li>
+<li>**GB18030 の例外**: <code>pg_gb18030_mblen</code> は 2 バイト目を確認する必要があるため、他のエンコーディングよりも注意が必要です。</li>
+<li>**UTF-8 DFA**: <code>Utf8Transition</code> テーブルは、Per Vognsen 氏のシフトベース DFA 実装を採用しており、パイプライン効率を最大化するように設計されています。</li>
+<li>**省略された詳細**: 各エンコーディングの具体的な変換ロジック（<code>pg_euc2wchar_with_len</code> 等）は、各エンコーディングの仕様に依存するため、詳細なビット演算の解説は省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__wchar_c__pg_ascii2wchar_with_len.html" target="wiki-view"><code>pg_ascii2wchar_with_len</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_ascii_mblen.html" target="wiki-view"><code>pg_ascii_mblen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_ascii_dsplen.html" target="wiki-view"><code>pg_ascii_dsplen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_euc2wchar_with_len.html" target="wiki-view"><code>pg_euc2wchar_with_len</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_euc_mblen.html" target="wiki-view"><code>pg_euc_mblen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_euc_dsplen.html" target="wiki-view"><code>pg_euc_dsplen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_eucjp2wchar_with_len.html" target="wiki-view"><code>pg_eucjp2wchar_with_len</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_eucjp_mblen.html" target="wiki-view"><code>pg_eucjp_mblen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_eucjp_dsplen.html" target="wiki-view"><code>pg_eucjp_dsplen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_euckr2wchar_with_len.html" target="wiki-view"><code>pg_euckr2wchar_with_len</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__pg_euckr_mblen.html" target="wiki-view"><code>pg_euckr_mblen</code></a></li>
+<li><a href="../../symbols/src__common__wchar_c__mbinterval.html" target="wiki-view"><code>mbinterval</code></a></li>
+</ul></body></html>

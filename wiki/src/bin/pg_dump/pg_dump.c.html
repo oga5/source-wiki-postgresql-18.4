@@ -1,0 +1,123 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/pg_dump.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/pg_dump.c</h1>
+<h2>概要</h2>
+<p><code>pg_dump.c</code> は、PostgreSQL データベースの論理バックアップを生成するユーティリティ <code>pg_dump</code> のメインエントリポイントおよび中心的な制御ロジックを保持するファイルです。データベースのシステムカタログを走査し、ダンプ対象オブジェクトの抽出、依存関係の解決、およびアーカイブへの書き出しを統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_dump</code> モジュールにおける「オーケストレーター」です。<code>pg_backup_archiver.c</code> が提供するアーカイブ抽象化層を利用し、データベースからメタデータを収集してダンプ順序を決定する一連の処理フローを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**コマンドライン解析**: ユーザー指定のオプション（フィルタ、フォーマット、並列数など）を <code>DumpOptions</code> 構造体に反映。</li>
+<li>**スキーマ収集**: <code>getSchemaData</code> 等の関数群を呼び出し、システムカタログからオブジェクト情報を抽出。</li>
+<li>**依存関係管理**: オブジェクト間の依存関係をグラフとして構築し、トポロジカルソートを実行してダンプ順序を確定。</li>
+<li>**ダンプ実行**: 確定した順序に基づき、各オブジェクトの定義やデータをアーカイブへ書き出し。</li>
+<li>**環境セットアップ**: トランザクションスナップショットの取得、セッション設定（<code>search_path</code> 等）の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ダンプ対象オブジェクト管理</h3>
+<ul>
+<li><code>DumpableObjectType</code>: ダンプ可能なオブジェクトの種類（テーブル、関数、型など）を定義する列挙型。</li>
+<li><code>DumpableObject</code>: 全ダンプ対象オブジェクトの基底構造体。</li>
+<li><code>TableInfo</code>, <code>FuncInfo</code>, <code>TypeInfo</code> 等: 各オブジェクト固有の情報を保持する構造体。</li>
+</ul>
+<h3>フィルタリングと状態管理</h3>
+<ul>
+<li><code>DumpOptions</code>: ダンプ処理全体の設定（<code>data_only</code>, <code>schema_only</code> 等）を保持。</li>
+<li><code>schema_include_patterns</code>, <code>table_include_oids</code> 等: ユーザーが指定したフィルタ条件を保持するリスト。</li>
+<li><code>ArchiveHandle</code>: アーカイブの入出力状態を管理するメインハンドル。</li>
+</ul>
+<h3>補助データ構造</h3>
+<ul>
+<li><code>CommentItem</code>, <code>SecLabelItem</code>: コメントやセキュリティラベルを一時的に保持する構造体。</li>
+<li><code>SequenceItem</code>: シーケンスの現在の状態を保持。</li>
+<li><code>BinaryUpgradeClassOidItem</code>: <code>pg_upgrade</code> 等で使用されるバイナリアップグレード用のメタデータ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BinaryUpgradeClassOidItem</code></li>
+<li><code>CommentItem</code></li>
+<li><code>OidOptions</code></li>
+<li><code>RoleNameItem</code></li>
+<li><code>SecLabelItem</code></li>
+<li><code>SeqType</code></li>
+<li><code>SequenceItem</code></li>
+<li><code>getLOs</code></li>
+<li><code>getPolicies</code></li>
+<li><code>getRootTableInfo</code></li>
+<li><code>getTableData</code></li>
+<li><code>getTableDataFKConstraints</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main()</code> でオプションを解析し、<code>CreateArchive()</code> で出力先を開く。 2. **接続**: <code>setup_connection()</code> でデータベースに接続し、トランザクションスナップショットを固定。 3. **収集**: <code>getSchemaData()</code> を呼び出し、システムカタログから全オブジェクトを <code>DumpableObject</code> としてメモリ上に構築。 4. **依存関係構築**: <code>getDependencies()</code> でオブジェクト間の依存関係をグラフ化。 5. **ソート**: <code>sortDumpableObjects()</code> でトポロジカルソートを行い、ダンプ順序を決定。 6. **出力**: ループ内で <code>dumpDumpableObject()</code> を呼び出し、各オブジェクトの <code>ArchiveEntry</code> を作成して書き出し。 7. **終了**: <code>CloseArchive()</code> でリソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq</code>: データベース接続およびクエリ実行。</li>
+<li><code>pg_backup.h</code>, <code>pg_backup_archiver.h</code>: アーカイブ形式の抽象化。</li>
+<li><code>fe_utils/</code>: 文字列操作やオプション解析の共通ユーティリティ。</li>
+<li><code>catalog/</code>: システムカタログの定義（<code>pg_class</code>, <code>pg_proc</code> 等）。</li>
+<li><code>access/attnum.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>catalog/pg_aggregate_d.h</code></li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>catalog/pg_attribute_d.h</code></li>
+<li><code>catalog/pg_authid_d.h</code></li>
+<li><code>catalog/pg_cast_d.h</code></li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>catalog/pg_constraint_d.h</code></li>
+<li><code>catalog/pg_default_acl_d.h</code></li>
+<li><code>catalog/pg_largeobject_d.h</code></li>
+<li><code>catalog/pg_proc_d.h</code></li>
+<li><code>catalog/pg_publication_d.h</code></li>
+<li><code>catalog/pg_subscription_d.h</code></li>
+<li><code>catalog/pg_type_d.h</code></li>
+<li><code>common/connect.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/relpath.h</code></li>
+<li><code>common/shortest_dec.h</code></li>
+<li><code>compress_io.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>dumputils.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>filter.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>libpq/libpq-fs.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>parallel.h</code></li>
+<li><code>pg_backup_db.h</code></li>
+<li><code>pg_backup_utils.h</code></li>
+<li><code>pg_dump.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>storage/block.h</code></li>
+<li><code>termios.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pg_dump_sort.c</code>: オブジェクトのダンプ順序を決定するソートロジック。</li>
+<li><code>pg_backup_archiver.c</code>: アーカイブファイル形式の実装。</li>
+<li><code>common.c</code>: メタデータ収集のための共通関数。</li>
+<li><code>dumputils.c</code>: SQL 生成のためのユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>pg_dump</code> は実行中に全オブジェクトのメタデータをメモリ上に保持します。大規模なデータベースではメモリ消費量が増大する点に注意してください。</li>
+<li>**トランザクション**: <code>pg_dump</code> は <code>REPEATABLE READ</code> または <code>SERIALIZABLE</code> トランザクション内で動作し、一貫したスナップショットを維持します。</li>
+<li>**バイナリアップグレード**: <code>dopt-&gt;binary_upgrade</code> フラグが有効な場合、<code>pg_upgrade</code> 用の特殊な処理（OID の固定など）が実行されます。</li>
+<li>**未実装/浅い部分**: フィルタリングの複雑な組み合わせや、特定の古いサーバーバージョンとの互換性維持のためのコードが混在しており、条件分岐が非常に多いです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__RoleNameItem.html" target="wiki-view"><code>RoleNameItem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__CommentItem.html" target="wiki-view"><code>CommentItem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__SecLabelItem.html" target="wiki-view"><code>SecLabelItem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__BinaryUpgradeClassOidItem.html" target="wiki-view"><code>BinaryUpgradeClassOidItem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__SeqType.html" target="wiki-view"><code>SeqType</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__SequenceItem.html" target="wiki-view"><code>SequenceItem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__OidOptions.html" target="wiki-view"><code>OidOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__getRootTableInfo.html" target="wiki-view"><code>getRootTableInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__getTableData.html" target="wiki-view"><code>getTableData</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__getTableDataFKConstraints.html" target="wiki-view"><code>getTableDataFKConstraints</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__getLOs.html" target="wiki-view"><code>getLOs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_dump_c__getPolicies.html" target="wiki-view"><code>getPolicies</code></a></li>
+</ul></body></html>

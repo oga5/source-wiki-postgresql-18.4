@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/statistics/mvdistinct.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/mvdistinct.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの拡張統計情報（Extended Statistics）における「多変量NDistinct（列の組み合わせごとの一意な値の数）」の推定と管理を担当します。<code>GROUP BY</code>句などで複数の列を組み合わせた際のカーディナリティ推定精度を向上させるための統計情報を生成・保持します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/statistics</code> モジュールの一部として、<code>ANALYZE</code>実行時に収集されたデータから統計オブジェクトを構築し、クエリプランナが利用可能な形式へシリアライズ/デシリアライズする機能を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の構築**: 指定された列の組み合わせに対するNDistinct値を計算する。</li>
+<li>**シリアライズ/デシリアライズ**: 統計情報をシステムカタログ（<code>pg_statistic_ext_data</code>）に格納するためのバイナリ形式（<code>bytea</code>）への変換。</li>
+<li>**推定ロジック**: Duj1推定器を用いた、単一列の統計情報から多変量への拡張計算。</li>
+<li>**組み合わせ生成**: 指定された列数から可能なすべての組み合わせを生成するユーティリティの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>statext_ndistinct_build</code>: 統計オブジェクト構築のメイン関数。</li>
+<li><code>statext_ndistinct_serialize</code> / <code>deserialize</code>: 統計情報の永続化用変換関数。</li>
+<li><code>ndistinct_for_combination</code>: 指定された列の組み合わせに対して、ソートとカウントを行いNDistinctを推定する。</li>
+<li><code>estimate_ndistinct</code>: Duj1推定器の実装。</li>
+<li><code>CombinationGenerator</code>: 列の組み合わせを効率的に生成するための内部状態管理構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>n_choose_k</code></li>
+<li><code>pg_ndistinct_in</code></li>
+<li><code>pg_ndistinct_out</code></li>
+<li><code>pg_ndistinct_recv</code></li>
+<li><code>pg_ndistinct_send</code></li>
+<li><code>statext_ndistinct_deserialize</code></li>
+<li><code>statext_ndistinct_load</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **構築**: <code>statext_ndistinct_build</code> が呼び出されると、<code>CombinationGenerator</code> を用いて列の全組み合わせを列挙します。 2. **計算**: 各組み合わせに対し、<code>ndistinct_for_combination</code> がサンプルデータをソートし、重複を除いたカウント（<code>d</code>）と1回だけ出現する値の数（<code>f1</code>）を求めます。 3. **推定**: <code>estimate_ndistinct</code> が <code>d</code> と <code>f1</code> を用いて、全行数に対するNDistinctを推定します。 4. **永続化**: <code>statext_ndistinct_serialize</code> により、メモリ上の構造体が<code>bytea</code>形式に変換され、カタログへ書き込まれます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic_ext.h</code>, <code>catalog/pg_statistic_ext_data.h</code>: 統計情報カタログ定義。</li>
+<li><code>statistics/extended_stats_internal.h</code>: 内部統計構造体定義。</li>
+<li><code>utils/typcache.h</code>: 型ごとのソート演算子取得用。</li>
+<li><code>math.h</code>: 推定計算用。</li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/analyze.c</code>: 統計情報収集の起点。</li>
+<li><code>src/backend/statistics/extended_stats.c</code>: 統計オブジェクト全体の管理。</li>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: 内部的なソート処理の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルで実装されているNDistinct推定は、単一列の統計収集で用いられるDuj1推定器を多変量に拡張したものです。</li>
+<li><code>CombinationGenerator</code> は再帰的に組み合わせを生成しますが、列数が増えると組み合わせ爆発が起きるため、統計オブジェクト作成時の列数には制限があります。</li>
+<li><code>pg_ndistinct</code> 型は内部的なバイナリ表現であり、ユーザーが直接操作するものではないため、入出力関数（<code>in</code>/<code>recv</code>）はエラーを返すよう設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__CombinationGenerator.html" target="wiki-view"><code>CombinationGenerator</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__statext_ndistinct_build.html" target="wiki-view"><code>statext_ndistinct_build</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__statext_ndistinct_load.html" target="wiki-view"><code>statext_ndistinct_load</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__statext_ndistinct_serialize.html" target="wiki-view"><code>statext_ndistinct_serialize</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__statext_ndistinct_deserialize.html" target="wiki-view"><code>statext_ndistinct_deserialize</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__pg_ndistinct_in.html" target="wiki-view"><code>pg_ndistinct_in</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__pg_ndistinct_out.html" target="wiki-view"><code>pg_ndistinct_out</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__pg_ndistinct_recv.html" target="wiki-view"><code>pg_ndistinct_recv</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__pg_ndistinct_send.html" target="wiki-view"><code>pg_ndistinct_send</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__ndistinct_for_combination.html" target="wiki-view"><code>ndistinct_for_combination</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__estimate_ndistinct.html" target="wiki-view"><code>estimate_ndistinct</code></a></li>
+<li><a href="../../../symbols/src__backend__statistics__mvdistinct_c__n_choose_k.html" target="wiki-view"><code>n_choose_k</code></a></li>
+</ul></body></html>

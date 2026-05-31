@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tsquery_cleanup.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tsquery_cleanup.c</h1>
+<h2>概要</h2>
+<p><code>tsquery_cleanup.c</code> は、PostgreSQL の全文検索用データ型 <code>tsquery</code> に対し、不要なノード（<code>NOT</code> 演算子やストップワード）を除去してクエリを最適化・簡略化するためのユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、<code>tsquery</code> の操作・変換を担う一連のファイル群の一部です。主に <code>tsquery</code> の内部構造（ツリー形式）を操作し、検索インデックスに適した形式へクエリを再構築する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**<code>NOT</code> 演算子の除去**: <code>clean_NOT</code> 関数により、インデックス検索時に意味をなさない（あるいはサポートされない）<code>NOT</code> 演算子を含むノードをツリーから削除します。</li>
+<li>**ストップワードの除去**: <code>cleanup_tsquery_stopwords</code> 関数により、検索対象外であるストップワード（<code>QI_VALSTOP</code>）をツリーから取り除きます。</li>
+<li>**クエリ構造の再構築**: 削除によって生じたツリーの欠損を補完し、フレーズ演算子（<code>&lt;-&gt;</code>）の距離を適切に再計算して、整合性の取れた <code>tsquery</code> を再生成します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>NODE</code>: クエリツリーを表現するための内部構造体。再帰的な処理に使用されます。</li>
+<li><code>maketree()</code> / <code>plaintree()</code>: <code>QueryItem</code> 配列と <code>NODE</code> ツリー間の相互変換を行います。</li>
+<li><code>clean_NOT_intree()</code>: <code>NOT</code> 演算子を再帰的に探索・除去します。</li>
+<li><code>clean_stopword_intree()</code>: ストップワードを除去し、フレーズ演算子の距離を調整するための再帰関数です。</li>
+<li><code>cleanup_tsquery_stopwords()</code>: ストップワード除去の公開インターフェースです。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLAINTREE</code></li>
+<li><code>calcstrlen</code></li>
+<li><code>clean_NOT</code></li>
+<li><code>clean_NOT_intree</code></li>
+<li><code>clean_stopword_intree</code></li>
+<li><code>cleanup_tsquery_stopwords</code></li>
+<li><code>freetree</code></li>
+<li><code>maketree</code></li>
+<li><code>plainnode</code></li>
+<li><code>plaintree</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ツリー化**: <code>maketree</code> が <code>tsquery</code> のフラットな配列を <code>NODE</code> 構造体のツリーに変換します。 2. **クリーンアップ**: <code>clean_NOT_intree</code> または <code>clean_stopword_intree</code> がツリーを走査します。</p>
+<ul>
+<li>ストップワード除去時は、フレーズ演算子の距離（<code>ladd</code>, <code>radd</code>）を親ノードへ伝播させ、距離を累積します。</li>
+<p>3. **再構築**: <code>plaintree</code> が処理後のツリーを再びフラットな <code>QueryItem</code> 配列へ変換します。 4. **メモリ確保**: <code>calcstrlen</code> で必要なバッファサイズを算出し、最終的な <code>TSQuery</code> オブジェクトを生成します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な PostgreSQL の型定義とマクロ。</li>
+<li><code>miscadmin.h</code>: <code>check_stack_depth()</code> によるスタックオーバーフロー防止。</li>
+<li><code>tsearch/ts_utils.h</code>: <code>tsquery</code> 関連の構造体定義と定数。</li>
+<li><code>varatt.h</code>: 可変長データ型の処理用マクロ。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>tsquery.c</code>: <code>tsquery</code> 型の基本的な操作や定義。</li>
+<li><code>tsquery_util.c</code>: クエリの走査や共通的なユーティリティ。</li>
+<li><code>tsquery_rewrite.c</code>: クエリの書き換えロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰処理**: 本ファイル内の関数はツリー構造を再帰的に処理するため、<code>check_stack_depth()</code> を呼び出してスタックオーバーフローを防止しています。深いクエリを扱う際の安全策です。</li>
+<li>**フレーズ距離の調整**: ストップワード除去時にフレーズ演算子の距離を調整するロジックは複雑です。特に、連続するフレーズ演算子や、ストップワードのみで構成されるサブツリーが削除される際の距離の伝播（<code>ladd</code>, <code>radd</code>）は、このファイルの最も繊細な部分です。</li>
+<li>**デバッグ**: <code>clean_NOT</code> は主にデバッグ用途を想定していますが、インデックス検索の最適化にも利用されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__NODE.html" target="wiki-view"><code>NODE</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__maketree.html" target="wiki-view"><code>maketree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__PLAINTREE.html" target="wiki-view"><code>PLAINTREE</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__plainnode.html" target="wiki-view"><code>plainnode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__plaintree.html" target="wiki-view"><code>plaintree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__freetree.html" target="wiki-view"><code>freetree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__clean_NOT_intree.html" target="wiki-view"><code>clean_NOT_intree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__clean_NOT.html" target="wiki-view"><code>clean_NOT</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__clean_stopword_intree.html" target="wiki-view"><code>clean_stopword_intree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__calcstrlen.html" target="wiki-view"><code>calcstrlen</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsquery_cleanup_c__cleanup_tsquery_stopwords.html" target="wiki-view"><code>cleanup_tsquery_stopwords</code></a></li>
+</ul></body></html>

@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__reorderbuffer_h__ReorderBufferTXN.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReorderBufferTXN</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/reorderbuffer.h:293</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングにおいて、WALから読み取られたトランザクションの断片（変更、スナップショット、サブトランザクション情報等）を保持・管理し、コミット順序に従って出力プラグインへ渡すための状態コンテナです。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ReorderBufferTXN {
+    bits32 txn_flags;
+    TransactionId xid;
+    TransactionId toplevel_xid;
+    char *gid;
+    XLogRecPtr first_lsn;
+    XLogRecPtr final_lsn;
+    XLogRecPtr end_lsn;
+    struct ReorderBufferTXN *toptxn;
+    XLogRecPtr restart_decoding_lsn;
+    RepOriginId origin_id;
+    XLogRecPtr origin_lsn;
+    union { TimestampTz commit_time; ... } xact_time;
+    Snapshot base_snapshot;
+    XLogRecPtr base_snapshot_lsn;
+    dlist_node base_snapshot_node;
+    Snapshot snapshot_now;
+    CommandId command_id;
+    uint64 nentries;
+    uint64 nentries_mem;
+    dlist_head changes;
+    dlist_head tuplecids;
+    uint64 ntuplecids;
+    HTAB *tuplecid_hash;
+    HTAB *toast_hash;
+    dlist_head subtxns;
+    uint32 nsubtxns;
+    uint32 ninvalidations;
+    SharedInvalidationMessage *invalidations;
+    uint32 ninvalidations_distributed;
+    SharedInvalidationMessage *invalidations_distributed;
+    dlist_node node;
+    dlist_node catchange_node;
+    pairingheap_node txn_node;
+    Size size;
+    Size total_size;
+    void *output_plugin_private;
+} ReorderBufferTXN;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: WALレコードから抽出された変更（<code>ReorderBufferChange</code>）、スナップショット、キャッシュ無効化メッセージ、サブトランザクション情報。</li>
+<li>**出力**: 出力プラグインへ渡されるトランザクションのライフサイクルイベント（コミット、準備、ストリーミング等）およびその内部データ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tuplecids</code> は常にトップレベルトランザクションに割り当てられる。</li>
+<li><code>size</code> および <code>total_size</code> は、メモリ上に保持されている変更のバイト数を追跡する。</li>
+<li><code>pairingheap_node</code> は、メモリ制限超過時にディスクへスプールするトランザクションを優先度順に選択するために使用される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**トランザクション統合**: サブトランザクションの変更をトップレベルトランザクションへ集約する。</li>
+<li>**メモリ管理**: <code>logical_decoding_work_mem</code> に基づき、メモリ使用量が閾値を超えるとディスクへシリアライズ（スプール）する。</li>
+<li>**再構築**: <code>toast_hash</code> を使用してTOASTチャンクを元のタプルへ復元する。</li>
+<li>**順序制御**: <code>pairingheap</code> を用いてLSN順序に基づいた処理を行う。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/test_decoding/test_decoding.c</code> 内の各コールバック関数が本構造体を引数として受け取っていることが確認されている。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、具体的な関数呼び出し先は <code>ReorderBuffer</code> の管理ロジック（<code>reorderbuffer.c</code>）に依存する。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReorderBufferChange</code>: トランザクション内の個別の変更内容。</li>
+<li><code>ReorderBuffer</code>: トランザクション全体を管理するメイン構造体。</li>
+<li><code>dlist_head</code>, <code>pairingheap_node</code>: リストおよび優先度付きキュー管理用。</li>
+<li><code>HTAB</code>: タプルCIDやTOASTデータの検索用ハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: メモリ制限を超過した場合、ディスクI/Oが発生し、<code>final_lsn</code> がディスクに書き出された最新の変更のLSNに更新される。</li>
+<li>**巨大トランザクション**: 巨大なトランザクションはメモリを圧迫するため、スプール処理が必須となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>RBTXN_*</code> マクロを使用してトランザクションの状態（コミット済み、準備済み等）を判定すること。</li>
+<li><code>output_plugin_private</code> は出力プラグインが独自の状態を保持するために使用できる。</li>
+<li><code>subtxns</code> リストはトップレベルトランザクションでのみ使用される。</li>
+</ul></body></html>

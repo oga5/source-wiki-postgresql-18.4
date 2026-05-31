@@ -1,0 +1,128 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/walsender.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/replication/walsender.c</h1>
+<h2>概要</h2>
+<p><code>walsender.c</code> は、PostgreSQLのプライマリサーバーにおいて、WAL（Write-Ahead Log）をスタンバイサーバーや論理レプリケーションサブスクライバーへストリーミング送信するプロセス（<code>walsender</code>）の実装です。Postmasterによって起動され、レプリケーションプロトコルを介してクライアントと通信します。</p>
+<h2>モジュール内での役割</h2>
+<p>レプリケーションサブシステムの送信側中核コンポーネントです。<code>walreceiver</code>（受信側）からの接続を受け付け、物理的なWAL転送または論理デコーディングによるデータ変換・送信を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALストリーミング**: 物理レプリケーション（WALの直接転送）および論理レプリケーション（デコーディングコンテキストを通じたデータ送信）の実行。</li>
+<li>**レプリケーションコマンド処理**: <code>START_REPLICATION</code>, <code>CREATE_REPLICATION_SLOT</code>, <code>IDENTIFY_SYSTEM</code> などのレプリケーション専用SQLコマンドの解析と実行。</li>
+<li>**同期レプリケーション制御**: 同期レプリケーション待機キューとの連携およびスタンバイの進捗報告に基づく待機解除。</li>
+<li>**ラグ追跡**: <code>LagTracker</code> を用いたレプリケーションラグ（Write/Flush/Apply）の計算と統計情報提供。</li>
+<li>**ライフサイクル管理**: プロセス終了時の正常なシャットダウン（残存WALの送信完了）とリソース解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス状態管理</h3>
+<ul>
+<li><code>WalSndCtl</code>: 全 <code>walsender</code> プロセスの状態を保持する共有メモリ上の制御構造体。</li>
+<li><code>MyWalSnd</code>: 現在のプロセスが使用する共有メモリ上の <code>WalSnd</code> スロット。</li>
+<li><code>replication_active</code>: ストリーミング中であることを示すフラグ。</li>
+</ul>
+<h3>ストリーミング制御</h3>
+<ul>
+<li><code>sentPtr</code>: 現在までに送信済みのWAL位置（LSN）。</li>
+<li><code>xlogreader</code>: 物理レプリケーションで使用されるWAL読み取り用リーダー。</li>
+<li><code>logical_decoding_ctx</code>: 論理レプリケーションで使用されるデコーディングコンテキスト。</li>
+</ul>
+<h3>統計・ラグ追跡</h3>
+<ul>
+<li><code>LagTracker</code>: WALの書き込み時刻とLSNを記録し、スタンバイからのフィードバックに基づいてラグを算出する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateReplicationSlot</code></li>
+<li><code>HandleWalSndInitStopping</code></li>
+<li><code>IdentifySystem</code></li>
+<li><code>InitWalSender</code></li>
+<li><code>InitWalSenderSlot</code></li>
+<li><code>LagTracker</code></li>
+<li><code>WalSndErrorCleanup</code></li>
+<li><code>WalSndInitStopping</code></li>
+<li><code>WalSndSendDataCallback</code></li>
+<li><code>WalSndShmemInit</code></li>
+<li><code>WalSndShutdown</code></li>
+<li><code>WalTimeSample</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitWalSender</code> で共有メモリ上のスロットを確保し、Postmasterに状態を通知。 2. **コマンドループ**: <code>exec_replication_command</code> がクライアントからのリクエストを解析し、適切なハンドラ（<code>StartReplication</code> 等）へディスパッチ。 3. **ストリーミングループ**: <code>WalSndLoop</code> がメインループとなり、<code>XLogSendPhysical</code> または <code>XLogSendLogical</code> をコールバックとして呼び出し、WALを読み取ってネットワークへ送信。 4. **フィードバック処理**: <code>ProcessRepliesIfAny</code> がスタンバイからの <code>CopyData</code> メッセージ（<code>r</code>型: Reply, <code>h</code>型: Hot Standby Feedback）を解析し、<code>sentPtr</code> や <code>xmin</code> を更新。 5. **待機制御**: <code>WalSndWaitForWal</code> がWALの生成を待ち、必要に応じてスタンバイの進捗を待機。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/slot.h</code>: レプリケーションスロットの管理。</li>
+<li><code>replication/syncrep.h</code>: 同期レプリケーションの待機制御。</li>
+<li><code>access/xlogreader.h</code>: WALの解析と読み取り。</li>
+<li><code>libpq/pqformat.h</code>: レプリケーションプロトコルのメッセージ構築。</li>
+<li><code>storage/proc.h</code>: プロセス間通信とラッチ管理。</li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>backup/basebackup_incremental.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/replnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/decode.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>tcop/dest.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/pgstat_internal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/slot.c</code>: スロットの永続化と共有メモリ管理。</li>
+<li><code>src/backend/replication/syncrep.c</code>: 同期レプリケーションのキュー管理。</li>
+<li><code>src/backend/replication/walreceiver.c</code>: 対となる受信側の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>uploaded_manifest</code> 等のデータは専用のメモリコンテキスト（<code>uploaded_manifest_mcxt</code>）で管理され、コマンド終了時に適切に解放されます。</li>
+<li>**シャットダウン**: <code>got_STOPPING</code> フラグが立つと、<code>walsender</code> は残存WALをすべて送信し終えるまで終了を待機します。これはチェックポイント処理と連動しています。</li>
+<li>**ラグ追跡の制限**: <code>LagTracker</code> は循環バッファを使用しており、スタンバイの応答が極端に遅い場合、古いサンプルが上書きされる可能性があります。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であるため、各レプリケーションコマンドの詳細なパースロジックや、論理デコーディングのプラグインインターフェースの詳細は省略しています。これらは <code>replication/logical.h</code> や <code>decode.h</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalTimeSample.html" target="wiki-view"><code>WalTimeSample</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__LagTracker.html" target="wiki-view"><code>LagTracker</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndSendDataCallback.html" target="wiki-view"><code>WalSndSendDataCallback</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__InitWalSender.html" target="wiki-view"><code>InitWalSender</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndErrorCleanup.html" target="wiki-view"><code>WalSndErrorCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndShutdown.html" target="wiki-view"><code>WalSndShutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__IdentifySystem.html" target="wiki-view"><code>IdentifySystem</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__CreateReplicationSlot.html" target="wiki-view"><code>CreateReplicationSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__InitWalSenderSlot.html" target="wiki-view"><code>InitWalSenderSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__HandleWalSndInitStopping.html" target="wiki-view"><code>HandleWalSndInitStopping</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndShmemInit.html" target="wiki-view"><code>WalSndShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndInitStopping.html" target="wiki-view"><code>WalSndInitStopping</code></a></li>
+</ul></body></html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/storage/bufmgr.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/storage/bufmgr.h</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバッファマネージャ（Buffer Manager）の公開インターフェースを定義するヘッダーファイルです。共有メモリ上のバッファプールとローカルバッファの管理、ディスクI/Oの抽象化、およびバッファのピン留め・ロック制御を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/storage</code> モジュールにおけるデータアクセスの最下層に位置します。上位のアクセス層（Access Method）が物理的なページを直接操作するのではなく、バッファマネージャを介してページを取得・解放することで、メモリ上のキャッシュ整合性と同時実行制御を担保します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファのライフサイクル管理**: <code>ReadBuffer</code> によるページの読み込みとピン留め、<code>ReleaseBuffer</code> による解放。</li>
+<li>**I/Oの抽象化**: 同期・非同期I/Oの制御、および <code>BufferAccessStrategy</code> を用いたスキャン時のバッファ置換アルゴリズムの最適化。</li>
+<li>**同時実行制御**: バッファに対する共有/排他ロックの提供。</li>
+<li>**バッファのフラッシュ**: チェックポイントやバックグラウンドライターによるダーティページのディスク書き出し管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ReadBuffer()</code>: 指定したブロックをバッファに読み込み、ピン留めして返す主要なエントリポイント。</li>
+<li><code>BufferAccessStrategy</code>: スキャン（シーケンシャルスキャン、VACUUM等）の種類に応じたバッファ置換戦略を定義。</li>
+<li><code>ReadBuffersOperation</code>: 非同期I/Oを伴う複数ブロックの読み込み操作を管理する構造体。</li>
+<li><code>Buffer</code>: バッファを識別する整数型（正は共有バッファ、負はローカルバッファ）。</li>
+<li><code>BufferGetPage()</code>: バッファIDからメモリ上のページポインタを取得するインライン関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Block</code></li>
+<li><code>BufferAccessStrategyType</code></li>
+<li><code>BufferGetBlock</code></li>
+<li><code>BufferGetPage</code></li>
+<li><code>BufferGetPageSize</code></li>
+<li><code>BufferIsValid</code></li>
+<li><code>BufferManagerRelation</code></li>
+<li><code>ExtendBufferedFlags</code></li>
+<li><code>PrefetchBufferResult</code></li>
+<li><code>ReadBufferMode</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **要求**: 上位層が <code>ReadBuffer</code> を呼び出し、リレーションとブロック番号を指定。 2.  **検索**: バッファテーブル（<code>buf_table.c</code>）を検索し、存在すればピンを増やして返す。 3.  **I/O**: 存在しない場合、<code>freelist.c</code> から空きバッファを選択し、ストレージマネージャ（<code>smgr</code>）を介してディスクから読み込む。 4.  **操作**: 呼び出し元は <code>LockBuffer</code> でページをロックし、内容を読み書きする。 5.  **解放**: 処理終了後、<code>ReleaseBuffer</code> でピンを減らし、必要に応じて <code>MarkBufferDirty</code> でダーティフラグを立てる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buf.h</code>: バッファIDの定義。</li>
+<li><code>storage/bufpage.h</code>: ページレイアウトの定義。</li>
+<li><code>storage/block.h</code>: ブロック番号の定義。</li>
+<li><code>storage/aio_types.h</code>: 非同期I/O関連の型定義。</li>
+<li><code>utils/relcache.h</code>: リレーションキャッシュの定義。</li>
+<li><code>port/pg_iovec.h</code></li>
+<li><code>storage/relfilelocator.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: 本ヘッダーの主要な実装。</li>
+<li><code>src/include/storage/buf_internals.h</code>: バッファ記述子（<code>BufferDesc</code>）など、内部的な共有データ構造。</li>
+<li><code>src/backend/storage/buffer/freelist.c</code>: バッファ置換アルゴリズムの実装。</li>
+<li><code>src/backend/storage/smgr/smgr.c</code>: 物理的なディスクI/Oの実行層。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**共有 vs ローカル**: 本ファイル内の多くの関数は共有バッファを対象としていますが、一部はローカルバッファ（一時テーブル用）も扱います。<code>BufferIsValid</code> 等のインライン関数で適切に分岐されています。</li>
+<li>**ピンとロック**: 「ピン（Pin）」はバッファの置換を防ぐための参照カウントであり、「ロック（Lock）」はページ内容の同時アクセスを防ぐための排他制御です。両者は独立していることに注意してください。</li>
+<li>**FRONTEND**: 一部のインライン関数は <code>FRONTEND</code> マクロで囲まれており、<code>pg_waldump</code> 等のツールから参照される際の依存関係を回避しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__Block.html" target="wiki-view"><code>Block</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferAccessStrategyType.html" target="wiki-view"><code>BufferAccessStrategyType</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__ReadBufferMode.html" target="wiki-view"><code>ReadBufferMode</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__PrefetchBufferResult.html" target="wiki-view"><code>PrefetchBufferResult</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__ExtendBufferedFlags.html" target="wiki-view"><code>ExtendBufferedFlags</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferManagerRelation.html" target="wiki-view"><code>BufferManagerRelation</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__ReadBuffersOperation.html" target="wiki-view"><code>ReadBuffersOperation</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferIsValid.html" target="wiki-view"><code>BufferIsValid</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferGetBlock.html" target="wiki-view"><code>BufferGetBlock</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferGetPageSize.html" target="wiki-view"><code>BufferGetPageSize</code></a></li>
+<li><a href="../../../symbols/src__include__storage__bufmgr_h__BufferGetPage.html" target="wiki-view"><code>BufferGetPage</code></a></li>
+</ul></body></html>

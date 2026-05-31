@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__pruneheap_c__heap_page_prune_opt.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_page_prune_opt</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/pruneheap.c:192</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープページ内の不要なタプルを削除し、HOT (Heap Only Tuple) チェーンを剪定することで、ページ内の空き領域を確保する。オンアクセス・プランニング（アクセス時の最適化）として機能し、競合を避けるために条件付きロックを用いる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void heap_page_prune_opt(Relation relation, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relation</code>: 対象のリレーション。</li>
+<li><code>buffer</code>: 剪定対象のヒープページを含むバッファ。</li>
+<li>**出力**: なし（副作用としてページ内容の変更および統計情報の更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リカバリモード中ではないこと（<code>RecoveryInProgress()</code> が真の場合は即時終了）。</li>
+<li>ページヘッダーの <code>pd_prune_xid</code> が有効であり、かつ <code>GlobalVisTestIsRemovableXid</code> により削除可能なタプルが存在する可能性があると判断されること。</li>
+<li>ページが満杯であるか、空き領域が設定された閾値（<code>fill-factor</code> または <code>BLCKSZ / 10</code> の大きい方）を下回っていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **事前チェック**: ページヘッダーの <code>pd_prune_xid</code> を確認し、削除対象の可能性があるか判定する。 2. **ヒューリスティック判定**: ページが満杯か、空き領域が不足しているかを判定する。 3. **ロック取得**: <code>ConditionalLockBufferForCleanup(buffer)</code> を使用し、排他ロックの取得を試みる。取得できない場合は即時終了する。 4. **再チェックと実行**: ロック取得後、再度空き領域を確認し、条件を満たせば <code>heap_page_prune_and_freeze</code> を呼び出して剪定を実行する。 5. **統計更新**: 削除されたタプル数（<code>presult.ndeleted - presult.nnewlpdead</code>）を <code>pgstat_update_heap_dead_tuples</code> に報告する。 6. **終了処理**: バッファロックを解除する。FSM（空き領域マップ）の更新は行わない。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam.c</code></li>
+<li><code>src/backend/access/heap/heapam_handler.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>heap_page_prune_and_freeze</code></li>
+<li><code>GlobalVisTestFor</code> / <code>GlobalVisTestIsRemovableXid</code></li>
+<li><code>RelationGetTargetPageFreeSpace</code></li>
+<li><code>ConditionalLockBufferForCleanup</code></li>
+<li><code>pgstat_update_heap_dead_tuples</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: リレーション情報。</li>
+<li><code>Buffer</code>: バッファ管理構造。</li>
+<li><code>PageHeader</code>: ページヘッダー（<code>pd_prune_xid</code> の参照に使用）。</li>
+<li><code>GlobalVisState</code>: 可視性判定状態。</li>
+<li><code>PruneFreezeResult</code>: 剪定結果を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ロック競合**: <code>ConditionalLockBufferForCleanup</code> が失敗した場合、剪定を行わずに終了する。</li>
+<li>**リカバリ中**: リカバリ中は WAL 記録ができないため、処理をスキップする。</li>
+<li>**空き領域**: 判定時の空き領域計算はロックなしで行われるため、ヒューリスティックな見積もりとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はオンアクセス・プランニングの一部であり、パフォーマンスへの影響を最小限にするため、ロックの取得に条件付きロジックを使用している。</li>
+<li><code>pgstat</code> への報告は、VACUUM による削除と重複カウントを避けるため、<code>LP_DEAD</code> に設定された項目を除外して計算している。</li>
+<li>FSM の更新を意図的に省略しているため、この処理で確保された空き領域は、主に当該ページに対する後続の更新処理で再利用されることを想定している。</li>
+</ul></body></html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/tablesync.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/tablesync.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける「初期データ同期」を管理するモジュールです。パブリッシャーからサブスクライバーへテーブル単位でデータをコピーし、ストリーミングレプリケーションの開始位置まで追いつかせるプロセスを制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>logical/worker.c</code>（適用ワーカー）と連携し、大規模な初期同期を並列化することで、システム全体の負荷を分散し、同期時間を短縮します。各テーブルは独立した「テーブル同期ワーカー」によって処理されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**状態遷移管理**: <code>INIT</code> から <code>READY</code> までの同期状態（<code>pg_subscription_rel</code>）の管理。</li>
+<li>**データコピー**: <code>COPY</code> コマンドを用いたリモートテーブルからの初期データ取得。</li>
+<li>**ストリーミング同期**: コピー完了後、適用ワーカーの進捗に追いつくまでの差分適用。</li>
+<li>**リソース管理**: 同期用レプリケーションスロットおよびレプリケーション起点の作成・削除。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>SyncingTablesState</code>: 同期対象テーブルのキャッシュ状態（<code>NEEDS_REBUILD</code>, <code>VALID</code> 等）。</li>
+<li><code>process_syncing_tables</code>: ワーカータイプに応じた同期処理のディスパッチャー。</li>
+<li><code>FetchTableStates</code>: <code>pg_subscription_rel</code> から未完了テーブルの状態をキャッシュへロード。</li>
+</ul>
+<h3>同期プロセス制御</h3>
+<ul>
+<li><code>TablesyncWorkerMain</code>: 同期ワーカーのメインエントリーポイント。</li>
+<li><code>LogicalRepSyncTableStart</code>: 同期ワーカーの初期化と <code>COPY</code> フェーズの実行。</li>
+<li><code>finish_sync_worker</code>: 同期完了時のクリーンアップと終了処理。</li>
+<li><code>wait_for_relation_state_change</code> / <code>wait_for_worker_state_change</code>: 適用ワーカーと同期ワーカー間の状態同期用ラッチ待機。</li>
+</ul>
+<h3>データ転送</h3>
+<ul>
+<li><code>copy_table</code>: リモートからデータを取得し、ローカルへ <code>COPY</code> するメイン関数。</li>
+<li><code>copy_read_data</code>: <code>walrcv_receive</code> を用いたネットワークデータ読み込みコールバック。</li>
+<li><code>fetch_remote_table_info</code>: リモートテーブルのスキーマ、列リスト、行フィルタ情報を取得。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AllTablesyncsReady</code></li>
+<li><code>FetchTableStates</code></li>
+<li><code>LogicalRepSyncTableStart</code></li>
+<li><code>ReplicationSlotNameForTablesync</code></li>
+<li><code>SyncingTablesState</code></li>
+<li><code>TablesyncWorkerMain</code></li>
+<li><code>UpdateTwoPhaseState</code></li>
+<li><code>finish_sync_worker</code></li>
+<li><code>invalidate_syncing_table_states</code></li>
+<li><code>tablesync_start_time_mapping</code></li>
+<li><code>wait_for_relation_state_change</code></li>
+<li><code>wait_for_worker_state_change</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: 適用ワーカーが <code>process_syncing_tables_for_apply</code> を通じて同期ワーカーを起動。 2. **コピー**: 同期ワーカーが <code>LogicalRepSyncTableStart</code> でリモート接続を確立し、<code>COPY</code> でデータを転送。 3. **待機**: コピー完了後、<code>SYNCWAIT</code> 状態へ移行し、適用ワーカーからの <code>CATCHUP</code> 指示を待つ。 4. **追いつき**: 適用ワーカーが <code>CATCHUP</code> を指示すると、同期ワーカーはストリーミングを開始し、指定された LSN まで差分を適用。 5. **完了**: <code>SYNCDONE</code> に到達後、同期ワーカーはスロットを削除して終了。適用ワーカーが最終的に <code>READY</code> へ更新。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_subscription_rel.h</code>: 同期状態の永続化。</li>
+<li><code>replication/logicalworker.h</code>: ワーカー間通信と状態共有。</li>
+<li><code>replication/walreceiver.h</code>: パブリッシャーとの通信プロトコル。</li>
+<li><code>commands/copy.h</code>: 初期データ転送用インターフェース。</li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/logicalrelation.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/worker_internal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rls.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/usercontext.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/logical/worker.c</code>: 適用ワーカーのメインロジック。</li>
+<li><code>src/backend/replication/logical/launcher.c</code>: 同期ワーカーの起動管理。</li>
+<li><code>src/backend/replication/logical/relation.c</code>: リモート・ローカル間のテーブルマッピング。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>copybuf</code> は <code>copy_read_data</code> で使用される一時的なバッファです。<code>table_states_not_ready</code> は <code>CacheMemoryContext</code> に割り当てられ、キャッシュの有効性を管理します。</li>
+<li>**エラーパス**: 同期ワーカーが失敗した場合、<code>start_table_sync</code> 内の <code>PG_TRY/CATCH</code> ブロックにより、<code>disableonerr</code> 設定に応じてサブスクリプションを無効化するか、エラーを再スローします。</li>
+<li>**デッドロック回避**: 適用ワーカーと同期ワーカー間で状態を待機する際、<code>LWLock</code> を保持したまま長時間待機しないよう、必要に応じてトランザクションをコミットしてロックを解放する設計になっています。</li>
+<li>**省略箇所**: 本ファイルは同期の「制御」に特化しており、WALのデコード詳細や、適用ワーカーの競合解決ロジックについては他モジュール（<code>reorderbuffer.c</code> 等）に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__SyncingTablesState.html" target="wiki-view"><code>SyncingTablesState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__finish_sync_worker.html" target="wiki-view"><code>finish_sync_worker</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__wait_for_relation_state_change.html" target="wiki-view"><code>wait_for_relation_state_change</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__wait_for_worker_state_change.html" target="wiki-view"><code>wait_for_worker_state_change</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__invalidate_syncing_table_states.html" target="wiki-view"><code>invalidate_syncing_table_states</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__tablesync_start_time_mapping.html" target="wiki-view"><code>tablesync_start_time_mapping</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__ReplicationSlotNameForTablesync.html" target="wiki-view"><code>ReplicationSlotNameForTablesync</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__LogicalRepSyncTableStart.html" target="wiki-view"><code>LogicalRepSyncTableStart</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__FetchTableStates.html" target="wiki-view"><code>FetchTableStates</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__TablesyncWorkerMain.html" target="wiki-view"><code>TablesyncWorkerMain</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__AllTablesyncsReady.html" target="wiki-view"><code>AllTablesyncsReady</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__tablesync_c__UpdateTwoPhaseState.html" target="wiki-view"><code>UpdateTwoPhaseState</code></a></li>
+</ul></body></html>

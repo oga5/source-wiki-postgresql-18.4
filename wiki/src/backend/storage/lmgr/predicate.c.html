@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/predicate.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/predicate.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL における「直列化可能スナップショット分離（SSI: Serializable Snapshot Isolation）」を実装する述語ロック（Predicate Lock）の中核です。SSI は、トランザクション間の読み書き依存関係（RW-Conflict）を追跡し、直列化不可能な実行順序を検出してアボートさせることで、完全な直列化可能分離レベルを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/lmgr</code> サブシステムの一部として、重量級ロック（<code>lock.c</code>）とは独立した「SIREAD ロック」の管理を行います。通常のロックが排他制御を目的とするのに対し、述語ロックは「依存関係の追跡」を目的とするため、ブロックが発生しないフラグのような挙動をとります。</p>
+<h2>責務</h2>
+<ul>
+<li>**述語ロック管理**: 述語（範囲）をカバーするロック（テーブル、ページ、タプル）の獲得・解放・粒度昇格。</li>
+<li>**RW-Conflict 追跡**: トランザクション間の読み書き依存関係をグラフとして管理し、循環（ピボット構造）を検出。</li>
+<li>**メモリ管理**: 共有メモリ上のハッシュテーブル（<code>PredicateLockHash</code> 等）の管理と、メモリ圧迫時のロック粒度昇格（Coalescing）。</li>
+<li>**ライフサイクル管理**: トランザクション終了後も、他のアクティブなトランザクションと重複する期間はロック情報を保持する。</li>
+<li>**2PC サポート**: 準備済みトランザクションの述語ロック状態の永続化と復旧。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>トランザクション管理</h3>
+<ul>
+<li><code>SERIALIZABLEXACT</code>: 直列化可能トランザクションの共有メモリ上の状態構造体。</li>
+<li><code>MySerializableXact</code>: 現在のバックエンドが実行中の直列化可能トランザクションへのポインタ。</li>
+<li><code>PredXact</code>: 述語ロックに参加する全トランザクションを追跡するリスト。</li>
+</ul>
+<h3>ロック管理</h3>
+<ul>
+<li><code>PREDICATELOCKTARGET</code>: ロック対象（テーブル/ページ/タプル）を表現する構造体。</li>
+<li><code>PREDICATELOCK</code>: 特定のトランザクションが特定のターゲットに対して保持するロック。</li>
+<li><code>LocalPredicateLockHash</code>: バックエンドローカルなハッシュテーブル。粒度昇格の判定に使用。</li>
+</ul>
+<h3>競合・依存関係</h3>
+<ul>
+<li><code>RWConflictData</code>: トランザクション間の依存関係（RW-Conflict）を保持する要素。</li>
+<li><code>SxactIsROSafe</code> / <code>SxactIsROUnsafe</code>: 読み取り専用トランザクションの安全性を判定するフラグ。</li>
+</ul>
+<h3>ユーティリティ・マクロ</h3>
+<ul>
+<li><code>TargetTagIsCoveredBy</code>: 粒度昇格時に、あるターゲットが別のターゲットに包含されているかを判定。</li>
+<li><code>PredicateLockHashPartitionLock</code>: ハッシュコードから対応する LWLock を取得。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtPrepare_PredicateLocks</code></li>
+<li><code>CreateLocalPredicateLockHash</code></li>
+<li><code>CreatePredXact</code></li>
+<li><code>CreatePredicateLock</code></li>
+<li><code>DeleteChildTargetLocks</code></li>
+<li><code>DeleteLockTarget</code></li>
+<li><code>OnConflict_CheckForSerializationFailure</code></li>
+<li><code>PreCommit_CheckForSerializationFailure</code></li>
+<li><code>PredicateLockShmemInit</code></li>
+<li><code>SerialControl</code></li>
+<li><code>SerialControlData</code></li>
+<li><code>SerialInit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ロック獲得**: <code>PredicateLockAcquire</code> が呼び出されると、ローカルハッシュで粒度昇格を判定し、必要に応じて <code>CreatePredicateLock</code> で共有メモリ上のハッシュテーブルを更新する。 2. **競合検出**: <code>CheckForSerializableConflictIn</code> / <code>Out</code> が、データアクセス時に呼び出される。依存関係が検出されると <code>FlagRWConflict</code> が呼ばれ、<code>OnConflict_CheckForSerializationFailure</code> で循環の有無をチェックする。 3. **循環検出**: 依存関係グラフに「Tin -&gt; Tpivot -&gt; Tout」という構造が形成されると、<code>OnConflict_CheckForSerializationFailure</code> がトランザクションをアボート（<code>ERRCODE_T_R_SERIALIZATION_FAILURE</code>）させる。 4. **クリーンアップ**: <code>ReleasePredicateLocks</code> がトランザクション終了時に呼ばれ、不要になったロックや依存関係を解放する。古い情報は <code>SerialSlruCtl</code>（SLRU）に要約される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/predicate_internals.h</code>: 内部構造体の定義。</li>
+<li><code>access/slru.h</code>: 古いトランザクション情報の要約用 SLRU。</li>
+<li><code>storage/lwlock.h</code>: 共有メモリ保護のための軽量ロック。</li>
+<li><code>access/xact.h</code>: トランザクション状態の参照。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/twophase_rmgr.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_lfind.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/predicate.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/storage/lmgr/lock.c</code>: 重量級ロック管理（比較対象）。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションのコミット/アボート処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: 述語ロック関連の構造体は共有メモリ上にあり、<code>SerializablePredicateListLock</code> や各パーティションの LWLock で保護されます。</li>
+<li>**粒度昇格**: メモリ不足を防ぐため、細かいロック（タプル）は粗いロック（ページ、テーブル）へ自動的に昇格されます。この際、ローカルの <code>LocalPredicateLockHash</code> がヒントとして使用されます。</li>
+<li>**パフォーマンス**: 述語ロックの取得は、通常のロックよりも高コストです。<code>SerializationNeededForRead</code> 等のインライン関数により、シリアライザブルでないトランザクションや、既に安全と判定された読み取り専用トランザクションのオーバーヘッドを最小化しています。</li>
+<li>**省略箇所**: SLRU の詳細なページ管理ロジックや、複雑な依存関係グラフの循環検出アルゴリズムの詳細は、論文（Cahill et al.）の理解が前提となっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__SerialControlData.html" target="wiki-view"><code>SerialControlData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__SerialControl.html" target="wiki-view"><code>SerialControl</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__CreatePredXact.html" target="wiki-view"><code>CreatePredXact</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__SerialInit.html" target="wiki-view"><code>SerialInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__PredicateLockShmemInit.html" target="wiki-view"><code>PredicateLockShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__CreateLocalPredicateLockHash.html" target="wiki-view"><code>CreateLocalPredicateLockHash</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__DeleteChildTargetLocks.html" target="wiki-view"><code>DeleteChildTargetLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__CreatePredicateLock.html" target="wiki-view"><code>CreatePredicateLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__DeleteLockTarget.html" target="wiki-view"><code>DeleteLockTarget</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__OnConflict_CheckForSerializationFailure.html" target="wiki-view"><code>OnConflict_CheckForSerializationFailure</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__PreCommit_CheckForSerializationFailure.html" target="wiki-view"><code>PreCommit_CheckForSerializationFailure</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__predicate_c__AtPrepare_PredicateLocks.html" target="wiki-view"><code>AtPrepare_PredicateLocks</code></a></li>
+</ul></body></html>

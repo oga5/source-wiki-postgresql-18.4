@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgstattuple/pgstatindex.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgstattuple/pgstatindex.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのインデックス（B-tree, GIN, Hash）の内部構造を解析し、断片化や空き容量などの統計情報を取得するためのSQL関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgstattuple</code> 拡張モジュールの一部として、インデックスの物理的な状態を可視化するバックエンド関数を実装しています。ユーザーがインデックスのメンテナンス（<code>REINDEX</code>の必要性など）を判断するためのデータを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>インデックスのメタページおよび各データページを走査し、統計情報を収集する。</li>
+<li>B-tree, GIN, Hash 各インデックス形式に応じた解析ロジックの提供。</li>
+<li>互換性維持のための旧バージョン（<code>_v1_5</code>なし）と新バージョン関数の提供。</li>
+<li>一時テーブルや無効なインデックスに対する安全なアクセス制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BTIndexStat</code>, <code>GinIndexStat</code>, <code>HashIndexStat</code>: 各インデックス形式の統計情報を保持する構造体。</li>
+<li><code>pgstatindex_impl</code>: B-treeインデックスの走査と統計計算を行う中核関数。</li>
+<li><code>pgstatginindex_internal</code>: GINインデックスのメタページから統計を抽出する関数。</li>
+<li><code>IS_INDEX</code>, <code>IS_BTREE</code>, <code>IS_GIN</code>, <code>IS_HASH</code>: インデックスの種類を判定するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetHashPageStats</code></li>
+<li><code>pg_relpages</code></li>
+<li><code>pg_relpages_impl</code></li>
+<li><code>pg_relpages_v1_5</code></li>
+<li><code>pg_relpagesbyid</code></li>
+<li><code>pg_relpagesbyid_v1_5</code></li>
+<li><code>pgstatindex_v1_5</code></li>
+<li><code>pgstatindexbyid_v1_5</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>relation_open</code> で対象インデックスを開き、<code>AccessShareLock</code> を取得。 2. **検証**: インデックスが有効か、一時テーブルではないかを確認。 3. **メタページ読み込み**: 各インデックス形式のメタページ（<code>ReadBuffer</code>）から基本情報を取得。 4. **ページ走査**: <code>RelationGetNumberOfBlocks</code> で全ブロック数を取得し、<code>ReadBufferExtended</code> を用いて全ページを順次走査。</p>
+<ul>
+<li>B-tree/Hashの場合、各ページをロックし、ページタイプ（リーフ、内部、未使用等）に応じて統計カウンタを更新。</li>
+<p>5. **結果構築**: <code>get_call_result_type</code> で戻り値の型を決定し、<code>BuildTupleFromCStrings</code> や <code>heap_form_tuple</code> を用いてレコードを生成。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>access/</code>: <code>nbtree.h</code>, <code>gin_private.h</code>, <code>hash.h</code> 等のインデックスアクセス用ヘッダー。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理（<code>ReadBuffer</code>, <code>LockBuffer</code>）。</li>
+<li><code>catalog/</code>: <code>pg_am.h</code> 等のシステムカタログ定義。</li>
+<li><code>access/gin_private.h</code></li>
+<li><code>access/hash.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/pgstattuple/pgstattuple.c</code>: ヒープ（テーブル）の統計情報を扱う対となるファイル。</li>
+<li><code>src/backend/access/</code>: 各インデックスの物理構造定義（<code>nbtree</code>, <code>gin</code>, <code>hash</code>）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**権限**: 1.5以降のバージョンでは <code>REVOKE EXECUTE ON PUBLIC</code> が前提となっており、関数内で <code>superuser()</code> チェックを行わない実装になっています。</li>
+<li>**パフォーマンス**: インデックス全体を走査するため、巨大なインデックスに対して実行するとI/O負荷が高くなります。<code>BAS_BULKREAD</code> を使用してバッファキャッシュへの影響を抑えています。</li>
+<li>**安全性**: <code>CHECK_FOR_INTERRUPTS()</code> がループ内に配置されており、長時間実行されるクエリのキャンセルに対応しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__BTIndexStat.html" target="wiki-view"><code>BTIndexStat</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__GinIndexStat.html" target="wiki-view"><code>GinIndexStat</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__HashIndexStat.html" target="wiki-view"><code>HashIndexStat</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pgstatindex_v1_5.html" target="wiki-view"><code>pgstatindex_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pgstatindexbyid_v1_5.html" target="wiki-view"><code>pgstatindexbyid_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pgstatindex_impl.html" target="wiki-view"><code>pgstatindex_impl</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pg_relpages.html" target="wiki-view"><code>pg_relpages</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pg_relpages_v1_5.html" target="wiki-view"><code>pg_relpages_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pg_relpagesbyid.html" target="wiki-view"><code>pg_relpagesbyid</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pg_relpagesbyid_v1_5.html" target="wiki-view"><code>pg_relpagesbyid_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__pg_relpages_impl.html" target="wiki-view"><code>pg_relpages_impl</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstatindex_c__GetHashPageStats.html" target="wiki-view"><code>GetHashPageStats</code></a></li>
+</ul></body></html>

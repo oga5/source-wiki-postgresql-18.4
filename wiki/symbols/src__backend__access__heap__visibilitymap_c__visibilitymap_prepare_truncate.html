@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__visibilitymap_c__visibilitymap_prepare_truncate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>visibilitymap_prepare_truncate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/visibilitymap.c:444</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーションの切り詰め（Truncation）に伴い、可視性マップ（Visibility Map）のサイズを調整し、切り詰められたヒープブロックに対応する不要なビットをクリアする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>BlockNumber visibilitymap_prepare_truncate(Relation rel, BlockNumber nheapblocks)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 対象のリレーション。</li>
+<li><code>nheapblocks</code>: 切り詰め後のヒープブロック数。</li>
+<li>**出力**:</li>
+<li>切り詰め後の可視性マップのブロック数（<code>BlockNumber</code>）。切り詰めが不要な場合やマップが存在しない場合は <code>InvalidBlockNumber</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>可視性マップが存在しない場合、何も行わず <code>InvalidBlockNumber</code> を返す。</li>
+<li>切り詰め後のヒープサイズがマップのページ境界と一致しない場合、境界をまたぐビットをクリアする必要がある。</li>
+<li>ビット操作はクリティカルセクション内で行われ、必要に応じて WAL ログが記録される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 指定された <code>nheapblocks</code> に対応するマップ上の位置（ブロック、バイト、オフセット）を算出する。 2. マップファイルが存在しない場合は終了する。 3. 切り詰め境界がページ境界と一致しない場合：</p>
+<ul>
+<li>対象のマップページを <code>vm_readbuf</code> で読み込む。</li>
+<li>排他ロックを取得し、クリティカルセクションを開始する。</li>
+<li><code>MemSet</code> を使用して、切り詰め範囲外のバイトを 0 クリアする。</li>
+<li>境界となるバイト内の不要なビットをビットマスク演算でクリアする。</li>
+<li>ページをダーティにし、必要に応じて <code>log_newpage_buffer</code> で WAL 記録を行う。</li>
+<li>クリティカルセクションを終了し、ロックを解放する。</li>
+<p>4. 最終的なマップのブロック数が切り詰め後のサイズより大きい場合、その値を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/catalog/storage.c</code>（<code>smgrtruncate</code> 関連処理）</li>
+<li><code>contrib/pg_visibility/pg_visibility.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>smgrexists</code>, <code>smgrnblocks</code></li>
+<li><code>vm_readbuf</code></li>
+<li><code>LockBuffer</code>, <code>START_CRIT_SECTION</code>, <code>END_CRIT_SECTION</code></li>
+<li><code>MarkBufferDirty</code>, <code>log_newpage_buffer</code></li>
+<li><code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: 操作対象のリレーション情報。</li>
+<li><code>Buffer</code>: 可視性マップのページを保持するバッファ。</li>
+<li><code>VISIBILITYMAP_FORKNUM</code>: 可視性マップが格納されるフォーク番号。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>マップファイルが存在しない場合、処理はスキップされる。</li>
+<li>既にマップファイルが要求サイズより小さい場合、何もせず <code>InvalidBlockNumber</code> を返す。</li>
+<li><code>vm_readbuf</code> が無効なバッファを返した場合、処理を中断する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、ヒープの切り詰め時にマップの整合性を保つために不可欠である。</li>
+<li>チェックサムが有効な場合、切り詰め後のページ保護のために WAL 記録が強制される点に注意すること。</li>
+<li><code>visibilitymap_truncation_length</code> は本関数と同様の計算を行うが、変更は行わない。</li>
+</ul></body></html>

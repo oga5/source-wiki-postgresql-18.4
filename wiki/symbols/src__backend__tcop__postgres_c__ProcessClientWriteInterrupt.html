@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__tcop__postgres_c__ProcessClientWriteInterrupt.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcessClientWriteInterrupt</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/tcop/postgres.c:547</code></li>
+</ul>
+<h2>目的</h2>
+<p>クライアントへの書き込み処理中に発生する割り込みを処理し、プロセス終了要求（<code>ProcDiePending</code>）がある場合に、書き込みのブロックによる応答遅延やデッドロックを防ぐ。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ProcessClientWriteInterrupt(bool blocked)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>blocked</code> (bool): 現在の書き込み操作がブロックされているかどうかを示すフラグ。</li>
+<li>**出力**: なし（副作用としてプロセスの状態や割り込みフラグを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>errno</code> の値は関数呼び出し前後で保存・復元され、外部への影響を最小限に抑える。</li>
+<li><code>ProcDiePending</code> が真の場合、プロセス終了処理が優先される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 現在の <code>errno</code> を保存する。 2. <code>ProcDiePending</code> が真（終了要求あり）の場合:</p>
+<ul>
+<li><code>blocked</code> が真（書き込みがブロック中）の場合:</li>
+<li>割り込み保留中（<code>InterruptHoldoffCount == 0</code>）かつクリティカルセクション外（<code>CritSectionCount == 0</code>）であれば、<code>whereToSendOutput</code> を <code>DestNone</code> に変更してエラーメッセージ送信を回避し、<code>CHECK_FOR_INTERRUPTS()</code> を呼び出して即座に終了処理へ移行する。</li>
+<li><code>blocked</code> が偽の場合:</li>
+<li><code>SetLatch(MyLatch)</code> を呼び出し、プロセスラッチをセットして終了処理を促す。</li>
+<p>3. 保存した <code>errno</code> を復元して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/libpq/be-secure.c</code> (複数の箇所で <code>true</code> または <code>false</code> を引数として呼び出し)</li>
+<li>**呼び出し先**:</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code></li>
+<li><code>SetLatch()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ProcDiePending</code> (グローバル変数: プロセス終了要求フラグ)</li>
+<li><code>MyLatch</code> (プロセスラッチ)</li>
+<li><code>InterruptHoldoffCount</code> / <code>CritSectionCount</code> (割り込み制御用カウンタ)</li>
+<li><code>whereToSendOutput</code> (出力先制御変数)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>InterruptHoldoffCount</code> や <code>CritSectionCount</code> が 0 でない場合、<code>ProcDiePending</code> が真であっても <code>CHECK_FOR_INTERRUPTS()</code> は実行されず、終了処理が遅延する可能性がある。</li>
+<li>書き込みがブロックされていない場合、単にラッチをセットするのみで、即時の終了は保証されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、クライアントとの通信プロトコル同期を維持しつつ、終了要求を迅速に処理するためのガードレールとして機能する。</li>
+<li><code>whereToSendOutput</code> を <code>DestNone</code> に変更するロジックは、部分的なプロトコルメッセージ送信による同期喪失を防ぐための重要な措置である。</li>
+</ul></body></html>

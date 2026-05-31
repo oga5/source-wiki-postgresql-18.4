@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_relation.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_relation.c</h1>
+<h2>概要</h2>
+<p>リレーション（テーブルやインデックス）に関する統計情報の収集・管理を行うモジュールです。<code>pgstat.c</code> から統計情報の詳細な処理を分離し、リレーション固有の統計ロジックをカプセル化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> サブシステムの一部として、リレーションのアクセス統計（挿入、更新、削除、スキャン回数など）を追跡します。リレーションのライフサイクル（作成、破棄、VACUUM/ANALYZE）と同期し、トランザクションのコミット/アボートに応じた統計の集計を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計の追跡**: DML操作（INSERT/UPDATE/DELETE）やVACUUM/ANALYZE実行時の統計更新。</li>
+<li>**トランザクション管理**: サブトランザクション階層を考慮した統計の保持と、コミット/アボート時の統計反映。</li>
+<li>**共有メモリとの同期**: ローカルの統計情報を共有メモリ上の統計エントリへフラッシュする処理。</li>
+<li>**2PC対応**: 準備されたトランザクション（PREPARED XACT）の統計情報を永続化・復元する機能。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgStat_TableStatus</code>: リレーションの統計情報を保持する構造体。</li>
+<li><code>pgstat_init_relation</code>: リレーションが開かれた際に統計追跡を初期化する。</li>
+<li><code>pgstat_assoc_relation</code>: リレーションと統計エントリを紐付ける。</li>
+<li><code>pgstat_report_vacuum</code> / <code>pgstat_report_analyze</code>: VACUUM/ANALYZE後の統計更新。</li>
+<li><code>pgstat_relation_flush_cb</code>: 統計情報を共有メモリへ書き出すためのコールバック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOSubXact_PgStat_Relations</code></li>
+<li><code>AtEOXact_PgStat_Relations</code></li>
+<li><code>AtPrepare_PgStat_Relations</code></li>
+<li><code>PostPrepare_PgStat_Relations</code></li>
+<li><code>TwoPhasePgStatRecord</code></li>
+<li><code>pgstat_copy_relation_stats</code></li>
+<li><code>pgstat_create_relation</code></li>
+<li><code>pgstat_drop_relation</code></li>
+<li><code>pgstat_update_heap_dead_tuples</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: リレーションがオープンされると <code>pgstat_init_relation</code> が呼ばれ、追跡対象か判定されます。 2. **追跡**: DML操作が発生すると <code>pgstat_count_heap_*</code> 関数群が呼ばれ、現在のトランザクションレベルに応じた <code>PgStat_TableXactStatus</code> が更新されます。 3. **トランザクション終了**: <code>AtEOXact_PgStat_Relations</code> がトランザクション終了時に呼ばれ、トランザクション内の累積値をベースの統計エントリへ転送します。 4. **フラッシュ**: <code>pgstat_relation_flush_cb</code> を通じて、ローカルの統計が共有メモリ上の <code>PgStatShared_Relation</code> に反映されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xact.h</code>: トランザクション状態の管理。</li>
+<li><code>utils/pgstat_internal.h</code>: 統計サブシステムの内部構造とAPI。</li>
+<li><code>utils/rel.h</code>: リレーションキャッシュ（RelCache）の操作。</li>
+<li><code>utils/timestamp.h</code>: VACUUM/ANALYZEの実行時間計測。</li>
+<li><code>access/twophase_rmgr.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計システム全体のメインエントリ。</li>
+<li><code>src/backend/utils/activity/pgstat_shmem.c</code>: 統計情報の共有メモリ管理。</li>
+<li><code>src/backend/catalog/heap.c</code>: リレーションの作成・破棄時に本モジュールの関数を呼び出す。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクションの分離**: 本ファイルは、トランザクションのネストレベルごとに統計を管理する複雑なスタック構造を持っています。デバッグ時は <code>trans</code> ポインタの階層構造に注意してください。</li>
+<li>**フラッシュのタイミング**: 統計は即座に共有メモリへ反映されるわけではなく、<code>pgstat_relation_flush_cb</code> が呼ばれるまでローカルに保持されます。</li>
+<li>**TRUNCATEの扱い**: TRUNCATE実行時は統計がリセットされるため、アボート時に備えて <code>save_truncdrop_counters</code> で以前の値を保存する特殊な処理が行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__TwoPhasePgStatRecord.html" target="wiki-view"><code>TwoPhasePgStatRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_copy_relation_stats.html" target="wiki-view"><code>pgstat_copy_relation_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_init_relation.html" target="wiki-view"><code>pgstat_init_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_assoc_relation.html" target="wiki-view"><code>pgstat_assoc_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_create_relation.html" target="wiki-view"><code>pgstat_create_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_drop_relation.html" target="wiki-view"><code>pgstat_drop_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_report_vacuum.html" target="wiki-view"><code>pgstat_report_vacuum</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__pgstat_report_analyze.html" target="wiki-view"><code>pgstat_report_analyze</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__AtEOXact_PgStat_Relations.html" target="wiki-view"><code>AtEOXact_PgStat_Relations</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__AtEOSubXact_PgStat_Relations.html" target="wiki-view"><code>AtEOSubXact_PgStat_Relations</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__AtPrepare_PgStat_Relations.html" target="wiki-view"><code>AtPrepare_PgStat_Relations</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_relation_c__PostPrepare_PgStat_Relations.html" target="wiki-view"><code>PostPrepare_PgStat_Relations</code></a></li>
+</ul></body></html>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/waitevent.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitEvent</h1>
+<h2>概念</h2>
+<p><code>WaitEvent</code> および <code>WaitEventSet</code> は、PostgreSQL において複数のイベント（ソケットの I/O 状態変化、ラッチのシグナル伝達、ポストマスタープロセスの終了など）を単一のインターフェースで効率的に監視・待機するための抽象化レイヤーです。OS 固有のイベント通知プリミティブ（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>WaitForMultipleObjects</code>）をラップすることで、プラットフォーム間の差異を吸収します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL の各バックエンドプロセス（<code>postmaster</code>, <code>syslogger</code>, <code>walreceiver</code> など）は、複数の接続ソケットや内部同期用のラッチを同時に監視する必要があります。<code>WaitEventSet</code> を使用することで、システムコールのオーバーヘッドを削減し、高パフォーマンスな多重待ち（I/O マルチプレクシング）をプラットフォームに依存しない統一された API で実現できます。また、<code>ResourceOwner</code> と連携することで、エラー発生時などのリソースリークを防止します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>struct WaitEvent</code>** (<code>src/include/storage/waiteventset.h</code>): 発生したイベントの詳細情報（イベント種別のビットマスク、関連ソケット <code>fd</code>、ユーザー定義データ <code>user_data</code> など）を格納し、呼び出し元へ伝達するための構造体。</li>
+<li>**<code>struct WaitEventSet</code>** (<code>src/backend/storage/ipc/waiteventset.c</code> / <code>src/include/storage/waiteventset.h</code>): 監視対象のイベント群を管理する不透明な（opaque）構造体。OS 固有の待機用データ（<code>epoll_fd</code> やハンドル配列など）を内包します。</li>
+<li>**<code>CreateWaitEventSet</code>** (<code>src/backend/storage/ipc/waiteventset.c</code>): 指定された最大イベント数 <code>nevents</code> に応じて <code>WaitEventSet</code> を初期化し、OS 固有の通知メカニズムを準備する関数。</li>
+<li>**<code>FreeWaitEventSet</code>** (<code>src/backend/storage/ipc/waiteventset.c</code>): <code>WaitEventSet</code> が保持する OS リソース（ファイル記述子など）をクリーンアップし、メモリを解放する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元（<code>postmaster</code> や <code>latch.c</code> など）が <code>CreateWaitEventSet</code> を呼び出し、<code>WaitEventSet</code> を生成します。この際、<code>ResourceOwner</code> を指定すると、リソースのライフサイクル管理に登録されます。 2. **イベント登録**: <code>AddWaitEventToSet</code>（※詳細な実装は本コンテキストの範囲外）を呼び出し、監視したいソケットやラッチ、イベントマスク（<code>WL_SOCKET_READABLE</code> など）をセットに追加します。 3. **待機**: <code>WaitEventSetWait</code>（※詳細な実装は本コンテキストの範囲外）を呼び出して、イベントが発生するかタイムアウトに達するまでプロセスをブロックします。内部的には <code>epoll_wait</code> や <code>kevent</code> などの OS システムコールが実行されます。 4. **イベント処理**: イベントを検知すると、発生したイベント情報が <code>WaitEvent</code> 構造体の配列として返されます。呼び出し元はこの配列を走査し、<code>events</code> ビットマスクや <code>user_data</code> に基づいて適切な処理を実行します。 5. **解放**: 利用が終わった段階で <code>FreeWaitEventSet</code> を呼び出し、OS 固有のファイル記述子のクローズやメモリの解放を行います。</p>
+<p>&gt; **注意**: <code>AddWaitEventToSet</code> や <code>WaitEventSetWait</code> の具体的な内部アルゴリズム、およびシグナルハンドラとの競合を回避する詳細なフローは、提供されたモジュール情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**イベント数の上限**: <code>WaitEventSet</code> 内の登録イベント数 <code>nevents</code> は、常に確保された最大スペース <code>nevents_space</code> 以下でなければなりません。</li>
+<li>**ラッチの整合性**: <code>WL_LATCH_SET</code> が指定されている場合、<code>latch</code> ポインタと <code>latch_pos</code> が正しく設定されている必要があります。</li>
+<li>**Windows での配置順序**: Windows 環境（<code>WAIT_USE_WIN32</code>）では、シグナル待機を保証するために <code>pgwin32_signal_event</code> が必ずハンドル配列の先頭（インデックス 0）に配置されていなければなりません。</li>
+<li>**有効なポインタ**: <code>FreeWaitEventSet</code> を呼び出す際、引数 <code>set</code> は有効なポインタでなければなりません（内部で NULL チェックのガードが明示されていないため）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**動的削除の未サポート**: 現在の設計では、一度 <code>WaitEventSet</code> に登録したイベントを動的に削除する機能は提供されていません。</li>
+<li>**タイムアウトのオーバーヘッド**: 待機処理におけるタイムアウトの指定はシステム的なオーバーヘッドを伴うため、可能な限り避けることが推奨されます。</li>
+<li>**プラットフォーム依存の挙動**: コンパイルフラグ（<code>WAIT_USE_EPOLL</code>、<code>WAIT_USE_KQUEUE</code>、<code>WAIT_USE_WIN32</code> など）によって内部実装が大きく異なります。特に Windows 環境では <code>reset</code> フラグの処理など、Unix 系とは異なる挙動に注意が必要です。</li>
+<li>**型安全ではない <code>user_data</code>**: <code>WaitEvent</code> の <code>user_data</code> フィールドは <code>void *</code> 型であるため、キャスト時の整合性を開発者が保証する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/storage/waiteventset.h</code>**: <code>WaitEvent</code> 構造体の定義や、利用可能な <code>WL_*</code> マクロの定義を確認できます。</li>
+<li>**<code>src/backend/storage/ipc/waiteventset.c</code>**: <code>CreateWaitEventSet</code> や <code>FreeWaitEventSet</code> の具体的な実装、およびプラットフォームごとの条件分岐（<code>epoll</code>, <code>kqueue</code>, <code>Win32</code>）の詳細を確認できます。</li>
+</ul></body></html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__tcop__utility_c__ProcessUtilitySlow.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcessUtilitySlow</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/tcop/utility.c:1091</code></li>
+</ul>
+<h2>目的</h2>
+<p>イベントトリガーのサポートが必要な複雑なユーティリティコマンド（DDL等）の実行を制御します。<code>ProcessUtility</code> から呼び出され、コマンドの実行前後でイベントトリガーを管理し、必要に応じてコマンドを再帰的にディスパッチします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ProcessUtilitySlow(
+    ParseState *pstate,
+    PlannedStmt *pstmt,
+    const char *queryString,
+    ProcessUtilityContext context,
+    ParamListInfo params,
+    QueryEnvironment *queryEnv,
+    DestReceiver *dest,
+    QueryCompletion *qc
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 実行対象の <code>PlannedStmt</code>、SQL文字列、実行コンテキスト、パラメータ情報、結果受信先など。</li>
+<li>**出力**: なし（副作用としてデータベース状態を変更し、イベントトリガーを起動する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>isCompleteQuery</code> が真の場合、イベントトリガーのライフサイクル（<code>EventTriggerBeginCompleteQuery</code> / <code>EndCompleteQuery</code>）が保証される。</li>
+<li>実行中のコマンドがイベントトリガーの対象である場合、<code>EventTriggerDDLCommandStart</code> が呼び出される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **イベントトリガー初期化**: <code>EventTriggerBeginCompleteQuery</code> を呼び出し、<code>PG_TRY</code> ブロックで囲むことで、異常終了時も確実に <code>EventTriggerEndCompleteQuery</code> が呼ばれるようにする。 2. **コマンドディスパッチ**: <code>nodeTag(parsetree)</code> に基づき、<code>switch</code> 文で適切なハンドラへ分岐する。</p>
+<ul>
+<li><code>T_CreateSchemaStmt</code>: <code>CreateSchemaCommand</code> を実行。</li>
+<li><code>T_CreateStmt</code> / <code>T_CreateForeignTableStmt</code>: </li>
+<li><code>transformCreateStmt</code> で解析し、生成された複数のステートメントを順次処理する。</li>
+<li><code>DefineRelation</code> 等でオブジェクトを作成し、<code>EventTriggerCollectSimpleCommand</code> でイベントトリガーに収集する。</li>
+<li><code>TableLikeClause</code> が含まれる場合は <code>expandTableLikeClause</code> で展開し、再帰的に処理する。</li>
+<li>その他のステートメントは <code>ProcessUtility</code> を再帰呼び出しして処理する。</li>
+<p>3. **状態更新**: コマンド間や処理の節目で <code>CommandCounterIncrement()</code> を呼び出し、変更を可視化する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/tcop/utility.c</code> 内の <code>ProcessUtility</code> から呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li><code>EventTrigger</code> 関連関数（<code>EventTriggerBeginCompleteQuery</code>, <code>EventTriggerDDLCommandStart</code> 等）</li>
+<li>各種コマンドハンドラ（<code>CreateSchemaCommand</code>, <code>DefineRelation</code>, <code>CreateForeignTable</code>, <code>transformCreateStmt</code> 等）</li>
+<li><code>ProcessUtility</code>（再帰呼び出し）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PlannedStmt</code>: 実行計画およびユーティリティ文のツリーを保持。</li>
+<li><code>ObjectAddress</code>: 作成されたデータベースオブジェクトの識別子。</li>
+<li><code>EventTrigger</code>: DDL コマンドのライフサイクル管理に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PG_TRY</code> ブロックにより、コマンド実行中にエラーが発生してもイベントトリガーの終了処理が保証される。</li>
+<li><code>CreateStmt</code> 処理において、<code>stmts</code> リストを走査中にリストが変更される可能性があるため、<code>foreach</code> ではなく <code>linitial</code> と <code>list_delete_first</code> を用いた安全な反復処理を行っている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はイベントトリガーをサポートするコマンド専用です。新しい DDL コマンドを追加し、イベントトリガーのフックが必要な場合は、この <code>switch</code> 文にケースを追加してください。</li>
+<li><code>CreateStmt</code> のような複雑なコマンドは、内部で複数のサブコマンドを生成するため、個別の <code>EventTriggerCollectSimpleCommand</code> 呼び出しと <code>CommandCounterIncrement</code> のタイミングに注意してください。</li>
+</ul></body></html>

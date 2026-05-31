@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistget_c__gistScanPage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistScanPage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistget.c:327</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスの指定されたページを読み込み、検索条件に合致するタプルを抽出して、スキャン状態のキューへの追加や結果セットへの格納を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, IndexOrderByDistance *myDistances, TIDBitmap *tbm, int64 *ntids)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>scan</code>: インデックススキャンの記述子。</li>
+<li><code>pageItem</code>: 走査対象のページ情報（ブロック番号、親LSN等）。</li>
+<li><code>myDistances</code>: 順序付きスキャン用の距離情報。</li>
+<li><code>tbm</code>: ビットマップスキャン時に使用するTIDビットマップ。</li>
+<li><code>ntids</code>: ビットマップに追加されたタプル数のカウンタ。</li>
+<li>**出力**: なし（副作用としてスキャン状態の更新やビットマップへの追加を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pageItem</code> はヒープタプルを指していないこと（<code>Assert(!GISTSearchItemIsHeap(*pageItem))</code>）。</li>
+<li>ページ読み込み時に <code>GIST_SHARE</code> ロックを取得する。</li>
+<li>ページが削除されている場合、処理を中断してバッファを解放する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ページ読み込み**: 指定されたブロックを読み込み、ロックを取得して <code>gistcheckpage</code> で検証する。 2. **右兄弟リンクの追跡**: 並行分割が発生している場合、<code>rightlink</code> を辿り、新しい <code>GISTSearchItem</code> を作成して優先度付きキューに追加する。 3. **削除済みページのスキップ**: ページが削除されている場合は即座に終了する。 4. **タプル走査**: ページ内の全タプルを順次評価する。</p>
+<ul>
+<li><code>gistindex_keytest</code> を呼び出し、検索条件との一致および距離を判定する。</li>
+<li><code>ignore_killed_tuples</code> が有効な場合、死んだタプルはスキップする。</li>
+<p>5. **結果の格納**:</p>
+<li>ビットマップスキャン時: <code>tbm_add_tuples</code> でTIDを格納。</li>
+<li>非順序スキャン時: <code>so-&gt;pageData</code> 配列に格納。</li>
+<li>順序付きスキャンまたは非リーフページ時: <code>GISTSearchItem</code> を作成し、<code>pairingheap</code> に追加。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gist/gistget.c</code> 内の各所（<code>gistgettuple</code> や <code>gistgetbitmap</code> 等から、再帰的または反復的に呼び出される）。</li>
+<li>**呼び出し先**: <code>ReadBuffer</code>, <code>LockBuffer</code>, <code>gistcheckpage</code>, <code>GistFollowRight</code>, <code>pairingheap_add</code>, <code>gistindex_keytest</code>, <code>tbm_add_tuples</code>, <code>gistFetchTuple</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GISTScanOpaque</code>: スキャン状態（キュー、メモリコンテキスト等）を保持。</li>
+<li><code>GISTSearchItem</code>: 検索対象のインデックスページまたはヒープタプルを表現する構造体。</li>
+<li><code>TIDBitmap</code>: ビットマップスキャン用の結果格納領域。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**並行分割**: 親LSNと現在のページNSNを比較し、分割が発生していれば右兄弟をキューに追加する。</li>
+<li>**ページ削除**: ページが削除済みの場合、処理をスキップする。</li>
+<li>**メモリ管理**: <code>gistindex_keytest</code> 実行時は <code>tempCxt</code> を使用し、タプル取得時は <code>pageDataCxt</code> を使用してメモリリークを防ぐ。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>LP_DEAD</code> ヒントの適用は、読み込み時のLSN（<code>so-&gt;curPageLSN</code>）を保存することで、MVCCスキャンにおいて安全に行われる。</li>
+<li>順序付きスキャン（<code>ORDER BY</code>）の場合、<code>myDistances</code> を用いてキューへの挿入順序が制御される。</li>
+</ul></body></html>

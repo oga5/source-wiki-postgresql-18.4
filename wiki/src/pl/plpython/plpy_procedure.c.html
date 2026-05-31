@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpython/plpy_procedure.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/plpython/plpy_procedure.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PL/Python関数およびトリガーの定義をキャッシュし、Pythonインタープリタ上で実行可能な形式へコンパイル・管理するための仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/pl/plpython</code> サブシステムにおいて、SQLレベルの関数定義とPython実行環境の橋渡しを行います。システムカタログ（<code>pg_proc</code>）から関数情報を取得し、実行に必要なメタデータ（引数変換、戻り値変換、コンパイル済みコード）を保持するキャッシュ層として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ管理**: <code>PLyProcedure</code> 構造体をハッシュテーブルで管理し、関数定義の変更（<code>xmin</code> や <code>tid</code> の変化）を検知して再コンパイルをトリガーする。</li>
+<li>**Pythonコードの生成**: SQLの関数本体をPythonの <code>def</code> 文に変換（munge）し、インタープリタへロードする。</li>
+<li>**リソース管理**: 関数ごとの専用メモリコンテキスト（<code>MemoryContext</code>）を生成し、Pythonオブジェクトのライフサイクルを管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PLy_procedure_cache</code>: 関数定義を保持するグローバルなハッシュテーブル。</li>
+<li><code>PLyProcedure</code>: 関数ごとの実行状態や変換情報を保持する主要構造体。</li>
+<li><code>PLy_procedure_get</code>: キャッシュから関数を取得、または必要に応じて新規作成するエントリポイント。</li>
+<li><code>PLy_procedure_compile</code>: Pythonソースをコンパイルし、実行可能なコードオブジェクトを生成する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLy_procedure_create</code></li>
+<li><code>PLy_procedure_delete</code></li>
+<li><code>PLy_procedure_munge_source</code></li>
+<li><code>PLy_procedure_name</code></li>
+<li><code>PLy_procedure_valid</code></li>
+<li><code>init_procedure_caches</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **取得**: <code>PLy_procedure_get</code> が呼ばれると、システムカタログから <code>pg_proc</code> タプルを取得。 2.  **検証**: キャッシュが存在すれば <code>PLy_procedure_valid</code> で有効性を確認。無効なら削除して再作成。 3.  **作成**: <code>PLy_procedure_create</code> がメモリコンテキストを確保し、引数・戻り値の型変換情報を設定。 4.  **コンパイル**: <code>PLy_procedure_munge_source</code> でソースを <code>def</code> 文に整形し、<code>Py_CompileString</code> でPythonバイトコードへ変換。 5.  **保持**: コンパイル済みコードと実行環境（<code>globals</code>, <code>statics</code>）を <code>PLyProcedure</code> に格納してキャッシュへ保存。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>utils/hsearch.h</code>: キャッシュ管理用。</li>
+<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: 関数定義および型情報の取得。</li>
+<li><code>plpy_procedure.h</code>: 構造体定義および外部インターフェース。</li>
+<li><code>utils/memutils.h</code>: 関数ごとのメモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>plpy_elog.h</code></li>
+<li><code>plpy_main.h</code></li>
+<li><code>plpy_util.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>plpy_typeio.c</code>: 引数および戻り値の変換ロジック（<code>PLy_input_setup_func</code> 等）。</li>
+<li><code>plpy_exec.c</code>: コンパイルされた <code>PLyProcedure</code> を実際に呼び出す実行エンジン。</li>
+<li><code>plpy_main.c</code>: Pythonインタープリタの初期化とグローバル環境の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 各 <code>PLyProcedure</code> は独自の <code>MemoryContext</code> を持ちます。<code>PLy_procedure_delete</code> が呼ばれると、関連するPythonオブジェクトの参照カウントを減らし、メモリコンテキストごと解放されるため、メモリリークには注意が必要です。</li>
+<li>**ソース変換**: <code>PLy_procedure_munge_source</code> は単純な文字列置換でインデントを調整しています。複雑なPythonコードを扱う際の制約となる可能性があるため、デバッグ時には生成されたソースを確認してください。</li>
+<li>**トリガーの扱い**: トリガー関数はキャッシュのキー（<code>fn_rel</code>）が特殊な扱いを受けるため、通常の関数とは異なるライフサイクルを持つ点に留意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__init_procedure_caches.html" target="wiki-view"><code>init_procedure_caches</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_name.html" target="wiki-view"><code>PLy_procedure_name</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_get.html" target="wiki-view"><code>PLy_procedure_get</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_create.html" target="wiki-view"><code>PLy_procedure_create</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_compile.html" target="wiki-view"><code>PLy_procedure_compile</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_delete.html" target="wiki-view"><code>PLy_procedure_delete</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_valid.html" target="wiki-view"><code>PLy_procedure_valid</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_procedure_c__PLy_procedure_munge_source.html" target="wiki-view"><code>PLy_procedure_munge_source</code></a></li>
+</ul></body></html>

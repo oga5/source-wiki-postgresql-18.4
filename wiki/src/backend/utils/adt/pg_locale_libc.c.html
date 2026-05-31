@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/pg_locale_libc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/pg_locale_libc.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLがOS標準のlibcロケール機能を利用するためのブリッジ層です。データベースの照合順序（Collation）や文字分類（CType）をOSのロケール設定に基づいて処理するための関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、ロケール依存の文字列操作（大文字小文字変換、照合比較）を抽象化する役割を担います。PostgreSQLはロケールプロバイダーとして <code>libc</code>、<code>icu</code>、<code>builtin</code> をサポートしており、本ファイルは <code>libc</code> プロバイダーの実装を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロケールオブジェクトの生成**: <code>create_pg_locale_libc</code> を通じ、指定されたOIDからOSのロケールハンドル（<code>locale_t</code>）を構築する。</li>
+<li>**文字列変換**: <code>strlower</code>, <code>strupper</code>, <code>strtitle</code> などの関数を、マルチバイト/シングルバイトのエンコーディングに応じて適切に振り分ける。</li>
+<li>**照合比較の抽象化**: <code>strcoll_l</code> や <code>strxfrm_l</code> をラップし、PostgreSQLの内部表現とOSのロケール関数を接続する。</li>
+<li>**プラットフォーム差異の吸収**: WindowsとPOSIX環境間でのロケールAPIの差異（<code>_create_locale</code> vs <code>newlocale</code> 等）を吸収する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>create_pg_locale_libc</code>: ロケール情報を保持する構造体を初期化するメインエントリーポイント。</li>
+<li><code>collate_methods_libc</code>: <code>libc</code> プロバイダーが提供する照合メソッド（<code>strncoll</code>, <code>strnxfrm</code>）を定義した構造体。</li>
+<li><code>strlower_libc</code>, <code>strupper_libc</code>, <code>strtitle_libc</code>: 大文字小文字変換の公開インターフェース。</li>
+<li><code>wchar2char</code>, <code>char2wchar</code>: libcの <code>wchar_t</code> とPostgreSQLのマルチバイト文字列間の変換ユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>make_libc_collator</code></li>
+<li><code>strlower_libc_mb</code></li>
+<li><code>strlower_libc_sb</code></li>
+<li><code>strncoll_libc</code></li>
+<li><code>strtitle_libc_mb</code></li>
+<li><code>strtitle_libc_sb</code></li>
+<li><code>strupper_libc_mb</code></li>
+<li><code>strupper_libc_sb</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>create_pg_locale_libc</code> がシステムカタログから照合順序情報を取得し、<code>make_libc_collator</code> を呼び出してOSのロケールハンドルを生成します。 2. **文字列操作**: 変換関数（例: <code>strlower_libc</code>）が呼ばれると、データベースのエンコーディング最大長を確認し、シングルバイト用（<code>_sb</code>）またはマルチバイト用（<code>_mb</code>）の処理へ分岐します。 3. **マルチバイト処理**: <code>_mb</code> 系関数は、一度 <code>char2wchar</code> でワイド文字配列に変換し、<code>towlower_l</code> 等のロケール対応関数を適用した後、<code>wchar2char</code> で元のエンコーディングに戻します。 4. **照合**: <code>strncoll_libc</code> は、必要に応じてスタック上のバッファ（<code>TEXTBUFLEN</code>）またはヒープを使用して文字列をNUL終端し、<code>strcoll_l</code> を呼び出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型定義。</li>
+<li><code>utils/pg_locale.h</code>: ロケール関連の共通構造体定義。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字処理のサポート。</li>
+<li><code>wctype.h</code>, <code>limits.h</code>: 標準Cライブラリの文字分類および制限定義。</li>
+<li><code>shlwapi.h</code> (Windowsのみ): Windows環境でのロケール操作用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>gnu/libc-version.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/pg_locale.c</code>: ロケールプロバイダーの抽象化層。</li>
+<li><code>src/backend/utils/adt/pg_locale_icu.c</code>: ICUプロバイダーによる実装（比較対象）。</li>
+<li><code>src/backend/utils/adt/pg_locale_builtin.c</code>: C/POSIXロケール用の組み込み実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スタックバッファ**: <code>TEXTBUFLEN</code> (1024バイト) を超える文字列は <code>palloc</code> でヒープ確保されます。パフォーマンスとメモリ消費のトレードオフが考慮されています。</li>
+<li>**strxfrmの無効化**: 現在、多くのプラットフォームで <code>strxfrm</code> の挙動に一貫性がないため、<code>strxfrm_is_safe</code> はデフォルトで <code>false</code> に設定されています。</li>
+<li>**Windowsの制約**: Windows環境では、異なる <code>LC_COLLATE</code> と <code>LC_CTYPE</code> の組み合わせをサポートしていないため、エラーを報告する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strlower_libc.html" target="wiki-view"><code>strlower_libc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strtitle_libc.html" target="wiki-view"><code>strtitle_libc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strupper_libc.html" target="wiki-view"><code>strupper_libc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strlower_libc_sb.html" target="wiki-view"><code>strlower_libc_sb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strlower_libc_mb.html" target="wiki-view"><code>strlower_libc_mb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strtitle_libc_sb.html" target="wiki-view"><code>strtitle_libc_sb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strtitle_libc_mb.html" target="wiki-view"><code>strtitle_libc_mb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strupper_libc_sb.html" target="wiki-view"><code>strupper_libc_sb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strupper_libc_mb.html" target="wiki-view"><code>strupper_libc_mb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__create_pg_locale_libc.html" target="wiki-view"><code>create_pg_locale_libc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__make_libc_collator.html" target="wiki-view"><code>make_libc_collator</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_libc_c__strncoll_libc.html" target="wiki-view"><code>strncoll_libc</code></a></li>
+</ul></body></html>

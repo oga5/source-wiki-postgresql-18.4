@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlogarchive_c__KeepFileRestoredFromArchive.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>KeepFileRestoredFromArchive</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xlogarchive.c:357</code></li>
+</ul>
+<h2>目的</h2>
+<p>アーカイブからリストアされたファイルを <code>pg_wal</code> ディレクトリへ配置し、アーカイブ状態の更新および関連プロセスへの通知を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void KeepFileRestoredFromArchive(const char *path, const char *xlogfname)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>path</code>: リストアされた一時ファイルのフルパス。</li>
+<li><code>xlogfname</code>: <code>pg_wal</code> 内での対象ファイル名。</li>
+<li>出力: なし（成功時はファイルを移動し、失敗時は <code>ereport</code> によりエラーを発生させる）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>path</code> で指定されたファイルは既にリストア済みであること。</li>
+<li><code>pg_wal</code> ディレクトリへの書き込み権限があること。</li>
+<li>Windows 環境では、ファイルが他プロセス（walsender 等）によって開かれている可能性があるため、リネーム処理が競合を回避するように設計されている。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **既存ファイルの削除**: <code>pg_wal</code> 内に同名のファイルが存在する場合、それを削除する。</p>
+<ul>
+<li>Windows では、他プロセスによるハンドル保持を考慮し、一時的な <code>.deleted</code> 拡張子へリネームしてから削除を行う。</li>
+<p>2. **ファイルの配置**: <code>durable_rename</code> を使用して、リストアされたファイルを <code>pg_wal</code> 内の目的のパスへ移動する。 3. **アーカイブ状態の更新**:</p>
+<li><code>ARCHIVE_MODE_ALWAYS</code> でない場合、<code>XLogArchiveForceDone</code> を呼び出し、アーカイブ済みとしてマークする。</li>
+<li>それ以外の場合は <code>XLogArchiveNotify</code> を呼び出し、アーカイブ対象として通知する。</li>
+<p>4. **通知**:</p>
+<li>ファイルが置換された場合、<code>WalSndRqstFileReload</code> を呼び出し、walsender にファイルのリロードを要求する。</li>
+<li><code>WalSndWakeup</code> を呼び出し、新しい WAL が到着したことを walsender に通知する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/timeline.c</code></li>
+<li><code>src/backend/access/transam/xlogrecovery.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>stat</code>, <code>rename</code>, <code>unlink</code> (システムコール)</li>
+<li><code>durable_rename</code></li>
+<li><code>XLogArchiveForceDone</code> / <code>XLogArchiveNotify</code></li>
+<li><code>WalSndRqstFileReload</code></li>
+<li><code>WalSndWakeup</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogArchiveMode</code>: アーカイブモードのグローバル設定。</li>
+<li><code>MAXPGPATH</code>: パス名の最大長。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**リネーム失敗**: <code>pg_wal</code> 内の既存ファイルのリネームや削除に失敗した場合、<code>ERROR</code> または <code>FATAL</code> で終了する。</li>
+<li>**ファイル移動失敗**: <code>durable_rename</code> が失敗した場合、<code>ERROR</code> を発生させる。</li>
+<li>**Windows 特有の競合**: 他プロセスがファイルを保持している場合、リネームが失敗する可能性があるが、<code>.deleted</code> 拡張子による一意な名前付けで回避を試みる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は WAL セグメント以外のファイル（タイムライン履歴ファイル等）に対しても呼び出される可能性があるため、<code>WalSnd</code> 関連の通知は汎用的に行われる。</li>
+<li>Windows における <code>.deleted</code> ファイルの生成は、ファイルハンドルがクローズされるまでファイルシステム上に残る挙動を考慮したものである。</li>
+</ul></body></html>

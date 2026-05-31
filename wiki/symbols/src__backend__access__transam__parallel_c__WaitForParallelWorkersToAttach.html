@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__parallel_c__WaitForParallelWorkersToAttach.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitForParallelWorkersToAttach</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/parallel.c:699</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、起動されたすべてのワーカープロセスが共有メモリのメッセージキュー（エラーキュー）にアタッチし、初期化を完了するまでリーダープロセスを待機させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void WaitForParallelWorkersToAttach(ParallelContext *pcxt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ParallelContext *pcxt</code>（並列実行コンテキストへのポインタ）</li>
+<li>**出力**: なし（完了時に復帰）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pcxt</code> は有効な並列コンテキストであること。</li>
+<li>リーダープロセスは、ワーカーがアタッチするまで定期的に <code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、ワーカーからのエラー伝播を処理する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pcxt-&gt;nworkers_launched</code> が 0 の場合は即座に終了する。 2. 無限ループ内で以下を繰り返す：</p>
+<ul>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を実行し、ワーカーからの保留中のメッセージやエラーを処理する。</li>
+<li>未アタッチの各ワーカーについて：</li>
+<li><code>error_mqh</code> が NULL の場合、ワーカーは既に終了済みとみなし、アタッチ済みとしてマークする。</li>
+<li><code>GetBackgroundWorkerPid</code> で状態を確認し、<code>BGWH_STARTED</code> であれば <code>shm_mq_get_sender</code> を通じてアタッチを確認する。</li>
+<li><code>BGWH_STOPPED</code> であり、かつアタッチが確認できない場合は、初期化失敗として <code>ERROR</code> を投げる。</li>
+<li>上記以外（未起動）の場合は、<code>WaitLatch</code> を使用してポストマスターからの通知を待機する。</li>
+<p>3. すべてのワーカーがアタッチ済み（<code>nknown_attached_workers == nworkers_launched</code>）になった時点でループを抜ける。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/brin/brin.c</code></li>
+<li><code>src/backend/access/gin/gininsert.c</code></li>
+<li><code>src/backend/access/nbtree/nbtsort.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code></li>
+<li><code>GetBackgroundWorkerPid()</code></li>
+<li><code>shm_mq_get_queue()</code></li>
+<li><code>shm_mq_get_sender()</code></li>
+<li><code>WaitLatch()</code></li>
+<li><code>ResetLatch()</code></li>
+<li><code>ereport()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行の管理構造体。</li>
+<li><code>BgwHandleStatus</code>: バックグラウンドワーカーのステータス。</li>
+<li><code>shm_mq</code>: 共有メモリメッセージキュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ワーカーがアタッチを完了する前に終了した場合、<code>ereport(ERROR, ...)</code> によりリーダープロセスでエラーが発生する。</li>
+<li><code>WaitLatch</code> 待機中にポストマスターが終了した場合、<code>WL_EXIT_ON_PM_DEATH</code> により待機が解除される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリーダープロセスがワーカーの準備完了を同期するための重要なポイントである。</li>
+<li><code>known_attached_workers</code> 配列は、各ワーカーのアタッチ状態を追跡するために使用される。</li>
+<li><code>shm_mq</code> の送信者が設定されているかどうかが、ワーカーのアタッチ完了の判定基準となっている。</li>
+</ul></body></html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__pl__plpython__plpy_exec_c__PLy_exec_trigger.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PLy_exec_trigger</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/pl/plpython/plpy_exec.c:318</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のトリガー呼び出しを Python 関数へ橋渡しし、トリガーデータの構築、実行、および戻り値（OK, SKIP, MODIFY）の処理を行うメインエントリーポイント。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>HeapTuple PLy_exec_trigger(FunctionCallInfo fcinfo, PLyProcedure *proc)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>fcinfo</code>: PostgreSQL の関数呼び出し情報。<code>TriggerData</code> を保持。</li>
+<li><code>proc</code>: 実行対象の PL/Python プロシージャ情報。</li>
+<li>**出力**:</li>
+<li><code>HeapTuple</code>: トリガー処理の結果として変更されたタプル、あるいは <code>NULL</code>（SKIP の場合）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>fcinfo</code> がトリガーとして呼び出されていること（<code>Assert(CALLED_AS_TRIGGER(fcinfo))</code>）。</li>
+<li>リレーションのタプル記述子（<code>tupdesc</code>）が変更された場合、実行のたびに <code>PLy_input/output_setup_func</code> および <code>setup_tuple</code> が再実行され、型変換情報が更新される。</li>
+<li>再帰呼び出し時には <code>PLy_global_args_push</code> が呼び出され、終了時に <code>PLy_global_args_pop</code> が保証されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **型変換の準備**: <code>rel_descr</code> を取得し、必要に応じて入出力変換関数をセットアップする。 2. **スタック管理**: 再帰呼び出しに備え、現在の引数状態を <code>PLy_global_args_push</code> で退避する。 3. **実行ブロック (<code>PG_TRY</code>)**:</p>
+<ul>
+<li><code>SPI_register_trigger_data</code> で SPI にトリガーデータを登録。</li>
+<li><code>PLy_trigger_build_args</code> で Python 用の引数を構築。</li>
+<li><code>PLy_procedure_call</code> で Python コードを実行。</li>
+<li><code>SPI_finish</code> で SPI 接続を終了。</li>
+<li>戻り値の解析: <code>None</code> または <code>&quot;OK&quot;</code> は正常終了、<code>&quot;SKIP&quot;</code> は <code>NULL</code> を返却、<code>&quot;MODIFY&quot;</code> は <code>PLy_modify_tuple</code> を呼び出してタプルを更新。</li>
+<p>4. **クリーンアップ (<code>PG_FINALLY</code>)**: <code>PLy_global_args_pop</code> を実行し、Python オブジェクトの参照カウントを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/pl/plpython/plpy_main.c</code> (直接の呼び出し)</li>
+<li>**呼び出し先**:</li>
+<li><code>PLy_output_setup_func</code>, <code>PLy_input_setup_func</code>, <code>PLy_output_setup_tuple</code>, <code>PLy_input_setup_tuple</code></li>
+<li><code>PLy_global_args_push</code>, <code>PLy_global_args_pop</code></li>
+<li><code>SPI_register_trigger_data</code>, <code>SPI_finish</code></li>
+<li><code>PLy_trigger_build_args</code>, <code>PLy_procedure_call</code>, <code>PLy_modify_tuple</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>FunctionCallInfo</code>: PostgreSQL の関数呼び出し情報。</li>
+<li><code>PLyProcedure</code>: PL/Python プロシージャの定義とキャッシュ。</li>
+<li><code>TriggerData</code>: トリガー実行時のコンテキスト情報。</li>
+<li><code>HeapTuple</code>: PostgreSQL のタプル構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**型不一致**: Python からの戻り値が期待される文字列（&quot;OK&quot;, &quot;SKIP&quot;, &quot;MODIFY&quot;）や <code>None</code> 以外の場合、<code>ERRCODE_DATA_EXCEPTION</code> でエラーを報告。</li>
+<li>**SPI 失敗**: <code>SPI_finish</code> が失敗した場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>**MODIFY の誤用**: DELETE トリガーで &quot;MODIFY&quot; が返された場合、警告を発行して無視する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>PG_TRY</code> ブロック内での <code>Py_XDECREF</code> 漏れはメモリリークを引き起こすため、<code>PG_FINALLY</code> での解放処理を厳守すること。</li>
+<li>トリガーのタプル記述子が変更される可能性があるため、型変換のセットアップはキャッシュの有無を確認しつつ毎回実行される設計となっている。</li>
+</ul></body></html>

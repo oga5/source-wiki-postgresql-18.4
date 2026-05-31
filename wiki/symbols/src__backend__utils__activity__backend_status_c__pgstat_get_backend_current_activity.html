@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__activity__backend_status_c__pgstat_get_backend_current_activity.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_get_backend_current_activity</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/activity/backend_status.c:995</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたプロセスID（PID）を持つバックエンドプロセスの現在のクエリ文字列を取得します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>const char *pgstat_get_backend_current_activity(int pid, bool checkUser);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>pid</code>: 検索対象のバックエンドプロセスID。</li>
+<li><code>checkUser</code>: 呼び出し元がスーパーユーザーでない場合に、対象バックエンドの所有者と現在のユーザーを照合するかどうかを指定するフラグ。</li>
+<li>**出力**:</li>
+<li>成功時: 現在実行中のクエリ文字列（<code>const char *</code>）。</li>
+<li>失敗時: 以下のいずれかのエラーメッセージ文字列を返します。</li>
+<li><code>&quot;&lt;insufficient privilege&gt;&quot;</code>: 権限不足。</li>
+<li><code>&quot;&lt;command string not enabled&gt;&quot;</code>: クエリ文字列が有効ではない。</li>
+<li><code>&quot;&lt;backend information not available&gt;&quot;</code>: 指定されたPIDが見つからない。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>BackendStatusArray</code> が初期化済みであること。</li>
+<li>共有メモリ上のデータ読み取りには、<code>st_changecount</code> を用いた楽観的並行制御プロトコルが適用されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>BackendStatusArray</code> を走査し、指定された <code>pid</code> と一致する <code>st_procpid</code> を持つエントリを検索します。 2. 検索中、各エントリに対して以下の非ブロッキング読み取りプロトコルを実行します。</p>
+<ul>
+<li><code>pgstat_begin_read_activity</code> で <code>st_changecount</code> を記録。</li>
+<li>データを読み取り、<code>pgstat_end_read_activity</code> で再度 <code>st_changecount</code> を記録。</li>
+<li><code>pgstat_read_activity_complete</code> で読み取りの一貫性を検証。不一致の場合はリトライします。</li>
+<p>3. 一致するエントリが見つかった場合:</p>
+<li><code>checkUser</code> が <code>true</code> かつ非スーパーユーザーであれば、所有者権限を確認します。</li>
+<li>クエリ文字列が空であれば専用のメッセージを返します。</li>
+<li>それ以外の場合は <code>pgstat_clip_activity</code> を介してクエリ文字列を返します。</li>
+<p>4. 全エントリを走査しても見つからない場合は、エラーメッセージを返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/lmgr/deadlock.c:1128</code></li>
+<li>**呼び出し先**:</li>
+<li><code>pgstat_begin_read_activity</code> (マクロ)</li>
+<li><code>pgstat_end_read_activity</code> (マクロ)</li>
+<li><code>pgstat_read_activity_complete</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code></li>
+<li><code>superuser</code></li>
+<li><code>GetUserId</code></li>
+<li><code>pgstat_clip_activity</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgBackendStatus</code>: バックエンドの状態を保持する共有メモリ上の構造体。</li>
+<li><code>BackendStatusArray</code>: 全バックエンドのステータスを格納する共有メモリ上の配列。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>指定したPIDが存在しない場合、<code>&quot;&lt;backend information not available&gt;&quot;</code> を返します。</li>
+<li>権限チェックに失敗した場合、<code>&quot;&lt;insufficient privilege&gt;&quot;</code> を返します。</li>
+<li>読み取り中に共有メモリ上のデータが更新され続けた場合、<code>CHECK_FOR_INTERRUPTS()</code> を呼び出しつつリトライを繰り返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>st_activity_raw</code> を直接参照するため、マルチバイト文字の切り詰めについては <code>pgstat_clip_activity</code> の実装に依存しています。</li>
+<li>戻り値の文字列はメモリリークの可能性がありますが、現状の設計では許容されています。</li>
+</ul></body></html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__waiteventset_c__AddWaitEventToSet.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AddWaitEventToSet</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/waiteventset.c:569</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>WaitEventSet</code> に監視対象のイベント（ソケット、ラッチ、ポストマスターの死滅など）を追加し、OS 固有の待機メカニズム（<code>epoll</code>, <code>kqueue</code>, <code>poll</code> 等）へ登録するための準備を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch, void *user_data)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>set</code>: 監視対象を保持する <code>WaitEventSet</code> 構造体。</li>
+<li><code>events</code>: 監視するイベントの種類（<code>WL_SOCKET_READABLE</code>, <code>WL_LATCH_SET</code> 等）。</li>
+<li><code>fd</code>: 監視対象のソケット記述子。</li>
+<li><code>latch</code>: 監視対象のラッチ（<code>NULL</code> 可）。</li>
+<li><code>user_data</code>: イベント発生時に呼び出し元が識別するための任意のポインタ。</li>
+<li>**出力**:</li>
+<li>戻り値: 追加されたイベントのインデックス（<code>int</code> 型）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>set-&gt;nevents</code> が <code>set-&gt;nevents_space</code> 未満であること（領域不足時は <code>Assert</code> で停止）。</li>
+<li>ラッチを指定する場合、そのラッチの所有者（<code>owner_pid</code>）が現在のプロセスと一致していること。</li>
+<li>1つの <code>WaitEventSet</code> に登録できるラッチは1つまで。</li>
+<li>ソケット関連のイベントを監視する場合、<code>fd</code> が <code>PGINVALID_SOCKET</code> であってはならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検証**: 入力されたイベントとリソース（ラッチ、ソケット）の整合性をチェックし、不正な組み合わせであれば <code>elog(ERROR)</code> を発行する。 2. **登録**: <code>WaitEventSet</code> 内のイベント配列に新しい <code>WaitEvent</code> を追加し、位置情報を記録する。 3. **特殊処理**:</p>
+<ul>
+<li><code>WL_LATCH_SET</code> の場合、内部のパイプやシグナル通知用 FD を設定する。</li>
+<li><code>WL_POSTMASTER_DEATH</code> の場合、ポストマスター監視用の FD を設定する。</li>
+<p>4. **OS 固有の初期化**: コンパイル時に選択されたバックエンド（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>win32</code>）に応じて、対応する <code>WaitEventAdjust*</code> 関数を呼び出し、カーネルレベルでの監視登録を行う。 5. **返却**: 追加されたイベントのインデックスを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/postgres_fdw/postgres_fdw.c</code>, <code>src/backend/executor/execAsync.c</code>, <code>src/backend/executor/nodeAppend.c</code>, <code>src/backend/libpq/pqcomm.c</code>, <code>src/backend/postmaster/postmaster.c</code>, <code>src/backend/postmaster/syslogger.c</code>, <code>src/backend/storage/ipc/latch.c</code> など。</li>
+<li>**呼び出し先**: <code>WaitEventAdjustEpoll</code>, <code>WaitEventAdjustKqueue</code>, <code>WaitEventAdjustPoll</code>, <code>WaitEventAdjustWin32</code>（いずれもプラットフォーム依存）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WaitEventSet</code>: 待機イベント群を管理するメイン構造体。</li>
+<li><code>WaitEvent</code>: 個々のイベントの属性（FD、イベント種別、ユーザーデータ）を保持する構造体。</li>
+<li><code>Latch</code>: プロセス間通信や起床通知に使用される構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**領域不足**: <code>set-&gt;nevents</code> が <code>set-&gt;nevents_space</code> を超える場合、<code>Assert</code> により異常終了する。</li>
+<li>**所有権違反**: 他プロセスが所有するラッチを登録しようとした場合、エラーとなる。</li>
+<li>**重複登録**: 既にラッチが登録されているセットに別のラッチを追加しようとした場合、エラーとなる。</li>
+<li>**無効な引数**: ソケットなしでソケットイベントを監視しようとした場合、エラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はプラットフォームごとの差異を吸収する重要な抽象化ポイントです。新しい OS プリミティブを追加する場合は、<code>WaitEventAdjust*</code> 関数の実装と、本関数内の条件分岐を適切に更新してください。</li>
+<li><code>WIN32</code> 環境では <code>event-&gt;reset</code> フラグの初期化など、特有の処理が含まれています。変更時は Windows 版の挙動に注意してください。</li>
+</ul></body></html>

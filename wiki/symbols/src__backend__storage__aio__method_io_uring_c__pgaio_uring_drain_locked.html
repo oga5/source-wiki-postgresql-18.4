@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_drain_locked.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgaio_uring_drain_locked</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/storage/aio/method_io_uring.c:525</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>io_uring</code> の完了キュー（CQ）をスキャンし、保留中の非同期 I/O イベントを回収して処理を実行するヘルパー関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgaio_uring_drain_locked(PgAioUringContext *context);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PgAioUringContext *context</code> - <code>io_uring</code> インスタンスとロックを保持するコンテキスト構造体。</li>
+<li>**出力**: なし（副作用として I/O 完了処理を実行）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は <code>context-&gt;completion_lock</code> を <code>LW_EXCLUSIVE</code> モードで保持している必要があります（<code>Assert</code> により検証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **エラーハンドリング設定**: <code>pgaio_uring_completion_error_callback</code> をエラーコンテキストスタックに登録します。 2. **キューの確認**: <code>io_uring_cq_ready</code> を使用して、現在処理可能な完了イベント数を取得します。 3. **バッチ処理**:</p>
+<ul>
+<li><code>io_uring_peek_batch_cqe</code> を用いて、最大 <code>PGAIO_MAX_LOCAL_COMPLETED_IO</code> 個の完了キューエントリ（CQE）を一度に取得します。</li>
+<li>取得した各 CQE に対して以下の処理を行います：</li>
+<li><code>io_uring_cqe_get_data</code> で関連付けられた <code>PgAioHandle</code> を取得。</li>
+<li><code>io_uring_cqe_seen</code> でカーネルに対してイベントの消費を通知。</li>
+<li><code>pgaio_io_process_completion</code> を呼び出し、I/O 結果を反映。</li>
+<p>4. **ループ**: 全ての保留イベントが処理されるまで繰り返します。 5. **後処理**: エラーコンテキストスタックを復元します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/aio/method_io_uring.c</code> 内の <code>pgaio_uring_wait_one</code> 等（完了イベントの回収が必要な箇所）。</li>
+<li>**呼び出し先**: <code>pgaio_io_process_completion</code>（I/O 完了処理の実行）、<code>liburing</code> API（<code>io_uring_cq_ready</code>, <code>io_uring_peek_batch_cqe</code>, <code>io_uring_cqe_seen</code>）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioUringContext</code>: <code>io_uring</code> リング構造体と <code>completion_lock</code> を保持。</li>
+<li><code>PgAioHandle</code>: I/O 操作のハンドル。</li>
+<li><code>io_uring_cqe</code>: カーネルから返される完了イベント構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ready</code> が 0 の場合はループに入らず即座に終了します。</li>
+<li><code>ncqes</code> が 0 の場合、または <code>io_uring_peek_batch_cqe</code> が期待通りに動作しない場合でも、ループ条件により安全に終了します。</li>
+<li>処理中にエラーが発生した場合、<code>error_context_stack</code> に登録されたコールバックが呼び出されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>completion_lock</code> を保持した状態で実行されるため、処理時間が長くなりすぎないよう注意が必要です。</li>
+<li><code>PGAIO_MAX_LOCAL_COMPLETED_IO</code> によるバッチ処理は、一度に大量のイベントを処理する際の効率化を目的としています。</li>
+</ul></body></html>

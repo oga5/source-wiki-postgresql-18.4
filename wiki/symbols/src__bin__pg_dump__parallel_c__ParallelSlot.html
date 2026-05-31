@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_dump__parallel_c__ParallelSlot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelSlot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/bin/pg_dump/parallel.c:95</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>pg_dump</code> および <code>pg_restore</code> における並列処理の各ワーカープロセス（またはスレッド）の状態、通信パイプ、および識別情報を保持する内部構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct ParallelSlot {
+    T_WorkerStatus workerStatus;
+    ParallelCompletionPtr callback;
+    void *callback_data;
+    ArchiveHandle *AH;
+    int pipeRead;
+    int pipeWrite;
+    int pipeRevRead;
+    int pipeRevWrite;
+#ifdef WIN32
+    uintptr_t hThread;
+    unsigned int threadId;
+#else
+    pid_t pid;
+#endif
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ParallelState</code> 内の配列要素として管理され、リーダープロセスからジョブ割り当て時に <code>callback</code> や <code>AH</code> が設定されます。</li>
+<li>**出力**: ワーカーの実行状態（<code>workerStatus</code>）や、プロセス/スレッド識別子を保持します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>workerStatus</code> が <code>WRKR_WORKING</code> の場合のみ、<code>callback</code> および <code>callback_data</code> が有効です。</li>
+<li>プラットフォームに応じて、Unix系では <code>pid</code> が、Windows環境では <code>hThread</code> および <code>threadId</code> がワーカーの生存確認に使用されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>リーダープロセスは、<code>DispatchJobForTocEntry</code> を通じてジョブを割り当て、パイプ経由でコマンドを送信します。</li>
+<li>ワーカーは <code>RunWorker</code> ループ内でパイプを監視し、リーダーからの指示に従って <code>ArchiveHandle</code> を使用した処理を実行します。</li>
+<li>処理完了後、ワーカーはパイプ経由で結果を返送し、リーダーが <code>ListenToWorkers</code> でこれを回収します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_dump/parallel.c</code> 内の <code>GetMyPSlot</code>、<code>RunWorker</code>、<code>set_cancel_slot_archive</code> 等から参照されます。また、<code>src/bin/pg_amcheck/pg_amcheck.c</code> においても <code>run_command</code> 等で利用されています。</li>
+<li>**呼び出し先**: 構造体内部に <code>ArchiveHandle</code> へのポインタを保持し、ワーカー処理の実行時に利用します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelState</code>: 本構造体を配列として保持する管理構造体。</li>
+<li><code>T_WorkerStatus</code>: ワーカーの状態（アイドル/実行中/終了）を定義する列挙型。</li>
+<li><code>ArchiveHandle</code>: ダンプ/リストア処理のコンテキストを保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>Windows環境では <code>fork</code> が利用できないため、スレッドとソケットを用いたパイプエミュレーション（<code>pgpipe</code>）に依存します。</li>
+<li>シグナルハンドラ内でのアクセスは制限されており、安全な関数のみを使用する必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>プラットフォーム依存の差異（<code>#ifdef WIN32</code>）がプロセス/スレッド管理に含まれているため、OS固有の挙動変更時には注意が必要です。</li>
+<li>デッドロック回避のため、ワーカーがテーブルロックを取得する際は <code>NOWAIT</code> が使用される設計となっています。</li>
+</ul></body></html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__indexcmds_c__ComputeIndexAttrs.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ComputeIndexAttrs</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/indexcmds.c:1871</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックス定義（<code>IndexElem</code> リスト）を解析し、インデックスの各列、式、および排他制約に必要な情報を計算して <code>IndexInfo</code> 構造体へ格納する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ComputeIndexAttrs(IndexInfo *indexInfo, Oid *typeOids, Oid *collationOids, Oid *opclassOids, Datum *opclassOptions, int16 *colOptions, const List *attList, const List *exclusionOpNames, Oid relId, const char *accessMethodName, Oid accessMethodId, bool amcanorder, bool isconstraint, bool iswithoutoverlaps, Oid ddl_userid, int ddl_sec_context, int *ddl_save_nestlevel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>indexInfo</code>: 構築対象のインデックス情報。</li>
+<li><code>attList</code>: インデックス対象列または式のリスト (<code>IndexElem</code>)。</li>
+<li><code>relId</code>: 対象テーブルの OID。</li>
+<li><code>exclusionOpNames</code>: 排他演算子名のリスト（存在する場合）。</li>
+<li>その他: アクセスメソッド情報、権限コンテキスト、制約フラグ等。</li>
+<li>**出力**: </li>
+<li><code>indexInfo</code> の各フィールド（属性番号、式リスト、排他演算子情報等）を更新。</li>
+<li><code>typeOids</code>, <code>collationOids</code>, <code>opclassOids</code> 等の配列へ計算結果を書き込み。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>exclusionOpNames</code> が提供される場合、その長さは <code>indexInfo-&gt;ii_NumIndexKeyAttrs</code> と一致しなければならない。</li>
+<li>インデックス式に含まれる関数は <code>IMMUTABLE</code> でなければならない。</li>
+<li>インデックスに含まれる列（Included columns）には、照合順序、演算子クラス、ソート順序の指定は不可。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **排他制約の準備**: <code>exclusionOpNames</code> または <code>iswithoutoverlaps</code> が指定されている場合、<code>IndexInfo</code> 内の排他演算子用配列を確保する。 2. **権限昇格**: <code>ddl_userid</code> が有効な場合、<code>GetUserIdAndSecContext</code> を呼び出し現在のセキュリティコンテキストを保存する。 3. **属性リストの走査**: <code>attList</code> を順次処理する。</p>
+<ul>
+<li>**単純な列**: <code>SearchSysCacheAttName</code> で属性情報を取得し、属性番号を記録。</li>
+<li>**式**: <code>exprType</code> および <code>exprCollation</code> で型と照合順序を特定。式が可変関数を含む場合はエラーとする。</li>
+<p>4. **検証**: インデックスのキー列数を超えた位置にある「付加列（Included columns）」に対して、制約違反（照合順序や演算子クラスの指定など）がないかチェックする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/indexcmds.c</code> 内の <code>DefineIndex</code> 等から複数回参照されている。</li>
+<li>**呼び出し先**: <code>SearchSysCacheAttName</code>, <code>GetUserIdAndSecContext</code>, <code>exprType</code>, <code>exprCollation</code>, <code>contain_mutable_functions_after_planning</code> 等のユーティリティ関数を呼び出す。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexInfo</code>: インデックス構築に必要なメタデータを保持する主要構造体。</li>
+<li><code>IndexElem</code>: パーサが生成するインデックス要素の定義。</li>
+<li><code>Form_pg_attribute</code>: システムカタログ <code>pg_attribute</code> の行データ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**列未定義**: 指定された列名がテーブルに存在しない場合、<code>ERRCODE_UNDEFINED_COLUMN</code> でエラー。</li>
+<li>**式制約違反**: インデックス式に <code>IMMUTABLE</code> 以外の関数が含まれる場合、<code>ERRCODE_INVALID_OBJECT_DEFINITION</code> でエラー。</li>
+<li>**サポート外の操作**: 付加列に対して演算子クラスやソート順序を指定した場合、<code>ERRCODE_INVALID_OBJECT_DEFINITION</code> でエラー。</li>
+<li>**式制限**: インデックス式内でサブクエリやウィンドウ関数を使用した場合、パーサ段階で拒否される前提。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>DefineIndex</code> の中核的な解析フェーズを担う。</li>
+<li><code>iswithoutoverlaps</code> の処理において、<code>exclusionOpNames</code> が <code>NIL</code> の場合でも配列の確保が必要になる点に注意。</li>
+<li>付加列（<code>attn &gt;= nkeycols</code>）のバリデーションロジックは、将来的に新しいインデックス機能が追加される際に拡張が必要となる可能性がある。</li>
+</ul></body></html>

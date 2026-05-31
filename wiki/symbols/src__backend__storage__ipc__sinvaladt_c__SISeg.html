@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__sinvaladt_c__SISeg.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SISeg</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/backend/storage/ipc/sinvaladt.c:165</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上で、全バックエンド間におけるキャッシュ無効化メッセージの伝播と、各プロセスの読み取り進捗を管理するためのメインデータ構造です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct SISeg {
+    int minMsgNum;
+    int maxMsgNum;
+    int nextThreshold;
+    slock_t msgnumLock;
+    SharedInvalidationMessage buffer[MAXNUMMESSAGES];
+    int numProcs;
+    int *pgprocnos;
+    ProcState procState[FLEXIBLE_ARRAY_MEMBER];
+} SISeg;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造であるため、直接的な入力・出力はありません。共有メモリを介して、<code>SIInsertDataEntries</code>（書き込み）および <code>SIGetDataEntries</code>（読み取り）の対象となります。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>msgnumLock</code> は <code>maxMsgNum</code> へのアクセスを保護し、マルチプロセッサ環境でのメモリ順序付けを保証します。</li>
+<li><code>procState</code> は <code>pgprocno</code> をインデックスとして使用します。</li>
+<li><code>pgprocnos</code> 配列は、現在使用中のスロットを効率的にスキャンするために保持される密な配列です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**循環バッファ管理**: <code>buffer</code> にメッセージを蓄積し、<code>minMsgNum</code> から <code>maxMsgNum</code> までの範囲でメッセージを管理します。</li>
+<li>**クリーンアップ**: <code>nextThreshold</code> に達すると <code>SICleanupQueue</code> が呼び出され、全バックエンドが読み終えた古いメッセージを解放して領域を再利用します。</li>
+<li>**進捗追跡**: 各バックエンドの <code>ProcState</code> を通じて、個別の読み取り進捗を追跡します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>shmInvalBuffer</code> を介して <code>src/backend/storage/ipc/sinvaladt.c</code> 内の各関数（<code>SIInsertDataEntries</code>, <code>SIGetDataEntries</code>, <code>SICleanupQueue</code> 等）から参照されます。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SharedInvalidationMessage</code>: <code>buffer</code> 内に格納される個別の無効化メッセージ。</li>
+<li><code>ProcState</code>: 各バックエンドの進捗状態を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**バッファ溢れ**: メッセージの蓄積がバッファ容量を超えた場合、<code>SICleanupQueue</code> による強制的なクリーンアップが行われます。</li>
+<li>**リセット状態**: 処理が極端に遅延し、バッファから溢れたバックエンドは <code>resetState</code> フラグが立てられ、キャッシュの再構築を強制されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>pgprocnos</code> は <code>ProcArrayStruct</code> と重複していますが、<code>ProcArrayLock</code> の競合を避けるために独立して保持されています。</li>
+<li><code>SIGetDataEntries</code> は共有ロックを取得しますが、これは自身の <code>ProcState</code> 更新を許可するための設計であり、読み取り専用ではありません。</li>
+</ul></body></html>

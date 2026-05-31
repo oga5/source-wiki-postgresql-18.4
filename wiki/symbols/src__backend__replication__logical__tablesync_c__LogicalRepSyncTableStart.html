@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__tablesync_c__LogicalRepSyncTableStart.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LogicalRepSyncTableStart</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/tablesync.c:1317</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおけるテーブル同期ワーカーの初期化処理を実行します。パブリッシャーへの接続確立、同期用スロットの作成、およびデータコピー開始のための準備を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>char *LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>origin_startpos</code> (同期開始位置を格納するポインタ)</li>
+<li>**出力**: 同期用スロット名（文字列）を返します。接続失敗時やエラー時は <code>ereport(ERROR, ...)</code> により終了します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MyLogicalRepWorker</code> が初期化されていること。</li>
+<li>同期対象テーブルの状態が <code>SUBREL_STATE_INIT</code>, <code>SUBREL_STATE_DATASYNC</code>, <code>SUBREL_STATE_FINISHEDCOPY</code> のいずれかであること。</li>
+<li>パブリッシャーへの接続情報が <code>MySubscription</code> に保持されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **状態確認**: <code>GetSubscriptionRelState</code> で現在の同期状態を取得し、共有メモリを更新。<code>SYNCDONE</code> 等の場合は <code>finish_sync_worker()</code> を呼び出し終了。 2. **接続**: パブリッシャーへ接続し、同期用スロット名を <code>application_name</code> として設定。 3. **状態別処理**:</p>
+<ul>
+<li><code>DATASYNC</code>: 既存の同期用スロットを削除。</li>
+<li><code>FINISHEDCOPY</code>: 既存のレプリケーションオリジンをセットアップし、<code>copy_table_done</code> へジャンプ。</li>
+<p>4. **初期化**: 新規同期の場合、状態を <code>DATASYNC</code> に更新し、レプリケーションオリジンを作成。 5. **トランザクション開始**: パブリッシャー側で <code>BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ</code> を実行。 6. **スロット作成**: <code>walrcv_create_slot</code> を呼び出し、キャッチアップフェーズ用の永続スロットを作成。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/tablesync.c</code> 内の <code>TablesyncWorkerMain</code> から呼び出されることが示唆されています。</li>
+<li>**呼び出し先**: <code>GetSubscriptionRelState</code>, <code>ReplicationSlotNameForTablesync</code>, <code>walrcv_connect</code>, <code>ReplicationSlotDropAtPubNode</code>, <code>replorigin_by_name</code>, <code>walrcv_exec</code>, <code>walrcv_create_slot</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MyLogicalRepWorker</code>: 同期ワーカーの共有メモリ状態。</li>
+<li><code>MySubscription</code>: サブスクリプション情報。</li>
+<li><code>LogRepWorkerWalRcvConn</code>: パブリッシャーとの接続用ハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>パブリッシャーへの接続失敗時に <code>ERRCODE_CONNECTION_FAILURE</code> でエラー終了。</li>
+<li>トランザクション開始失敗やスロット作成失敗時にエラー終了。</li>
+<li>状態が <code>READY</code> 等の完了済み状態である場合、ワーカーは即座に終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は同期ワーカーのライフサイクル管理の要であり、状態遷移（<code>INIT</code> → <code>DATASYNC</code> → <code>FINISHEDCOPY</code>）の整合性が重要です。</li>
+<li><code>COPY</code> 中のネットワーク切断やクラッシュ後の再開処理が含まれており、<code>XXX</code> コメントにある通り、スロットのクリーンアップ戦略には改善の余地があります。</li>
+</ul></body></html>

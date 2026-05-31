@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__subscriptioncmds_c__DropSubscription.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DropSubscription</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/subscriptioncmds.c:1625</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションのサブスクリプションを削除し、関連するカタログエントリ、レプリケーションスロット、ワーカープロセス、および同期状態をクリーンアップする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>stmt</code>: 削除対象のサブスクリプション名を含む <code>DropSubscriptionStmt</code> 構造体。</li>
+<li><code>isTopLevel</code>: コマンドがトップレベルで実行されているかを示すフラグ。</li>
+<li>**出力**: なし（副作用としてシステムカタログおよびレプリケーションリソースを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>実行ユーザーはサブスクリプションの所有者である必要がある。</li>
+<li>レプリケーションスロットを伴う削除の場合、トランザクションブロック内での実行は禁止される。</li>
+<li>実行中、対象サブスクリプションに対して <code>AccessExclusiveLock</code> を取得し、他のプロセス（レプリケーションワーカー等）による操作を排他する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_subscription</code> カタログから対象を検索し、存在しない場合は <code>missing_ok</code> に応じてエラーまたは通知を出す。 2. 所有権チェックを行い、<code>InvokeObjectDropHook</code> を呼び出す。 3. <code>AccessExclusiveLock</code> を取得し、サブスクリプションのメタデータ（名前、接続情報、スロット名）を抽出する。 4. スロットが存在する場合、トランザクションブロック内での実行を阻止する。 5. <code>pg_subscription</code> からタプルを削除し、関連するレプリケーションワーカーを停止させる。 6. ランチャーのワーカー開始時刻情報を削除する。 7. 各テーブルの同期状態を走査し、関連するレプリケーションオリジンを削除する。 8. 共有依存関係を削除し、最後に <code>RemoveSubscriptionRel</code> を呼び出して関連するリレーション同期状態をクリーンアップする。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/tcop/utility.c</code> (SQLコマンド実行時)</li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code>, <code>SearchSysCache2</code>, <code>object_ownercheck</code>, <code>InvokeObjectDropHook</code>, <code>LockSharedObject</code>, <code>PreventInTransactionBlock</code>, <code>EventTriggerSQLDropAddObject</code>, <code>CatalogTupleDelete</code>, <code>logicalrep_workers_find</code>, <code>logicalrep_worker_stop</code>, <code>ApplyLauncherForgetWorkerStartTime</code>, <code>GetSubscriptionRelations</code>, <code>replorigin_drop_by_name</code>, <code>deleteSharedDependencyRecordsFor</code>, <code>RemoveSubscriptionRel</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DropSubscriptionStmt</code>: SQL構文解析結果。</li>
+<li><code>pg_subscription</code>: サブスクリプション定義を保持するシステムカタログ。</li>
+<li><code>SubscriptionRelState</code>: テーブル同期状態。</li>
+<li><code>LogicalRepWorker</code>: レプリケーションワーカーの制御構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>サブスクリプションが存在しない場合、<code>missing_ok</code> が偽であればエラーを発生させる。</li>
+<li>所有者でない場合、<code>aclcheck_error</code> を発生させる。</li>
+<li>トランザクションブロック内でスロット削除を伴う操作を行おうとした場合、<code>PreventInTransactionBlock</code> によりエラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>AccessExclusiveLock</code> を保持して処理を行うため、長時間実行される可能性がある。</li>
+<li>レプリケーションスロットの削除は非トランザクション的であるため、ロールバックが発生してもスロットは削除されたままとなる点に注意すること。</li>
+</ul></body></html>

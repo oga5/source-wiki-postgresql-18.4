@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/multixactid.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MultiXactId</h1>
+<h2>概念</h2>
+<p><code>MultiXactId</code> は、複数のトランザクション（XID）が同一のタプルに対して同時にロックを保持する場合などに、それらを1つの識別子として束ねるために使用される32ビットの識別子です（<code>src/include/c.h</code>）。</p>
+<p>通常、タプルヘッダには1つのトランザクションIDしか記録できませんが、複数の共有ロック（Shared Lock）などが並行して保持される場合、単一のXIDでは表現できません。<code>MultiXactId</code> は、複数のトランザクションIDとそれぞれのロック状態（<code>MultiXactStatus</code>）を1つのIDに集約することで、この制限を解決します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLにおける行レベルの並行ロック制御において、複数のトランザクションによる同時ロックを効率的に管理するために不可欠です。<code>MultiXactId</code> を用いることで、ロック保持者である複数のトランザクション情報をディスク上のタプルヘッダにコンパクトに格納し、トランザクション間の競合やデッドロックの検出を正しく行うことが可能になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/transam</code> （トランザクション管理および <code>multixact.c</code> を含むコアモジュール）</li>
+<li><code>module:src/include</code> （基本型定義 <code>c.h</code> を含むヘッダモジュール）</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/c.h#MultiXactId</code>**: 32ビットの識別子。</li>
+<li>**<code>symbol:src/backend/access/transam/multixact.c#MultiXactIdCreate</code>**: 2つのトランザクションID（XID）とそれぞれのロック状態（<code>MultiXactStatus</code>）を組み合わせ、新しい <code>MultiXactId</code> を生成する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: タプルロック更新時（<code>src/backend/access/heap/heapam.c</code> など）に、2つのXIDとそれぞれのロック状態を指定して <code>MultiXactIdCreate</code> が呼び出されます。 2. **メンバーの格納**: 入力された2つのXIDとステータスが <code>MultiXactMember</code> 配列に格納されます。 3. **永続化とID生成**: <code>MultiXactIdCreateFromMembers(2, members)</code> が呼び出され、メンバーリストがSLRU（Simple Least Recently Used）領域に永続化され、新しい <code>MultiXactId</code> が取得されます。 4. **返却**: 生成された <code>MultiXactId</code> が呼び出し元に返されます。</p>
+<p>*注意: 3つ以上のメンバーを束ねる際の流れや、SLRU領域のページ管理、およびVACUUM等によるクリーンアップ処理の全体的なエンドツーエンドフローは、提供されたコンテキストからは未検証です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効なXID**: <code>MultiXactIdCreate</code> に渡される <code>xid1</code> および <code>xid2</code> は、有効なトランザクションID（<code>TransactionIdIsValid</code>）でなければなりません。</li>
+<li>**同一XID時のステータス不一致**: <code>xid1</code> と <code>xid2</code> が同一である場合、それぞれのロック状態（<code>status1</code> と <code>status2</code>）は異なる必要があります。</li>
+<li>**事前初期化**: <code>MultiXactIdCreate</code> を呼び出す前に、<code>MultiXactIdSetOldestMember()</code> が事前に呼び出され、最古のメンバーIDスロットが有効化されていなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**生存確認の省略**: <code>MultiXactIdCreate</code> は、既存の <code>MultiXactIdExpand</code> とは異なり、入力されたXIDが現在実行中（生存中）であるかのチェックを行いません。そのため、呼び出し側でトランザクションの整合性を担保する必要があります。</li>
+<li>**メンバー数の制限**: <code>MultiXactIdCreate</code> は2つのメンバーを束ねる専用のラッパー関数です。3つ以上のメンバーを扱う場合は、この関数ではなく <code>MultiXactIdCreateFromMembers</code> を直接使用する必要があります。</li>
+<li>**リソース枯渇による失敗**: 内部の <code>MultiXactIdCreateFromMembers</code> の処理において、SLRU領域の枯渇やI/Oエラーにより処理が失敗する可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/transam/multixact.c</code> (実装詳細、<code>MultiXactIdCreate</code> や <code>MultiXactIdCreateFromMembers</code> の定義)</li>
+<li><code>src/include/c.h</code> (<code>MultiXactId</code> の型定義)</li>
+</ul></body></html>

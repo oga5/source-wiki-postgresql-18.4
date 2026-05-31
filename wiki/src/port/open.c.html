@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/port/open.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/port/open.c</h1>
+<h2>概要</h2>
+<p>Windows 環境における <code>open()</code> および <code>fopen()</code> のラッパー実装です。POSIX 準拠のファイル操作を Windows のネイティブ API (<code>CreateFile</code>) に変換し、PostgreSQL が必要とする高度なファイル共有やエラーハンドリングを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/port</code> 内で、プラットフォーム固有の差異を吸収する「移植層」の一部です。特に Windows 特有のファイルロック問題や、POSIX とは異なるファイル属性の扱いを抽象化し、PostgreSQL のコアおよびフロントエンドツールが共通のインターフェースでファイル操作を行えるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**POSIX 互換のファイルオープン**: <code>open()</code> および <code>fopen()</code> の呼び出しを Windows の <code>CreateFile</code> にマッピングします。</li>
+<li>**共有違反の緩和**: アンチウイルスソフト等による一時的なファイルロックに対し、最大 30 秒間の再試行ロジックを提供します。</li>
+<li>**ファイル属性の変換**: <code>O_CREAT</code> や <code>O_TRUNC</code> などのフラグを Windows の <code>CreateFile</code> 用フラグへ変換します。</li>
+<li>**ハンドル管理**: <code>O_CLOEXEC</code> のサポートや、ファイルハンドルからファイル記述子（fd）への変換を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgwin32_open_handle</code>: 内部関数。<code>CreateFile</code> を呼び出し、再試行ロジックと NT ステータスの変換を担います。</li>
+<li><code>pgwin32_open</code>: <code>open()</code> の代替。ファイルハンドルを取得し、<code>_open_osfhandle</code> を通じて C ランタイムのファイル記述子を返します。</li>
+<li><code>pgwin32_fopen</code>: <code>fopen()</code> の代替。モード文字列を解析して <code>pgwin32_open</code> を呼び出し、<code>_fdopen</code> で <code>FILE*</code> を生成します。</li>
+<li><code>openFlagsToCreateFileFlags</code>: POSIX のオープンフラグを Windows の <code>dwCreationDisposition</code> に変換するヘルパー関数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **フラグ変換**: <code>openFlagsToCreateFileFlags</code> が POSIX フラグを Windows の作成モードに変換します。 2.  **ハンドル取得**: <code>pgwin32_open_handle</code> が <code>CreateFile</code> を実行します。ここで共有モード (<code>FILE_SHARE_READ|WRITE|DELETE</code>) を指定し、同時実行性を確保します。 3.  **再試行ループ**: <code>ERROR_SHARING_VIOLATION</code> 等が発生した場合、<code>pg_usleep</code> を用いて最大 30 秒間リトライします。 4.  **fd 変換**: 成功したハンドルは <code>_open_osfhandle</code> で POSIX 互換のファイル記述子に変換されます。 5.  **モード適用**: <code>_setmode</code> を使用して、バイナリ/テキストモードを適用します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>windows.h</code> (間接的): <code>CreateFile</code>, <code>HANDLE</code> 等の Windows API。</li>
+<li><code>port/win32ntdll.h</code>: NT ステータスコードの取得用。</li>
+<li><code>fcntl.h</code>, <code>sys/stat.h</code>: POSIX ファイルフラグ定義。</li>
+<li><code>assert.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fe.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/port/win32error.c</code>: <code>_dosmaperr</code> を通じて Windows エラーコードを <code>errno</code> に変換する際に利用されます。</li>
+<li><code>src/include/port.h</code>: <code>open</code> や <code>fopen</code> が本ファイルの実装に置換されるためのマクロ定義が含まれています。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>WIN32</code> マクロが定義されている場合のみコンパイルされます。</li>
+<li><code>O_CLOEXEC</code> の実装において、<code>SetHandleInformation</code> ではなく <code>CreateFile</code> の <code>SECURITY_ATTRIBUTES</code> を利用している点は、マルチスレッド環境での競合を避けるための重要な設計です。</li>
+<li><code>STATUS_DELETE_PENDING</code> のハンドリングは、Windows 特有の「削除中だがまだファイルが存在する」状態を POSIX の期待通りに扱うための工夫です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__port__open_c__openFlagsToCreateFileFlags.html" target="wiki-view"><code>openFlagsToCreateFileFlags</code></a></li>
+<li><a href="../../symbols/src__port__open_c__pgwin32_open_handle.html" target="wiki-view"><code>pgwin32_open_handle</code></a></li>
+<li><a href="../../symbols/src__port__open_c__pgwin32_open.html" target="wiki-view"><code>pgwin32_open</code></a></li>
+<li><a href="../../symbols/src__port__open_c__pgwin32_fopen.html" target="wiki-view"><code>pgwin32_fopen</code></a></li>
+</ul></body></html>

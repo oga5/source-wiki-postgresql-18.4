@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/utils/syscache.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/utils/syscache.h</h1>
+<h2>概要</h2>
+<p><code>syscache.h</code> は、PostgreSQL のシステムカタログ（<code>pg_class</code>, <code>pg_attribute</code> 等）に対する高速なインメモリ・キャッシュアクセスを提供するためのインターフェース定義です。パーサー、プランナー、エグゼキューターがカタログ情報を頻繁に参照する際のオーバーヘッドを削減します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache/catcache.c</code>（汎用カタログキャッシュエンジン）のラッパーとして機能します。<code>lsyscache.h</code> が特定のカタログ情報取得のための高レベルな便利関数を提供するのに対し、本ファイルはキャッシュの検索、解放、無効化といった低レベルかつ汎用的な操作を定義しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ検索**: 指定されたキーに基づくカタログタプルの検索（単一タプルおよびリスト）。</li>
+<li>**ライフサイクル管理**: キャッシュされたタプルの参照カウント管理と解放。</li>
+<li>**属性抽出**: キャッシュされたタプルからの特定属性値の抽出。</li>
+<li>**キャッシュ無効化**: システムカタログ更新時のキャッシュ整合性維持。</li>
+<li>**抽象化**: キーの数（1〜4個）に応じた関数呼び出しの正規化とマクロによる簡素化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>検索・取得系</h3>
+<ul>
+<li><code>SearchSysCache[1-4]</code>: 指定したキャッシュIDとキーでタプルを検索。参照カウントがインクリメントされる。</li>
+<li><code>SearchSysCacheCopy[1-4]</code>: 検索結果のタプルをコピーして返す。呼び出し側が <code>heap_freetuple</code> で解放する必要がある。</li>
+<li><code>SearchSysCacheExists[1-4]</code>: タプルの存在確認のみを行う。</li>
+<li><code>GetSysCacheOid[1-4]</code>: キャッシュから特定の OID 属性を直接取得する。</li>
+</ul>
+<h3>ライフサイクル・管理系</h3>
+<ul>
+<li><code>ReleaseSysCache(HeapTuple)</code>: <code>SearchSysCache</code> で取得したタプルの参照カウントをデクリメントする。</li>
+<li><code>SysCacheInvalidate(int, uint32)</code>: 特定のキャッシュエントリを無効化する。</li>
+<li><code>ReleaseSysCacheList</code>: <code>catclist</code> を解放するためのマクロ。</li>
+</ul>
+<h3>属性アクセス系</h3>
+<ul>
+<li><code>SysCacheGetAttr</code>: キャッシュされたタプルから属性値を抽出する。</li>
+<li><code>SysCacheGetAttrNotNull</code>: 属性が NULL でないことを前提とした抽出。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索フロー**: <code>SearchSysCacheN</code> マクロは、内部で <code>SearchSysCache</code> 関数を呼び出します。これは <code>catcache.c</code> の検索ロジックを介して、ハッシュテーブル上の <code>HeapTuple</code> を返します。 2. **メモリ管理**: <code>SearchSysCache</code> で取得したタプルはキャッシュ内に保持されます。呼び出し側は不要になった時点で <code>ReleaseSysCache</code> を呼び出し、参照カウントを戻す必要があります。 3. **無効化フロー**: <code>SysCacheInvalidate</code> は、カタログの更新（<code>heap_update</code> 等）が発生した際に呼び出され、該当するハッシュ値を持つキャッシュエントリを無効化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/attnum.h</code>: 属性番号の定義。</li>
+<li><code>access/htup.h</code>: ヒープタプルの構造定義。</li>
+<li><code>catalog/syscache_ids.h</code>: キャッシュID（<code>CACHEID</code>）の列挙。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/cache/syscache.c</code>: 実装本体。</li>
+<li><code>src/backend/utils/cache/catcache.c</code>: キャッシュエンジンの基盤。</li>
+<li><code>src/include/utils/lsyscache.h</code>: <code>syscache.h</code> を利用した、より具体的なカタログ検索関数群。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>SearchSysCache</code> 系はキャッシュ内のタプルを指すポインタを返しますが、<code>SearchSysCacheCopy</code> 系は呼び出し側が所有権を持つコピーを返します。後者は必ず解放が必要です。</li>
+<li>**インライン化**: 多くの関数がマクロとして定義されており、キーの数（1〜4）を明示することで型安全性を高め、将来的なキー数変更の影響を最小化しています。</li>
+<li>**省略された詳細**: <code>catcache.h</code> は意図的にインクルードされていません。これは依存関係の複雑化を避けるためであり、リスト検索機能を使用する場合のみ、呼び出し側で明示的にインクルードする必要があります。</li>
+<li>**パフォーマンス**: <code>SearchSysCache</code> は非常に高速ですが、頻繁な呼び出しは参照カウントの操作を伴うため、可能な限り <code>SearchSysCacheCopy</code> ではなく、必要な属性のみを抽出する手法が推奨されます。</li>
+</ul></body></html>

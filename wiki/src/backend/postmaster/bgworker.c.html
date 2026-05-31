@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/bgworker.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/bgworker.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの「バックグラウンドワーカー（BGWorker）」機能の実装ファイルです。ユーザー定義のコードを独立したプロセスとして実行するための基盤を提供します。Postmasterによるプロセス管理と、共有メモリを介した動的なワーカー登録・監視の仕組みを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、Postmasterプロセスと通常のバックエンドプロセス間の橋渡しを行います。Postmasterはワーカーの起動・終了・再起動を管理し、バックエンドはワーカーの登録や状態監視を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ワーカーのライフサイクル管理**: Postmasterによるワーカープロセスのフォーク、死活監視、終了処理。</li>
+<li>**共有メモリ管理**: <code>BackgroundWorkerArray</code> を用いたワーカー状態の共有と、ロックレスな通信プロトコルの提供。</li>
+<li>**動的登録**: バックエンドプロセスからのワーカー登録と、それに対するハンドル（<code>BackgroundWorkerHandle</code>）の提供。</li>
+<li>**関数解決**: ライブラリ名と関数名から実行アドレスを解決するメカニズムの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ管理</h3>
+<ul>
+<li><code>BackgroundWorkerArray</code>: 全ワーカーの状態を保持する共有メモリ上の配列。</li>
+<li><code>BackgroundWorkerSlot</code>: 個々のワーカーの状態（PID、終了フラグ、登録情報）を保持する構造体。</li>
+<li><code>BackgroundWorkerLock</code>: 共有メモリ上のスロットを操作する際に使用する <code>LWLock</code>。</li>
+</ul>
+<h3>プロセス管理（Postmaster側）</h3>
+<ul>
+<li><code>BackgroundWorkerList</code>: Postmasterが保持する登録済みワーカーのプライベートリスト。</li>
+<li><code>BackgroundWorkerStateChange()</code>: 共有メモリの変更を検知し、Postmasterの内部状態を更新する。</li>
+<li><code>ReportBackgroundWorkerPID()</code> / <code>ReportBackgroundWorkerExit()</code>: ワーカーのPID変化を共有メモリに反映し、通知を行う。</li>
+</ul>
+<h3>ユーザー・バックエンドAPI</h3>
+<ul>
+<li><code>RegisterDynamicBackgroundWorker()</code>: 実行中のバックエンドからワーカーを動的に登録する。</li>
+<li><code>GetBackgroundWorkerPid()</code>: ワーカーの現在のPIDと状態を取得する。</li>
+<li><code>WaitForBackgroundWorkerStartup()</code> / <code>WaitForBackgroundWorkerShutdown()</code>: ワーカーの起動・終了を待機する。</li>
+<li><code>TerminateBackgroundWorker()</code>: ワーカーに終了を指示する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BackgroundWorkerArray</code></li>
+<li><code>BackgroundWorkerHandle</code></li>
+<li><code>BackgroundWorkerInitializeConnection</code></li>
+<li><code>BackgroundWorkerInitializeConnectionByOid</code></li>
+<li><code>BackgroundWorkerShmemInit</code></li>
+<li><code>BackgroundWorkerShmemSize</code></li>
+<li><code>BackgroundWorkerSlot</code></li>
+<li><code>BackgroundWorkerStateChange</code></li>
+<li><code>FindRegisteredWorkerBySlotNumber</code></li>
+<li><code>ForgetBackgroundWorker</code></li>
+<li><code>ResetBackgroundWorkerCrashTimes</code></li>
+<li><code>bgworker_main_type</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: バックエンドが <code>RegisterDynamicBackgroundWorker</code> を呼び出し、<code>BackgroundWorkerLock</code> を取得して空きスロットを確保。<code>in_use</code> フラグを立てて <code>PMSIGNAL_BACKGROUND_WORKER_CHANGE</code> シグナルをPostmasterに送る。 2. **起動**: Postmasterが <code>BackgroundWorkerStateChange</code> を実行。<code>in_use</code> が真のスロットを走査し、新規ワーカーであれば <code>fork()</code> を実行。 3. **実行**: 子プロセスは <code>BackgroundWorkerMain</code> を呼び出し、<code>LookupBackgroundWorkerFunction</code> でユーザー関数をロードして実行する。 4. **終了**: ワーカー終了時、Postmasterが <code>ReportBackgroundWorkerExit</code> を呼び出し、必要に応じて再起動またはスロットの解放（<code>in_use = false</code>）を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>: 共有メモリ領域の確保。</li>
+<li><code>storage/lwlock.h</code>: ワーカー登録時の排他制御。</li>
+<li><code>postmaster/postmaster.h</code>: Postmasterへのシグナル送信と状態管理。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/atomics.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgworker_internals.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/ascii.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timeout.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/bgworker.h</code>: 公開API定義。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: プロセス管理のメインループ。</li>
+<li><code>src/backend/replication/logicalworker.c</code>: 実際のBGWorker実装例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックレスプロトコル**: Postmasterはロックを取得できないため、共有メモリ上の <code>in_use</code> フラグとメモリバリア（<code>pg_read_barrier</code> / <code>pg_write_barrier</code>）を用いたロックレスな協調動作が設計されています。</li>
+<li>**メモリ所有権**: <code>RegisteredBgWorker</code> はPostmasterのプライベートメモリ（<code>PostmasterContext</code>）で管理されます。</li>
+<li>**制約**: <code>max_parallel_workers</code> の制限は、共有メモリ上のカウンタ（<code>parallel_register_count</code> 等）で管理されます。</li>
+<li>**省略された詳細**: 本ファイルはプロセス管理のロジックに特化しており、ユーザーコードが実行する具体的なトランザクション処理や、<code>InitPostgres</code> の詳細な内部挙動については他モジュールに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerSlot.html" target="wiki-view"><code>BackgroundWorkerSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerArray.html" target="wiki-view"><code>BackgroundWorkerArray</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerHandle.html" target="wiki-view"><code>BackgroundWorkerHandle</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__bgworker_main_type.html" target="wiki-view"><code>bgworker_main_type</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerShmemSize.html" target="wiki-view"><code>BackgroundWorkerShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerShmemInit.html" target="wiki-view"><code>BackgroundWorkerShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__FindRegisteredWorkerBySlotNumber.html" target="wiki-view"><code>FindRegisteredWorkerBySlotNumber</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerStateChange.html" target="wiki-view"><code>BackgroundWorkerStateChange</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__ForgetBackgroundWorker.html" target="wiki-view"><code>ForgetBackgroundWorker</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__ResetBackgroundWorkerCrashTimes.html" target="wiki-view"><code>ResetBackgroundWorkerCrashTimes</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerInitializeConnection.html" target="wiki-view"><code>BackgroundWorkerInitializeConnection</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__bgworker_c__BackgroundWorkerInitializeConnectionByOid.html" target="wiki-view"><code>BackgroundWorkerInitializeConnectionByOid</code></a></li>
+</ul></body></html>

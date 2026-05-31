@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/partitioning/partprune.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/partitioning/partprune.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのパーティションプルーニング（不要なパーティションの除外）ロジックの中核を担います。クエリの <code>WHERE</code> 句（<code>RestrictInfo</code>）を解析し、実行時にパーティションを特定するための「プルーニングステップ」を生成・実行する機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>partitioning</code> サブシステムにおいて、<code>partbounds.c</code> が境界値の数学的定義を管理するのに対し、本ファイルはそれらの境界をクエリ条件と照らし合わせる「最適化エンジン」として機能します。プランナによる静的プルーニングと、エグゼキュータによる動的プルーニングの両方をサポートします。</p>
+<h2>責務</h2>
+<ul>
+<li>**プルーニングステップの生成**: <code>WHERE</code> 句を解析し、パーティションキーとの比較条件を <code>PartitionPruneStep</code>（演算用または結合用）に変換する。</li>
+<li>**実行時プルーニングの最適化**: プランナが決定できない条件（<code>PARAM_EXEC</code> 等）を検出し、実行時に評価可能なステップを生成する。</li>
+<li>**境界値との照合**: 生成されたステップを境界情報（<code>PartitionBoundInfo</code>）と照合し、スキャン対象のパーティションインデックスを特定する。</li>
+<li>**論理的矛盾の検出**: クエリ条件がパーティション定義と矛盾する場合（例：<code>x=1</code> かつ <code>x=2</code>）、プルーニングを早期終了させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プルーニングコンテキストと状態</h3>
+<ul>
+<li><code>GeneratePruningStepsContext</code>: ステップ生成中の状態保持用。<code>target</code>（プランナ/初期/実行時）に応じて生成ロジックを切り替える。</li>
+<li><code>PartClauseInfo</code>: パーティションキーとマッチした句のメタデータ（演算子、式、比較関数）。</li>
+<li><code>PruneStepResult</code>: ステップ実行結果。対象となる境界オフセットと、デフォルト/NULLパーティションのスキャン要否を保持。</li>
+</ul>
+<h3>ステップ生成・実行関数</h3>
+<ul>
+<li><code>make_partition_pruneinfo</code>: プランナが呼び出すエントリポイント。実行時プルーニングのための情報を <code>PlannerInfo</code> に付与する。</li>
+<li><code>gen_partprune_steps</code>: クエリ句を解析し、ステップを生成する。</li>
+<li><code>get_matching_partitions</code>: 実際にステップを実行し、生存するパーティションの <code>Bitmapset</code> を返す。</li>
+<li><code>perform_pruning_base_step</code> / <code>perform_pruning_combine_step</code>: ステップの種類に応じた実行ロジック。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: <code>gen_partprune_steps</code> が <code>WHERE</code> 句を走査し、<code>match_clause_to_partition_key</code> を用いてキーとマッチする式を抽出。 2. **ステップ構築**: 抽出された式から <code>PartitionPruneStepOp</code> を生成。複数のステップは <code>PartitionPruneStepCombine</code>（AND/ORに対応するINTERSECT/UNION）で結合される。 3. **実行**: <code>get_matching_partitions</code> がステップを順次評価。</p>
+<ul>
+<li>演算ステップは <code>get_matching_[hash|list|range]_bounds</code> を呼び出し、境界値と照合。</li>
+<li>結合ステップは <code>bms_add_members</code> (UNION) または <code>bms_int_members</code> (INTERSECT) で結果をマージ。</li>
+<p>4. **結果**: 最終的な <code>Bitmapset</code> が、スキャン対象のパーティションインデックスとして返される。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>, <code>optimizer/</code> 系: 式ツリーの操作およびプランナとの連携。</li>
+<li><code>partitioning/partbounds.h</code>: 境界値の検索・比較ロジック。</li>
+<li><code>utils/lsyscache.h</code>: 型情報や演算子情報の取得。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/partitioning/partbounds.c</code>: 境界値の計算ロジック（本ファイルの実行エンジンが依存）。</li>
+<li><code>src/backend/executor/execPartition.c</code>: 実行時に <code>PartitionPruneContext</code> を初期化し、<code>partprune.c</code> の関数を呼び出す側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PartitionPruneContext</code> 内の <code>ppccontext</code> は、FmgrInfo などの永続的なデータ保持に使用されます。実行時の式評価は <code>ExprContext</code> を介して行われます。</li>
+<li>**制約**: <code>PARTTARGET_PLANNER</code> は定数のみを扱いますが、<code>PARTTARGET_EXEC</code> は <code>PARAM_EXEC</code> を含む動的な式を扱います。</li>
+<li>**境界の不変性**: <code>PartitionBoundInfo</code> はキャッシュされた不変データとして扱われます。</li>
+<li>**未実装/浅い部分**: <code>NOT</code> 句の複雑な組み合わせに対するプルーニングは限定的です。また、<code>ScalarArrayOpExpr</code>（<code>IN</code> 句など）の処理は、定数配列に対しては最適化されていますが、動的な配列に対しては制限があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseInfo.html" target="wiki-view"><code>PartClauseInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseMatchStatus.html" target="wiki-view"><code>PartClauseMatchStatus</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseTarget.html" target="wiki-view"><code>PartClauseTarget</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__GeneratePruningStepsContext.html" target="wiki-view"><code>GeneratePruningStepsContext</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PruneStepResult.html" target="wiki-view"><code>PruneStepResult</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__make_partition_pruneinfo.html" target="wiki-view"><code>make_partition_pruneinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__add_part_relids.html" target="wiki-view"><code>add_part_relids</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__make_partitionedrel_pruneinfo.html" target="wiki-view"><code>make_partitionedrel_pruneinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__gen_partprune_steps.html" target="wiki-view"><code>gen_partprune_steps</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__prune_append_rel_partitions.html" target="wiki-view"><code>prune_append_rel_partitions</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__get_matching_partitions.html" target="wiki-view"><code>get_matching_partitions</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__gen_partprune_steps_internal.html" target="wiki-view"><code>gen_partprune_steps_internal</code></a></li>
+</ul></body></html>

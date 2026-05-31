@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/sharedtuplestoreaccessor.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SharedTuplestoreAccessor</h1>
+<h2>概念</h2>
+<p><code>SharedTuplestoreAccessor</code> は、PostgreSQLの並列クエリ実行時において、各バックエンドプロセスが共有メモリ上のタプルストア（<code>SharedTuplestore</code>）に対して読み書きを行うための、プロセスローカルな状態管理・操作用構造体です。</p>
+<p>ヘッダーファイル（<code>sharedtuplestore.h</code>）では不透明な構造体（Opaque Struct）として宣言され、実体は <code>sharedtuplestore.c</code> で定義されています。これにより、各プロセスが担当する一時ファイル（<code>SharedFileSet</code>）と共有メモリ上の状態を紐付け、バッファリングやスキャン状態をカプセル化して管理します。</p>
+<h2>なぜ重要か</h2>
+<p>並列クエリ（並列ハッシュジョインなど）において、複数のバックエンドプロセスが協調してタプルを共有ストアに書き込み、またそれを並列にスキャン（読み取り）する必要があります。</p>
+<p><code>SharedTuplestoreAccessor</code> は、共有メモリ上の <code>SharedTuplestore</code> と、各プロセスが所有するローカルな一時ファイル（<code>BufFile</code>）やバッファ（<code>read_buffer</code>, <code>write_chunk</code>）との仲介役として機能します。これにより、プロセス間での不要な競合を避けつつ、効率的なデータの一時保存と並列スキャンを実現するために不可欠な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/sort</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/utils/sharedtuplestore.h#SharedTuplestoreAccessor</code></li>
+<p>外部モジュール向けに公開されている不透明な構造体の定義。</p>
+<li><code>symbol:src/backend/utils/sort/sharedtuplestore.c#SharedTuplestoreAccessor</code></li>
+<p>構造体の具体的なメンバ（読み取り用状態、書き込み用状態、メモリコンテキスト、ファイルセットへのポインタなど）を定義する実体。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化・接続**: バックエンドプロセスは、<code>sts_initialize</code> や <code>sts_attach</code> を呼び出して <code>SharedTuplestoreAccessor</code> を初期化し、共有メモリ上の <code>SharedTuplestore</code> および <code>SharedFileSet</code> に接続します。 2. **書き込み（データ蓄積）**:</p>
+<ul>
+<li><code>src/backend/executor/nodeHash.c</code> などの呼び出し元から <code>sts_puttuple</code> を介してタプルが渡されます。</li>
+<li>データはアクセサー内の <code>write_chunk</code> に蓄積され、チャンクが満杯になると <code>sts_flush_chunk</code> によって <code>BufFile</code>（一時ファイル）へ書き出されます。</li>
+<li>書き込み終了時は <code>sts_end_write</code> が呼び出されます。</li>
+<p>3. **読み取り（並列スキャン）**:</p>
+<li><code>src/backend/executor/nodeHashjoin.c</code> などの呼び出し元から <code>sts_parallel_scan_next</code> が呼び出されます。</li>
+<li>アクセサーは <code>SharedTuplestore</code> のロックを用いて同期しながら、全参加者のファイルを順次スキャンします。</li>
+<li><code>read_buffer</code> を用いてチャンク単位でデータをロードし、タプルを再構成して呼び出し元に提供します。</li>
+</ul>
+<p>*※なお、詳細なエラーハンドリングや、共有ストアへの接続が確立されていない状態でアクセスした場合の具体的なフォールバック処理などのエンドツーエンドのフローは、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ローカルメモリ配置**: <code>SharedTuplestoreAccessor</code> 自体は各バックエンドのローカルメモリ（<code>MemoryContext</code>）上に配置され、共有メモリ上の <code>SharedTuplestore</code> とは明確に区別されます。</li>
+<li>**書き込みの排他制御不要**: 書き込み操作は各プロセス専用の <code>write_file</code> に対して行われるため、プロセス間での書き込み競合に対する排他制御は不要です。</li>
+<li>**読み取り時の同期**: 並列スキャン（読み取り）を行う際は、<code>SharedTuplestore</code> が管理するロックを使用して、各プロセスが読み取る位置（<code>read_participant</code> や <code>read_next_page</code>）を同期しなければなりません。</li>
+<li>**有効な参照**: <code>sts</code> フィールドは、常に共有メモリ上の有効な <code>SharedTuplestore</code> を指していなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**共有メモリ構造体との混同**: プロセスローカルな <code>SharedTuplestoreAccessor</code> と、共有メモリ上に存在する <code>SharedTuplestore</code> を混同しないよう注意してください。</li>
+<li>**ランダムアクセスの未サポート**: 本構造体はシーケンシャルな読み書きを前提としており、ランダムアクセスやシーク機能は提供されていません。</li>
+<li>**順序の非保証**: 並列スキャン時、各バックエンドが取得するタプルの順序は保証されません。</li>
+<li>**巨大タプルのハンドリング**: チャンクサイズを超える巨大なタプルはオーバーフローチャンクとして分割されるため、読み取り側は <code>read_buffer</code> を用いてこれらを適切に再構成する必要があります。このバッファ管理や <code>write_pointer</code> / <code>write_end</code> の更新ロジックは <code>sts_flush_chunk</code> と密接に関連しており、保守時の変更には注意を要します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/sharedtuplestore.h</code></li>
+<p>（アクセサーの不透明な構造体宣言や、外部向けAPI関数のシグネチャを確認する場合）</p>
+<li><code>src/backend/utils/sort/sharedtuplestore.c</code></li>
+<p>（<code>SharedTuplestoreAccessor</code> の具体的なメンバ定義や、<code>sts_flush_chunk</code>, <code>sts_parallel_scan_next</code> などの内部実装を確認する場合）</p>
+<li><code>src/backend/executor/nodeHash.c</code> / <code>src/backend/executor/nodeHashjoin.c</code></li>
+<p>（アクセサーが実際にハッシュジョイン等でどのように使用されているかを確認する場合）</p>
+</ul></body></html>

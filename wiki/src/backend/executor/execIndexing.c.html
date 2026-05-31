@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execIndexing.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execIndexing.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの実行エンジンにおいて、テーブルへのタプル挿入に伴うインデックス更新と、一意性制約（Unique）および排他制約（Exclusion）の強制を行うためのルーチン群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、主に <code>nodeModifyTable.c</code> から呼び出され、データ操作（INSERT/UPDATE）の過程でインデックス整合性を維持する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスの管理**: <code>ExecOpenIndices</code> および <code>ExecCloseIndices</code> による、対象リレーションに関連するインデックスのオープン・クローズとリソース管理。</li>
+<li>**インデックス更新**: <code>ExecInsertIndexTuples</code> を通じた、ヒープタプル挿入後の全インデックスへのタプル追加。</li>
+<li>**制約の強制**:</li>
+<li>一意性制約のチェック（インデックスAMによるアトミックなチェック、または遅延制約のための再チェック）。</li>
+<li>排他制約のチェック（挿入後のスキャンによる競合検出と、必要に応じた待機処理）。</li>
+<li>**投機的挿入（Speculative Insertion）のサポート**: <code>INSERT ... ON CONFLICT</code> のための競合検出とデッドロック回避（Livelock防止ロジックを含む）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInsertIndexTuples</code>: インデックス更新のメインエントリーポイント。</li>
+<li><code>ExecCheckIndexConstraints</code>: 挿入前に制約違反がないかを検証する関数。</li>
+<li><code>check_exclusion_or_unique_constraint</code>: 制約違反を検出するための内部コア関数。</li>
+<li><code>CEOUC_WAIT_MODE</code>: 排他制約チェック時の待機動作（WAIT/NOWAIT/LIVELOCK_PREVENTING_WAIT）を制御する列挙型。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecCloseIndices</code></li>
+<li><code>ExecOpenIndices</code></li>
+<li><code>ExecWithoutOverlapsNotEmpty</code></li>
+<li><code>check_exclusion_constraint</code></li>
+<li><code>index_expression_changed_walker</code></li>
+<li><code>index_recheck_constraint</code></li>
+<li><code>index_unchanged_by_update</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecOpenIndices</code> で対象テーブルのインデックス情報を <code>ResultRelInfo</code> にキャッシュします。 2. **挿入処理**: <code>ExecInsertIndexTuples</code> が呼び出されると、各インデックスに対して <code>FormIndexDatum</code> でキー値を生成し、<code>index_insert</code> を実行します。 3. **制約チェック**:</p>
+<ul>
+<li>一意性制約は <code>index_insert</code> 内でAMが処理します（遅延制約の場合は <code>UNIQUE_CHECK_PARTIAL</code> を使用）。</li>
+<li>排他制約は挿入後に <code>check_exclusion_or_unique_constraint</code> を呼び出し、競合があれば待機またはエラーを発生させます。</li>
+<p>4. **投機的挿入**: 競合検出時に <code>CEOUC_LIVELOCK_PREVENTING_WAIT</code> を使用し、XIDに基づく優先順位付けでデッドロックを回避します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/genam.h</code>, <code>access/tableam.h</code>: インデックスおよびテーブルアクセスメソッドのインターフェース。</li>
+<li><code>access/xact.h</code>: トランザクション管理とロック待機。</li>
+<li><code>executor/executor.h</code>: 実行状態（EState）やリレーション情報。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>access/relscan.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/multirangetypes.h</code></li>
+<li><code>utils/rangetypes.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: 本ファイルの主要な呼び出し元。</li>
+<li><code>src/backend/access/nbtree/nbtinsert.c</code>: インデックスAM側での一意性チェックの実装。</li>
+<li><code>src/backend/access/common/indextuple.c</code>: インデックス用タプルの操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**デッドロックとLivelock**: 排他制約のチェックは挿入後に行われるため、同時実行時にデッドロックのリスクがあります。投機的挿入（ON CONFLICT）では、これを防ぐためにXIDを用いた決定論的な待機順序を採用しています。</li>
+<li>**遅延制約**: <code>indimmediate</code> が偽の制約は、即座にエラーにせず、後続の再チェックが必要なリストとして返される点に注意してください。</li>
+<li>**最適化**: <code>index_unchanged_by_update</code> は、UPDATE時にインデックスキーが変更されていない場合にインデックス更新をスキップするヒントを生成し、パフォーマンスを向上させます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__CEOUC_WAIT_MODE.html" target="wiki-view"><code>CEOUC_WAIT_MODE</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__ExecOpenIndices.html" target="wiki-view"><code>ExecOpenIndices</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__ExecCloseIndices.html" target="wiki-view"><code>ExecCloseIndices</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__ExecInsertIndexTuples.html" target="wiki-view"><code>ExecInsertIndexTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__ExecCheckIndexConstraints.html" target="wiki-view"><code>ExecCheckIndexConstraints</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__check_exclusion_or_unique_constraint.html" target="wiki-view"><code>check_exclusion_or_unique_constraint</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__check_exclusion_constraint.html" target="wiki-view"><code>check_exclusion_constraint</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__index_recheck_constraint.html" target="wiki-view"><code>index_recheck_constraint</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__index_unchanged_by_update.html" target="wiki-view"><code>index_unchanged_by_update</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__index_expression_changed_walker.html" target="wiki-view"><code>index_expression_changed_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execIndexing_c__ExecWithoutOverlapsNotEmpty.html" target="wiki-view"><code>ExecWithoutOverlapsNotEmpty</code></a></li>
+</ul></body></html>

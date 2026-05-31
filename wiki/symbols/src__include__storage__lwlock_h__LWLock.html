@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__lwlock_h__LWLock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LWLock</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/lwlock.h:41</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上のデータ構造を保護するための、低オーバーヘッドな相互排他（Lightweight Lock）メカニズムを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct LWLock
+{
+    uint16      tranche;        /* トランチID */
+    pg_atomic_uint32 state;      /* 共有/排他ロックの状態 */
+    proclist_head waiters;      /* 待機中のPGPROCリスト */
+#ifdef LOCK_DEBUG
+    pg_atomic_uint32 nwaiters;  /* 待機者数 */
+    struct PGPROC *owner;       /* 最後に排他ロックを取得した所有者 */
+#endif
+} LWLock;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: ロック取得・解放操作の対象となる <code>LWLock</code> 構造体へのポインタ。</li>
+<li>**出力**: アトミックな状態遷移の結果、および待機リストへのプロセス追加・削除。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>LWLock</code> は共有メモリ上に配置される必要があります。</li>
+<li><code>state</code> フィールドはアトミック操作（<code>pg_atomic_uint32</code>）によって管理され、競合状態を回避します。</li>
+<li><code>LOCK_DEBUG</code> が有効な場合、<code>nwaiters</code> と <code>owner</code> が追跡されますが、パフォーマンスに影響を与えます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **取得**: <code>LWLockAcquire</code> は <code>state</code> に対してアトミックな <code>compare-and-exchange</code> を試みます。成功すれば即座にロックを獲得します。失敗した場合は、自身の <code>PGPROC</code> を <code>waiters</code> リストに追加し、OS レベルで待機します。 2. **解放**: <code>LWLockRelease</code> は <code>state</code> をアトミックに減算します。待機者が存在する場合、適切なプロセスを起床させます。 3. **変数待ち**: <code>LWLockUpdateVar</code> および <code>LWLockWaitForVar</code> を併用することで、ロックを保持したまま特定の共有変数の変更を待機するフローをサポートします。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/pg_prewarm</code>, <code>contrib/pg_stat_statements</code>, <code>src/backend/access/nbtree</code>, <code>src/backend/access/transam/clog</code> 等の各モジュールが、共有ハッシュテーブルや並列状態の保護のために本構造体を参照しています。</li>
+<li>**呼び出し先**: <code>port/atomics.h</code>（アトミック操作）、<code>storage/proclist_types.h</code>（待機リスト管理）を利用します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LWLockPadded</code>: キャッシュライン競合を避けるために <code>LWLock</code> をパディングした構造体。</li>
+<li><code>PGPROC</code>: 待機リスト（<code>waiters</code>）に含まれるプロセス情報。</li>
+<li><code>MainLWLockArray</code>: システム全体で共有される主要なロック配列。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>競合が激しい場合、待機リストの管理によるオーバーヘッドが発生します。</li>
+<li><code>LOCK_DEBUG</code> 定義時は、デバッグ情報の更新によりパフォーマンスが低下します。</li>
+<li>フロントエンドコードからはインクルードできません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>LWLock</code> は <code>LWLockPadded</code> を介して使用されることが一般的です。構造体のサイズを変更する際は、キャッシュライン境界（<code>LWLOCK_PADDED_SIZE</code>）への影響を考慮してください。</li>
+<li>待機プロセスリストの操作は <code>proclist_types.h</code> に依存しているため、リスト操作の変更時には関連性に注意してください。</li>
+</ul></body></html>

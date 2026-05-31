@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_ctl/pg_ctl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_ctl/pg_ctl.c</h1>
+<h2>概要</h2>
+<p><code>pg_ctl</code> は、PostgreSQL サーバー（postmaster）の起動、停止、再起動、状態監視、およびスタンバイ昇格を管理するコマンドラインユーティリティです。Unix系OSとWindowsの両方に対応し、プロセス管理、PIDファイル監視、およびWindowsサービス制御を単一のソースファイルで実現しています。</p>
+<h2>モジュール内での役割</h2>
+<p>PostgreSQLのフロントエンドツール群の一部であり、データベース管理者がサーバーのライフサイクルを制御するためのインターフェースを提供します。サーバープロセスとの通信にはシグナル（Unix）やサービス制御マネージャー（Windows）を利用します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス管理**: サーバープロセスの起動（<code>fork</code>/<code>exec</code> または <code>CreateRestrictedProcess</code>）と終了シグナルの送信。</li>
+<li>**状態同期**: <code>postmaster.pid</code> や <code>pg_control</code> をポーリングし、サーバーの起動完了や停止完了を待機する。</li>
+<li>**設定解決**: <code>PGDATA</code> の特定、設定ディレクトリからのデータディレクトリ解決、および <code>postmaster.opts</code> の読み込み。</li>
+<li>**Windows サービス統合**: Windows環境におけるサービス登録、解除、およびサービスとして実行するためのイベントログ出力と制御ハンドラの実装。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コマンドと状態</h3>
+<ul>
+<li><code>CtlCommand</code>: 実行アクション（<code>START_COMMAND</code>, <code>STOP_COMMAND</code> 等）を定義する列挙型。</li>
+<li><code>ShutdownMode</code>: シャットダウンの挙動（<code>SMART</code>, <code>FAST</code>, <code>IMMEDIATE</code>）を定義。</li>
+<li><code>WaitPMResult</code>: 起動待機処理の結果（<code>POSTMASTER_READY</code>, <code>POSTMASTER_FAILED</code> 等）。</li>
+</ul>
+<h3>プロセス制御・監視</h3>
+<ul>
+<li><code>start_postmaster()</code>: サーバープロセスを起動し、PIDを返す。</li>
+<li><code>wait_for_postmaster_start()</code>: <code>postmaster.pid</code> を監視し、サーバーが準備完了するまで待機する。</li>
+<li><code>get_pgpid()</code>: PIDファイルからサーバーのPIDを取得し、存在確認を行う。</li>
+<li><code>postmaster_is_alive()</code>: 指定PIDのプロセスが生存しているかを確認する。</li>
+</ul>
+<h3>Windows固有機能</h3>
+<ul>
+<li><code>pgwin32_doRegister()</code> / <code>pgwin32_doUnregister()</code>: サービス登録・解除。</li>
+<li><code>CreateRestrictedProcess()</code>: セキュリティトークンを制限した状態でプロセスを起動する。</li>
+<li><code>pgwin32_ServiceMain()</code>: サービスとして実行される際のメインエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateRestrictedProcess</code></li>
+<li><code>CtlCommand</code></li>
+<li><code>GetPrivilegesToDelete</code></li>
+<li><code>InheritStdHandles</code></li>
+<li><code>ShutdownMode</code></li>
+<li><code>WaitPMResult</code></li>
+<li><code>do_init</code></li>
+<li><code>free_readfile</code></li>
+<li><code>get_pgpid</code></li>
+<li><code>print_msg</code></li>
+<li><code>write_eventlog</code></li>
+<li><code>write_stderr</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main</code> 関数で引数を解析し、<code>PGDATA</code> を特定。<code>adjust_data_dir()</code> で設定ディレクトリから実際のデータディレクトリを解決。 2. **ディスパッチ**: <code>ctl_command</code> に基づき、<code>do_start</code>, <code>do_stop</code>, <code>do_restart</code> 等の各関数へ処理を委譲。 3. **待機処理**: <code>-w</code> オプションが有効な場合、<code>wait_for_postmaster_start()</code> 等がループ内で <code>pg_usleep</code> を呼び出し、PIDファイルやDB状態をポーリングする。 4. **終了**: 成功時は <code>exit(0)</code>、エラー時は <code>write_stderr</code> でメッセージを出力し、適切な終了コードで終了する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド共通定義。</li>
+<li><code>catalog/pg_control.h</code>, <code>common/controldata_utils.h</code>: 制御ファイル解析用。</li>
+<li><code>utils/pidfile.h</code>: PIDファイル操作用。</li>
+<li><code>getopt_long.h</code>: コマンドライン引数解析用。</li>
+<li>Windows環境では <code>versionhelpers.h</code>, <code>pqexpbuffer.h</code> 等のOS固有ヘッダー。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/resource.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/postmaster/postmaster.c</code>: <code>pg_ctl</code> が制御するサーバー側のメインプロセス。</li>
+<li><code>src/include/catalog/pg_control.h</code>: 制御ファイルの構造体定義。</li>
+<li><code>src/bin/initdb/initdb.c</code>: <code>pg_ctl init</code> が呼び出す初期化ツール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>readfile()</code> で読み込んだデータは <code>free_readfile()</code> で解放する必要があります。</li>
+<li>**プラットフォーム差異**: Unixでは <code>fork</code> を使用しますが、Windowsでは <code>CreateRestrictedProcess</code> を用いて権限を制限したプロセスを生成します。</li>
+<li>**PIDファイルの扱い**: <code>pg_ctl</code> は <code>postmaster.pid</code> の内容を信頼してサーバーの状態を判断します。このファイルが古い場合や不整合がある場合、誤った判断をする可能性があるため注意が必要です。</li>
+<li>**未実装・浅い部分**: Windowsのサービス制御ハンドラ（<code>pgwin32_ServiceHandler</code>）は、一部の制御コード（<code>SERVICE_CONTROL_CONTINUE</code> 等）に対しては空の処理となっており、将来的な拡張余地があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__ShutdownMode.html" target="wiki-view"><code>ShutdownMode</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__WaitPMResult.html" target="wiki-view"><code>WaitPMResult</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__CtlCommand.html" target="wiki-view"><code>CtlCommand</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__write_eventlog.html" target="wiki-view"><code>write_eventlog</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__write_stderr.html" target="wiki-view"><code>write_stderr</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__print_msg.html" target="wiki-view"><code>print_msg</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__get_pgpid.html" target="wiki-view"><code>get_pgpid</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__free_readfile.html" target="wiki-view"><code>free_readfile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__do_init.html" target="wiki-view"><code>do_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__InheritStdHandles.html" target="wiki-view"><code>InheritStdHandles</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__CreateRestrictedProcess.html" target="wiki-view"><code>CreateRestrictedProcess</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_ctl__pg_ctl_c__GetPrivilegesToDelete.html" target="wiki-view"><code>GetPrivilegesToDelete</code></a></li>
+</ul></body></html>

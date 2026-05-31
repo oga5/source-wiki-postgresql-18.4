@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/shm-mq.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shm_mq</h1>
+<h2>概念</h2>
+<p><code>shm_mq</code> は、PostgreSQLのバックエンドプロセス間（主にユーザーバックエンドとバックグラウンドワーカー間）でメッセージをやり取りするために設計された、共有メモリ上に配置される単一リーダー（Single-Reader）・単一ライター（Single-Writer）型のメッセージキュー構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>プロセス間通信（IPC）において、スピンロック（<code>mq_mutex</code>）の使用を最小限に抑えつつ、アトミック操作とメモリバリアによって高速かつ安全にメッセージを同期できるためです。また、バッファが満杯または空の際に <code>PGPROC</code> のラッチ（<code>Latch</code>）を利用してプロセスを効率的にブロッキング/ウェイクアップし、不要なCPU消費を防ぐ設計になっています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/storage/ipc/shm_mq.c#shm_mq</code>: 共有メモリ上に配置されるキューのメイン構造体。</li>
+<li><code>symbol:src/include/storage/shm_mq.h#shm_mq</code>: <code>shm_mq</code> 構造体のヘッダー定義。</li>
+<li><code>symbol:src/backend/storage/ipc/shm_mq.c#shm_mq_create</code>: 共有メモリ領域上に <code>shm_mq</code> を初期化する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、メッセージの送信（<code>shm_mq_send</code>）や受信（<code>shm_mq_receive</code>）の具体的な内部コードや、呼び出し元（<code>parallel.c</code> や <code>execParallel.c</code> など）との詳細なエンドツーエンドの連携フローの全容は完全には記述されていません。</p>
+<p>ただし、判明している大まかな流れは以下の通りです：</p>
+<p>1. **初期化**: <code>shm_mq_create</code> を呼び出し、共有メモリ（DSMなど）上の指定アドレスに <code>shm_mq</code> 構造体を初期化します。 2. **登録**: 送信側・受信側のプロセスを <code>shm_mq_set_sender</code> / <code>shm_mq_set_receiver</code>（本コンテキストでは宣言のみ言及）を介して登録し、<code>PGPROC</code> ポインタを設定します。 3. **送受信**: <code>mq_ring</code> をリングバッファとして使用し、アトミックな読み書きカウンタ（<code>mq_bytes_read</code> / <code>mq_bytes_written</code>）を更新しながらデータを転送します。バッファの状態に応じてラッチによる待機が発生します。 4. **切断**: 相手プロセスが終了すると <code>mq_detached</code> フラグが立ち、切断が検知されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**単一リーダー・単一ライター**: 複数のプロセスが同時に読み取り、または同時に書き込みを行うことはできません。</li>
+<li>**アトミック操作**: <code>mq_bytes_read</code> および <code>mq_bytes_written</code> の操作にはアトミック操作が必須であり、メモリバリアによる保護を厳守する必要があります。</li>
+<li>**メモリ配置**: 必ず共有メモリ上に配置され、サイズは <code>MAXALIGN</code> 境界にアラインされます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不適切な初期化**: <code>shm_mq_create</code> はキューの初期化のみを行うため、送信側・受信側のプロセス登録（<code>shm_mq_set_sender</code> / <code>shm_mq_set_receiver</code>）を別途呼び出さなければ通信を開始できません。</li>
+<li>**サイズ不足**: <code>shm_mq_create</code> に渡す <code>size</code> がヘッダー領域（<code>shm_mq</code> 構造体）より小さい場合、アサーション（<code>Assert(size &gt; data_offset)</code>）により異常終了します。</li>
+<li>**切断の無視**: 相手プロセスが予期せず終了した場合、<code>SHM_MQ_DETACHED</code> が返されるため、速やかに処理を終了しないとデッドロックやリソースリークの原因となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/shm_mq.c</code></li>
+<li><code>src/include/storage/shm_mq.h</code></li>
+</ul></body></html>

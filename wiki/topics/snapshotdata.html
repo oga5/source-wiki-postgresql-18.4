@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/snapshotdata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SnapshotData</h1>
+<h2>概念</h2>
+<p><code>SnapshotData</code> は、PostgreSQLにおいて特定のトランザクションから見てどのタプル（行）が可視（参照可能）であるかを判定するための基準情報を保持する構造体です。MVCC（多版同時実行制御）やリカバリ時の状態管理において、可視性判定の抽象化インターフェースとして機能します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのMVCCにおいて、同時実行される複数のトランザクション間で一貫したデータの可視性を保証するために不可欠なデータ構造です。また、前回のスナップショット生成以降にトランザクションの完了がない場合に再計算を回避する最適化（<code>snapXactCompletionCount</code> による管理）など、パフォーマンス面でも重要な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/utils/snapshot.h#SnapshotData</code>: 可視性判定に必要な情報を格納する構造体。</li>
+<li><code>symbol:src/backend/storage/ipc/procarray.c#GetSnapshotData</code>: 現在のトランザクション状態やリカバリ状態に基づいて <code>SnapshotData</code> を構築する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **構築**: <code>GetSnapshotData()</code> が呼び出され、現在のシステム状態（トランザクションやリカバリの状態）を反映した <code>SnapshotData</code> が構築されます。 2. **判定**: <code>HeapTupleSatisfiesMVCC</code> などの可視性判定関数が、構築された <code>SnapshotData</code> を参照してタプルの可視性を判定します。 3. **管理**: スナップショットのライフサイクルは、参照カウント（<code>active_count</code>, <code>regd_count</code>）や <code>pairingheap_node</code> を通じて管理されます。</p>
+<p>※ なお、呼び出し元（<code>heapam.c</code> やレプリケーション関連モジュールなど）との詳細な連携や、システム全体における網羅的なエンドツーエンドの制御フローの全貌は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**xminの境界**: <code>xmin</code> 未満のすべてのトランザクションID（XID）は可視です。</li>
+<li>**xmaxの境界**: <code>xmax</code> 以上のすべての XID は不可視です。</li>
+<li>**xipの範囲**: <code>xip[]</code> に含まれるすべての ID は、<code>xmin &lt;= id &lt; xmax</code> の範囲を満たします。</li>
+<li>**subxipの範囲**: <code>subxip[]</code> に含まれるすべての ID は、<code>xmin</code> 以上です。</li>
+<li>**非MVCC型での例外**: <code>snapshot_type</code> が <code>SNAPSHOT_MVCC</code> 以外の場合、<code>xmin</code> や <code>xmax</code> などの一部のフィールドは特殊な目的で再利用されるか、ゼロ値となります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**型依存のフィールド解釈**: フィールドの解釈は <code>snapshot_type</code> に依存するため、スナップショットの型を誤認してフィールドにアクセスすると、不正な可視性判定を引き起こします。</li>
+<li>**サブトランザクションのオーバーフロー**: サブトランザクション数が上限を超えると <code>suboverflowed</code> フラグが <code>true</code> になります。この状態を考慮したハンドリングが必要です。</li>
+<li>**直接的な参照カウント操作**: メモリ管理は <code>snapmgr.h</code> 経由で行う必要があり、<code>active_count</code> や <code>regd_count</code> を直接操作することは禁止されています。</li>
+<li>**リカバリ時の特殊挙動**: リカバリ中に取得されたスナップショットでは、<code>xip</code> が空になる場合があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/snapshot.h</code>: <code>SnapshotData</code> 構造体の定義、各フィールドの詳細、および関連する <code>SnapshotType</code> などの定義。</li>
+<li><code>src/backend/storage/ipc/procarray.c</code>: <code>GetSnapshotData</code> の実装と、スナップショット構築時のトランザクション状態の取得ロジック。</li>
+</ul></body></html>

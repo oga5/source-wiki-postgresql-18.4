@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeHash_c__ExecParallelHashTupleAlloc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecParallelHashTupleAlloc</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeHash.c:2975</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ハッシュ結合において、共有メモリ（DSA）上にタプルを格納するためのメモリ領域を確保する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>HashJoinTuple ExecParallelHashTupleAlloc(HashJoinTable hashtable, size_t size, dsa_pointer *shared)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>hashtable</code>: ハッシュ結合の状態を保持する <code>HashJoinTable</code> 構造体。</li>
+<li><code>size</code>: 確保するタプルのサイズ（バイト単位）。</li>
+<li><code>shared</code>: 確保された領域の DSA ポインタを格納する出力用引数。</li>
+<li>**出力**:</li>
+<li>確保されたメモリ領域を指す <code>HashJoinTuple</code> 型のポインタ。確保に失敗した場合（成長処理が必要な場合など）は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>size</code> は <code>MAXALIGN</code> によってアライメント調整される。</li>
+<li><code>hashtable-&gt;area</code> が有効な DSA（Dynamic Shared Area）を指していること。</li>
+<li>並列実行時、バッチやバケットの拡張が必要な場合は、呼び出し元で再試行を行う必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **高速パス**: 現在のバックエンドが保持する <code>current_chunk</code> に十分な空きがある場合、ロックを取得せずにメモリを割り当て、<code>shared</code> ポインタを更新して即座に返す。 2. **低速パス**:</p>
+<ul>
+<li><code>pstate-&gt;lock</code>（排他ロック）を取得する。</li>
+<li>他の参加者がバッチやバケットの拡張を要求している場合、ロックを解放し、拡張処理（<code>ExecParallelHashIncreaseNumBatches</code> 等）を呼び出した後 <code>NULL</code> を返す。</li>
+<li>メモリ制限や負荷係数（load factor）の閾値を超過した場合、拡張フラグを立ててロックを解放し <code>NULL</code> を返す。</li>
+<li>条件を満たす場合、<code>dsa_allocate</code> を使用して新しいチャンクを確保し、<code>hashtable</code> のチャンクリストに追加する。</li>
+<li>確保したチャンクを <code>current_chunk</code> として更新し、ロックを解放して確保した領域を返す。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHash.c</code> 内の複数箇所（<code>ExecHashTableInsert</code> 等の文脈で利用）。</li>
+<li>**呼び出し先**:</li>
+<li><code>ExecParallelHashIncreaseNumBatches</code></li>
+<li><code>ExecParallelHashIncreaseNumBuckets</code></li>
+<li><code>dsa_allocate</code> / <code>dsa_get_address</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HashJoinTable</code>: ハッシュ結合の全状態を保持。</li>
+<li><code>ParallelHashJoinState</code>: 並列実行時の共有状態。</li>
+<li><code>HashMemoryChunk</code>: 共有メモリ上のチャンク管理構造。</li>
+<li><code>dsa_pointer</code>: DSA 内のメモリ位置を示すポインタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**拡張要求**: バッチやバケットの拡張が必要な場合、この関数は <code>NULL</code> を返し、呼び出し元に再試行を促す。</li>
+<li>**メモリ不足**: <code>space_allowed</code> を超過した場合、バッチ拡張フラグを立てて <code>NULL</code> を返す。</li>
+<li>**巨大タプル**: <code>HASH_CHUNK_THRESHOLD</code> を超えるタプルは、通常のチャンク共有を行わず、個別のチャンクとして確保される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は並列実行時の共有メモリ管理の核心部であり、ロックの取得範囲がパフォーマンスに直結する。</li>
+<li><code>current_chunk</code> の更新ロジックは、並列ワーカー間でのメモリ断片化を抑制するように設計されている。</li>
+<li>呼び出し元は、本関数が <code>NULL</code> を返した場合の再試行ロジックを必ず実装すること。</li>
+</ul></body></html>

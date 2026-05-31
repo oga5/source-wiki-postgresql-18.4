@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpython/plpy_typeio.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/plpython/plpy_typeio.c</h1>
+<h2>概要</h2>
+<p><code>plpy_typeio.c</code> は、PostgreSQL のデータ型（<code>Datum</code>）と Python オブジェクト（<code>PyObject</code>）間の双方向変換を担う中核モジュールです。SQL の型システムと Python の動的型システムを橋渡しするため、再帰的な型構造（配列、複合型、ドメイン）の解析と変換ロジックを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>plpy_exec.c</code> 等の実行エンジンが SQL 関数を呼び出す際、引数や戻り値のマーシャリングを本モジュールに委譲します。型変換のメタデータ（<code>PLyDatumToOb</code>, <code>PLyObToDatum</code>）を保持し、実行時の型チェックや変換関数のディスパッチを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**入力変換（SQL → Python）**: <code>Datum</code> を Python の基本型、リスト、辞書に変換。</li>
+<li>**出力変換（Python → SQL）**: Python オブジェクトを <code>Datum</code> に変換し、必要に応じて <code>record_in</code> や型固有の入力関数を呼び出す。</li>
+<li>**メタデータ管理**: 型変換に必要な <code>FmgrInfo</code> や <code>TupleDesc</code> のキャッシュと初期化。</li>
+<li>**再帰的構造の処理**: 多次元配列やネストされた複合型の再帰的な走査。</li>
+<li>**エラーハンドリング**: 変換失敗時の PostgreSQL エラー（<code>ereport</code>）への変換と、Python 例外のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>変換エントリポイント</h3>
+<ul>
+<li><code>PLy_input_convert</code>: SQL から Python への変換を開始するトップレベル関数。</li>
+<li><code>PLy_output_convert</code>: Python から SQL への変換を開始するトップレベル関数。</li>
+<li><code>PLy_input_from_tuple</code>: <code>HeapTuple</code> を Python の <code>dict</code> に変換。</li>
+</ul>
+<h3>初期化・セットアップ</h3>
+<ul>
+<li><code>PLy_input_setup_func</code> / <code>PLy_output_setup_func</code>: 型 OID に基づき、変換に必要な構造体（<code>PLyDatumToOb</code> 等）を再帰的に構築。</li>
+<li><code>PLy_input_setup_tuple</code> / <code>PLy_output_setup_tuple</code>: 複合型（<code>RECORD</code> 等）の各カラムに対する変換情報を初期化。</li>
+</ul>
+<h3>変換ロジック（ファミリー）</h3>
+<ul>
+<li>**スカラー**: <code>PLyBool_FromBool</code>, <code>PLyLong_FromInt64</code>, <code>PLyUnicode_FromScalar</code> 等。</li>
+<li>**配列**: <code>PLyList_FromArray</code>（SQL→Py）, <code>PLySequence_ToArray</code>（Py→SQL）。</li>
+<li>**複合型**: <code>PLyDict_FromComposite</code>（SQL→Py）, <code>PLyObject_ToComposite</code>（Py→SQL）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLyObject_AsString</code></li>
+<li><code>PLyObject_ToBool</code></li>
+<li><code>PLyObject_ToBytea</code></li>
+<li><code>PLyObject_ToComposite</code></li>
+<li><code>PLy_input_convert</code></li>
+<li><code>PLy_input_from_tuple</code></li>
+<li><code>PLy_input_setup_func</code></li>
+<li><code>PLy_input_setup_tuple</code></li>
+<li><code>PLy_output_convert</code></li>
+<li><code>PLy_output_setup_func</code></li>
+<li><code>PLy_output_setup_record</code></li>
+<li><code>PLy_output_setup_tuple</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **セットアップ**: 実行開始時に <code>PLy_*_setup_func</code> が呼ばれ、型 OID に応じた変換関数ポインタとメタデータが <code>PLyDatumToOb</code> 構造体に格納されます。 2. **変換実行**:</p>
+<ul>
+<li><code>PLy_input_convert</code> は <code>MemoryContextReset</code> を行い、変換中のメモリリークを防ぎます。</li>
+<li>変換関数は再帰的に呼び出されます（例: <code>PLyList_FromArray_recurse</code>）。</li>
+<li>Python オブジェクトの生成には <code>PyObject_*</code> API を使用し、PostgreSQL 側へ戻す際は <code>InputFunctionCall</code> 等で <code>Datum</code> を生成します。</li>
+<p>3. **エラーパス**: <code>PG_TRY</code> / <code>PG_CATCH</code> ブロックにより、変換中のエラー発生時に Python の参照カウント（<code>Py_DECREF</code>）を適切に解放し、PostgreSQL のエラー状態へ復帰します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>access/htup_details.h</code>: タプル操作の基盤。</li>
+<li><code>utils/typcache.h</code>, <code>utils/lsyscache.h</code>: 型情報のキャッシュと検索。</li>
+<li><code>plpy_typeio.h</code>: 変換用構造体の定義。</li>
+<li><code>plpy_elog.h</code>: エラー報告の抽象化。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>plpy_main.h</code></li>
+<li><code>plpy_util.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>plpy_exec.c</code>: このモジュールの変換関数を呼び出すメインエンジン。</li>
+<li><code>plpy_procedure.c</code>: プロシージャのキャッシュ管理。</li>
+<li><code>src/backend/utils/adt/arrayfuncs.c</code>: PostgreSQL 側の配列操作ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 変換処理は <code>PLyExecutionContext</code> に紐付いたスクラッチメモリコンテキストで行われます。<code>MemoryContextReset</code> が多用されるため、変換関数内で永続的なメモリ確保を行わないよう注意が必要です。</li>
+<li>**再帰の深さ**: <code>check_stack_depth()</code> が再帰的なセットアップ関数内で呼ばれており、スタックオーバーフローを防止しています。</li>
+<li>**RECORD 型**: <code>RECORDOID</code> は実行時に <code>TupleDesc</code> が決定するため、他の型よりも複雑なライフサイクル管理（<code>PinTupleDesc</code> / <code>ReleaseTupleDesc</code>）が必要です。</li>
+<li>**省略された詳細**: 本ファイルは型変換の「ロジック」に集中しており、Python インタプリタ自体の初期化や SPI の詳細については <code>plpy_main.c</code> や <code>plpy_spi.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_input_convert.html" target="wiki-view"><code>PLy_input_convert</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_output_convert.html" target="wiki-view"><code>PLy_output_convert</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_input_from_tuple.html" target="wiki-view"><code>PLy_input_from_tuple</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_input_setup_tuple.html" target="wiki-view"><code>PLy_input_setup_tuple</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_output_setup_tuple.html" target="wiki-view"><code>PLy_output_setup_tuple</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_output_setup_record.html" target="wiki-view"><code>PLy_output_setup_record</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_output_setup_func.html" target="wiki-view"><code>PLy_output_setup_func</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLy_input_setup_func.html" target="wiki-view"><code>PLy_input_setup_func</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLyObject_ToBool.html" target="wiki-view"><code>PLyObject_ToBool</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLyObject_ToBytea.html" target="wiki-view"><code>PLyObject_ToBytea</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLyObject_ToComposite.html" target="wiki-view"><code>PLyObject_ToComposite</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_typeio_c__PLyObject_AsString.html" target="wiki-view"><code>PLyObject_AsString</code></a></li>
+</ul></body></html>

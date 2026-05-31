@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__generic_xlog_c__generic_redo.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>generic_redo</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/generic_xlog.c:477</code></li>
+</ul>
+<h2>目的</h2>
+<p>リカバリ処理時に、WALレコードに記録されたページ差分（デルタ）を適用し、ページの状態を再現する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void generic_redo(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（解析対象のWALレコード）</li>
+<li>**出力**: なし（副作用としてバッファの更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> 内のブロックID数が <code>MAX_GENERIC_XLOG_PAGES</code> を超えないこと。</li>
+<li>ページ内の <code>pd_lower</code> から <code>pd_upper</code> までの領域（ホール）は、WAL適用後にゼロクリアされる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>record</code> に含まれる各ブロックを順次処理する。 2. <code>XLogReadBufferForRedo</code> を呼び出し、対象バッファを読み込む。 3. <code>BLK_NEEDS_REDO</code> が返された場合：</p>
+<ul>
+<li><code>XLogRecGetBlockData</code> でデルタを取得し、<code>applyPageRedo</code> でページに適用する。</li>
+<li>ページヘッダーの <code>pd_lower</code> から <code>pd_upper</code> までの領域を <code>memset</code> でゼロクリアする。</li>
+<li>ページのLSNをレコードの終了位置（<code>record-&gt;EndRecPtr</code>）に更新し、バッファをダーティにする。</li>
+<p>4. 全ブロックの処理完了後、ロックされていた全てのバッファを <code>UnlockReleaseBuffer</code> で解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: リカバリプロセス（<code>src/include/access/rmgrlist.h</code> にて <code>RM_GENERIC_ID</code> のリソースマネージャとして登録されており、リカバリ時に呼び出される）。</li>
+<li>**呼び出し先**: <code>XLogRecMaxBlockId</code>, <code>XLogRecHasBlockRef</code>, <code>XLogReadBufferForRedo</code>, <code>BufferGetPage</code>, <code>XLogRecGetBlockData</code>, <code>applyPageRedo</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>BufferIsValid</code>, <code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogReaderState</code>: WALレコードの読み込み状態を保持。</li>
+<li><code>Buffer</code>: ページを保持するバッファ。</li>
+<li><code>PageHeader</code>: ページ構造のヘッダー情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogRecMaxBlockId(record) &gt;= MAX_GENERIC_XLOG_PAGES</code> の場合、アサーションエラーが発生する。</li>
+<li>対象ブロックが存在しない場合はスキップされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリソースマネージャのRedoルーチンとして機能する。</li>
+<li>ページ内のホール（<code>pd_lower</code>〜<code>pd_upper</code>）のゼロクリアは、異なる環境間でのページ再構築時にゴミデータによる不一致を防ぐために必須である。</li>
+</ul></body></html>

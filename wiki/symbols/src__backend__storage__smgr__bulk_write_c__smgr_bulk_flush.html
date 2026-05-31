@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_flush.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>smgr_bulk_flush</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/smgr/bulk_write.c:241</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>BulkWriteState</code> 内に保持されている保留中の書き込みキューを物理ストレージへフラッシュし、必要に応じて WAL への記録およびチェックサムの計算を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void smgr_bulk_flush(BulkWriteState *bulkstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>BulkWriteState *bulkstate</code>（書き込み状態を保持する構造体）</li>
+<li>**出力**: なし（副作用としてストレージへの書き込みおよび <code>bulkstate-&gt;npending</code> のリセットを行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>bulkstate</code> は有効なポインタであること。</li>
+<li>書き込み対象のページデータは <code>bulkstate-&gt;pending_writes</code> に格納されていること。</li>
+<li>呼び出し後、<code>bulkstate-&gt;npending</code> は 0 にリセットされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ソート**: 保留中の書き込みが複数ある場合、<code>buffer_cmp</code> を用いてブロック番号順にソートする。 2. **WAL 記録**: <code>bulkstate-&gt;use_wal</code> が真の場合、キュー内の全ページを <code>log_newpages</code> を用いて WAL に記録する。 3. **チェックサム計算**: 各ページに対して <code>PageSetChecksumInplace</code> を実行する。 4. **物理書き込み**:</p>
+<ul>
+<li>ブロック番号が現在のリレーションサイズ (<code>bulkstate-&gt;relsize</code>) を超える場合、その間の空き領域をゼロ埋め（<code>smgrextend</code>）してから対象ページを書き込む。</li>
+<li>既存領域内の場合は <code>smgrwrite</code> を使用する。</li>
+<p>5. **メモリ解放**: 書き込み完了後、各ページバッファを <code>pfree</code> で解放する。 6. **状態更新**: <code>bulkstate-&gt;npending</code> を 0 に戻す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/smgr/bulk_write.c</code> 内の <code>smgr_bulk_write</code>（キュー溢れ時）および <code>smgr_bulk_finish</code>（終了時）。</li>
+<li>**呼び出し先**:</li>
+<li><code>qsort</code>, <code>buffer_cmp</code></li>
+<li><code>log_newpages</code></li>
+<li><code>PageSetChecksumInplace</code></li>
+<li><code>smgrextend</code>, <code>smgrwrite</code></li>
+<li><code>pfree</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BulkWriteState</code>: 書き込み操作の全体状態を管理。</li>
+<li><code>PendingWrite</code>: 個別の書き込み要求（ブロック番号とバッファデータ）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>npending == 0</code> の場合は何もせず即座に復帰する。</li>
+<li>非連続的なブロック書き込みが発生した場合、ファイルシステムの断片化を防ぐためにゼロ埋め処理が実行される。</li>
+<li><code>log_newpages</code> 呼び出し時、標準外のページレイアウトが混在している場合は、すべて非標準としてログ記録される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>BulkWriteState</code> が保持するバッファの所有権を消費（<code>pfree</code>）するため、呼び出し後にバッファへアクセスしてはならない。</li>
+<li><code>smgrextend</code> によるゼロ埋め処理は、論理的には必須ではないが、ファイルシステムの断片化抑制を目的としている。</li>
+</ul></body></html>

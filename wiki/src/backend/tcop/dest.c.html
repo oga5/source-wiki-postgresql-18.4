@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tcop/dest.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tcop/dest.c</h1>
+<h2>概要</h2>
+<p><code>dest.c</code> は、クエリ実行結果（タプル）の出力先を管理する抽象化レイヤーです。PostgreSQL バックエンドが生成したデータを、クライアントへの送信、内部ストレージへの保存、あるいは破棄といった適切な宛先へルーティングする仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tcop</code> サブシステムの一部として、実行エンジン（Executor）と通信プロトコル層（libpq）の仲介役を果たします。クエリ実行の開始から終了までのライフサイクルにおいて、出力先に応じた適切なハンドラ（<code>DestReceiver</code>）を割り当てます。</p>
+<h2>責務</h2>
+<ul>
+<li>**出力先の抽象化**: <code>DestReceiver</code> 構造体を通じて、出力先ごとの具体的な処理（タプルの受信、初期化、終了処理）を統一的なインターフェースで提供する。</li>
+<li>**ライフサイクル管理**: クエリ実行の開始（<code>BeginCommand</code>）から終了（<code>EndCommand</code>）、およびプロトコル上の状態通知（<code>ReadyForQuery</code>）を制御する。</li>
+<li>**静的レシーバーの提供**: 状態を持たない出力先（<code>DestNone</code> 等）に対して、再利用可能な静的オブジェクトを提供し、メモリ効率を最適化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DestReceiver</code>: 出力先ごとのメソッド（<code>receiveSlot</code>, <code>rStartup</code>, <code>rShutdown</code>, <code>rDestroy</code>）を保持する構造体。</li>
+<li><code>CreateDestReceiver()</code>: 指定された <code>CommandDest</code> に基づき、適切な <code>DestReceiver</code> を生成・返却するファクトリ関数。</li>
+<li><code>None_Receiver</code>: <code>DestNone</code>（結果破棄）用のグローバルな静的レシーバー。</li>
+<li><code>ReadyForQuery()</code>: クエリ処理完了をクライアントに通知し、通信バッファをフラッシュする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BeginCommand</code></li>
+<li><code>CreateDestReceiver</code></li>
+<li><code>EndCommand</code></li>
+<li><code>EndReplicationCommand</code></li>
+<li><code>NullCommand</code></li>
+<li><code>ReadyForQuery</code></li>
+<li><code>donothingCleanup</code></li>
+<li><code>donothingReceive</code></li>
+<li><code>donothingStartup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: クエリ実行前に <code>CreateDestReceiver</code> が呼び出され、出力先に応じたレシーバーが取得されます。 2. **データ転送**: Executor は取得したレシーバーの <code>receiveSlot</code> メソッドを繰り返し呼び出し、タプルを順次処理します。 3. **終了処理**: クエリ完了後、<code>EndCommand</code> が呼び出され、必要に応じて <code>CommandComplete</code> メッセージがクライアントへ送信されます。 4. **状態同期**: <code>ReadyForQuery</code> が呼び出され、トランザクション状態の通知と通信バッファのフラッシュが行われます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/printtup.h</code>, <code>access/printsimple.h</code>: リモート出力用ハンドラの定義。</li>
+<li><code>executor/tstoreReceiver.h</code>, <code>executor/functions.h</code>: 各種特殊レシーバーの定義。</li>
+<li><code>libpq/libpq.h</code>, <code>libpq/pqformat.h</code>: クライアント通信用プロトコル関数。</li>
+<li><code>access/xact.h</code></li>
+<li><code>commands/copy.h</code></li>
+<li><code>commands/createas.h</code></li>
+<li><code>commands/explain_dr.h</code></li>
+<li><code>commands/matview.h</code></li>
+<li><code>executor/tqueue.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/tcop/dest.h</code>: <code>CommandDest</code> 列挙型および <code>DestReceiver</code> 構造体の定義。</li>
+<li><code>src/backend/access/common/printtup.c</code>: リモート出力の具体的な実装。</li>
+<li><code>src/backend/executor/tstoreReceiver.c</code>: <code>DestTuplestore</code> の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>DestReceiver</code> のメソッドは、呼び出し側が適切なメモリコンテキストを管理する必要があります。動的に割り当てられたレシーバーは <code>rDestroy</code> で解放されますが、静的なレシーバー（<code>donothingDR</code> 等）は解放してはいけません。</li>
+<li><code>ReadyForQuery</code> は通信の区切りを意味するため、ここで <code>pq_flush()</code> を呼び出すことで、ネットワークパケットの送信回数を最適化しています。</li>
+<li>新しい出力先を追加する場合は、<code>CommandDest</code> 列挙型への追加と <code>CreateDestReceiver</code> 内の <code>switch</code> 文へのケース追加が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__donothingReceive.html" target="wiki-view"><code>donothingReceive</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__donothingStartup.html" target="wiki-view"><code>donothingStartup</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__donothingCleanup.html" target="wiki-view"><code>donothingCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__BeginCommand.html" target="wiki-view"><code>BeginCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__CreateDestReceiver.html" target="wiki-view"><code>CreateDestReceiver</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__EndCommand.html" target="wiki-view"><code>EndCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__EndReplicationCommand.html" target="wiki-view"><code>EndReplicationCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__NullCommand.html" target="wiki-view"><code>NullCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__dest_c__ReadyForQuery.html" target="wiki-view"><code>ReadyForQuery</code></a></li>
+</ul></body></html>

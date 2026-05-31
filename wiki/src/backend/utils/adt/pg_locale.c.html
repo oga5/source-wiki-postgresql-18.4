@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/pg_locale.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/pg_locale.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のロケールおよび照合順序（Collation）処理の基盤となるユーティリティ群です。データベース作成時に固定される <code>LC_COLLATE</code> / <code>LC_CTYPE</code> と、実行時に変更可能な <code>LC_MESSAGES</code> / <code>LC_MONETARY</code> / <code>LC_NUMERIC</code> / <code>LC_TIME</code> の管理、および ICU/libc/組み込みプロバイダ間の抽象化レイヤーを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、文字列の比較、変換、書式設定を行う際の「ロケール依存の振る舞い」を決定する中心的な役割を担います。各データ型（<code>text</code>, <code>numeric</code>, <code>money</code> 等）は、本ファイルが提供する <code>pg_locale_t</code> 構造体を通じて、プロバイダ（libc, ICU, builtin）を意識せずにロケール操作を実行できます。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロケール管理**: <code>setlocale</code> のラッパー（<code>pg_perm_setlocale</code>）による環境変数の整合性維持と、Windows 特有のロケール名変換。</li>
+<li>**照合順序キャッシュ**: <code>pg_collation</code> カタログに基づく <code>pg_locale_t</code> の生成と、<code>simplehash</code> を用いたバックエンド生存期間中のキャッシュ管理。</li>
+<li>**プロバイダ抽象化**: libc, ICU, 組み込みプロバイダの差異を吸収し、文字列操作（大文字小文字変換、照合、変換）の統一インターフェースを提供。</li>
+<li>**書式設定キャッシュ**: <code>LC_TIME</code> や <code>lconv</code>（通貨・数値書式）の情報をキャッシュし、高コストなロケール切り替えを抑制。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ロケール管理・キャッシュ</h3>
+<ul>
+<li><code>pg_newlocale_from_collation(Oid)</code>: 指定された OID に対応する <code>pg_locale_t</code> を取得（キャッシュ利用）。</li>
+<li><code>pg_perm_setlocale(int, const char*)</code>: 安全な <code>setlocale</code> ラッパー。</li>
+<li><code>PGLC_localeconv()</code>: 数値・通貨書式情報の取得とキャッシュ。</li>
+<li><code>cache_locale_time()</code>: 日時書式情報のキャッシュ更新。</li>
+</ul>
+<h3>文字列操作インターフェース</h3>
+<ul>
+<li><code>pg_strcoll</code>, <code>pg_strncoll</code>: ロケール依存の文字列比較。</li>
+<li><code>pg_strnxfrm</code>, <code>pg_strnxfrm_prefix</code>: 比較キーへの変換（インデックス作成等で使用）。</li>
+<li><code>pg_strlower</code>, <code>pg_strupper</code>, <code>pg_strtitle</code>, <code>pg_strfold</code>: 大文字小文字変換。</li>
+</ul>
+<h3>内部構造体</h3>
+<ul>
+<li><code>struct pg_locale_struct</code>: ロケールプロバイダ、決定論的フラグ、メソッドテーブルを保持する主要構造体。</li>
+<li><code>collation_cache_entry</code>: <code>simplehash</code> で管理されるキャッシュエントリ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>IsoLocaleName</code></li>
+<li><code>PGLC_localeconv</code></li>
+<li><code>assign_locale_monetary</code></li>
+<li><code>assign_locale_numeric</code></li>
+<li><code>assign_locale_time</code></li>
+<li><code>check_locale</code></li>
+<li><code>check_locale_messages</code></li>
+<li><code>check_locale_monetary</code></li>
+<li><code>check_locale_numeric</code></li>
+<li><code>check_locale_time</code></li>
+<li><code>collation_cache_entry</code></li>
+<li><code>pg_perm_setlocale</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>init_database_collation</code> がデータベースのデフォルトロケールを <code>TopMemoryContext</code> にロード。 2. **キャッシュ検索**: <code>pg_newlocale_from_collation</code> が呼ばれると、まず <code>last_collation_cache_oid</code> を確認し、ミスなら <code>CollationCache</code>（ハッシュテーブル）を検索。 3. **ロケール生成**: キャッシュミス時、<code>create_pg_locale</code> が <code>pg_collation</code> カタログを読み込み、プロバイダ（<code>builtin</code>, <code>icu</code>, <code>libc</code>）に応じて適切な初期化関数を呼び出す。 4. **操作実行**: <code>pg_strcoll</code> 等の関数が <code>pg_locale_t</code> 内のメソッドテーブル（<code>collate_methods</code>）を介して、各プロバイダの実装（<code>strncoll_icu</code> 等）へディスパッチする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_collation.h</code>, <code>catalog/pg_database.h</code>: システムカタログ定義。</li>
+<li><code>lib/simplehash.h</code>: 照合順序キャッシュの実装。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字処理。</li>
+<li><code>utils/syscache.h</code>: システムカタログの高速検索。</li>
+<li><code>utils/pg_locale.h</code>: 公開インターフェース定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>shlwapi.h</code></li>
+<li><code>time.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/relcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/pg_locale_libc.c</code>: libc プロバイダの実装。</li>
+<li><code>src/backend/utils/adt/pg_locale_icu.c</code>: ICU プロバイダの実装。</li>
+<li><code>src/backend/utils/adt/pg_locale_builtin.c</code>: 組み込み（C/POSIX）プロバイダの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>pg_locale_t</code> は <code>CollationCacheContext</code>（<code>TopMemoryContext</code> 配下）で確保され、バックエンド終了まで解放されません。<code>freelocale()</code> を直接呼んではいけません。</li>
+<li>**Windows 対応**: Windows は <code>LC_MESSAGES</code> の扱いが特殊であり、<code>IsoLocaleName</code> 等の変換ロジックが複雑に含まれています。</li>
+<li>**省略された詳細**: 本ファイルは各プロバイダの具体的な変換ロジック（<code>strlower_icu</code> 等）の呼び出し元であり、個別のアルゴリズム詳細は各 <code>pg_locale_*.c</code> ファイルに委譲されています。</li>
+<li>**安全性**: <code>pg_strnxfrm</code> 等はプロバイダによって安全性が異なるため、必ず <code>pg_strxfrm_enabled()</code> で確認してから使用してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__collation_cache_entry.html" target="wiki-view"><code>collation_cache_entry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__pg_perm_setlocale.html" target="wiki-view"><code>pg_perm_setlocale</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__check_locale.html" target="wiki-view"><code>check_locale</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__check_locale_monetary.html" target="wiki-view"><code>check_locale_monetary</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__assign_locale_monetary.html" target="wiki-view"><code>assign_locale_monetary</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__check_locale_numeric.html" target="wiki-view"><code>check_locale_numeric</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__assign_locale_numeric.html" target="wiki-view"><code>assign_locale_numeric</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__check_locale_time.html" target="wiki-view"><code>check_locale_time</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__assign_locale_time.html" target="wiki-view"><code>assign_locale_time</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__check_locale_messages.html" target="wiki-view"><code>check_locale_messages</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__PGLC_localeconv.html" target="wiki-view"><code>PGLC_localeconv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_locale_c__IsoLocaleName.html" target="wiki-view"><code>IsoLocaleName</code></a></li>
+</ul></body></html>

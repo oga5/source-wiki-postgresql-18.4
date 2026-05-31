@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__slot_c__CreateSlotOnDisk.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CreateSlotOnDisk</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/slot.c:2257</code></li>
+</ul>
+<h2>目的</h2>
+<p>レプリケーションスロットの状態をディスク上の永続的なディレクトリ構造として作成・保存します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void CreateSlotOnDisk(ReplicationSlot *slot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ReplicationSlot *slot</code>（永続化対象のスロット構造体）</li>
+<li>**出力**: なし（成功時はディスクへ書き出し、失敗時はエラーをスロー）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象のスロットは、この関数が呼び出される時点では他のプロセスから参照されていない必要があります（<code>io_in_progress_lock</code> を取得しないため）。</li>
+<li><code>PG_REPLSLOT_DIR</code> 配下にスロット名に対応するディレクトリを作成します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **一時ディレクトリの準備**: <code>slot-&gt;data.name</code> に基づく一時ディレクトリ（<code>.tmp</code> 接尾辞）を作成します。既存の同名一時ディレクトリが存在する場合は削除を試みます。 2. **ディレクトリ作成と同期**: <code>MakePGDirectory</code> で一時ディレクトリを作成し、<code>fsync_fname</code> でディスクへフラッシュします。 3. **状態の書き出し**: <code>slot-&gt;dirty</code> を <code>true</code> に設定し、<code>SaveSlotToPath</code> を呼び出してスロットの状態ファイルを一時ディレクトリ内に保存します。 4. **アトミックな配置**: <code>rename</code> を使用して一時ディレクトリを正式なパスへ移動します。 5. **永続化の保証**: クリティカルセクションを開始し、作成したディレクトリと親ディレクトリ（<code>PG_REPLSLOT_DIR</code>）に対して <code>fsync_fname</code> を実行し、クラッシュ後の整合性を確保します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/slot.c</code> 内の <code>ReplicationSlotCreate</code> から呼び出されます。</li>
+<li>**呼び出し先**: <code>rmtree</code>, <code>MakePGDirectory</code>, <code>fsync_fname</code>, <code>SaveSlotToPath</code>, <code>rename</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationSlot</code>: スロットのメモリ内表現。</li>
+<li><code>PG_REPLSLOT_DIR</code>: スロットデータが格納されるベースディレクトリ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>一時ディレクトリの作成やリネームに失敗した場合、<code>ereport(ERROR, ...)</code> により処理が中断されます。</li>
+<li><code>fsync</code> 失敗時など、永続化が保証できない状況ではクリティカルセクション内で強制的な再起動（パニックに近い挙動）を誘発する設計となっています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>io_in_progress_lock</code> を取得しません。これは <code>SaveSlotToPath</code> が内部でロックを取得するためであり、デッドロックを回避するための設計です。</li>
+<li>ディレクトリの作成とリネームによるアトミックな更新は、クラッシュセーフティを維持するための重要なパターンです。</li>
+</ul></body></html>

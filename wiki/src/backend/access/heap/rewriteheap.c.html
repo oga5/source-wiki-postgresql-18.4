@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/rewriteheap.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/rewriteheap.c</h1>
+<h2>概要</h2>
+<p><code>rewriteheap.c</code> は、PostgreSQL においてテーブル（ヒープ）を物理的に再構築するための基盤機能を提供します。主に <code>VACUUM FULL</code> や <code>CLUSTER</code> コマンドの実行時に使用され、既存のヒープから新しいヒープへタプルをコピーしつつ、可視性情報や更新チェーン（<code>ctid</code>）の整合性を維持します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールの一部として、低レベルなヒープ操作を抽象化します。<code>heapam.c</code> が通常のタプル操作を担うのに対し、本ファイルは「テーブル全体を一度に書き換える」という特殊なユースケースに特化しており、バルク書き込みと論理デコーディング用のマッピング管理を統合しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ヒープ再構築のライフサイクル管理**: <code>begin_heap_rewrite</code> から <code>end_heap_rewrite</code> までの状態管理。</li>
+<li>**更新チェーンの解決**: 古いヒープと新しいヒープ間での <code>ctid</code> リンクの再構築。</li>
+<li>**バルク書き込み**: <code>raw_heap_insert</code> を用いた効率的なページ構築と WAL への書き出し。</li>
+<li>**論理デコーディング支援**: 論理レプリケーションが必要な場合に、古い TID と新しい TID のマッピングを永続化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RewriteStateData</code>: 再構築中の状態を保持する不透明な構造体。</li>
+<li><code>begin_heap_rewrite</code> / <code>end_heap_rewrite</code>: 再構築処理の開始と終了を制御する関数。</li>
+<li><code>rewrite_heap_tuple</code>: 個々のタプルを新しいヒープへ書き込むメイン関数。</li>
+<li><code>raw_heap_insert</code>: ページバッファを直接操作し、効率的にタプルを挿入する内部関数。</li>
+<li><code>CheckPointLogicalRewriteHeap</code>: チェックポイント時に不要なマッピングファイルを削除・同期する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>OldToNewMapping</code></li>
+<li><code>OldToNewMappingData</code></li>
+<li><code>RewriteMappingDataEntry</code></li>
+<li><code>RewriteMappingFile</code></li>
+<li><code>TidHashKey</code></li>
+<li><code>UnresolvedTup</code></li>
+<li><code>UnresolvedTupData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>begin_heap_rewrite</code> でハッシュテーブル（<code>rs_unresolved_tups</code>, <code>rs_old_new_tid_map</code>）を作成し、再構築状態を初期化します。 2. **タプル処理**: <code>rewrite_heap_tuple</code> が呼び出されるたびに、タプルが更新チェーンの一部かを確認します。</p>
+<ul>
+<li>未解決のチェーンがある場合、ハッシュテーブルに一時保存します。</li>
+<li>チェーンが解決可能になった時点で、正しい <code>ctid</code> を付与して新しいヒープへ書き込みます。</li>
+<p>3. **バルク書き込み**: <code>raw_heap_insert</code> はページが一杯になるまでバッファリングし、一杯になった時点で WAL 記録とディスク書き込みを行います。 4. **終了**: <code>end_heap_rewrite</code> で残りのタプルをフラッシュし、論理マッピングファイルを同期してリソースを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>, <code>access/heapam_xlog.h</code>, <code>access/heaptoast.h</code>: ヒープおよび TOAST 操作。</li>
+<li><code>storage/bulk_write.h</code>: 大量書き込み用のバッファ管理。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/fd.h</code>: バッファおよびファイルシステム操作。</li>
+<li><code>utils/memutils.h</code>: 再構築専用のメモリコンテキスト管理。</li>
+<li><code>access/rewriteheap.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/rewriteheap.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: 通常のヒープアクセスメソッド。</li>
+<li><code>src/backend/commands/cluster.c</code> / <code>vacuum.c</code>: 本モジュールの主要な利用者。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ消費**: 更新チェーンの解決にはインメモリのハッシュテーブルを使用します。非常に巨大なテーブルで大量の更新が未解決のまま滞留するとメモリ不足になる可能性があります。</li>
+<li>**論理デコーディング**: 論理レプリケーションが有効な場合、マッピングファイルが <code>pg_logical/mappings</code> に生成されます。これらはクラッシュリカバリ時に論理デコーディングの整合性を保つために不可欠です。</li>
+<li>**ロック**: 本機能を使用する呼び出し元は、対象テーブルに対して <code>AccessExclusiveLock</code> を保持している必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__RewriteStateData.html" target="wiki-view"><code>RewriteStateData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__TidHashKey.html" target="wiki-view"><code>TidHashKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__UnresolvedTupData.html" target="wiki-view"><code>UnresolvedTupData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__UnresolvedTup.html" target="wiki-view"><code>UnresolvedTup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__OldToNewMappingData.html" target="wiki-view"><code>OldToNewMappingData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__OldToNewMapping.html" target="wiki-view"><code>OldToNewMapping</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__RewriteMappingFile.html" target="wiki-view"><code>RewriteMappingFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__RewriteMappingDataEntry.html" target="wiki-view"><code>RewriteMappingDataEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__begin_heap_rewrite.html" target="wiki-view"><code>begin_heap_rewrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__end_heap_rewrite.html" target="wiki-view"><code>end_heap_rewrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__rewrite_heap_tuple.html" target="wiki-view"><code>rewrite_heap_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__rewriteheap_c__CheckPointLogicalRewriteHeap.html" target="wiki-view"><code>CheckPointLogicalRewriteHeap</code></a></li>
+</ul></body></html>

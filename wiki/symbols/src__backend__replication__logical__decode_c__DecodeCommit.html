@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__decode_c__DecodeCommit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DecodeCommit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/decode.c:666</code></li>
+</ul>
+<h2>目的</h2>
+<p>WALのコミットレコードを解析し、論理デコーディングコンテキストにおいてトランザクションの確定処理（<code>reorderbuffer</code> への反映およびスナップショットの更新）を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
+                         xl_xact_parsed_commit *parsed, TransactionId xid,
+                         bool two_phase)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>ctx</code>: 論理デコーディングの現在のコンテキスト。</li>
+<li><code>buf</code>: 解析対象のWALレコードバッファ。</li>
+<li><code>parsed</code>: コミットレコードの解析済みデータ構造。</li>
+<li><code>xid</code>: コミット対象のトランザクションID。</li>
+<li><code>two_phase</code>: 2フェーズコミット（2PC）かどうかを示すフラグ。</li>
+<li>**出力**: なし（副作用として <code>reorderbuffer</code> および <code>snapshot_builder</code> を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>parsed</code> は有効なコミットレコード情報を含んでいること。</li>
+<li><code>ctx-&gt;snapshot_builder</code> および <code>ctx-&gt;reorder</code> が初期化されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メタデータ抽出**: レコードからレプリケーションオリジンのIDとLSN、コミット時刻を取得する。 2. **スナップショット更新**: <code>SnapBuildCommitTxn</code> を呼び出し、スナップショットの状態を更新する。 3. **フィルタリング判定**: <code>DecodeTXNNeedSkip</code> を実行。対象外のデータベースやオリジンの場合は、<code>ReorderBufferForget</code> を用いて当該トランザクションおよびサブトランザクションの情報を破棄し、早期リターンする。 4. **サブトランザクション登録**: 生存しているサブトランザクションを <code>ReorderBufferCommitChild</code> で登録する。 5. **コミット処理**:</p>
+<ul>
+<li><code>two_phase</code> が真の場合: <code>ReorderBufferFinishPrepared</code> を呼び出し、準備済みトランザクションを完了させる。</li>
+<li>それ以外の場合: <code>ReorderBufferCommit</code> を呼び出し、トランザクションを確定させる。</li>
+<p>6. **統計更新**: <code>UpdateDecodingStats</code> を呼び出し、デコーディング統計を更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/decode.c</code> 内のレコード処理ループ（<code>LogicalDecodingProcessRecord</code> からのディスパッチ経由）。</li>
+<li>**呼び出し先**:</li>
+<li><code>SnapBuildCommitTxn</code></li>
+<li><code>DecodeTXNNeedSkip</code></li>
+<li><code>ReorderBufferForget</code></li>
+<li><code>ReorderBufferCommitChild</code></li>
+<li><code>ReorderBufferFinishPrepared</code></li>
+<li><code>ReorderBufferCommit</code></li>
+<li><code>UpdateDecodingStats</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogicalDecodingContext</code>: デコーディングの全体状態。</li>
+<li><code>XLogRecordBuffer</code>: WALレコードの保持構造。</li>
+<li><code>xl_xact_parsed_commit</code>: コミットレコードの解析結果。</li>
+<li><code>ReorderBuffer</code>: 変更を蓄積するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**スキップ処理**: <code>DecodeTXNNeedSkip</code> が真を返す場合、トランザクションの内容は破棄される。この際、共有カタログの無効化が必要なケースでは注意が必要（ソースコードのコメント参照）。</li>
+<li>**2PC**: <code>two_phase</code> フラグにより、通常のコミットと準備済みトランザクションの完了処理が分岐する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>DecodePrepare</code> と類似のロジックを共有している。</li>
+<li><code>ReorderBufferForget</code> を呼び出す際は、トランザクションの無効化処理が適切に行われるか確認すること。</li>
+<li>統計情報の更新は、デコーディングの中断時に情報を失わないよう、コミット等のタイミングで明示的に行われている。</li>
+</ul></body></html>

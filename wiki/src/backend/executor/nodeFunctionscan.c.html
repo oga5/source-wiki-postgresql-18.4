@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeFunctionscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeFunctionscan.c</h1>
+<h2>概要</h2>
+<p><code>nodeFunctionscan.c</code> は、SQL クエリの <code>FROM</code> 句に記述されたテーブル関数（<code>RangeFunctions</code>）を評価・スキャンするための実行ノードです。関数が返す結果セットを一時的な <code>Tuplestore</code> に格納し、それを順次読み出すことで、テーブルと同様のインターフェースをクエリ実行エンジンに提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、<code>ExecProcNode</code> インターフェースを実装するスキャンノードの一つです。他のスキャンノード（<code>nodeSeqscan.c</code> 等）と同様に、<code>ExecScan</code> を利用してタプルを供給します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数実行と結果保持**: <code>ExecMakeTableFunctionResult</code> を呼び出し、関数の出力を <code>Tuplestore</code> にキャッシュする。</li>
+<li>**データ統合**: 複数の関数結果や、<code>WITH ORDINALITY</code> 指定による序数カラムを統合して単一のタプルを構築する。</li>
+<li>**ライフサイクル管理**: スキャン開始時の初期化、再スキャン時の状態リセット、終了時のリソース解放を行う。</li>
+<li>**スキャン制御**: 前方・後方スキャンをサポートし、必要に応じて関数の再評価を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>FunctionScanState</code>: このノードの実行時状態を保持する構造体。</li>
+<li><code>FunctionScanPerFuncState</code>: 各関数ごとの実行状態（<code>Tuplestore</code> や結果型情報）を管理する内部構造体。</li>
+<li><code>FunctionNext</code>: <code>ExecScan</code> から呼び出される、次のタプルを取得するためのメインロジック。</li>
+<li><code>ExecInitFunctionScan</code>: ノードの初期化と、関数ごとのメタデータ（<code>TupleDesc</code> 等）の構築を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndFunctionScan</code></li>
+<li><code>ExecFunctionScan</code></li>
+<li><code>ExecReScanFunctionScan</code></li>
+<li><code>FunctionRecheck</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化 (<code>ExecInitFunctionScan</code>)**: 各関数の戻り値型を解析し、結果を格納する <code>Tuplestore</code> 用の準備を行う。 2. **実行 (<code>FunctionNext</code>)**:</p>
+<ul>
+<li>初回呼び出し時: <code>ExecMakeTableFunctionResult</code> で関数を実行し、結果を <code>Tuplestore</code> に格納する。</li>
+<li>2回目以降: <code>Tuplestore</code> からタプルを読み出す。</li>
+<li>複数関数/序数ありの場合: 各関数の出力を結合し、仮想タプルとして <code>ScanTupleSlot</code> に格納する。</li>
+<p>3. **再スキャン (<code>ExecReScanFunctionScan</code>)**: パラメータが変更された場合は <code>Tuplestore</code> を破棄して再実行し、変更がない場合は <code>tuplestore_rescan</code> で先頭に戻す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>funcapi.h</code>: テーブル関数実行用 API。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式評価用ノード定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>executor/nodeFunctionscan.h</code>: 公開ヘッダー。</li>
+<li><code>catalog/pg_type.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execSRF.c</code>: セットを返す関数（SRF）の実行ロジック。</li>
+<li><code>src/backend/executor/execScan.c</code>: スキャンノードの共通基盤。</li>
+<li><code>src/backend/executor/functions.c</code>: 関数実行の基盤処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**シンプルパス**: 関数が1つで <code>ORDINALITY</code> がない場合、オーバーヘッドを避けるための高速パス（<code>simple</code> フラグ）が存在します。</li>
+<li>**序数管理**: <code>WITH ORDINALITY</code> が指定されていない場合でも、後方スキャンを正しくサポートするために内部的に <code>ordinal</code> カウンタを維持しています。</li>
+<li>**メモリ管理**: 関数引数の評価には <code>argcontext</code> を使用し、クエリ実行中のメモリリークを防いでいます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__FunctionScanPerFuncState.html" target="wiki-view"><code>FunctionScanPerFuncState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__FunctionNext.html" target="wiki-view"><code>FunctionNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__FunctionRecheck.html" target="wiki-view"><code>FunctionRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__ExecFunctionScan.html" target="wiki-view"><code>ExecFunctionScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__ExecInitFunctionScan.html" target="wiki-view"><code>ExecInitFunctionScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__ExecEndFunctionScan.html" target="wiki-view"><code>ExecEndFunctionScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeFunctionscan_c__ExecReScanFunctionScan.html" target="wiki-view"><code>ExecReScanFunctionScan</code></a></li>
+</ul></body></html>

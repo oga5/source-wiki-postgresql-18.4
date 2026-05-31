@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/getquadrant.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>getQuadrant</h1>
+<h2>概念</h2>
+<p><code>getQuadrant</code> は、PostgreSQLのSP-GiST（Space-Partitioned GiST）インデックスにおいて、インデックス対象のデータが基準となる「重心（centroid）」に対してどの象限（Quadrant）に属するかを判定するための関数群です。データ型（<code>Point</code>、<code>BOX</code>、<code>RangeType</code>）ごとに異なるシグネチャと分類ロジックを持つ同名の関数が、それぞれのソースファイルで定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>SP-GiSTは空間分割ツリー（四分木など）を構築・検索するために、データを特定の象限に分類して子ノードに振り分ける必要があります。<code>getQuadrant</code> は、インデックスの挿入（<code>choose</code> や <code>picksplit</code>）や検索（<code>consistent</code>）の処理において、対象データがどのサブツリー（象限）に配置されるべきかを決定するコアロジックを担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/spgist</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/spgist/spgquadtreeproc.c#getQuadrant</code>**</li>
+<li>**対象型**: <code>Point</code></li>
+<li>**役割**: 基準点に対する対象点の位置関係から、1〜4の象限番号（<code>int16</code>）を決定します。</li>
+<li>**<code>symbol:src/backend/utils/adt/geo_spgist.c#getQuadrant</code>**</li>
+<li>**対象型**: <code>BOX</code></li>
+<li>**役割**: 基準矩形に対する対象矩形の相対位置を、4次元空間上の象限を表す0〜15のビットマスク（<code>uint8</code>）として特定します。</li>
+<li>**<code>symbol:src/backend/utils/adt/rangetypes_spgist.c#getQuadrant</code>**</li>
+<li>**対象型**: <code>RangeType</code></li>
+<li>**役割**: 基準範囲に対する対象範囲の位置関係から、1〜4の象限、または空範囲用の象限5（<code>int16</code>）に分類します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>SP-GiSTインデックスの構築や検索の過程において、各データ型に対応するインデックスサポート関数（<code>spg_quad_choose</code>、<code>spg_box_quad_choose</code> など）から <code>getQuadrant</code> が呼び出されます。</p>
+<p>1. **入力の受け取り**: 基準となる重心（<code>centroid</code>）と、判定対象のデータ（<code>tst</code> または <code>inBox</code>）が渡されます。 2. **象限の判定**:</p>
+<ul>
+<li>**Point型**: <code>SPTEST</code> マクロ（<code>point_above</code> や <code>point_right</code> など）を用いて、反時計回りに1（右上）、2（右下）、3（左下）、4（左上）のいずれかに分類します。</li>
+<li>**BOX型**: 境界の座標（<code>low.x</code>, <code>high.x</code>, <code>low.y</code>, <code>high.y</code>）を比較し、4ビットのビットマスク（0〜15）を生成します。</li>
+<li>**RangeType型**: <code>range_deserialize</code> で境界値を抽出し、下限・上限の比較結果に基づいて1〜4、または空範囲の場合は5に分類します。</li>
+<p>3. **結果の返却**: 決定された象限番号またはビットマスクを返し、呼び出し元はこれに基づいて適切な子ノードの選択や分割を行います。</p>
+</ul>
+<p>*注意: SP-GiST全体のインデックス走査や挿入処理における完全なエンドツーエンドの制御フローの全容は、提供されたシンボル情報からは完全には網羅されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**Point型**:</li>
+<li>軸上の点は、より番号の小さい象限に分類されます。</li>
+<li>どの象限にも該当しない状態は論理的に不可能であり、発生した場合は <code>elog(ERROR)</code> となります。</li>
+<li>**BOX型**:</li>
+<li>戻り値の各ビット（ビット0〜3）は、対象矩形の各座標が基準矩形の対応する座標より大きいかどうか（<code>&gt;</code>）を厳密に表します。</li>
+<li>**RangeType型**:</li>
+<li>対象範囲が空範囲（Empty）である場合、不変条件として常に象限 <code>5</code> が返されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>getQuadrant</code> という名前の関数は、扱うデータ型（<code>Point</code>、<code>BOX</code>、<code>RangeType</code>）ごとにシグネチャや戻り値の型（<code>int16</code> または <code>uint8</code>）、分類ロジックが全く異なります。これらは静的（<code>static</code>）またはファイルローカルに定義されているため、修正や参照を行う際は対象のファイルおよびデータ型を正しく識別する必要があります。</li>
+<li>**境界値の扱い**: 基準点や基準範囲と完全に一致する場合や、軸上に位置する場合の挙動（どの象限に割り当てられるか、またはビットが立たないかなど）は型ごとに定義が異なるため、変更時にはSP-GiSTのインデックス構造の整合性に影響を与える可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/spgist/spgquadtreeproc.c</code> （Point型用の実装）</li>
+<li><code>src/backend/utils/adt/geo_spgist.c</code> （BOX型用の実装）</li>
+<li><code>src/backend/utils/adt/rangetypes_spgist.c</code> （RangeType型用の実装）</li>
+</ul></body></html>

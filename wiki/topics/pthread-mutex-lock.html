@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pthread-mutex-lock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pthread_mutex_lock</h1>
+<h2>概念</h2>
+<p><code>pthread_mutex_lock</code> は、POSIXスレッド（pthread）ライブラリが標準で提供されていないWindows環境において、PostgreSQLのクライアントライブラリ（<code>libpq</code> および <code>ecpglib</code>）が内部的に使用するミューテックスのロック処理をエミュレートする関数です。Windowsの <code>CRITICAL_SECTION</code> を用いて排他制御を実現します。</p>
+<h2>なぜ重要か</h2>
+<p>Windows環境において、マルチスレッド対応のクライアントアプリケーションが安全にデータベース接続や関連処理を行うためには、プラットフォームに依存しない共通のインターフェースで排他制御を行う必要があります。この関数は、Windows固有のAPI（<code>CRITICAL_SECTION</code> など）を隠蔽し、POSIX準拠のインターフェースを提供することで、コードのポータビリティを維持しつつスレッド安全性を確保するために重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/interfaces/ecpg/ecpglib</code></li>
+<li><code>module:src/interfaces/libpq</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/interfaces/libpq/pthread-win32.c#pthread_mutex_lock</code>: Windows環境用の <code>pthread_mutex_lock</code> の実装。</li>
+<li><code>symbol:src/interfaces/ecpg/ecpglib/misc.c#pthread_mutex_lock</code>: <code>ecpglib</code> 内で参照または定義されているシンボル。</li>
+<li><code>pthread_mutex_t</code> (<code>src/port/pthread-win32.h</code> で定義): Windows環境用のミューテックス構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: <code>src/interfaces/ecpg/ecpglib/</code>（<code>connect.c</code>, <code>misc.c</code> など）や <code>src/interfaces/libpq/</code>（<code>fe-auth-oauth.c</code>, <code>fe-connect.c</code> など）の処理から <code>pthread_mutex_lock(mp)</code> が呼び出されます。 2. **遅延初期化のチェック**:</p>
+<ul>
+<li><code>mp-&gt;initstate</code> が <code>1</code>（初期化済み）でない場合、初期化処理が開始されます。</li>
+<li><code>InterlockedExchange</code> を用いて <code>initstate</code> を <code>2</code>（初期化中）に変更し、競合を回避します。他スレッドが初期化中の場合は <code>Sleep(0)</code> で待機します。</li>
+<li>初期化が完了すると、<code>InitializeCriticalSection</code> 等により内部の <code>CRITICAL_SECTION</code> がセットアップされます。</li>
+<p>3. **ロックの取得**: Windows API の <code>EnterCriticalSection</code> を呼び出し、OSレベルで排他制御のロックを取得します。 4. **制御の返却**: ロック取得に成功すると、呼び出し元に <code>0</code> を返します。</p>
+</ul>
+<p>※なお、<code>ecpglib</code> 側における具体的な呼び出しフローの全容や、Windows以外のプラットフォームにおける標準 <code>pthread</code> ライブラリとの完全な統合フロー（エンドツーエンドの全体像）は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化状態の整合性**: <code>mp-&gt;initstate</code> は、未初期化、初期化中（<code>2</code>）、初期化完了（<code>1</code>）のいずれかの状態を厳密に遷移し、マルチスレッド環境下でも <code>InterlockedExchange</code> によるアトミック操作で保護されていなければなりません。</li>
+<li>**有効なポインタ**: 入力される <code>mp</code> は、有効な <code>pthread_mutex_t</code> 構造体を指している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**再帰ロックの挙動**: 本実装は Windows の <code>EnterCriticalSection</code> を使用しているため、同一スレッドによる再帰的なロック（二重ロック）が発生した場合の挙動は <code>CRITICAL_SECTION</code> の仕様に依存します。</li>
+<li>**不完全な pthread 互換性**: 本関数は <code>libpq</code> 内部の同期ニーズに特化して設計されており、汎用的な <code>pthread</code> ライブラリとしての完全な機能やエラーハンドリングは備えていません。</li>
+<li>**スピンロックによる待機**: 初期化競合時の <code>InterlockedExchange</code> と <code>Sleep(0)</code> によるスピンロック的な待機は、長時間の競合を想定した設計ではないため、初期化フェーズでの極端な競合はパフォーマンス低下を招く可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/libpq/pthread-win32.c</code>: Windows環境における <code>pthread_mutex_lock</code> の具体的な実装コード。</li>
+<li><code>src/port/pthread-win32.h</code>: <code>pthread_mutex_t</code> 構造体の定義。</li>
+<li><code>src/interfaces/ecpg/ecpglib/misc.c</code>: <code>ecpglib</code> におけるミューテックスの利用箇所。</li>
+</ul></body></html>

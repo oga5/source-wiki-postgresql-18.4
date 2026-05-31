@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/pg_upgrade_support.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/pg_upgrade_support.c</h1>
+<h2>概要</h2>
+<p><code>pg_upgrade_support.c</code> は、PostgreSQL のメジャーバージョンアップグレードツールである <code>pg_upgrade</code> を支援するためのサーバーサイド関数群を提供します。これらの関数は、アップグレードプロセス中にカタログのメタデータ（OID や RelFileNode）を強制的に指定したり、アップグレードに必要な特殊な状態を構築したりするために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュール内に位置し、通常のユーザー向け関数とは異なり、アップグレードという特殊な運用フェーズでのみ利用される管理用インターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**OID/RelFileNode の固定**: 新しいクラスタのカタログに、古いクラスタと同一の OID や物理ファイル番号を割り当てるためのグローバル変数を設定する。</li>
+<li>**カタログの直接操作**: <code>pg_extension</code> などのシステムカタログに対して、通常の SQL コマンドでは不可能な直接的な挿入や状態設定を行う。</li>
+<li>**アップグレード時の整合性検証**: 論理レプリケーションスロットの WAL 到達状況の確認など、データ損失を防ぐための検証機能を提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CHECK_IS_BINARY_UPGRADE</code>: サーバーが <code>binary_upgrade</code> モードで起動されていることを確認するマクロ。すべての関数で必須のガード。</li>
+<li><code>binary_upgrade_set_next_*</code>: 各種オブジェクト（テーブルスペース、型、クラス、RelFileNode 等）の次回の OID/番号を予約するための関数群。</li>
+<li><code>binary_upgrade_create_empty_extension</code>: 拡張機能のメタデータのみをカタログに挿入する関数。</li>
+<li><code>binary_upgrade_logical_slot_has_caught_up</code>: 論理レプリケーションスロットが最新の WAL を消費済みか判定する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>binary_upgrade_set_next_array_pg_type_oid</code></li>
+<li><code>binary_upgrade_set_next_heap_pg_class_oid</code></li>
+<li><code>binary_upgrade_set_next_heap_relfilenode</code></li>
+<li><code>binary_upgrade_set_next_index_pg_class_oid</code></li>
+<li><code>binary_upgrade_set_next_index_relfilenode</code></li>
+<li><code>binary_upgrade_set_next_multirange_array_pg_type_oid</code></li>
+<li><code>binary_upgrade_set_next_multirange_pg_type_oid</code></li>
+<li><code>binary_upgrade_set_next_pg_enum_oid</code></li>
+<li><code>binary_upgrade_set_next_pg_tablespace_oid</code></li>
+<li><code>binary_upgrade_set_next_pg_type_oid</code></li>
+<li><code>binary_upgrade_set_next_toast_pg_class_oid</code></li>
+<li><code>binary_upgrade_set_next_toast_relfilenode</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ガード**: 各関数は <code>CHECK_IS_BINARY_UPGRADE</code> を呼び出し、<code>IsBinaryUpgrade</code> フラグが有効でない場合はエラーを投げる。 2. **設定**: <code>binary_upgrade_set_next_*</code> 系関数は、引数として受け取った値を、対応するグローバル変数（例: <code>binary_upgrade_next_heap_pg_class_oid</code>）に代入する。 3. **カタログ操作**: <code>binary_upgrade_create_empty_extension</code> 等の関数は、引数から得た情報を基に <code>InsertExtensionTuple</code> などの内部関数を呼び出し、システムカタログを直接更新する。 4. **検証**: <code>binary_upgrade_logical_slot_has_caught_up</code> は、レプリケーションスロットを一時的にロックし、WAL のフラッシュ位置と照合して結果を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/binary_upgrade.h</code>: アップグレード用のグローバル変数定義。</li>
+<li><code>catalog/heap.h</code>, <code>catalog/pg_type.h</code>: カタログ操作に必要な定義。</li>
+<li><code>replication/logical.h</code>, <code>replication/origin.h</code>: 論理レプリケーション関連の検証用。</li>
+<li><code>utils/builtins.h</code>: 関数定義の基盤。</li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_subscription_rel.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/worker_internal.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/binary_upgrade.h</code>: このファイルで設定されるグローバル変数の宣言元。</li>
+<li><code>src/bin/pg_upgrade/</code>: <code>pg_upgrade</code> 実行バイナリのソースコード。このファイル内の関数を SQL 経由で呼び出す。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**セキュリティ**: これらの関数は非常に強力であり、誤用するとシステムカタログの整合性が破壊されます。そのため、<code>binary_upgrade</code> モードでのみ動作するよう厳格に制限されています。</li>
+<li>**読み方**: 各関数は非常に定型的な実装になっています。まずは <code>CHECK_IS_BINARY_UPGRADE</code> マクロの役割を理解し、次に <code>binary_upgrade_create_empty_extension</code> のようなカタログ操作関数を追うと、このファイルが「いかにしてカタログをハックしているか」が理解しやすくなります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_pg_tablespace_oid.html" target="wiki-view"><code>binary_upgrade_set_next_pg_tablespace_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_pg_type_oid.html" target="wiki-view"><code>binary_upgrade_set_next_pg_type_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_array_pg_type_oid.html" target="wiki-view"><code>binary_upgrade_set_next_array_pg_type_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_multirange_pg_type_oid.html" target="wiki-view"><code>binary_upgrade_set_next_multirange_pg_type_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_multirange_array_pg_type_oid.html" target="wiki-view"><code>binary_upgrade_set_next_multirange_array_pg_type_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_heap_pg_class_oid.html" target="wiki-view"><code>binary_upgrade_set_next_heap_pg_class_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_heap_relfilenode.html" target="wiki-view"><code>binary_upgrade_set_next_heap_relfilenode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_index_pg_class_oid.html" target="wiki-view"><code>binary_upgrade_set_next_index_pg_class_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_index_relfilenode.html" target="wiki-view"><code>binary_upgrade_set_next_index_relfilenode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_toast_pg_class_oid.html" target="wiki-view"><code>binary_upgrade_set_next_toast_pg_class_oid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_toast_relfilenode.html" target="wiki-view"><code>binary_upgrade_set_next_toast_relfilenode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pg_upgrade_support_c__binary_upgrade_set_next_pg_enum_oid.html" target="wiki-view"><code>binary_upgrade_set_next_pg_enum_oid</code></a></li>
+</ul></body></html>

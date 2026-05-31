@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_func.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_func.c</h1>
+<h2>概要</h2>
+<p>SQL 解析フェーズにおいて、関数呼び出し、プロシージャ呼び出し、および集約関数・ウィンドウ関数の解決を担う中核モジュールです。SQL 内の関数名と引数リストをシステムカタログ（<code>pg_proc</code> 等）と照合し、適切な関数 OID の特定、型変換の挿入、および構文上の制約チェックを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムの一部として、<code>parse_expr.c</code> から呼び出される関数解決の専門家です。名前解決の結果に基づき、<code>FuncExpr</code>（通常関数）、<code>Aggref</code>（集約）、<code>WindowFunc</code>（ウィンドウ関数）といったノードを生成し、プランナが処理可能な形式へ変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数・プロシージャ解決**: 名前と引数型に基づき、オーバーロードされた関数から最適な候補を選択する。</li>
+<li>**型整合性の確保**: 引数の型を関数の宣言型に合わせるための暗黙的キャスト（<code>make_fn_arguments</code>）の挿入。</li>
+<li>**構文制約の検証**: <code>WITHIN GROUP</code>、<code>FILTER</code>、<code>OVER</code> 句の配置が関数種別に対して妥当かどうかのチェック。</li>
+<li>**特殊な構文の解釈**: <code>tab.col</code> と <code>col(tab)</code> の等価性（列プロジェクション）の解決。</li>
+<li>**SRF（Set-Returning Function）の配置制限**: SRF が許可されていない場所（WHERE 句など）での使用を禁止する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>関数解決のメインエントリ</h3>
+<ul>
+<li><code>ParseFuncOrColumn</code>: 本ファイルのメイン関数。関数呼び出し、列参照、型キャストのいずれであるかを判別し、適切なノードを生成する。</li>
+<li><code>func_get_detail</code>: システムカタログを検索し、関数候補のリストから最適なものを特定する。</li>
+</ul>
+<h3>候補選択とマッチング</h3>
+<ul>
+<li><code>func_match_argtypes</code>: 候補リストから、引数型が一致（またはキャスト可能）なものだけを抽出する。</li>
+<li><code>func_select_candidate</code>: 複数の候補がある場合に、型優先度やカテゴリに基づき「最も適切な」関数を選択する。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><code>make_fn_arguments</code>: 引数リストに対して必要な型変換ノードを挿入する。</li>
+<li><code>unify_hypothetical_args</code>: 仮説的集約（Hypothetical-set aggregate）の引数型を統一する。</li>
+<li><code>check_srf_call_placement</code>: SRF が現在の構文コンテキストで許可されているか検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FuncLookupError</code></li>
+<li><code>FuncNameAsType</code></li>
+<li><code>LookupFuncName</code></li>
+<li><code>LookupFuncNameInternal</code></li>
+<li><code>LookupFuncWithArgs</code></li>
+<li><code>ParseComplexProjection</code></li>
+<li><code>ParseFuncOrColumn</code></li>
+<li><code>func_get_detail</code></li>
+<li><code>func_match_argtypes</code></li>
+<li><code>func_select_candidate</code></li>
+<li><code>make_fn_arguments</code></li>
+<li><code>unify_hypothetical_args</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ParseFuncOrColumn</code> が引数リストを走査し、型情報を抽出。 2. **候補検索**: <code>func_get_detail</code> が <code>FuncnameGetCandidates</code> を呼び出し、カタログから候補を取得。 3. **解決**:</p>
+<ul>
+<li>候補が単一ならそれを採用。</li>
+<li>候補が複数なら <code>func_select_candidate</code> で絞り込み。</li>
+<li>候補なしの場合、列プロジェクション（<code>ParseComplexProjection</code>）や型キャストの可能性を検討。</li>
+<p>4. **変換**: <code>make_fn_arguments</code> が引数ノードにキャストを適用。 5. **ノード生成**: 最終的に <code>FuncExpr</code>, <code>Aggref</code>, <code>WindowFunc</code> のいずれかを生成して返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_proc</code>, <code>pg_aggregate</code> 等のシステムカタログ定義。</li>
+<li><code>parser/</code>: <code>parse_coerce.h</code> (型変換), <code>parse_expr.h</code> (式解析), <code>parse_relation.h</code> (名前解決)。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code> (キャッシュ検索), <code>syscache.h</code>。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/parse_expr.c</code>: 式解析の起点。</li>
+<li><code>src/backend/parser/parse_coerce.c</code>: 型変換のロジック。</li>
+<li><code>src/backend/parser/parse_agg.c</code>: 集約・ウィンドウ関数特有の変換ロジック。</li>
+<li><code>src/backend/catalog/namespace.c</code>: <code>FuncnameGetCandidates</code> の実装元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本モジュールで生成されるノードは <code>ParseState</code> のメモリコンテキストに割り当てられます。</li>
+<li>**エラーハンドリング**: <code>ereport(ERROR, ...)</code> を多用し、解析エラーを即座に報告します。<code>parser_errposition</code> を用いて SQL 内の正確な位置を特定するよう設計されています。</li>
+<li>**未実装・制限**: </li>
+<li>集約関数における名前付き引数のサポートは現在制限されています。</li>
+<li><code>ParseComplexProjection</code> は、複雑な型（RECORD 等）の解決において <code>expandRecordVariable</code> に依存しており、ここが解析のボトルネックになる場合があります。</li>
+<li>**設計思想**: PostgreSQL の関数解決は、単なる名前一致ではなく、型優先度やカテゴリに基づく複雑なヒューリスティックを用いており、<code>func_select_candidate</code> がその心臓部です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__FuncLookupError.html" target="wiki-view"><code>FuncLookupError</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__ParseFuncOrColumn.html" target="wiki-view"><code>ParseFuncOrColumn</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_match_argtypes.html" target="wiki-view"><code>func_match_argtypes</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_select_candidate.html" target="wiki-view"><code>func_select_candidate</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_get_detail.html" target="wiki-view"><code>func_get_detail</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__unify_hypothetical_args.html" target="wiki-view"><code>unify_hypothetical_args</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__make_fn_arguments.html" target="wiki-view"><code>make_fn_arguments</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__FuncNameAsType.html" target="wiki-view"><code>FuncNameAsType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__ParseComplexProjection.html" target="wiki-view"><code>ParseComplexProjection</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncNameInternal.html" target="wiki-view"><code>LookupFuncNameInternal</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncName.html" target="wiki-view"><code>LookupFuncName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncWithArgs.html" target="wiki-view"><code>LookupFuncWithArgs</code></a></li>
+</ul></body></html>

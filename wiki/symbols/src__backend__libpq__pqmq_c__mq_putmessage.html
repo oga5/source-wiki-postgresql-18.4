@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__libpq__pqmq_c__mq_putmessage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>mq_putmessage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/libpq/pqmq.c:117</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリメッセージキュー（<code>shm_mq</code>）を介して、libpqプロトコル形式のメッセージを送信する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int mq_putmessage(char msgtype, const char *s, size_t len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>msgtype</code>: メッセージタイプを示す文字。</li>
+<li><code>s</code>: 送信するデータ本体のバッファ。</li>
+<li><code>len</code>: データ本体の長さ。</li>
+<li>**出力**:</li>
+<li>成功時は <code>0</code> を返す。</li>
+<li>失敗時（キューのデタッチやエラー）は <code>EOF</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pq_mq_handle</code> が有効であること（<code>NULL</code> の場合は無視される）。</li>
+<li><code>pq_mq_busy</code> フラグにより、メッセージ送信中の再帰的な呼び出しを防止する。</li>
+<li>呼び出し時に <code>shm_mq_sendv</code> を使用して共有メモリへ書き込む。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **再入チェック**: <code>pq_mq_busy</code> が真の場合、デッドロック回避のためキューをデタッチして <code>EOF</code> を返す。 2. **初期化**: <code>pq_mq_busy</code> を真に設定し、メッセージタイプとデータを <code>shm_mq_iovec</code> に格納する。 3. **送信ループ**:</p>
+<ul>
+<li><code>shm_mq_sendv</code> を呼び出し、データをキューへ書き込む。</li>
+<li>並列リーダーのPIDが設定されている場合、<code>SendProcSignal</code> を発行してリーダーに通知する。</li>
+<li>キューが満杯（<code>SHM_MQ_WOULD_BLOCK</code>）であれば、<code>WaitLatch</code> で空きを待ち、割り込みチェックを行う。</li>
+<p>4. **終了処理**: <code>pq_mq_busy</code> を偽に戻し、送信結果を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>PqCommMqMethods</code> 構造体を通じて、libpqの通信メソッドとして間接的に呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>shm_mq_sendv</code> (共有メモリへの書き込み)</li>
+<li><code>SendProcSignal</code> (並列リーダーへの通知)</li>
+<li><code>WaitLatch</code> / <code>ResetLatch</code> (待機処理)</li>
+<li><code>CHECK_FOR_INTERRUPTS</code> (割り込み確認)</li>
+<li><code>shm_mq_detach</code> (再入時のクリーンアップ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>shm_mq</code>: 共有メモリメッセージキューのハンドル。</li>
+<li><code>shm_mq_iovec</code>: 送信データ構成用構造体。</li>
+<li><code>pq_mq_handle</code>: 現在使用中の共有メモリキューへのポインタ。</li>
+<li><code>pq_mq_busy</code>: 送信中状態を示すフラグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キューが満杯**: <code>WaitLatch</code> を使用して待機し、空きができるまでループする。</li>
+<li>**再入**: 送信中に割り込み等で再度 <code>mq_putmessage</code> が呼ばれた場合、キューをデタッチして <code>EOF</code> を返す。</li>
+<li>**キューの消失**: <code>pq_mq_handle</code> が <code>NULL</code> の場合、メッセージを無視して <code>0</code> を返す。</li>
+<li>**送信失敗**: <code>shm_mq_sendv</code> が成功以外を返した場合、<code>EOF</code> を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>PqCommMqMethods</code> の一部として、通常のソケット通信の代替として機能する。</li>
+<li><code>SendProcSignal</code> の送信先は、論理レプリケーションワーカーか並列ワーカーかによってシグナル種別が分岐する。</li>
+</ul></body></html>

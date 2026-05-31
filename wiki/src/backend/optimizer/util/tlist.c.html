@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/tlist.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/tlist.c</h1>
+<h2>概要</h2>
+<p><code>tlist.c</code> は、PostgreSQL のクエリ最適化プロセスにおける「ターゲットリスト（Target List）」および「PathTarget」の操作を担うユーティリティ群です。プランナがクエリ実行計画を構築する際、列の抽出、式評価の順序制御、およびソートやグループ化に必要なメタデータの管理をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、プランナが扱う中間表現（<code>TargetEntry</code> や <code>PathTarget</code>）の変換・検索・検証を行います。特に、セットを返す関数（SRF: Set-Returning Functions）を含む複雑な式を、実行可能な複数のプランレベルに分解する機能が本ファイルの核心です。</p>
+<h2>責務</h2>
+<ul>
+<li>**ターゲットリストの検索と操作**: 特定の式や変数に対応する <code>TargetEntry</code> の検索、フラットなリストへの追加。</li>
+<li>**PathTarget の管理**: <code>PathTarget</code> 構造体の生成、コピー、列の追加、およびコスト/幅の計算準備。</li>
+<li>**SRF の分離**: 実行計画の各段階で安全に SRF を評価できるよう、式を再帰的に解析して複数の <code>PathTarget</code> に分割する。</li>
+<li>**メタデータの一貫性維持**: ソートやグループ化の参照（<code>SortGroupRef</code>）の整合性チェックと適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>tlist_member</code>: 指定した式と一致する <code>TargetEntry</code> をリストから検索する基本関数。</li>
+<li><code>split_pathtarget_at_srfs</code>: SRF を含む式を、実行可能なレベルに分解するための主要なエントリポイント。</li>
+<li><code>PathTarget</code>: プランナが使用する、コストや幅の情報を保持した軽量なターゲットリスト表現。</li>
+<li><code>IS_SRF_CALL</code>: 式が SRF を含んでいるかを判定する内部マクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>add_to_flat_tlist</code></li>
+<li><code>apply_tlist_labeling</code></li>
+<li><code>count_nonjunk_tlist_entries</code></li>
+<li><code>get_sortgroupref_tle</code></li>
+<li><code>get_tlist_exprs</code></li>
+<li><code>split_pathtarget_context</code></li>
+<li><code>split_pathtarget_item</code></li>
+<li><code>tlist_member_match_var</code></li>
+<li><code>tlist_same_collations</code></li>
+<li><code>tlist_same_datatypes</code></li>
+<li><code>tlist_same_exprs</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **SRF 分解**: <code>split_pathtarget_at_srfs</code> が呼び出されると、<code>split_pathtarget_walker</code> が式ツリーを再帰的に走査します。 2. **コンテキスト管理**: <code>split_pathtarget_context</code> を通じて、SRF のネスト深さや必要な入力変数（<code>input_vars</code>）を追跡します。 3. **レベル生成**: SRF のネスト深さに応じて、評価すべきレベルを <code>level_srfs</code> リストに蓄積します。 4. **再構築**: 蓄積された情報に基づき、複数の <code>PathTarget</code> を生成し、各レベルで必要な式が正しく渡されるように構成します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/makefuncs.h</code>, <code>nodes/nodeFuncs.h</code>: ノード操作および生成用。</li>
+<li><code>optimizer/tlist.h</code>: 公開プロトタイプ定義。</li>
+<li><code>optimizer/cost.h</code>: コスト計算用。</li>
+<li><code>rewrite/rewriteManip.h</code>: 式の書き換え操作用。</li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/nodes/pathnodes.h</code>: <code>PathTarget</code> 構造体の定義。</li>
+<li><code>src/backend/optimizer/plan/createplan.c</code>: 本ファイルで作成された <code>PathTarget</code> を利用して実際のプランノードを生成する箇所。</li>
+<li><code>src/backend/optimizer/util/clauses.c</code>: 式の評価や定数畳み込みなど、より広範な式操作を行うモジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**SRF の扱い**: 本ファイル内の SRF 分解ロジックは非常に複雑です。SRF がネストしている場合、実行エンジンが処理可能な形に分解する必要があるためです。この処理を理解するには、<code>split_pathtarget_at_srfs</code> のコメントにある例（<code>x + srf1(srf2(y + z))</code>）を追うのが最適です。</li>
+<li>**<code>equal()</code> の使用**: <code>tlist_member</code> 等では <code>equal()</code> を使用して式の一致を確認しますが、<code>tlist_member_match_var</code> のように特定の条件下で緩和された比較を行う関数もあります。用途に応じて使い分ける必要があります。</li>
+<li>**<code>PathTarget</code> のコスト**: <code>create_pathtarget</code> マクロは、<code>make_pathtarget_from_tlist</code> で作成したターゲットにコストと幅の情報を付与する推奨手順です。手動で作成する場合はコスト計算を忘れないようにしてください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__split_pathtarget_item.html" target="wiki-view"><code>split_pathtarget_item</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__split_pathtarget_context.html" target="wiki-view"><code>split_pathtarget_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__tlist_member.html" target="wiki-view"><code>tlist_member</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__tlist_member_match_var.html" target="wiki-view"><code>tlist_member_match_var</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__add_to_flat_tlist.html" target="wiki-view"><code>add_to_flat_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__get_tlist_exprs.html" target="wiki-view"><code>get_tlist_exprs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__count_nonjunk_tlist_entries.html" target="wiki-view"><code>count_nonjunk_tlist_entries</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__tlist_same_exprs.html" target="wiki-view"><code>tlist_same_exprs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__tlist_same_datatypes.html" target="wiki-view"><code>tlist_same_datatypes</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__tlist_same_collations.html" target="wiki-view"><code>tlist_same_collations</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__apply_tlist_labeling.html" target="wiki-view"><code>apply_tlist_labeling</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__tlist_c__get_sortgroupref_tle.html" target="wiki-view"><code>get_sortgroupref_tle</code></a></li>
+</ul></body></html>

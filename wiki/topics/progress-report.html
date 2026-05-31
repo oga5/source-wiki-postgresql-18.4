@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/progress-report.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>progress_report</h1>
+<h2>概念</h2>
+<p><code>progress_report</code> は、PostgreSQLの各種コマンドラインユーティリティにおいて、時間のかかる処理の進捗状況を標準エラー出力（<code>stderr</code>）にリアルタイムで表示するための関数群です。これらは共通の共有ライブラリ関数ではなく、各ツール（<code>pg_checksums</code> や <code>pg_rewind</code> など）の内部で個別に定義・実装されたローカルな進捗報告ロジックです。</p>
+<h2>なぜ重要か</h2>
+<p>大規模なデータベースクラスタに対する操作（チェックサム検証やデータ同期など）は、完了までに長時間を要することがあります。<code>progress_report</code> を用いて進捗率（%）や処理済みサイズを定期的に出力することで、ユーザーは処理が正常に進行しているか、あるいはハングアップしていないかを視覚的に把握できます。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づくと、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/bin/pg_amcheck</code></li>
+<li><code>module:src/bin/pg_basebackup</code></li>
+<li><code>module:src/bin/pg_checksums</code></li>
+<li><code>module:src/bin/pg_rewind</code></li>
+<li><code>module:src/bin/pg_verifybackup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関連する主要なエンティティ（関数）は以下の通りです。</p>
+<ul>
+<li>**<code>symbol:src/bin/pg_checksums/pg_checksums.c#progress_report</code>**</li>
+<li>データディレクトリのチェックサム検証の進捗（MB単位）を表示する静的関数。</li>
+<li>**<code>symbol:src/bin/pg_rewind/pg_rewind.c#progress_report</code>**</li>
+<li>データ同期（コピー）の進捗（kB単位）を表示する関数。</li>
+<li>**<code>pg_amcheck</code>, <code>pg_basebackup</code>, <code>pg_verifybackup</code> 内の同名関数**</li>
+<li>これらも検出されていますが、詳細な実装情報は提供されていません。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各ツールにおける進捗報告の具体的なエンドツーエンドの呼び出しフロー（どの処理ループからどのように呼び出されるか）の全容は、提供された情報からは完全には明らかになっていません。</p>
+<p>ただし、<code>pg_checksums</code> および <code>pg_rewind</code> における一般的な流れは以下の通りです：</p>
+<p>1. **事前準備**: 処理開始前に、対象となる総サイズ（<code>total_size</code> や <code>fetch_size</code>）を算出または取得します。 2. **更新ループ**: 実際の処理ループ内で、処理済みのサイズ（<code>current_size</code> や <code>fetch_done</code>）を更新しながら、定期的に <code>progress_report(false)</code> を呼び出します。 3. **時間判定と出力**: <code>progress_report</code> 内部で、前回の出力から1秒以上経過している場合のみ、計算された進捗率（%）と処理済みサイズを <code>stderr</code> に出力します。 4. **完了処理**: すべての処理が完了した時点で、<code>progress_report(true)</code> を呼び出して最終的な進捗（100%）を出力し、改行を行います。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**進捗表示の有効化**: グローバル変数 <code>showprogress</code> が <code>true</code>（または真）である場合にのみ、実際の出力処理が行われます。</li>
+<li>**出力頻度の制限**: 処理完了時（<code>finished</code> が <code>true</code>）を除き、前回の報告から1秒以上経過していない場合は、出力をスキップして即座にリターンします。</li>
+<li>**進捗率の補正**: 処理済みサイズが総サイズを超えた場合、進捗率が100%を超えないように、総サイズを補正するか、または進捗率を制限します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>progress_report</code> は複数のバイナリで個別に定義されています。これらはシグネチャや内部で扱う単位（MB、kBなど）、使用するグローバル変数が異なるため、共通のAPIとして混同しないよう注意が必要です。</li>
+<li>**パフォーマンスへの影響**: <code>pg_checksums</code> などで進捗表示を有効にする場合、処理を開始する前に全ファイルサイズを事前計算する必要があり、大規模な環境ではこの事前計算自体が実行時間に影響を与える可能性があります。</li>
+<li>**出力先の端末依存**: 出力先が端末（<code>isatty</code> が真）の場合は <code>\r</code> を用いて同一行を上書きしますが、パイプなどの非端末（<code>isatty</code> が偽）の場合は <code>\n</code> で改行されます。ログファイル等に出力する際は、出力が大量に行に分かれて出力される点に留意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_checksums/pg_checksums.c</code> : <code>pg_checksums</code> における進捗報告の実装。</li>
+<li><code>src/bin/pg_rewind/pg_rewind.c</code> : <code>pg_rewind</code> における進捗報告の実装。</li>
+<li><code>src/bin/pg_amcheck/pg_amcheck.c</code></li>
+<li><code>src/bin/pg_basebackup/pg_basebackup.c</code></li>
+<li><code>src/bin/pg_verifybackup/pg_verifybackup.c</code></li>
+</ul></body></html>

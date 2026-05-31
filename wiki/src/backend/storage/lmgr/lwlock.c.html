@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/lwlock.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/lwlock.c</h1>
+<h2>概要</h2>
+<p><code>lwlock.c</code> は、PostgreSQL の共有メモリデータ構造を保護するための軽量ロック（LWLock）メカニズムを実装する中核ファイルです。重量級ロック（<code>lock.c</code>）とは異なり、デッドロック検出やトランザクション管理のオーバーヘッドを持たず、アトミック操作と OS のセマフォを組み合わせて高速な排他・共有制御を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>lmgr</code> サブシステムにおける同期プリミティブの最下層に近い位置にあります。スピンロック（<code>s_lock.c</code>）よりも複雑な待機キュー管理を必要とする共有メモリ操作において、標準的な同期手段として利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロック管理**: 共有/排他モードでのロック獲得・解放、および条件付き獲得の提供。</li>
+<li>**待機キュー制御**: 競合発生時のプロセス待機（<code>PGPROC</code> への登録）と、ロック解放時の効率的な起床処理。</li>
+<li>**変数同期**: <code>LWLockUpdateVar</code> 等による、ロック状態と連動した値の更新と待機プロセスの通知。</li>
+<li>**リソース管理**: <code>LWLock</code> 配列の共有メモリ上での初期化、および動的トランシェ（Tranche）の登録と管理。</li>
+<li>**エラーリカバリ**: <code>LWLockReleaseAll</code> による、エラー発生時の保持ロックの安全な解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ロック操作・状態管理</h3>
+<ul>
+<li><code>LWLockAcquire</code>: ロック獲得のメインエントリ。競合時は待機キューへ入る。</li>
+<li><code>LWLockRelease</code>: ロック解放。必要に応じて待機中のプロセスを起床させる。</li>
+<li><code>LWLockAttemptLock</code>: アトミック操作によるロックの試行（Phase 1）。</li>
+<li><code>LWLockQueueSelf / DequeueSelf</code>: 待機キューへの登録・削除。</li>
+</ul>
+<h3>変数同期</h3>
+<ul>
+<li><code>LWLockWaitForVar</code>: ロックが空くか、指定変数が更新されるまで待機。</li>
+<li><code>LWLockUpdateVar</code>: 変数を更新し、待機中のプロセスを起床させる。</li>
+</ul>
+<h3>初期化・管理</h3>
+<ul>
+<li><code>MainLWLockArray</code>: 共有メモリ上の全 LWLock を保持する配列。</li>
+<li><code>LWLockInitialize</code>: 個々の <code>LWLock</code> 構造体の初期化。</li>
+<li><code>RequestNamedLWLockTranche</code>: 拡張モジュール等が独自のロック群を要求するためのインターフェース。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateLWLocks</code></li>
+<li><code>InitLWLockAccess</code></li>
+<li><code>InitializeLWLocks</code></li>
+<li><code>LOG_LWDEBUG</code></li>
+<li><code>LWLockHandle</code></li>
+<li><code>LWLockInitialize</code></li>
+<li><code>LWLockUpdateVar</code></li>
+<li><code>NamedLWLockTrancheRequest</code></li>
+<li><code>NumLWLocksForNamedTranches</code></li>
+<li><code>PRINT_LWDEBUG</code></li>
+<li><code>lwlock_stats</code></li>
+<li><code>lwlock_stats_key</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **獲得フロー**: <code>LWLockAcquire</code> はまずアトミック操作でロックを試行。失敗した場合、<code>LWLockQueueSelf</code> で <code>PGPROC</code> を待機リストに追加し、再度試行してからセマフォでスリープする。 2. **解放フロー**: <code>LWLockRelease</code> はアトミックな減算を行い、ロックが空になった場合に <code>LWLockWakeup</code> を呼び出す。 3. **起床フロー**: <code>LWLockWakeup</code> は待機リストをロックし、起床可能なプロセスを特定してセマフォをアンロックする。 4. **データ構造**: <code>LWLock</code> 構造体内の <code>state</code>（<code>pg_atomic_uint32</code>）がロックの所有状態とフラグ（<code>HAS_WAITERS</code>, <code>LOCKED</code> 等）を管理する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: プロセス管理（<code>PGPROC</code>）とセマフォ操作。</li>
+<li><code>storage/proclist.h</code>: 待機キューの双方向リスト操作。</li>
+<li><code>port/atomics.h</code>: ロック状態の競合を防ぐアトミック操作。</li>
+<li><code>storage/spin.h</code>: 待機リストの保護に使用するスピンロック。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lwlocklist.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/lwlock.h</code>: 公開インターフェースと構造体定義。</li>
+<li><code>src/include/storage/lwlocklist.h</code>: ビルトインのロックトランシェ定義。</li>
+<li><code>src/backend/storage/lmgr/proc.c</code>: プロセスごとの待機状態管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: <code>LWLock</code> はキャッシュライン境界にアライメントされており、<code>LWLockPadded</code> を介して共有メモリに配置されます。</li>
+<li>**パフォーマンス**: 共有モードのロック獲得は、競合がない限りアトミック操作のみで完結する「Wait-free」な設計です。</li>
+<li>**制約**: <code>LWLock</code> 保持中に <code>ereport(ERROR)</code> が発生すると、<code>LWLockReleaseAll</code> が呼び出されます。この際、<code>InterruptHoldoffCount</code> を適切に維持することが重要です。</li>
+<li>**未実装・浅い領域**: <code>LWLOCK_STATS</code> が定義されている場合、統計情報が収集されますが、これはデバッグ用であり本番環境では無効化されるのが一般的です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockHandle.html" target="wiki-view"><code>LWLockHandle</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__NamedLWLockTrancheRequest.html" target="wiki-view"><code>NamedLWLockTrancheRequest</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats_key.html" target="wiki-view"><code>lwlock_stats_key</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats.html" target="wiki-view"><code>lwlock_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__PRINT_LWDEBUG.html" target="wiki-view"><code>PRINT_LWDEBUG</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LOG_LWDEBUG.html" target="wiki-view"><code>LOG_LWDEBUG</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__NumLWLocksForNamedTranches.html" target="wiki-view"><code>NumLWLocksForNamedTranches</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__CreateLWLocks.html" target="wiki-view"><code>CreateLWLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__InitializeLWLocks.html" target="wiki-view"><code>InitializeLWLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__InitLWLockAccess.html" target="wiki-view"><code>InitLWLockAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockInitialize.html" target="wiki-view"><code>LWLockInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.html" target="wiki-view"><code>LWLockUpdateVar</code></a></li>
+</ul></body></html>

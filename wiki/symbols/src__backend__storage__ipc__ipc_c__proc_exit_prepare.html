@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__ipc_c__proc_exit_prepare.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>proc_exit_prepare</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/ipc.c:165</code></li>
+</ul>
+<h2>目的</h2>
+<p>プロセス終了シーケンスの準備および実行を行う内部関数。終了処理中フラグのセット、割り込みの無効化、共有メモリのクリーンアップ、および登録済み終了コールバックの実行を順次行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void proc_exit_prepare(int code)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>code</code> (終了ステータスコード)</li>
+<li>**出力**: なし（副作用としてプロセスの終了処理を実行）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本関数が呼び出されると <code>proc_exit_inprogress</code> が <code>true</code> に設定され、以降の <code>ereport()</code> はメインループへ戻らず本関数へ制御を戻す。</li>
+<li>割り込みフラグ（<code>InterruptPending</code>, <code>ProcDiePending</code>, <code>QueryCancelPending</code>）は <code>false</code> にリセットされる。</li>
+<li><code>error_context_stack</code> および <code>debug_query_string</code> は <code>NULL</code> にリセットされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>proc_exit_inprogress</code> を <code>true</code> に設定し、終了処理の不可逆性を確定させる。 2. 割り込みフラグを無効化し、<code>InterruptHoldoffCount</code> を 1 に設定して割り込みを抑制する。 3. エラーコンテキストスタックとデバッグ用クエリ文字列をクリアする。 4. <code>shmem_exit(code)</code> を呼び出し、共有メモリ関連のクリーンアップを実行する。 5. 登録された終了コールバック（<code>on_proc_exit_list</code>）を LIFO（後入れ先出し）順で実行する。</p>
+<ul>
+<li>コールバック実行中にエラーが発生した場合、再帰的な無限ループを避けるため、実行前にリストから削除される設計となっている。</li>
+<p>6. 最後に <code>on_proc_exit_index</code> を 0 にリセットする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/ipc/ipc.c</code> 内の <code>proc_exit()</code> から呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>shmem_exit()</code></li>
+<li><code>on_proc_exit_list</code> に登録された各コールバック関数</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>proc_exit_inprogress</code> (終了処理中フラグ)</li>
+<li><code>on_proc_exit_list</code> (終了コールバックの配列)</li>
+<li><code>on_proc_exit_index</code> (コールバック配列のインデックス)</li>
+<li><code>InterruptPending</code>, <code>ProcDiePending</code>, <code>QueryCancelPending</code> (割り込み制御フラグ)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>コールバック内で <code>ereport(ERROR)</code> または <code>FATAL</code> が発生した場合、そのコールバックは再実行されず、終了処理が継続される。</li>
+<li>終了処理中に <code>elog(FATAL)</code> 等が発生しても、<code>proc_exit_inprogress</code> により終了処理が優先される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はプロセス終了のクリティカルパスである。コールバックの追加や変更を行う際は、LIFO順序とエラー発生時の再帰防止設計を維持すること。</li>
+<li><code>InterruptHoldoffCount</code> を 1 に設定しているため、本関数内での割り込み処理は抑制される。</li>
+</ul></body></html>

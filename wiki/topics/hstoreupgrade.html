@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/hstoreupgrade.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hstoreUpgrade</h1>
+<h2>概念</h2>
+<p><code>hstoreUpgrade</code> は、PostgreSQLの <code>hstore</code> 拡張モジュールにおいて、旧形式（<code>hstore-old</code>）のデータを現在の形式（<code>hstore-new</code>）へインプレースで変換・アップグレードするための関数、およびその処理機構です。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのアップグレードや古いデータの読み込みにおいて、格納されている <code>hstore</code> データの整合性を維持しつつ、透過的に最新のデータ形式（<code>HStore</code>）へ変換するために不可欠です。また、<code>hstore_plperl</code> や <code>hstore_plpython</code> などの外部言語バインディングモジュールが <code>hstore</code> データを処理する際にも、この関数を介して最新形式への変換を保証する必要があります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/hstore</code></li>
+<li><code>module:contrib/hstore_plperl</code></li>
+<li><code>module:contrib/hstore_plpython</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/hstore/hstore_compat.c#hstoreUpgrade</code>**: 実際の変換処理を実装するコア関数。</li>
+<li>**<code>symbol:contrib/hstore_plperl/hstore_plperl.c#hstoreUpgrade</code>**: Perl環境で <code>hstore</code> データを扱う際に呼び出される参照。</li>
+<li>**<code>symbol:contrib/hstore_plpython/hstore_plpython.c#hstoreUpgrade</code>**: Python環境で <code>hstore</code> データを扱う際に呼び出される参照。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: <code>DatumGetHStoreP</code> マクロ（<code>contrib/hstore/hstore.h</code> 内）経由、または <code>hstore_plperl</code> / <code>hstore_plpython</code> から <code>hstoreUpgrade(orig)</code> が呼び出されます。 2. **デトースト**: 入力された <code>Datum</code> をデトースト（<code>PG_DETOAST_DATUM</code>）し、必要に応じて書き込み可能なコピーを作成します。 3. **高速パス**: <code>HS_FLAG_NEWVERSION</code> フラグが確認できた場合は、変換不要としてそのまま返却します。 4. **検証**: <code>hstoreValidNewFormat</code> および <code>hstoreValidOldFormat</code> を使用してデータの妥当性を判定します。 5. **変換処理**: 旧形式と判定された場合、<code>HOldEntry</code> から <code>HEntry</code> へのマッピングを再計算し、メモリ上で上書き変換を行います。 6. **完了**: <code>HS_SETCOUNT</code> および <code>HS_FIXSIZE</code> を適用し、正しい形式の <code>HStore *</code> を返却します。</p>
+<p>*注意: どのようなクエリ実行パスやトランザクションコンテキストから <code>DatumGetHStoreP</code> が呼び出されるかなど、詳細なエンドツーエンドの呼び出しフロー全体は提供された情報からは明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**エントリサイズの一致**: 旧形式（<code>HOldEntry</code>）と新形式（<code>HEntry</code>）のエントリサイズが同一でなければなりません。この前提に基づいてインプレースの上書き変換が行われます。</li>
+<li>**バージョンの整合性**: <code>HS_FLAG_NEWVERSION</code> フラグが設定されているデータは、すでに新形式であるため変換処理を行いません。</li>
+<li>**データの妥当性**: 入力データは、新形式（<code>valid_new</code>）または旧形式（<code>valid_old</code>）の少なくとも一方として妥当でなければなりません。両方とも無効な場合は <code>elog(ERROR)</code> が発生します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**曖昧なケースの解決**: 旧形式と新形式の両方として解釈可能なデータが存在する場合、ビルド設定（<code>HSTORE_IS_HSTORE_NEW</code>）に基づいて解決され、警告（<code>WARNING</code>）が出力されます。この挙動はビルド時の設定に依存します。</li>
+<li>**前提条件の依存**: 変換ロジックは「旧形式と新形式のエントリサイズが一致する」という前提に強く依存しているため、この前提が崩れるとメモリ破損を引き起こす危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/hstore/hstore_compat.c</code>（<code>hstoreUpgrade</code> の具体的な変換アルゴリズムと検証ロジック）</li>
+<li><code>contrib/hstore_plperl/hstore_plperl.c</code>（Perlバインディングにおける呼び出し箇所）</li>
+<li><code>contrib/hstore_plpython/hstore_plpython.c</code>（Pythonバインディングにおける呼び出し箇所）</li>
+</ul></body></html>

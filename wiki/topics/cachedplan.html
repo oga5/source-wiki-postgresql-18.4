@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/cachedplan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CachedPlan</h1>
+<h2>概念</h2>
+<p><code>CachedPlan</code> は、PostgreSQL において実行可能なクエリ計画（<code>PlannedStmt</code> のリストなど）を保持し、それを再利用可能にすることで、クエリの解析（パース）や計画作成（プランニング）のコストを削減するためのデータ構造です。</p>
+<h2>なぜ重要か</h2>
+<p>クエリを実行するたびに発生する解析・計画作成コストは、データベース全体のパフォーマンスに影響を与えます。<code>CachedPlan</code> を用いて実行計画をキャッシュし、適切に再利用することで、このオーバーヘッドを大幅に削減できます。また、スキーマ変更などのイベントが発生した際には、キャッシュされた計画を無効化（<code>is_valid = false</code>）して再計画を促す仕組みを提供し、データの整合性と最新スキーマへの追従を両立させています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/cache</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>struct:src/include/utils/plancache.h#CachedPlan</code>: 実行可能なクエリ計画や参照カウント、有効性フラグなどを保持するメインの構造体。</li>
+<li><code>function:src/backend/utils/cache/plancache.c#CreateCachedPlan</code>: クエリのパースツリーやクエリ文字列を基に、計画キャッシュのソースとなる <code>CachedPlanSource</code> を初期化・確保する関数。</li>
+<li><code>function:src/backend/utils/cache/plancache.c#GetCachedPlan</code>: キャッシュされた計画を取得するための関数（詳細な実装仕様は提供されたコンテキストからは未検証）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたソースコード情報からは、完全なエンドツーエンドの流れ（特に <code>GetCachedPlan</code> の詳細な内部動作や、実行エンジンへの受け渡し、<code>CompleteCachedPlan</code> との連携など）は完全には明らかになっておらず、一部未検証です。</p>
+<p>現在判明している部分的な流れは以下の通りです：</p>
+<p>1. **初期化（第1段階）**: <code>CreateCachedPlan</code> を呼び出し、生パースツリー（<code>RawStmt</code>）やクエリ文字列、コマンドタグを基に、専用のメモリコンテキスト（<code>AllocSetContextCreate</code> で作成された長寿命なコンテキスト）内で <code>CachedPlanSource</code> 構造体を初期化・確保します。 2. **計画の生成と保持**: （詳細なフローは未検証ですが）実行計画が作成され、<code>CachedPlan</code> 構造体の <code>stmt_list</code> に <code>PlannedStmt</code> のリストとして格納されます。 3. **再利用と無効化の監視**: 生成された <code>CachedPlan</code> は参照カウント（<code>refcount</code>）により管理され、再利用されます。スキーマ変更などのイベントが発生すると <code>is_valid</code> が <code>false</code> に設定され、次回利用時に再計画（Replan）がトリガーされます。また、<code>saved_xmin</code> を使用してトランザクションの <code>xmin</code> 変化を検知し、再計画を判定します。 4. **解放**: 参照カウント（<code>refcount</code>）が 0 になった時点で、<code>context</code> が示すメモリコンテキストが解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**マジックナンバーの整合性**: <code>CachedPlan</code> 構造体の <code>magic</code> フィールドは、常に <code>CACHEDPLAN_MAGIC</code> と一致しなければなりません。</li>
+<li>**有効性フラグの遵守**: <code>is_valid</code> が <code>false</code> の場合、その計画は再利用できず、必ず再計画（Replan）を行う必要があります。</li>
+<li>**メモリ管理のライフサイクル**: <code>refcount</code> が 0 になった時点で、その <code>CachedPlan</code> に紐づくメモリコンテキスト（<code>context</code>）は解放されます。</li>
+<li>**入力制限**: <code>CreateCachedPlan</code> の呼び出し時、<code>query_string</code> は <code>NULL</code> であってはなりません（デバッグビルドでは <code>Assert</code> により停止します）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**参照カウントの管理不備**: <code>refcount</code> の操作（通常は <code>ResourceOwner</code> を介して行われる）に不備があると、メモリリークや不正なメモリ解放を引き起こす原因になります。</li>
+<li>**無効な計画の実行**: <code>is_valid</code> が <code>false</code> であるにもかかわらず、再計画を行わずに計画を実行しようとした場合、未定義の動作やエラーが発生する可能性があります。</li>
+<li>**oneshot 計画の監視対象外**: <code>is_oneshot</code> が真に設定されているクエリは、キャッシュ無効化の監視対象外となり、呼び出し元のメモリコンテキストに依存するため、スキーマ変更などの影響を考慮する際に注意が必要です。</li>
+<li>**初期化の未完了**: <code>CreateCachedPlan</code> は計画キャッシュ作成の「第1段階」に過ぎず、キャッシュを完全に機能させるには <code>CompleteCachedPlan</code> の呼び出しが必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/plancache.h</code>: <code>CachedPlan</code> 構造体の定義や、関連するフラグ・フィールドの詳細を確認できます。</li>
+<li><code>src/backend/utils/cache/plancache.c</code>: <code>CreateCachedPlan</code> や <code>GetCachedPlan</code> などの具体的なライフサイクル管理関数の実装を確認できます。</li>
+</ul></body></html>

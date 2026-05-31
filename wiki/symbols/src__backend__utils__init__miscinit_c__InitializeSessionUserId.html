@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__init__miscinit_c__InitializeSessionUserId.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitializeSessionUserId</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/init/miscinit.c:760</code></li>
+</ul>
+<h2>目的</h2>
+<p>セッションユーザーの識別情報を初期化し、認証されたユーザーIDの設定、GUCパラメータの更新、およびログイン権限や接続制限の検証を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void InitializeSessionUserId(const char *rolename, Oid roleid, bool bypass_login_check)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rolename</code>: ロール名（指定がある場合）。</li>
+<li><code>roleid</code>: ロールOID（<code>rolename</code> がNULLの場合に使用）。</li>
+<li><code>bypass_login_check</code>: ログイン権限チェックをスキップするかどうかのフラグ。</li>
+<li>**出力**: なし（成功時は内部状態を更新し、失敗時は <code>FATAL</code> エラーでプロセスを終了する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>IsBootstrapProcessingMode()</code> が偽であること。</li>
+<li>並列ワーカー（<code>InitializingParallelWorker</code>）の場合は、何もせず即座に復帰する。</li>
+<li>システムカタログ（<code>pg_authid</code>）がアクセス可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **無効化メッセージの処理**: <code>AcceptInvalidationMessages()</code> を呼び出し、最新のカタログ変更を反映させる。 2. **ロール情報の検索**: <code>rolename</code> または <code>roleid</code> をキーに <code>pg_authid</code> システムカタログを検索。存在しない場合は <code>FATAL</code> エラー。 3. **ユーザーIDの設定**: <code>SetAuthenticatedUserId()</code> を呼び出し、認証済みユーザーIDを記録。 4. **GUC設定**: <code>session_authorization</code> パラメータをロール名で更新。 5. **ログイン・接続制限の検証** (<code>IsUnderPostmaster</code> が真の場合):</p>
+<ul>
+<li><code>bypass_login_check</code> が偽かつ <code>rolcanlogin</code> が偽の場合、<code>FATAL</code> エラー。</li>
+<li>通常のバックエンドプロセスかつ非スーパーユーザーの場合、<code>CountUserBackends()</code> を用いて <code>rolconnlimit</code> を超えていないか確認し、超過時は <code>FATAL</code> エラー。</li>
+<p>6. **リソース解放**: <code>ReleaseSysCache()</code> で検索したタプルを解放。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/parallel.c</code></li>
+<li><code>src/backend/utils/init/postinit.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>AcceptInvalidationMessages</code></li>
+<li><code>SearchSysCache1</code></li>
+<li><code>SetAuthenticatedUserId</code></li>
+<li><code>SetConfigOption</code></li>
+<li><code>CountUserBackends</code></li>
+<li><code>ReleaseSysCache</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_authid</code>: ロール情報を保持するシステムカタログ。</li>
+<li><code>Form_pg_authid</code>: <code>pg_authid</code> の構造体定義。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ロール不在**: 指定されたロール名またはOIDが <code>pg_authid</code> に存在しない場合、<code>FATAL</code> エラー。</li>
+<li>**ログイン禁止**: <code>rolcanlogin</code> が偽のロールでログインしようとした場合、<code>FATAL</code> エラー。</li>
+<li>**接続数超過**: <code>rolconnlimit</code> を超える接続が発生した場合、<code>FATAL</code> エラー。</li>
+<li>**競合**: 接続制限チェックには競合状態（Race Condition）が存在し、制限値は近似的なものとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>postmaster</code> 配下での動作を前提としたチェック（ログイン可否、接続数制限）を含んでいる。</li>
+<li><code>session_authorization</code> の設定は <code>PGC_S_OVERRIDE</code> を使用しており、<code>pg_db_role_setting</code> による動的な上書きは現在の実装では意図的に無効化されている。変更にはメジャーリリースレベルの検討が必要。</li>
+</ul></body></html>

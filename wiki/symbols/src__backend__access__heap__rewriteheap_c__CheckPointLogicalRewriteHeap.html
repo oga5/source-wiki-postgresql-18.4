@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__rewriteheap_c__CheckPointLogicalRewriteHeap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CheckPointLogicalRewriteHeap</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/rewriteheap.c:1154</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションで使用されるヒープ再構築時のマッピングファイル（<code>map-*</code>）を管理し、不要なファイルを削除し、必要なファイルをディスクへ同期（fsync）します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void CheckPointLogicalRewriteHeap(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし（内部的に <code>ReplicationSlotsComputeLogicalRestartLSN()</code> 等のグローバル状態を参照）</li>
+<li>**出力**: なし（副作用として <code>PG_LOGICAL_MAPPINGS_DIR</code> 内のファイル操作を実行）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、チェックポイント処理の一部として本関数を実行している必要があります。</li>
+<li>システム全体で同時に実行されるチェックポイントは一つのみであるため、ファイル削除処理における競合は発生しません。</li>
+<li>対象テーブルに対して <code>AccessExclusiveLock</code> が保持されている環境下での実行を想定しています。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **カットオフの決定**: <code>GetRedoRecPtr()</code> と論理レプリケーションスロットの最小再開LSNを比較し、削除基準となる <code>cutoff</code> LSN を算出します。 2. **ディレクトリ走査**: <code>PG_LOGICAL_MAPPINGS_DIR</code> 内の全ファイルを順次走査します。 3. **ファイル判定**: <code>map-</code> で始まるファイル名を解析し、ファイル名に含まれるLSN情報を抽出します。 4. **削除または同期**:</p>
+<ul>
+<li>ファイルのLSNが <code>cutoff</code> より小さい場合、不要と判断して <code>unlink()</code> で削除します。</li>
+<li>それ以外の場合、<code>pg_fsync()</code> を呼び出し、データの永続化を保証します。</li>
+<p>5. **ディレクトリ同期**: 最後に <code>fsync_fname()</code> を呼び出し、ディレクトリ自体の変更をディスクへ反映します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/xlog.c</code> (チェックポイント処理のメインフロー)</li>
+<li><code>src/backend/access/heap/rewriteheap.c</code> (コメント内での言及あり)</li>
+<li>**呼び出し先**:</li>
+<li><code>ReplicationSlotsComputeLogicalRestartLSN</code></li>
+<li><code>AllocateDir</code>, <code>ReadDir</code>, <code>FreeDir</code></li>
+<li><code>pg_fsync</code>, <code>fsync_fname</code></li>
+<li><code>OpenTransientFile</code>, <code>CloseTransientFile</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PG_LOGICAL_MAPPINGS_DIR</code>: マッピングファイルが格納されるディレクトリパス。</li>
+<li><code>LOGICAL_REWRITE_FORMAT</code>: ファイル名の解析に使用されるフォーマット文字列。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ファイル操作エラー**: <code>unlink</code>、<code>open</code>、<code>fsync</code> 等のシステムコールが失敗した場合、<code>ereport(ERROR, ...)</code> によりチェックポイント処理全体が中断されます。</li>
+<li>**解析エラー**: ファイル名が期待するフォーマットと一致しない場合、<code>elog(ERROR, ...)</code> が発生します。</li>
+<li>**空のLSN**: <code>cutoff</code> が <code>InvalidXLogRecPtr</code> の場合、すべてのマッピングファイルが保持対象となります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はチェックポイントの整合性を維持するために不可欠です。論理レプリケーションのクラッシュリカバリにおいて、マッピングファイルが正しく同期されていることが前提となります。</li>
+<li><code>fsync</code> の負荷を軽減する最適化の余地はありますが、現状では全対象ファイルの同期が優先されています。</li>
+</ul></body></html>

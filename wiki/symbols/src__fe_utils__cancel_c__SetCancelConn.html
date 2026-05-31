@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__fe_utils__cancel_c__SetCancelConn.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SetCancelConn</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/fe_utils/cancel.c:76</code></li>
+</ul>
+<h2>目的</h2>
+<p>現在のデータベース接続（<code>PGconn</code>）に対応するキャンセル用オブジェクト（<code>PGcancel</code>）を更新し、割り込み発生時にバックエンドへキャンセル要求を送信できるようにします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SetCancelConn(PGconn *conn)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PGconn *conn</code> - キャンセル対象となるデータベース接続ポインタ。<code>NULL</code> を指定することで、既存のキャンセルオブジェクトを破棄し、新規設定を無効化できます。</li>
+<li>**出力**: なし（<code>void</code>）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>Windows環境では、内部の <code>cancelConn</code> ポインタを保護するために <code>cancelConnLock</code>（<code>CRITICAL_SECTION</code>）による排他制御が行われます。</li>
+<li><code>cancelConn</code> ポインタの更新中、シグナルハンドラが古いポインタを参照しないよう、一時的に <code>NULL</code> に設定する安全策が講じられています。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **排他制御**: Windows環境の場合、<code>cancelConnLock</code> を取得します。 2. **既存オブジェクトの解放**: 現在保持している <code>cancelConn</code> を退避し、<code>cancelConn</code> を <code>NULL</code> に設定した上で、<code>PQfreeCancel</code> を呼び出してメモリを解放します。 3. **新規オブジェクトの生成**: <code>PQgetCancel(conn)</code> を呼び出し、新しい接続からキャンセル用オブジェクトを取得して <code>cancelConn</code> に格納します。 4. **排他制御の解除**: Windows環境の場合、<code>cancelConnLock</code> を解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>pgbench</code> (<code>src/bin/pgbench/pgbench.c</code>)</li>
+<li><code>psql</code> (<code>src/bin/psql/common.c</code>, <code>src/bin/psql/large_obj.c</code>)</li>
+<li><code>parallel_slot</code> (<code>src/fe_utils/parallel_slot.c</code>)</li>
+<li>**呼び出し先**:</li>
+<li><code>PQfreeCancel</code> (libpq)</li>
+<li><code>PQgetCancel</code> (libpq)</li>
+<li><code>EnterCriticalSection</code> / <code>LeaveCriticalSection</code> (Windows環境のみ)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: libpqの接続ハンドル。</li>
+<li><code>PGcancel</code>: libpqのキャンセル用オブジェクト。</li>
+<li><code>cancelConn</code>: <code>src/fe_utils/cancel.c</code> 内で定義された静的変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>conn</code> が <code>NULL</code> の場合、<code>PQgetCancel</code> は <code>NULL</code> を返し、結果としてキャンセル機能が無効化されます。</li>
+<li><code>PQgetCancel</code> がメモリ不足等で失敗した場合、<code>cancelConn</code> は <code>NULL</code> となり、以降のキャンセル要求は送信されません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はシグナルハンドラと非同期に動作する可能性があるため、ポインタの入れ替え順序（<code>NULL</code> への一時設定）は必須の不変条件です。</li>
+<li>Windows環境での排他制御は、<code>handle_sigint</code> 等のシグナルハンドラが <code>cancelConn</code> を参照する際にも同様のロックを必要とすることを前提としています。</li>
+</ul></body></html>

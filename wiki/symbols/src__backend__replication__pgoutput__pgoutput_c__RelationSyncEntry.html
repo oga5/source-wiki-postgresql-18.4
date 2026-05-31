@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__pgoutput__pgoutput_c__RelationSyncEntry.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelationSyncEntry</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/backend/replication/pgoutput/pgoutput.c:126</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおいて、特定のテーブルに対するパブリケーション設定、行フィルタ、列リスト、およびスキーマ送信状態を保持するキャッシュ構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct RelationSyncEntry {
+    Oid relid;
+    bool replicate_valid;
+    bool schema_sent;
+    PublishGencolsType include_gencols_type;
+    List *streamed_txns;
+    PublicationActions pubactions;
+    ExprState *exprstate[NUM_ROWFILTER_PUBACTIONS];
+    EState *estate;
+    TupleTableSlot *new_slot;
+    TupleTableSlot *old_slot;
+    Oid publish_as_relid;
+    AttrMap *attrmap;
+    Bitmapset *columns;
+    MemoryContext entry_cxt;
+} RelationSyncEntry;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>get_rel_sync_entry</code> 関数等を通じて、対象テーブルのOIDおよびパブリケーション情報に基づき初期化されます。</li>
+<li>**出力**: レプリケーション処理中に、テーブルの同期状態（スキーマ送信済みか、どの列を送信すべきか等）を判定するための情報源として利用されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>exprstate</code> は <code>NUM_ROWFILTER_PUBACTIONS</code> 分の要素を持ち、各アクション（INSERT/UPDATE/DELETE）に対応する行フィルタを保持します。</li>
+<li><code>attrmap</code> は、パーティションテーブルを親テーブルのスキーマで公開する場合の変換に使用されます。</li>
+<li><code>entry_cxt</code> は、この構造体に関連する動的なメモリ（行フィルタ式や列リスト等）を管理するための専用メモリコンテキストです。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**行フィルタ**: 各アクションに対して個別の <code>ExprState</code> を保持します。これは、UPDATE/DELETEがレプリカアイデンティティに依存する一方、INSERTは依存しないという制約の違いを吸収するためです。</li>
+<li>**スキーマ同期**: <code>schema_sent</code> フラグにより、サブスクライバーへ既にテーブル定義が送信されたかを追跡します。</li>
+<li>**パーティション対応**: <code>publish_via_partition_root</code> が有効な場合、<code>publish_as_relid</code> に親テーブルのOIDが設定され、<code>attrmap</code> を用いてタプルの変換が行われます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>get_rel_sync_entry</code> が本構造体の取得・生成を行います。また、<code>pgoutput_change</code> 等の変更処理関数が、対象テーブルの同期状態を確認するために参照します。</li>
+<li>**呼び出し先**: 構造体内部の <code>EState</code> や <code>ExprState</code> を通じて、PostgreSQLの実行エンジン（<code>executor/executor.h</code>）の機能を利用します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PublicationActions</code>: パブリケーションの対象アクションを定義。</li>
+<li><code>ExprState</code>, <code>EState</code>: 行フィルタ評価に使用。</li>
+<li><code>AttrMap</code>: パーティションと親テーブル間の属性マッピング。</li>
+<li><code>Bitmapset</code>: 公開対象の列リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>システムカタログの変更によりキャッシュが無効化された場合、<code>replicate_valid</code> フラグ等を用いて再同期が必要です。</li>
+<li>パーティションと親テーブルで <code>TupleDesc</code> が同一の場合、<code>attrmap</code> は <code>NULL</code> となります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>pgoutput</code> プラグインのキャッシュ管理の核です。システムカタログの変更時にキャッシュを適切に無効化するコールバック（<code>rel_sync_cache_relation_cb</code> 等）との整合性に注意してください。</li>
+<li><code>streamed_txns</code> はストリーミングトランザクションのスキーマ状態管理に使用されます。</li>
+</ul></body></html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/parse.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>parse</h1>
+<h2>概念</h2>
+<p>PostgreSQLのソースツリーにおいて、<code>parse</code> という識別子は、異なる目的を持つ複数のモジュールで構文解析（パース）処理を行う関数として定義されています。具体的には、正規表現エンジンにおける正規表現の構文解析と、ソースコード整形ツール（<code>pg_bsd_indent</code>）におけるC言語コードの構文解析という、2つの独立した文脈で用いられています。</p>
+<h2>なぜ重要か</h2>
+<p>それぞれの文脈において、<code>parse</code> 関数は処理の核となる役割を担っています。</p>
+<ul>
+<li>**正規表現エンジン (<code>src/backend/regex</code>)**: 与えられた正規表現文字列を再帰的に解析して抽象構文木（<code>subre</code> ツリー）を構築し、NFA（非決定性有限オートマトン）の状態遷移と論理的に整合させるための中心的な役割を果たします。</li>
+<li>**コード整形ツール (<code>src/tools/pg_bsd_indent</code>)**: 字句解析されたトークンをスタックベースの構文コンテキストに適用し、インデントレベルの決定や構文の還元（畳み込み）を行うことで、正しいコード整形を実現するための基盤となります。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/regex</code></li>
+<li><code>module:src/tools/pg_bsd_indent</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/regex/regcomp.c#parse</code>**: 正規表現の構文を再帰的に解析し、<code>subre</code> 構造体を構築する静的関数。</li>
+<li>**<code>symbol:src/tools/pg_bsd_indent/parse.c#parse</code>**: トークンを受け取り、グローバルな解析状態（<code>parser_state</code>）を更新する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける詳細なエンドツーエンドの全体フロー（呼び出し元から最終的な出力にいたる完全なパス）は、提供された情報からは完全には明らかになっていません。現時点で判明している部分的な流れは以下の通りです。</p>
+<h3>正規表現の解析 (<code>regcomp.c</code>)</h3>
+<p>1. <code>parse</code> が呼び出され、<code>do-while</code> ループ内で <code>parsebranch()</code> を呼び出して正規表現の各枝（<code>|</code> で区切られた要素）を解析します。 2. 各枝を <code>subre</code> ツリーの兄弟ノードとして連結し、フラグを更新します。 3. 解析終了後、最適化処理（単一の枝の簡略化など）を行い、構築された <code>subre</code> 構造体へのポインタを返します。</p>
+<h3>インデント整形の解析 (<code>parse.c</code>)</h3>
+<p>1. 字句解析器からトークンコード <code>tk</code> を受け取って <code>parse(tk)</code> が呼び出されます（<code>indent.c</code> がメインループとして呼び出すことが示唆されています）。 2. <code>else</code> を伴わない <code>if</code> 文の還元などの前処理を行います。 3. <code>switch(tk)</code> により、トークン種別（<code>decl</code>, <code>ifstmt</code>, <code>lbrace</code> など）に応じてスタック操作とインデントレベルの調整を行います。 4. <code>reduce()</code> を呼び出してスタック上のパターンを評価し、文を畳み込みます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**正規表現の解析 (<code>regcomp.c</code>)**:</li>
+<li>引数 <code>stopper</code> は <code>&#x27;)&#x27;</code> または <code>EOS</code>（文字列の終端）である必要があります。</li>
+<li><code>NOERRN()</code> マクロにより、エラー発生時は即座に <code>NULL</code> を返してエラー状態を伝播させます。</li>
+<li>構築される <code>subre</code> ツリーは、指定された NFA の開始状態（<code>init</code>）および終了状態（<code>final</code>）と論理的に整合していなければなりません。</li>
+<li>**インデント整形の解析 (<code>parse.c</code>)**:</li>
+<li>スタックポインタ <code>ps.tos</code> は、常にスタック配列 <code>ps.p_stack</code> の有効な範囲内に収まっていなければなりません。</li>
+<li><code>reduce()</code> の呼び出しにより、スタックは常に安定した（還元可能なパターンが処理された）状態に保たれる必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**正規表現の解析 (<code>regcomp.c</code>)**:</li>
+<li><code>lastbranch</code> の連結処理や <code>branches-&gt;flags</code> の更新ロジックは、正規表現の結合性と最適化に直結しているため、不用意に変更すると解析結果や最適化の挙動が壊れる危険性があります。</li>
+<li>**インデント整形の解析 (<code>parse.c</code>)**:</li>
+<li><code>ps.tos</code> がスタックの最大サイズを超えると、<code>errx(1, &quot;Parser stack overflow&quot;)</code> によりプログラムが強制終了します。</li>
+<li><code>reduce()</code> は内部で無限ループとして実装されているため、新しい構文ルールを追加する際にスタックが正しく収束しないと、無限ループに陥るリスクがあります。</li>
+<li><code>ps.p_stack</code> はインデント計算の直接的な根拠となるため、<code>indent_globs.h</code> の定義との整合性を常に維持する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/regex/regcomp.c</code>**: 正規表現の再帰的降下解析の実装と、<code>subre</code> ツリー構築の詳細。</li>
+<li>**<code>src/tools/pg_bsd_indent/parse.c</code>**: インデントツールの構文解析、スタック操作、および <code>reduce()</code> による還元処理の実装。</li>
+</ul></body></html>

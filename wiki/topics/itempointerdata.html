@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/itempointerdata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ItemPointerData</h1>
+<h2>概念</h2>
+<p><code>ItemPointerData</code> は、PostgreSQL の物理ストレージにおいて、テーブルファイル内の特定のページ（ブロック）と、そのページ内の特定のタプル位置を指し示す「アイテムポインタ（TID: Tuple Identifier）」を保持する 6 バイトの固定長構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>本構造体は、インデックスからヒープタプルへの参照や、タプルの更新履歴（<code>t_ctid</code>）の管理、ハッシュキーとしての利用など、PostgreSQL のストレージエンジンおよびアクセスメソッドの基盤として機能します。また、<code>Datum</code> 型との相互変換が可能であり、システム全体でタプルの物理位置を一意に識別・伝達するために不可欠なデータ構造です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/pageinspect</code></li>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/storage/itemptr.h#ItemPointerData</code> : 構造体の基本定義。<code>BlockIdData ip_blkid</code> と <code>OffsetNumber ip_posid</code> をメンバに持ちます。</li>
+<li><code>symbol:src/include/access/relscan.h#ItemPointerData</code> : スキャン範囲の境界（<code>rs_mintid</code>, <code>rs_maxtid</code>）を定義する <code>tidrange</code> 構造体などで参照されます。</li>
+<li><code>symbol:contrib/pageinspect/brinfuncs.c#ItemPointerData</code> : BRIN インデックスのリビジョンマップページから抽出された TID の配列を保持・走査するために利用されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **スキャン範囲の定義とタプル特定**: テーブルスキャン時、<code>src/include/access/relscan.h</code> の <code>tidrange</code> 構造体（<code>rs_mintid</code>, <code>rs_maxtid</code>）に <code>ItemPointerData</code> が設定され、スキャン対象の物理的な境界が定義されます。 2. **インデックス・リビジョンマップの解析**: <code>contrib/pageinspect/brinfuncs.c</code> の <code>brin_revmap_data</code> 関数内では、リビジョンマップから抽出された <code>ItemPointerData</code> の配列（<code>tids</code>）を反復処理し、物理ページ上の TID 情報を SQL 結果として出力するために読み取ります。</p>
+<p>※なお、インデックスアクセスメソッド（B-tree, GIN, BRIN等）やヒープストレージ間における、詳細なエンドツーエンドの更新・参照フローの全容は、提供された情報からは完全には網羅されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**サイズとアライメント**: 構造体全体のサイズは厳密に 6 バイトである必要があります。コンパイラによるパディングを抑制するため、<code>pg_attribute_packed</code> 等の属性が適用されています。</li>
+<li>**オフセット位置の前提**: <code>contrib/amcheck/verify_nbtree.c</code> の実装に基づき、<code>ip_posid</code> は構造体の先頭から期待されるオフセット位置に配置されている必要があります。</li>
+<li>**特殊状態の表現**: <code>ip_posid</code> が <code>MaxOffsetNumber</code> を超える値を持つ場合、通常のタプル位置ではなく、推論的挿入トークンやパーティション間移動などの特殊状態を示します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**特殊値の誤認**: <code>ip_posid</code> が <code>MaxOffsetNumber</code> を超えている場合、それを通常のタプル位置として扱うと誤動作の原因になります。</li>
+<li>**バイナリ互換性の破壊**: メモリレイアウトが厳密に定義されているため、フィールドの追加や順序変更を行うと、依存するインデックスアクセスメソッド（GIN, B-tree等）や拡張モジュールとのバイナリ互換性が失われます。</li>
+<li>**範囲外アクセスとメモリ不足**: <code>brin_revmap_data</code> 等で <code>ItemPointerData</code> の配列を動的に確保・走査する際、メモリ割り当て（<code>palloc</code>）の失敗や、インデックス（<code>idx</code>）管理の不備による境界外アクセスのリスクが存在します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/storage/itemptr.h</code> : <code>ItemPointerData</code> の構造体定義および <code>ItemPointerGetBlockNumber</code> などのアクセサマクロ群。</li>
+<li><code>src/include/access/relscan.h</code> : <code>tidrange</code> 構造体など、スキャン処理における TID の利用方法。</li>
+<li><code>contrib/pageinspect/brinfuncs.c</code> : <code>brin_revmap_data</code> における <code>ItemPointerData</code> 配列の具体的な走査・利用例。</li>
+</ul></body></html>

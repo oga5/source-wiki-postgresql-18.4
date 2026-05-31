@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__explain_c__ExplainOnePlan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExplainOnePlan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/explain.c:493</code></li>
+</ul>
+<h2>目的</h2>
+<p>計画されたクエリ（<code>PlannedStmt</code>）を実行し、その実行計画および統計情報を整形して出力する中核関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
+                    const char *queryString, ParamListInfo params,
+                    QueryEnvironment *queryEnv, const instr_time *planduration,
+                    const BufferUsage *bufusage,
+                    const MemoryContextCounters *mem_counters)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>plannedstmt</code>: 実行対象の計画済みクエリツリー。</li>
+<li><code>into</code>: <code>CREATE TABLE AS</code> のための句（存在する場合）。</li>
+<li><code>es</code>: 出力形式やオプションを保持する <code>ExplainState</code>。</li>
+<li><code>queryString</code>, <code>params</code>, <code>queryEnv</code>: クエリ実行に必要なコンテキスト情報。</li>
+<li><code>planduration</code>, <code>bufusage</code>, <code>mem_counters</code>: プランニング段階の統計情報。</li>
+<li>**出力**: なし（副作用として <code>es</code> に出力内容が蓄積され、クライアントへ送信される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>plannedstmt-&gt;commandType</code> が <code>CMD_UTILITY</code> であってはならない（<code>Assert</code> で検証）。</li>
+<li><code>ANALYZE</code> オプションが有効な場合、実際にクエリが実行されるため、データ変更を伴うクエリには注意が必要。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>ExplainState</code> の設定に基づき、実行フラグ（<code>instrument_option</code>）を決定。 2. **スナップショット**: <code>PushCopiedSnapshot</code> により現在のスナップショットを保護し、コマンドIDを更新。 3. **実行準備**: <code>CreateQueryDesc</code> でクエリ記述子を作成し、<code>ExecutorStart</code> を呼び出す。 4. **実行（ANALYZE時のみ）**: <code>ExecutorRun</code> および <code>ExecutorFinish</code> を呼び出し、実行統計を収集。 5. **出力生成**:</p>
+<ul>
+<li><code>ExplainPrintPlan</code> でプランツリーをダンプ。</li>
+<li>プランニング時のバッファ使用量やメモリ統計を表示。</li>
+<li><code>ANALYZE</code> 時はトリガー実行時間、JIT 統計、シリアライズ統計を順次出力。</li>
+<p>6. **終了処理**: <code>ExecutorEnd</code> でクエリ実行を終了し、リソースを解放。<code>PopActiveSnapshot</code> でスナップショットを復元。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/commands/explain.c</code> (内部の <code>EXPLAIN</code> フロー)</li>
+<li><code>src/backend/commands/prepare.c</code></li>
+<li>**呼び出し先**: </li>
+<li><code>ExecutorStart</code>, <code>ExecutorRun</code>, <code>ExecutorFinish</code>, <code>ExecutorEnd</code></li>
+<li><code>ExplainPrintPlan</code>, <code>ExplainPrintTriggers</code>, <code>ExplainPrintJITSummary</code>, <code>ExplainPrintSerialize</code></li>
+<li><code>CreateQueryDesc</code>, <code>FreeQueryDesc</code></li>
+<li><code>explain_per_plan_hook</code> (プラグイン用フック)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PlannedStmt</code>: 実行計画の構造体。</li>
+<li><code>ExplainState</code>: <code>EXPLAIN</code> の出力状態とオプションを管理。</li>
+<li><code>QueryDesc</code>: クエリ実行に必要な情報を集約した構造体。</li>
+<li><code>DestReceiver</code>: クエリ結果の出力先を抽象化。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>into</code> 句が存在する場合、<code>CreateIntoRelDestReceiver</code> が使用され、結果はテーブル作成へ送られる。</li>
+<li><code>es-&gt;serialize</code> が設定されている場合、専用の <code>DestReceiver</code> を介してシリアライズ統計が収集される。</li>
+<li><code>ANALYZE</code> 指定時、<code>into-&gt;skipData</code> が真であれば <code>NoMovementScanDirection</code> で実行される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>EXPLAIN</code> の実行フェーズの心臓部です。プランノードの表示内容を変更する場合は <code>ExplainPrintPlan</code> を、実行統計の収集ロジックを変更する場合は本関数の <code>Executor</code> 呼び出し周辺を確認してください。</li>
+<li><code>explain_per_plan_hook</code> を介した外部プラグインによる拡張がサポートされています。</li>
+</ul></body></html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/errordata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ErrorData</h1>
+<h2>概念</h2>
+<p><code>ErrorData</code> は、PostgreSQLのエラー報告プロセスにおいて、発生したエラーに関する詳細情報（エラーレベル、SQLSTATE、エラーメッセージ、コンテキスト、発生したソースファイルや行数など）を保持・伝播するための構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>エラー情報を構造化して保持することで、ログ出力先（標準エラー出力、syslog、CSV、JSONなど）への書き出しや、クライアントへのエラー通知を柔軟に行うことができます。また、<code>CopyErrorData</code> や <code>FreeErrorData</code> を用いてエラー情報をコピー・解放することで、エラーハンドリング（PL/PythonやPL/Tclなどの手続き言語、外部データラッパ、論理レプリケーションなど）において、エラー情報を安全に伝播・管理し、メモリリークを防ぐことができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/error</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/utils/elog.h#ErrorData</code> (構造体): エラーの詳細情報を保持するデータ構造。</li>
+<li><code>symbol:src/backend/utils/error/elog.c#FreeErrorData</code> (関数): <code>CopyErrorData</code> 等で割り当てられた <code>ErrorData</code> 構造体およびその内部の動的メモリを解放する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報に基づく、エラー情報の生成から解放までの流れは以下の通りです。</p>
+<p>1. **初期化と構築**: <code>ereport()</code> が呼び出されると、<code>errstart()</code> により <code>ErrorData</code> が生成され、<code>errmsg()</code> や <code>errcode()</code> などの関数によってエラー属性（メッセージ、SQLSTATEなど）が構造体の各フィールドに蓄積されます。 2. **完了と出力**: <code>errfinish()</code> が呼び出されると、蓄積された <code>ErrorData</code> の内容に基づいてログ出力やクライアントへの通知が行われます。 3. **コピーと伝播**: 特定のコンテキスト（PL/Python、PL/Tcl、postgres_fdw、ReorderBufferなど）では、エラー情報を退避・伝播するために <code>CopyErrorData()</code> を用いて <code>ErrorData</code> のコピーが作成されます。 4. **解放**: コピーされた <code>ErrorData</code> は、そのライフサイクルの終了時に <code>FreeErrorData()</code> を呼び出すことで、内部の文字列フィールド（<code>FreeErrorDataContents</code> による解放）および構造体自体（<code>pfree</code> による解放）のメモリが適切に解放されます。</p>
+<p>※なお、<code>CopyErrorData()</code> の具体的な内部実装や、エラー発生時のトランザクション異常終了処理（<code>siglongjmp</code>）との詳細な連携フローの全容は、提供されたソース抜粋からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>FreeErrorData</code> に渡す <code>edata</code> ポインタは、<code>CopyErrorData</code> 等によって適切に割り当てられた有効なポインタでなければなりません。</li>
+<li><code>PG_TRY</code> ブロック内で <code>ErrorData</code> に関連する非定数文字列を保持する場合、関連するメモリコンテキスト（<code>assoc_context</code>）が適切に管理されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリリーク**: <code>CopyErrorData</code> でコピーした <code>ErrorData</code> を、処理終了後に <code>FreeErrorData</code> で解放し忘れると、<code>ErrorContext</code> 内でメモリリークが発生する原因になります。</li>
+<li>**不正ポインタアクセス**: <code>FreeErrorData</code> によって既に解放された <code>ErrorData</code> ポインタや、初期化されていない不正なポインタを操作すると、メモリ破壊を引き起こす可能性があります。また、<code>FreeErrorData</code> に対する <code>NULL</code> ポインタ入力時の挙動は、提供された情報からは明示されていません。</li>
+<li>**PG_TRY内の変数**: <code>PG_TRY</code> ブロック内で使用するローカル変数は、コンパイラの最適化による不整合を防ぐために <code>volatile</code> 宣言が必須です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/elog.h</code> (構造体 <code>ErrorData</code> の定義)</li>
+<li><code>src/backend/utils/error/elog.c</code> (関数 <code>FreeErrorData</code> の実装)</li>
+</ul></body></html>

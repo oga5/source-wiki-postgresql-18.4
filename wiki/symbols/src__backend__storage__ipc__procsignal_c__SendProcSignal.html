@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__procsignal_c__SendProcSignal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SendProcSignal</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/procsignal.c:284</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたプロセス（PID）に対して、共有メモリを介したシグナル通知（<code>SIGUSR1</code>）を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>pid</code>: 送信先プロセスのプロセスID。</li>
+<li><code>reason</code>: <code>ProcSignalReason</code> 型の通知理由。</li>
+<li><code>procNumber</code>: 送信先プロセスのインデックス（不明な場合は <code>INVALID_PROC_NUMBER</code> を指定）。</li>
+<li>**出力**:</li>
+<li>成功時: <code>kill()</code> の戻り値（通常は 0）。</li>
+<li>失敗時: <code>-1</code>（<code>errno</code> に <code>ESRCH</code> が設定される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>procNumber</code> が指定されている場合、その値は <code>NumProcSignalSlots</code> 未満である必要がある。</li>
+<li>共有メモリ上の <code>ProcSignalSlot</code> 内のフラグ操作は、<code>pss_mutex</code> スピンロックによって保護される。</li>
+<li><code>pss_pid</code> の確認は、スピンロック取得前後でアトミックに行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>procNumber</code> が有効な場合、該当するスロットを直接参照する。 2. <code>procNumber</code> が <code>INVALID_PROC_NUMBER</code> の場合、全スロットを後ろから前へ走査し、指定された <code>pid</code> と一致するスロットを検索する。 3. 一致するスロットが見つかった場合：</p>
+<ul>
+<li><code>pss_mutex</code> を取得し、対象プロセスの <code>pss_signalFlags[reason]</code> を <code>true</code> に設定する。</li>
+<li><code>pss_mutex</code> を解放する。</li>
+<li><code>kill(pid, SIGUSR1)</code> を実行して対象プロセスにシグナルを送信する。</li>
+<p>4. 対象が見つからない場合は <code>errno</code> を <code>ESRCH</code> に設定し <code>-1</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/parallel.c</code></li>
+<li><code>src/backend/commands/async.c</code></li>
+<li><code>src/backend/libpq/pqmq.c</code></li>
+<li><code>src/backend/replication/logical/applyparallelworker.c</code></li>
+<li><code>src/backend/replication/slotsync.c</code></li>
+<li><code>src/backend/replication/slot.c</code></li>
+<li><code>src/backend/replication/walsender.c</code></li>
+<li><code>src/backend/storage/ipc/procarray.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>kill()</code> (システムコール)</li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>pg_atomic_read_u32</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ProcSignalSlot</code>: プロセスごとのシグナル状態を保持する構造体。</li>
+<li><code>ProcSignalHeader</code>: 全スロットを管理する共有メモリ上のヘッダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>指定された <code>pid</code> に対応するスロットが存在しない場合、<code>ESRCH</code> を返し失敗する。</li>
+<li><code>procNumber</code> が <code>INVALID_PROC_NUMBER</code> の場合、全スロットを走査するため、スロット数が多い場合にオーバーヘッドが発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>SIGUSR1</code> は多重化されているため、この関数は「通知フラグを立てる」ことと「シグナルを送る」ことのペアで機能する。</li>
+<li>補助プロセスはスロット配列の後方に配置される傾向があるため、<code>INVALID_PROC_NUMBER</code> 指定時は後ろからの走査が最適化として機能する。</li>
+</ul></body></html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgstattuple/pgstattuple.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgstattuple/pgstattuple.c</h1>
+<h2>概要</h2>
+<p><code>pgstattuple.c</code> は、PostgreSQL のテーブルおよびインデックスの物理的な統計情報（タプル数、デッドタプル数、空き容量など）を算出するためのコアロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pgstattuple</code> モジュールにおけるメインの実行エンジンです。ユーザーが SQL 関数を呼び出した際、対象リレーションの種別を判定し、適切なスキャン手法へディスパッチする役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の集計**: テーブルおよびインデックスのページを走査し、ライブ/デッドタプルの数とサイズ、および空き容量を計算する。</li>
+<li>**アクセス制御**: 実行ユーザーの権限チェック（バージョン依存）および、他セッションの一時テーブルへのアクセス制限。</li>
+<li>**結果の構築**: 集計した <code>pgstattuple_type</code> 構造体を、SQL で利用可能な複合型（Datum）へ変換する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgstattuple_type</code>: 統計結果を保持する構造体。</li>
+<li><code>pgstat_relation</code>: リレーションの種類（テーブル/インデックス）を判定し、適切なスキャン関数へ振り分けるエントリポイント。</li>
+<li><code>pgstat_heap</code>: ヒープテーブルをスキャンし、ライブ/デッドタプルと空き容量を算出する。</li>
+<li><code>pgstat_index</code>: インデックスを走査するための汎用的なループ処理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BufferAccessStrategy</code></li>
+<li><code>build_pgstattuple_type</code></li>
+<li><code>pgstat_btree_page</code></li>
+<li><code>pgstat_gist_page</code></li>
+<li><code>pgstat_hash_page</code></li>
+<li><code>pgstat_index_page</code></li>
+<li><code>pgstattuple_v1_5</code></li>
+<li><code>pgstattuplebyid_v1_5</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **エントリ**: <code>pgstattuple()</code> 等の SQL 関数が呼ばれ、<code>pgstat_relation()</code> を呼び出す。 2. **判定**: <code>relkind</code> に基づき、ヒープなら <code>pgstat_heap()</code>、インデックスなら <code>pgstat_index()</code> を実行。 3. **走査**:</p>
+<ul>
+<li>ヒープの場合: <code>table_beginscan_strat</code> を使用して全ページを走査し、<code>HeapTupleSatisfiesVisibility</code> でタプルの生存状態を判定。</li>
+<li>インデックスの場合: <code>pagefn</code>（<code>pgstat_btree_page</code> 等）を介して各インデックス構造特有のページ走査を行う。</li>
+<p>4. **集計**: 走査中に <code>pgstattuple_type</code> 構造体の各フィールドを更新。 5. **出力**: <code>build_pgstattuple_type()</code> が構造体の値を基に <code>HeapTuple</code> を生成し、Datum として返却。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>access/</code>: <code>heapam.h</code>, <code>nbtree.h</code>, <code>hash.h</code>, <code>gist_private.h</code> 等、各アクセスメソッドの内部構造へのアクセス。</li>
+<li><code>storage/bufmgr.h</code>: バッファマネージャを介したページ読み込みとロック。</li>
+<li><code>access/gist_private.h</code></li>
+<li><code>access/hash.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgstatindex.c</code>: インデックスのより詳細な統計情報（B-tree の深さやフラグメント率など）を扱う。</li>
+<li><code>pgstatapprox.c</code>: ヒープの統計を近似計算で高速に行うための実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**権限**: <code>pgstattuple</code> 関数はバージョン 1.5 以降、デフォルトで PUBLIC から実行権限が剥奪されています。古いバージョンとの互換性のため、<code>_v1_5</code> サフィックス付きの関数と古い関数が共存しています。</li>
+<li>**ロック**: 走査中は <code>AccessShareLock</code> を保持し、整合性を確保します。</li>
+<li>**パフォーマンス**: 全ページを物理的に読み込むため、大規模なテーブルに対して実行すると I/O 負荷が高くなります。<code>CHECK_FOR_INTERRUPTS()</code> が各ループに含まれており、クエリキャンセルには対応しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstattuple_type.html" target="wiki-view"><code>pgstattuple_type</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__BufferAccessStrategy.html" target="wiki-view"><code>BufferAccessStrategy</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__build_pgstattuple_type.html" target="wiki-view"><code>build_pgstattuple_type</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstattuple_v1_5.html" target="wiki-view"><code>pgstattuple_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstattuplebyid_v1_5.html" target="wiki-view"><code>pgstattuplebyid_v1_5</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_relation.html" target="wiki-view"><code>pgstat_relation</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_heap.html" target="wiki-view"><code>pgstat_heap</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_btree_page.html" target="wiki-view"><code>pgstat_btree_page</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_hash_page.html" target="wiki-view"><code>pgstat_hash_page</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_gist_page.html" target="wiki-view"><code>pgstat_gist_page</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_index.html" target="wiki-view"><code>pgstat_index</code></a></li>
+<li><a href="../../symbols/contrib__pgstattuple__pgstattuple_c__pgstat_index_page.html" target="wiki-view"><code>pgstat_index_page</code></a></li>
+</ul></body></html>

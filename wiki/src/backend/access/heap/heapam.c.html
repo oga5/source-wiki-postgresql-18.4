@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/heapam.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/heapam.c</h1>
+<h2>概要</h2>
+<p><code>heapam.c</code> は、PostgreSQLのヒープアクセスメソッド（AM）の主要なCRUD操作およびスキャンロジックを実装する中心的なファイルです。テーブルの物理的な読み書き、タプルのロック、MVCC可視性判定の呼び出し、およびWAL生成の責務を負います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールにおける「アクセスメソッド層」のメイン実装です。<code>heapam_handler.c</code> が提供する <code>TableAmRoutine</code> インターフェースの背後で、実際のタプル操作（挿入、更新、削除、フェッチ、スキャン）を実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**CRUD操作**: タプルの挿入、更新、削除、およびTIDによる直接フェッチ。</li>
+<li>**スキャン制御**: シーケンシャルスキャン、TID範囲スキャン、およびビットマップスキャンにおけるページ走査とタプル抽出。</li>
+<li>**ロック管理**: タプルレベルのロック（<code>LockTuple</code>）およびマルチトランザクション（MultiXact）の整合性維持。</li>
+<li>**WAL生成**: ヒープ操作に伴うWALレコードの生成と、論理デコーディング用情報の記録。</li>
+<li>**メンテナンス補助**: VACUUMや凍結処理のためのヒープページ走査と状態管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>スキャン記述子</h3>
+<ul>
+<li><code>HeapScanDescData</code>: スキャン状態（現在のブロック、バッファ、スキャン方向、プリフェッチ状態）を保持する構造体。</li>
+<li><code>initscan()</code>: スキャン記述子の初期化とアクセス戦略（<code>BufferAccessStrategy</code>）の決定。</li>
+</ul>
+<h3>タプル操作</h3>
+<ul>
+<li><code>heap_insert()</code> / <code>heap_multi_insert()</code>: タプルの挿入。<code>heap_prepare_insert()</code> でTOAST処理やヘッダ設定を行う。</li>
+<li><code>heap_update()</code>: タプルの更新。HOT（Heap-Only Tuple）更新の判定や、インデックス更新の要否を決定。</li>
+<li><code>heap_delete()</code>: タプルの削除。MVCC可視性判定とロック競合解決を含む。</li>
+<li><code>heap_fetch()</code>: TIDによるタプル取得。HOTチェーンの追跡は行わない。</li>
+</ul>
+<h3>ロックとマルチトランザクション</h3>
+<ul>
+<li><code>tupleLockExtraInfo</code>: ロックモードと <code>MultiXactStatus</code> のマッピングテーブル。</li>
+<li><code>heap_lock_tuple()</code>: タプルに対する共有/排他ロックの取得。</li>
+<li><code>MultiXactIdWait()</code>: マルチトランザクションの終了待ち合わせ。</li>
+</ul>
+<h3>内部補助関数</h3>
+<ul>
+<li><code>heapgettup()</code> / <code>heapgettup_pagemode()</code>: スキャン中のタプル抽出ロジック。</li>
+<li><code>log_heap_update()</code> / <code>log_heap_visible()</code>: ヒープ操作のWAL記録用ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AssertHasSnapshotForToast</code></li>
+<li><code>Do_MultiXactIdWait</code></li>
+<li><code>FreeBulkInsertState</code></li>
+<li><code>FreezeMultiXactId</code></li>
+<li><code>IndexDeleteCounts</code></li>
+<li><code>IndexDeletePrefetchState</code></li>
+<li><code>LOCKMODE</code></li>
+<li><code>UpdateXmaxHintBits</code></li>
+<li><code>heap_delete</code></li>
+<li><code>heap_get_latest_tid</code></li>
+<li><code>heap_insert</code></li>
+<li><code>heap_update</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャン**: <code>heap_beginscan</code> で記述子を作成し、<code>heap_getnext</code> が <code>heapgettup</code> を呼び出す。<code>heapgettup</code> は <code>heap_fetch_next_buffer</code> でバッファを順次読み込み、<code>HeapTupleSatisfiesVisibility</code> で可視性を判定する。 2. **DML**: <code>heap_insert</code> 等は <code>RelationGetBufferForTuple</code> でページを確保し、<code>START_CRIT_SECTION</code> で保護された領域でページを更新。その後、WALを生成し、<code>CacheInvalidateHeapTuple</code> でキャッシュを無効化する。 3. **ロック競合**: <code>heap_update</code> や <code>heap_delete</code> は <code>HeapTupleSatisfiesUpdate</code> で競合を検出し、必要に応じて <code>XactLockTableWait</code> や <code>MultiXactIdWait</code> で待機する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>: ヒープAMの定義。</li>
+<li><code>access/hio.h</code>: ヒープページI/O。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップ管理。</li>
+<li><code>access/xloginsert.h</code>: WAL生成インターフェース。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>storage/lmgr.h</code>: ロック管理。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/syncscan.h</code></li>
+<li><code>access/valid.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_database_d.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/spccache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>heapam_handler.c</code>: <code>TableAmRoutine</code> の実装。</li>
+<li><code>heapam_visibility.c</code>: MVCC可視性判定のルール。</li>
+<li><code>hio.c</code>: ページレベルの低レベルI/O。</li>
+<li><code>pruneheap.c</code>: HOT剪定と凍結。</li>
+<li><code>heaptoast.c</code>: TOASTデータの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>HeapScanDesc</code> は <code>palloc</code> で確保され、<code>heap_endscan</code> で解放されます。タプルデータはバッファ上のポインタを指すことが多く、バッファピンのライフサイクルに注意が必要です。</li>
+<li>**HOT更新**: <code>heap_update</code> は、インデックス列が変更されない場合にHOT更新を試みます。この際、<code>use_hot_update</code> フラグが制御フローを分岐させます。</li>
+<li>**並行性**: <code>heap_update</code> 等の操作は、<code>BUFFER_LOCK_EXCLUSIVE</code> を保持したままWALを生成し、<code>END_CRIT_SECTION</code> で保護されます。この間はエラー発生を避ける必要があります。</li>
+<li>**浅い領域**: <code>heap_index_delete_tuples</code> などのインデックス削除関連ロジックは、ヒープAMのメンテナンス機能として実装されており、通常のDMLとは異なる最適化（プリフェッチやバッチ処理）が含まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__LOCKMODE.html" target="wiki-view"><code>LOCKMODE</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__IndexDeletePrefetchState.html" target="wiki-view"><code>IndexDeletePrefetchState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__IndexDeleteCounts.html" target="wiki-view"><code>IndexDeleteCounts</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__AssertHasSnapshotForToast.html" target="wiki-view"><code>AssertHasSnapshotForToast</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__heap_get_latest_tid.html" target="wiki-view"><code>heap_get_latest_tid</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__UpdateXmaxHintBits.html" target="wiki-view"><code>UpdateXmaxHintBits</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__FreeBulkInsertState.html" target="wiki-view"><code>FreeBulkInsertState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__heap_insert.html" target="wiki-view"><code>heap_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__heap_delete.html" target="wiki-view"><code>heap_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__heap_update.html" target="wiki-view"><code>heap_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__FreezeMultiXactId.html" target="wiki-view"><code>FreezeMultiXactId</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_c__Do_MultiXactIdWait.html" target="wiki-view"><code>Do_MultiXactIdWait</code></a></li>
+</ul></body></html>

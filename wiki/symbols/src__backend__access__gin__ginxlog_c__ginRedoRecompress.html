@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginxlog_c__ginRedoRecompress.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginRedoRecompress</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginxlog.c:116</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのリーフページにおけるポスティングリストの変更（挿入、置換、追加、削除）をWALレコードに基づいて再適用し、ページの状態を復元します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>page</code>: 更新対象のGINインデックスページ。</li>
+<li><code>data</code>: 適用すべき変更内容を含むWALレコード構造体。</li>
+<li>**出力**: なし（副作用として <code>page</code> を直接更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>ページが圧縮形式でない場合（pre-9.4形式）、処理の開始時に自動的に新形式へ変換されます。</li>
+<li>ページ内のポスティングリストの変更は、WALレコード内のアクション順序に従って逐次適用されます。</li>
+<li>変更適用中、ページ末尾のデータが上書きされる可能性がある場合、<code>tailCopy</code> を使用して一時的に退避されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **形式変換**: ページが非圧縮の場合、<code>ginCompressPostingList</code> を用いて圧縮形式へ変換し、メタデータを更新します。 2. **WAL解析**: <code>data</code> から各アクション（<code>GIN_SEGMENT_INSERT</code>, <code>REPLACE</code>, <code>ADDITEMS</code>, <code>DELETE</code>）を順次読み取ります。 3. **セグメント処理**:</p>
+<ul>
+<li><code>ADDITEMS</code> の場合、既存のセグメントをデコードし、新しいアイテムとマージして再圧縮します。</li>
+<li>変更対象のセグメント以降のデータは、必要に応じて <code>tailCopy</code> に退避し、整合性を保ちながらページ上に新しいセグメントを書き込みます。</li>
+<p>4. **ページ更新**: 変更後のセグメントをページ上の適切な位置に配置し、ポインタを進めます。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginxlog.c</code> 内のWALリプレイ処理（<code>gin_redo</code> 等の文脈から呼び出される）。</li>
+<li>**呼び出し先**:</li>
+<li><code>ginCompressPostingList</code>, <code>ginPostingListDecode</code>, <code>ginMergeItemPointers</code>（ポスティングリスト操作）</li>
+<li><code>palloc</code>（メモリ確保）</li>
+<li><code>memcpy</code>（データコピー）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ginxlogRecompressDataLeaf</code>: WALレコードのデータ構造。</li>
+<li><code>GinPostingList</code>: GINインデックスのポスティングリスト形式。</li>
+<li><code>Page</code>: PostgreSQLの標準的なページ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ページ形式**: pre-9.4形式のページに対する変換処理が含まれており、空のリーフページも適切に処理されます。</li>
+<li>**メモリ**: <code>tailCopy</code> の確保時にメモリ不足が発生する可能性があります。</li>
+<li>**アサーション**: <code>Assert</code> により、セグメントの順序やサイズ、ページ境界（<code>PageGetSpecialPointer</code>）を超えないことが検証されています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はGINのWALリプレイにおいて最も複雑なロジックの一つです。特に <code>tailCopy</code> を用いたページ末尾の保護と、<code>ADDITEMS</code> 時の再圧縮ロジックは、インデックスの物理構造に深く依存しています。</li>
+<li>変更を加える際は、<code>gin_mask</code> による整合性チェックが正しく機能するよう、ページ内の変更箇所が適切にマスクされているか確認してください。</li>
+</ul></body></html>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__slot_h__ReplicationSlot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReplicationSlot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/slot.h:155</code></li>
+</ul>
+<h2>目的</h2>
+<p>レプリケーションスロットのメモリ内表現を保持し、プライマリサーバーがスタンバイや論理レプリケーションクライアントのために必要なWALや古いタプルを保持し続けるための状態管理を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ReplicationSlot {
+    slock_t mutex;
+    bool in_use;
+    pid_t active_pid;
+    bool just_dirtied;
+    bool dirty;
+    TransactionId effective_xmin;
+    TransactionId effective_catalog_xmin;
+    ReplicationSlotPersistentData data;
+    LWLock io_in_progress_lock;
+    ConditionVariable active_cv;
+    TransactionId candidate_catalog_xmin;
+    XLogRecPtr candidate_xmin_lsn;
+    XLogRecPtr candidate_restart_valid;
+    XLogRecPtr candidate_restart_lsn;
+    XLogRecPtr last_saved_confirmed_flush;
+    TimestampTz inactive_since;
+    XLogRecPtr last_saved_restart_lsn;
+} ReplicationSlot;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ上のスロット制御構造（<code>ReplicationSlotCtlData</code>）の一部として初期化され、WALの進捗やクライアントからの確認応答に基づいて各フィールドが更新される。</li>
+<li>**出力**: <code>data</code> フィールド（<code>ReplicationSlotPersistentData</code>）がチェックポイント時にディスクへ永続化される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>スロットの追加・削除には <code>ReplicationSlotControlLock</code>（LWLock）が必要。</li>
+<li>スロット内の個別のフィールド更新には、スロット固有の <code>mutex</code>（スピンロック）の取得が必須。</li>
+<li>論理デコーディングにおいて、<code>effective_xmin</code> はクラッシュリカバリ後も整合性を保つため、ディスクに書き込まれた最新の値を反映しなければならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**状態管理**: <code>in_use</code> フラグでスロットの有効性を管理し、<code>active_pid</code> で現在ストリーミング中のプロセスを追跡する。</li>
+<li>**論理デコーディング**: <code>candidate_*</code> フィールドを使用して、クライアントからのフラッシュ確認に基づき <code>catalog_xmin</code> や <code>restart_lsn</code> を安全に進める。</li>
+<li>**永続化**: <code>just_dirtied</code> および <code>dirty</code> フラグにより変更を検知し、チェックポイント時にディスクへフラッシュする。</li>
+<li>**排他制御**: <code>io_in_progress_lock</code> により、I/O操作中のスロットに対する競合を防ぐ。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 以下のソースファイルで <code>ReplicationSlot</code> 型への参照が確認されている。</li>
+<li><code>src/backend/replication/logical/logical.c</code></li>
+<li><code>src/backend/replication/logical/origin.c</code></li>
+<li><code>src/backend/replication/logical/reorderbuffer.c</code></li>
+<li><code>src/backend/replication/logical/slotsync.c</code></li>
+<li>**呼び出し先**: 構造体自体はデータ保持が主目的であり、特定の関数呼び出しは含まない。操作には <code>src/backend/replication/slot.c</code> で定義された関数群が使用される。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationSlotPersistentData</code>: ディスクに書き込まれる永続属性。</li>
+<li><code>ReplicationSlotCtlData</code>: 全スロットを保持する共有メモリ上の配列。</li>
+<li><code>ConditionVariable</code>: <code>active_pid</code> の変化を通知するために使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>effective_xmin</code> の不適切な管理は、論理デコーディングにおける誤ったデータ削除や整合性欠如を招く。</li>
+<li>適切なロックを取得せずにフィールドを更新した場合、共有メモリ上のデータ破損が発生する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ReplicationSlot</code> 内の <code>data</code> フィールドのみが永続化対象である点に注意すること。</li>
+<li>論理デコーディングの整合性維持のため、<code>effective_xmin</code> の更新ロジックには細心の注意を払うこと。</li>
+<li>スロットの同期（スタンバイ側）とプライマリ側の操作で、<code>inactive_since</code> 等のフィールドの解釈が異なる場合がある。</li>
+</ul></body></html>

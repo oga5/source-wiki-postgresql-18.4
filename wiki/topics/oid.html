@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/oid.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Oid</h1>
+<h2>概念</h2>
+<p><code>Oid</code>（Object Identifier）は、PostgreSQLデータベースシステムにおいて、テーブル、インデックス、関数、データ型、演算子族などの各種データベースオブジェクトを一意に識別するための基本データ型（通常は <code>unsigned int</code>）です。</p>
+<h2>なぜ重要か</h2>
+<p><code>Oid</code> は、PostgreSQLのほぼすべてのサブシステムを横断する共通の「キー」として機能するため極めて重要です。システムカタログの検索、キャッシュ（syscacheやrelcache）のルックアップ、式評価エンジンでの型判定、インデックスアクセスメソッドのメタデータ管理、DDL追跡、およびキャッシュ無効化イベントの通知など、オブジェクトの特定が必要なあらゆる場面で利用されます。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたコンテキストに基づき、以下のモジュールが <code>Oid</code> を使用してオブジェクトの識別や操作を行っています。</p>
+<ul>
+<li><code>module:src/bin/pg_dump</code>（アーカイブ処理対象のオブジェクト特定）</li>
+<li><code>module:src/include</code>（基本型定義）</li>
+<li><code>module:src/include/access</code>（インデックスアクセスメソッドのメタデータ管理）</li>
+<li><code>module:src/include/catalog</code>（システムカタログ内のオブジェクト識別、名前解決、オブジェクトアクセスフック）</li>
+<li><code>module:src/include/commands</code>（EXPLAIN出力時のインデックス名取得フック）</li>
+<li><code>module:src/include/executor</code>（式評価ステップにおける変数の型情報保持）</li>
+<li><code>module:src/include/foreign</code>（外部リレーションのサイズ取得等のFDW API）</li>
+<li><code>module:src/include/nodes</code>（式ノードの評価結果や関数識別子の表現）</li>
+<li><code>module:src/include/replication</code>（WALレシーバ関連）</li>
+<li><code>module:src/include/tcop</code>（DDL追跡やイベントトリガー用のCollectedCommand構造体）</li>
+<li><code>module:src/include/utils</code>（キャッシュ無効化イベントの対象リレーション特定）</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/postgres_ext.h#Oid</code>**: バックエンドとフロントエンド（libpq等）で共有される基本型定義（<code>typedef unsigned int Oid;</code>）。</li>
+<li>**<code>symbol:src/bin/pg_dump/pg_backup_archiver.h#Oid</code>**: アーカイブ処理（<code>StartLOPtrType</code> 等）でオブジェクトを特定するための定義。</li>
+<li>**<code>symbol:src/include/access/amapi.h#Oid</code>**: インデックスアクセスメソッド（<code>amtranslate_strategy_function</code> 等）で演算子族などを特定するための定義。</li>
+<li>**<code>symbol:src/include/catalog/namespace.h#Oid</code>**: 名前解決（<code>RangeVarGetRelid</code> 等）でオブジェクトIDを取得するための定義。</li>
+<li>**<code>symbol:src/include/catalog/objectaccess.h#Oid</code>**: オブジェクトアクセスフック（<code>object_access_hook_type</code>）で操作対象を特定するための定義。</li>
+<li>**<code>symbol:src/include/commands/explain.h#Oid</code>**: EXPLAINフック（<code>explain_get_index_name_hook_type</code>）でインデックスを特定するための定義。</li>
+<li>**<code>symbol:src/include/executor/execExpr.h#Oid</code>**: 式評価ステップ（<code>ExprEvalStep</code> 内の <code>var.vartype</code>）で変数の型を特定するための定義。</li>
+<li>**<code>symbol:src/include/foreign/fdwapi.h#Oid</code>**: FDW API（<code>GetForeignRelSize_function</code> 等）で外部テーブルを特定するための定義。</li>
+<li>**<code>symbol:src/include/nodes/nodeFuncs.h#Oid</code>**: 式ノード（<code>FuncExpr</code>, <code>OpExpr</code> 等）で評価結果や関数を特定するための定義。</li>
+<li>**<code>symbol:src/include/tcop/deparse_utility.h#Oid</code>**: DDL追跡（<code>CollectedCommand</code> 内の <code>alterTable.objectId</code> / <code>classId</code>）で対象オブジェクトを特定するための定義。</li>
+<li>**<code>symbol:src/include/utils/inval.h#Oid</code>**: キャッシュ無効化（<code>RelcacheCallbackFunction</code> 等）で影響を受けるリレーションを特定するための定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>具体的なエンドツーエンドのフロー（例：クエリ実行からキャッシュ無効化、あるいはダンプ出力までの完全なライフサイクル）は、提供されたモジュール情報だけでは完全には明らかになっていません。</p>
+<p>ただし、部分的な流れとして以下が確認されています。</p>
+<p>1. **名前解決とオブジェクト特定**: <code>RangeVar</code> などの入力から <code>RangeVarGetRelid</code> などの名前解決関数を介して対象オブジェクトの <code>Oid</code> が取得されます。 2. **式評価と実行**: プランナーが生成した式ツリーから <code>Oid</code>（<code>vartype</code> など）が設定され、実行時に適切な型変換や関数呼び出しのディスパッチに利用されます。 3. **キャッシュ無効化とフック**: オブジェクトの変更時には <code>Oid</code> を用いて <code>object_access_hook</code> や <code>RelcacheCallbackFunction</code> が呼び出され、キャッシュの無効化や監査ログの生成が行われます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**一意性**: <code>Oid</code> は、システムカタログ内の各オブジェクトに対して一意な値として割り当てられます（データベースクラスタ全体、またはデータベース単位）。</li>
+<li>**無効値の予約**: <code>InvalidOid</code>（通常 <code>0</code>）は、オブジェクトが存在しない、または無効であることを示す予約値として定義されています。</li>
+<li>**型の一貫性**: <code>Oid</code> はシステム全体で一貫して <code>unsigned int</code>（32ビット符号なし整数）として扱われ、フロントエンドとバックエンドの間で共通のインターフェースを提供します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**<code>InvalidOid</code> のハンドリング漏れ**: 名前解決やオブジェクト検索の結果として <code>InvalidOid</code> が返された場合、呼び出し元で適切にエラーハンドリングを行わないと、システムカタログの検索失敗や予期しない動作を引き起こす可能性があります。</li>
+<li>**Oid の再利用と生存期間**: システムカタログの更新やオブジェクトの削除・再作成に伴い、古い <code>Oid</code> が無効になったり、別のオブジェクトに再利用されたりする可能性があるため、永続的な参照として保持する際は注意が必要です。</li>
+<li>**共用体アクセスの前提条件**: <code>deparse_utility.h</code> の <code>CollectedCommand</code> のように、<code>Oid</code> が共用体（<code>alterTable</code> 構造体など）の一部として定義されている場合、親構造体の <code>type</code> フィールドを確認せずにアクセスすると、不正なメモリ参照を引き起こす危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/postgres_ext.h</code> (基本型 <code>Oid</code> および <code>InvalidOid</code> の定義)</li>
+<li><code>src/include/catalog/namespace.h</code> (名前解決と <code>Oid</code> 取得のインターフェース)</li>
+<li><code>src/include/utils/inval.h</code> (キャッシュ無効化と <code>Oid</code> の関連)</li>
+<li><code>src/include/catalog/objectaccess.h</code> (オブジェクトアクセスフックと <code>Oid</code> の利用)</li>
+</ul></body></html>

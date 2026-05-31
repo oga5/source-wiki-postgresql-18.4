@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/slotfuncs.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/replication/slotfuncs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのレプリケーションスロットを操作するためのSQL関数インターフェースを提供します。ユーザーがSQL経由でスロットの作成、削除、一覧表示、位置の進捗、コピー、および同期を行うためのエントリポイントを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication</code> モジュールにおいて、SQLレイヤーと内部的なスロット管理ロジック（<code>slot.c</code>）を繋ぐブリッジの役割を果たします。スロットの永続化や状態遷移のトリガーをSQLコマンドから受け取り、適切な内部関数へ委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スロットのライフサイクル管理**: <code>pg_create_*_replication_slot</code> および <code>pg_drop_replication_slot</code> によるスロットの作成・削除。</li>
+<li>**状態の可視化**: <code>pg_get_replication_slots</code> によるシステム内の全スロット情報の集約と出力。</li>
+<li>**位置の制御**: <code>pg_replication_slot_advance</code> によるWAL読み取り位置の強制的な更新。</li>
+<li>**スロットの複製と同期**: <code>copy_replication_slot</code> による既存スロットのコピー、および <code>pg_sync_replication_slots</code> によるスタンバイへのスロット同期。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_create_physical_replication_slot</code> / <code>pg_create_logical_replication_slot</code>: SQLから物理/論理スロットを作成する関数。</li>
+<li><code>pg_get_replication_slots</code>: <code>pg_replication_slots</code> ビューのバックエンドとなるSRF（Set Returning Function）。</li>
+<li><code>pg_replication_slot_advance</code>: スロットの <code>restart_lsn</code> を進める関数。</li>
+<li><code>copy_replication_slot</code>: 既存スロットの設定を新しいスロットに複製する内部ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>create_logical_replication_slot</code></li>
+<li><code>create_physical_replication_slot</code></li>
+<li><code>pg_copy_logical_replication_slot_a</code></li>
+<li><code>pg_copy_logical_replication_slot_b</code></li>
+<li><code>pg_drop_replication_slot</code></li>
+<li><code>pg_logical_replication_slot_advance</code></li>
+<li><code>pg_physical_replication_slot_advance</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **リクエスト受付**: SQL関数が引数を解析し、<code>CheckSlotPermissions()</code> 等で権限を確認します。 2. **内部操作**: <code>ReplicationSlotCreate</code> や <code>ReplicationSlotDrop</code> を呼び出し、共有メモリ上のスロット状態を更新します。 3. **同期と永続化**: 変更が必要な場合、<code>ReplicationSlotMarkDirty()</code> と <code>ReplicationSlotSave()</code> を呼び出し、ディスク上の状態を更新します。 4. **結果返却**: <code>heap_form_tuple</code> を用いて結果を構築し、呼び出し元へ返します。</p>
+<ul>
+<li><code>pg_get_replication_slots</code> は <code>ReplicationSlotControlLock</code> を取得し、全スロットを走査して <code>tuplestore</code> に結果を蓄積します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/slot.h</code>: スロット管理の基本構造体とAPI。</li>
+<li><code>replication/logical.h</code>: 論理デコーディングコンテキストの管理。</li>
+<li><code>replication/slotsync.h</code>: スロット同期機能の定義。</li>
+<li><code>access/xlog_internal.h</code>: WAL位置（LSN）の操作。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/slot.c</code>: スロットの共有メモリ管理、ディスクへの書き出し、ロック制御の核心部分。</li>
+<li><code>src/backend/replication/walsender.c</code>: スロットを利用してWALを送信するプロセス。</li>
+<li><code>src/backend/replication/logical.c</code>: 論理デコーディングの実行エンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの扱い**: <code>pg_get_replication_slots</code> は <code>ReplicationSlotControlLock</code> を共有ロックで保持しつつ、各スロットの <code>mutex</code> を個別に取得してスナップショットをコピーします。このため、スロット数が多い場合でもシステム全体を長時間ブロックしない設計になっています。</li>
+<li>**エラーハンドリング**: スロット作成中にエラーが発生した場合、<code>ReplicationSlotCreate</code> はトランザクションのロールバックに伴い自動的にクリーンアップされるよう設計されています。</li>
+<li>**コピーの制約**: <code>copy_replication_slot</code> は、ソーススロットが無効化されている場合や、WAL予約が完了していない場合にはコピーを拒否します。これは不整合なスロットが作成されるのを防ぐためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__create_physical_replication_slot.html" target="wiki-view"><code>create_physical_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_create_physical_replication_slot.html" target="wiki-view"><code>pg_create_physical_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__create_logical_replication_slot.html" target="wiki-view"><code>create_logical_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_create_logical_replication_slot.html" target="wiki-view"><code>pg_create_logical_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_drop_replication_slot.html" target="wiki-view"><code>pg_drop_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_get_replication_slots.html" target="wiki-view"><code>pg_get_replication_slots</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_physical_replication_slot_advance.html" target="wiki-view"><code>pg_physical_replication_slot_advance</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_logical_replication_slot_advance.html" target="wiki-view"><code>pg_logical_replication_slot_advance</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_replication_slot_advance.html" target="wiki-view"><code>pg_replication_slot_advance</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__copy_replication_slot.html" target="wiki-view"><code>copy_replication_slot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_copy_logical_replication_slot_a.html" target="wiki-view"><code>pg_copy_logical_replication_slot_a</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__slotfuncs_c__pg_copy_logical_replication_slot_b.html" target="wiki-view"><code>pg_copy_logical_replication_slot_b</code></a></li>
+</ul></body></html>

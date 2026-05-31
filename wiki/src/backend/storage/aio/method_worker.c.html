@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/method_worker.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/method_worker.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける非同期I/O（AIO）のデフォルト実装である「ワーカープロセス方式」を提供します。専用のバックグラウンドプロセス（IO Worker）が共有メモリ上のキューからI/Oリクエストを取り出し、同期的なシステムコールを実行することで、クライアントプロセスのブロッキングを回避します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/aio</code> サブシステムにおけるI/O実行メソッドの一つです。他のメソッド（<code>io_uring</code>等）が利用できない環境や、デフォルトのフォールバックとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有キューの管理**: クライアントが投入したI/Oリクエストを保持するリングバッファの管理。</li>
+<li>**ワーカープロセスのライフサイクル**: ワーカーの登録、アイドル状態の管理、および終了時のクリーンアップ。</li>
+<li>**I/Oの実行**: 同期的なシステムコールへの変換と、完了通知の処理。</li>
+<li>**負荷分散**: <code>IO_WORKER_WAKEUP_FANOUT</code> を用いた、効率的なワーカーの起床制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>IoWorkerMain</code>: ワーカープロセスのメインループ。I/Oの消費と実行を担う。</li>
+<li><code>PgAioWorkerSubmissionQueue</code>: クライアントとワーカー間で共有されるI/O投入用リングバッファ。</li>
+<li><code>PgAioWorkerControl</code>: 全ワーカーの稼働状況（アイドルマスク等）を保持する制御構造体。</li>
+<li><code>pgaio_worker_submit</code>: クライアントがI/Oを投入する際のインターフェース。</li>
+<li><code>AioWorkerSubmissionQueueLock</code>: キューへのアクセスを保護する排他制御用ロック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PgAioWorkerSlot</code></li>
+<li><code>pgaio_worker_choose_idle</code></li>
+<li><code>pgaio_worker_control_shmem_size</code></li>
+<li><code>pgaio_worker_queue_shmem_size</code></li>
+<li><code>pgaio_worker_shmem_init</code></li>
+<li><code>pgaio_worker_shmem_size</code></li>
+<li><code>pgaio_worker_submission_queue_consume</code></li>
+<li><code>pgaio_worker_submission_queue_depth</code></li>
+<li><code>pgaio_worker_submission_queue_insert</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **投入**: クライアントが <code>pgaio_worker_submit</code> を呼び出し、I/Oをキューに挿入。必要に応じてアイドル状態のワーカーのラッチをセットして起床させる。 2.  **起床と消費**: ワーカーは <code>IoWorkerMain</code> ループ内で <code>AioWorkerSubmissionQueueLock</code> を取得し、キューからI/O IDを消費する。 3.  **実行**: ワーカーは <code>pgaio_io_reopen</code> で対象ファイルを開き直し、<code>pgaio_io_perform_synchronously</code> で実際のI/Oを実行する。 4.  **完了**: I/O完了後、ワーカーは次のジョブを探すか、ジョブがなければ <code>WaitLatch</code> で待機状態に入る。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/aio_internal.h</code>: AIO内部データ構造とハンドルの定義。</li>
+<li><code>storage/io_worker.h</code>: ワーカープロセス共通の定義。</li>
+<li><code>storage/latch.h</code>: プロセス間通知（起床）メカニズム。</li>
+<li><code>storage/ipc.h</code>: 共有メモリ管理（<code>ShmemInitStruct</code> 等）。</li>
+<li><code>storage/proc.h</code>: プロセス管理と <code>MyProcNumber</code>。</li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>storage/aio.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/aio.c</code>: AIOサブシステムの全体的な初期化とディスパッチ。</li>
+<li><code>src/backend/storage/aio/method_io_uring.c</code>: 代替となる高性能なI/O実行メソッド。</li>
+<li><code>src/backend/postmaster/auxprocess.c</code>: ワーカープロセスの起動元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ファンアウト**: <code>IO_WORKER_WAKEUP_FANOUT</code> は、一度の起床で複数のワーカーを連鎖的に起こす仕組みです。これにより、大量のI/O投入時にシステムコールを減らしています。</li>
+<li>**同期実行のフォールバック**: ファイルの再オープンが不可能な場合など、一部のI/Oはワーカーに委譲せず、クライアントプロセス自身が同期的に実行します。</li>
+<li>**エラーハンドリング**: ワーカー内でエラーが発生した場合、<code>sigsetjmp</code> を用いて安全に終了し、ポストマスターがワーカーを再起動する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__PgAioWorkerSubmissionQueue.html" target="wiki-view"><code>PgAioWorkerSubmissionQueue</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__PgAioWorkerSlot.html" target="wiki-view"><code>PgAioWorkerSlot</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__PgAioWorkerControl.html" target="wiki-view"><code>PgAioWorkerControl</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_queue_shmem_size.html" target="wiki-view"><code>pgaio_worker_queue_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_control_shmem_size.html" target="wiki-view"><code>pgaio_worker_control_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_shmem_size.html" target="wiki-view"><code>pgaio_worker_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_shmem_init.html" target="wiki-view"><code>pgaio_worker_shmem_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_choose_idle.html" target="wiki-view"><code>pgaio_worker_choose_idle</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_submission_queue_insert.html" target="wiki-view"><code>pgaio_worker_submission_queue_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_submission_queue_consume.html" target="wiki-view"><code>pgaio_worker_submission_queue_consume</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__pgaio_worker_submission_queue_depth.html" target="wiki-view"><code>pgaio_worker_submission_queue_depth</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_worker_c__IoWorkerMain.html" target="wiki-view"><code>IoWorkerMain</code></a></li>
+</ul></body></html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/bgwriter.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/bgwriter.c</h1>
+<h2>概要</h2>
+<p>バックグラウンドライター（bgwriter）プロセスのメインループを実装するファイルです。PostgreSQL 8.0 で導入され、共有バッファ内のダーティページを定期的にディスクへ書き出すことで、通常のバックエンドプロセスがバッファ不足時に行う書き出し負荷を軽減します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として動作する補助プロセスです。チェックポイント処理は別のプロセス（<code>checkpointer.c</code>）に分離されているため、本モジュールは純粋に「共有バッファのクリーン化」と「スタンバイ用スナップショットの定期記録」に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファのクリーン化**: <code>BgBufferSync</code> を呼び出し、共有バッファプール内のダーティページを適宜書き出す。</li>
+<li>**ハイバネーション制御**: システムがアイドル状態の際、スリープ時間を延長して電力消費と不要なウェイクアップを抑制する。</li>
+<li>**スタンバイ情報の記録**: レプリケーションの整合性を保つため、定期的に <code>xl_running_xacts</code> を WAL に書き込む。</li>
+<li>**エラーリカバリ**: プロセス内で発生したエラーを捕捉し、リソースを適切に解放して再起動する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BackgroundWriterMain</code>: プロセスのエントリポイント。</li>
+<li><code>BgWriterDelay</code>: 書き出しサイクルの間隔（デフォルト 200ms）。</li>
+<li><code>HIBERNATE_FACTOR</code>: アイドル時に <code>BgWriterDelay</code> に乗算される係数。</li>
+<li><code>LOG_SNAPSHOT_INTERVAL_MS</code>: スタンバイ用スナップショットを記録する間隔。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>AuxiliaryProcessMainCommon</code> を経由してシグナルハンドラを設定し、専用のメモリコンテキストを作成。 2.  **メインループ**:</p>
+<ul>
+<li><code>BgBufferSync()</code> を呼び出し、ダーティバッファを書き出す。</li>
+<li>統計情報を更新し、必要に応じて <code>smgrdestroyall()</code> で不要なファイルハンドルを解放。</li>
+<li>スタンバイ状態であれば、一定間隔で <code>LogStandbySnapshot()</code> を実行。</li>
+<li><code>WaitLatch()</code> で次のサイクルまで待機。</li>
+<p>3.  **ハイバネーション**: <code>BgBufferSync</code> が書き出し不要と判断し、かつ連続してアイドル状態が続いた場合、<code>StrategyNotifyBgWriter</code> を通じてバッファ割り当て時の通知を待ち、スリープ時間を延長する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/bufmgr.h</code>: バッファ管理機能へのアクセス。</li>
+<li><code>storage/lwlock.h</code>: 共有メモリ保護のためのロック制御。</li>
+<li><code>postmaster/bgwriter.h</code>: プロセス間通信や共有定義。</li>
+<li><code>access/xlog.h</code>: WAL 関連の操作。</li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/buf_internals.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/resowner.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: <code>BgBufferSync</code> の実装元。バッファ管理の核心。</li>
+<li><code>src/backend/postmaster/checkpointer.c</code>: チェックポイント処理を担当する兄弟プロセス。</li>
+<li><code>src/backend/storage/buffer/freelist.c</code>: <code>StrategyNotifyBgWriter</code> 等のバッファ戦略関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**エラー処理**: <code>PG_TRY</code> を使用せず、<code>sigsetjmp</code> を直接使用してエラーからの復帰を制御しています。これは、エラー発生時にスタックを確実にリセットし、無限ループを避けるための設計です。</li>
+<li>**ハイバネーションの挙動**: バックエンドがバッファを割り当てると <code>StrategyNotifyBgWriter</code> が呼び出され、スリープ中の bgwriter が即座に叩き起こされる仕組みになっています。</li>
+<li>**チェックポイントとの分離**: 9.2 以降、チェックポイント処理は <code>checkpointer.c</code> に移管されています。本ファイル内のコードを読む際は、チェックポイント関連のロジックが混在していないことに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__bgwriter_c__BackgroundWriterMain.html" target="wiki-view"><code>BackgroundWriterMain</code></a></li>
+</ul></body></html>

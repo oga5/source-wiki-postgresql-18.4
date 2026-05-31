@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/waiteventset.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WaitEventSet</h1>
+<h2>概念</h2>
+<p><code>WaitEventSet</code> は、複数のイベント（ソケット、ラッチ、ポストマスターの終了など）を単一のインターフェースで効率的に待機するための抽象化レイヤーを提供する構造体です。OS 固有のイベント通知プリミティブ（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>WaitForMultipleObjects</code>）をラップし、プラットフォーム間の差異を吸収します。</p>
+<p>ヘッダーファイル（<code>waiteventset.h</code>）では不透明な（opaque）構造体として宣言され、実装ファイル（<code>waiteventset.c</code>）で具体的なメンバが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL の各バックエンドプロセス（<code>postmaster</code>, <code>syslogger</code>, <code>walreceiver</code> など）や拡張モジュール（<code>postgres_fdw</code> など）が、複数の I/O イベントやシグナル、プロセス間通信（ラッチ）を効率的に多重待ちできるようにするために重要です。これにより、OS 固有のシステムコールのオーバーヘッドを削減し、プラットフォーム非依存の統一された API を提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/ipc/waiteventset.c#WaitEventSet</code>**</li>
+<p>内部メンバ（<code>ResourceOwner</code>, <code>nevents</code>, <code>nevents_space</code>, <code>events</code>, <code>latch</code>, <code>latch_pos</code>, <code>exit_on_postmaster_death</code>、およびプラットフォーム依存のメンバなど）を定義する実体構造体です。</p>
+<li>**<code>symbol:src/include/storage/waiteventset.h#WaitEventSet</code>**</li>
+<p>外部に公開される不透明な（opaque）構造体の <code>typedef</code> 宣言です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元が <code>CreateWaitEventSet</code> を呼び出してセットを確保し、<code>ResourceOwner</code> に紐付けてリソースのライフサイクルを管理します。 2. **登録**: <code>AddWaitEventToSet</code> を通じて、監視対象のイベント（ラッチやソケットなど）をセットに追加します。この際、OS 固有のシステムコール（<code>epoll_ctl</code> など）でカーネルに登録されます。 3. **待機**: <code>WaitEventSetWait</code> を呼び出すと、イベント発生またはタイムアウトまでプロセスがブロック（停止）します。内部的には OS 固有の待機プリミティブ（<code>epoll_wait</code>, <code>kevent</code>, <code>poll</code>, <code>WaitForMultipleObjects</code> など）が呼び出されます。 4. **復帰と処理**: イベントが発生すると、発生したイベント情報が <code>WaitEvent</code> 構造体の配列として返され、呼び出し元がこれを走査して処理を行います。 5. **解放**: <code>FreeWaitEventSet</code> を呼び出し、リソースをクリーンアップします。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>nevents</code>（登録されたイベント数）は常に <code>nevents_space</code>（確保されたスペース）以下でなければなりません。</li>
+<li><code>WL_LATCH_SET</code> が指定された場合、<code>latch</code> ポインタと <code>latch_pos</code> が正しく設定されていなければなりません。</li>
+<li>待機対象のイベントには、<code>WL_LATCH_SET</code> や <code>WL_SOCKET_READABLE</code> などの有効なビットマスクを指定する必要があります。</li>
+<li>コンパイル時に選択されたプラットフォーム固有のメンバ（<code>epoll_fd</code> 等）が、対応する OS プリミティブと整合している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**動的削除の未サポート**: 現在の設計では、既存の <code>WaitEventSet</code> からイベントを動的に削除する機能は提供されていません。</li>
+<li>**プラットフォーム依存性**: コンパイル時のフラグ（<code>WAIT_USE_EPOLL</code> 等）によって内部実装が大きく異なります。特に Windows 環境（<code>WaitForMultipleObjects</code> を使用）は Unix 系環境と実装が大きく異なるため、デバッグ時は対象環境のプリミティブを確認する必要があります。</li>
+<li>**リソース管理**: メモリリークを防ぐため、<code>ResourceOwner</code> を用いた適切なスコープ管理と <code>FreeWaitEventSet</code> による解放を徹底する必要があります。</li>
+<li>**タイムアウトのオーバーヘッド**: タイムアウト指定はオーバーヘッドを伴うため、可能な限り避けることが推奨されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/waiteventset.c</code></li>
+<p>プラットフォームごとの具体的なシステムコール呼び出しや、<code>WaitEventSet</code> の内部構造体の実装が記述されています。</p>
+<li><code>src/include/storage/waiteventset.h</code></li>
+<p><code>WaitEventSet</code> の不透明な宣言や、利用可能なイベントビットマスク（<code>WL_LATCH_SET</code> 等）の定義が記述されています。</p>
+</ul></body></html>

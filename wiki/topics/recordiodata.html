@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/recordiodata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RecordIOData</h1>
+<h2>概念</h2>
+<p><code>RecordIOData</code> は、PostgreSQL において複合型（Composite Types）、匿名レコード（<code>record</code>）、または <code>hstore</code> などの拡張型とレコード型との相互変換を行う際に、対象となるレコードの実行時型情報および各カラム（フィールド）の入出力（I/O）処理に必要なメタデータを保持するための構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>レコードや複合型の入出力処理において、毎回型定義（<code>TupleDesc</code>）から情報を取得してI/O関数を特定するのは非効率です。<code>RecordIOData</code> は、関数呼び出しのコンテキスト（<code>fcinfo-&gt;flinfo-&gt;fn_extra</code>）にキャッシュとして保持されることで、2回目以降の呼び出しにおける再計算を避け、入出力処理を大幅に高速化・効率化するために重要な役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/hstore</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/hstore/hstore_io.c#RecordIOData</code>**</li>
+<p><code>hstore</code> 型とレコード型との相互変換（<code>hstore_from_record</code> や <code>hstore_populate_record</code> など）において、型情報や各カラムの変換メタデータを保持します。複合型上のドメインを扱うための <code>domain_info</code> フィールドを備えています。</p>
+<li>**<code>symbol:src/backend/utils/adt/rowtypes.c#RecordIOData</code>**</li>
+<p>複合型や匿名レコードの入出力処理において、実行時の型情報および各フィールドのI/O関数情報をキャッシュするために使用されます。</p>
+<li>**<code>src/backend/utils/adt/jsonfuncs.c</code>**</li>
+<p>本構造体へのポインタや可変長構造体としての参照が行われています。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **キャッシュの初期化とメモリ確保** 初回実行時、レコードの型定義（<code>TupleDesc</code>）から情報を取得します。<code>ncolumns</code> に基づき、可変長部分を含めたサイズ（<code>offsetof(RecordIOData, columns) + (ncolumns * sizeof(ColumnIOData))</code>）を計算して <code>RecordIOData</code> のメモリを動的に確保します。 2. **メタデータのキャッシュ** 取得した型情報や各カラムのI/O関数情報を <code>RecordIOData</code>（および <code>ColumnIOData</code>）に格納し、<code>fcinfo-&gt;flinfo-&gt;fn_extra</code> にキャッシュします。 3. **入出力処理の実行** 以降の呼び出しでは、<code>fn_extra</code> からキャストして本構造体を取得し、再計算を避けて各カラムの入出力処理を効率的に実行します。この際、削除された列（<code>attisdropped</code>）は処理対象から除外されます。</p>
+<p>*注意: キャッシュが無効化された場合の再構築トリガーや、<code>jsonfuncs.c</code> 側における具体的な利用フローの詳細は、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**可変長配列のサイズ整合性**</li>
+<p><code>columns</code> フィールドは可変長配列（<code>FLEXIBLE_ARRAY_MEMBER</code>）として定義されているため、構造体インスタンスを確保する際は、必ず <code>ncolumns</code> の値に応じた正しいメモリサイズを動的に計算・確保しなければなりません。</p>
+<li>**キャッシュの生存期間**</li>
+<p><code>RecordIOData</code>（および <code>domain_info</code> などの内部キャッシュ）の生存期間は、それが格納される <code>fn_extra</code> の生存期間に依存します。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**型定義の変更（スキーマ変更）**</li>
+<p><code>ALTER TYPE</code> などによってレコードや複合型の定義が変更された場合、キャッシュされた <code>RecordIOData</code> が無効になる可能性があり、古いキャッシュをそのまま使用すると不整合が生じる恐れがあります。</p>
+<li>**メモリ破壊**</li>
+<p><code>ncolumns</code> が実際のタプル構造やレコード構造と一致しない場合、<code>columns</code> 配列へのアクセスによってメモリ破壊や不正アクセスが発生します。</p>
+<li>**未初期化アクセス**</li>
+<p><code>fn_extra</code> が初期化されていない（NULLである）状態でキャストしてアクセスすると、未定義動作を引き起こします。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/hstore/hstore_io.c</code></li>
+<li><code>src/backend/utils/adt/rowtypes.c</code></li>
+<li><code>src/backend/utils/adt/jsonfuncs.c</code></li>
+</ul></body></html>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>modules/src__bin__pg_dump.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>src/bin/pg_dump</h1>
+<h2>システム内での役割</h2>
+<p><code>src/bin/pg_dump</code> は、PostgreSQL データベースの論理バックアップおよびリストアを行うためのユーティリティ群（<code>pg_dump</code>, <code>pg_dumpall</code>, <code>pg_restore</code>）を格納するモジュールです。システムカタログからデータベースオブジェクトを抽出し、依存関係を解決した上で、指定されたフォーマット（カスタム、ディレクトリ、tar、テキスト）でアーカイブを作成・復元します。</p>
+<p>※本モジュールはディレクトリ境界に基づき定義されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ抽出**: システムカタログからテーブル、関数、インデックス等のメタデータを収集し、メモリ上で <code>DumpableObject</code> として表現する。</li>
+<li>**依存関係解決**: オブジェクト間の依存関係をグラフ化し、トポロジカルソートを用いて正しい順序でダンプ・リストアを実行する。</li>
+<li>**アーカイブ管理**: 圧縮アルゴリズム（Gzip, LZ4, Zstd）やアーカイブ形式を抽象化し、一貫した入出力インターフェースを提供する。</li>
+<li>**並列処理**: マルチプロセス/スレッドを活用し、大規模データベースのダンプ・リストアを効率化する。</li>
+</ul>
+<h2>このモジュールのファイル</h2>
+<p>本モジュールは、以下のカテゴリで構成される 36 個のソースファイル群です。</p>
+<ul>
+<li>**メインロジック**: <code>pg_dump.c</code>, <code>pg_dumpall.c</code>, <code>pg_restore.c</code></li>
+<li>**アーカイブ管理**: <code>pg_backup_archiver.c</code>, <code>pg_backup_custom.c</code>, <code>pg_backup_tar.c</code>, <code>pg_backup_directory.c</code></li>
+<li>**圧縮・I/O**: <code>compress_io.c</code>, <code>compress_gzip.c</code>, <code>compress_lz4.c</code>, <code>compress_zstd.c</code>, <code>compress_none.c</code></li>
+<li>**ユーティリティ・共通**: <code>common.c</code>, <code>dumputils.c</code>, <code>connectdb.c</code>, <code>parallel.c</code>, <code>filter.c</code>, <code>pg_backup_utils.c</code></li>
+<li>**ヘッダー定義**: 上記各ファイルに対応する <code>.h</code> ファイル群</li>
+</ul>
+<h2>主要なデータ構造</h2>
+<ul>
+<li><code>ArchiveHandle</code>: アーカイブ操作の全状態を保持するメイン構造体。</li>
+<li><code>DumpableObject</code>: ダンプ対象オブジェクトの基底構造体。</li>
+<li><code>TocEntry</code>: アーカイブ内の各エントリ（TOC）のメタデータと依存関係を保持。</li>
+<li><code>ParallelState</code>: 並列処理のジョブ管理およびワーカー状態を保持。</li>
+<li><code>CompressorState</code>: 圧縮アルゴリズムの抽象化とコールバックを管理。</li>
+<li><code>FilterStateData</code>: フィルタファイル解析時の状態管理。</li>
+</ul>
+<h2>主なフロー</h2>
+<p>1. **初期化**: コマンドライン引数を解析し、<code>ArchiveHandle</code> を生成してデータベースへ接続。 2. **収集**: <code>getSchemaData</code> によりシステムカタログからオブジェクトを抽出し、<code>DumpId</code> を割り当ててハッシュテーブルに登録。 3. **依存関係構築**: オブジェクト間の依存関係をグラフ化し、<code>sortDumpableObjects</code> でダンプ順序を確定。 4. **実行**: アーカイブ形式に応じた <code>ArchiveEntry</code> を作成し、並列処理（<code>ParallelState</code>）を介してデータを書き出し/読み込み。 5. **終了**: <code>exit_nicely</code> を通じて登録されたクリーンアップ処理を実行し、リソースを解放。</p>
+<h2>外部依存</h2>
+<ul>
+<li><code>libpq</code>: データベース接続およびクエリ実行。</li>
+<li><code>common/</code>: ログ出力、文字列操作、ファイル操作等の共通ライブラリ。</li>
+<li><code>fe_utils/</code>: 識別子のクォートやオプション解析などのフロントエンド共通ユーティリティ。</li>
+<li><code>zlib</code>, <code>liblz4</code>, <code>libzstd</code>: 各圧縮アルゴリズムのライブラリ。</li>
+</ul>
+<h2>内部構成</h2>
+<p>本モジュールは、アーカイブエンジン（<code>pg_backup_archiver</code>）を核として、圧縮層、並列処理層、およびオブジェクト管理層が連携する構成です。各アーカイブ形式（Custom, Tar, Directory）は、共通の関数ポインタインターフェースを実装することでプラグイン的に拡張可能です。</p>
+<h2>推奨読書順</h2>
+<p>1. <code>pg_dump.h</code> / <code>pg_backup_archiver.h</code> (中核となるデータ構造とインターフェース) 2. <code>pg_backup.h</code> (公開 API 定義) 3. <code>parallel.h</code> / <code>compress_io.h</code> (並列処理と圧縮の抽象化) 4. <code>pg_dump.c</code> (ダンプ処理のメインフロー) 5. <code>pg_backup_archiver.c</code> (アーカイブ管理の実装) 6. <code>common.c</code> (オブジェクト収集と依存関係管理) 7. <code>pg_dumpall.c</code> (クラスタ全体のオーケストレーション)</p>
+<h2>未解決の問い</h2>
+<ul>
+<li>LLM ベースのモジュール合成を追加した後で、責務とフローを精緻化する。</li>
+</ul></body></html>

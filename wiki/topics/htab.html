@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/htab.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HTAB</h1>
+<h2>概念</h2>
+<p><code>HTAB</code> は、PostgreSQL の動的ハッシュテーブル（<code>dynahash</code>）を管理するための制御構造体です。</p>
+<p>外部モジュールに対しては、<code>src/include/utils/hsearch.h</code> において不透明な（opaque）構造体 <code>typedef struct HTAB HTAB;</code> として宣言されており、カプセル化されています。一方、<code>src/backend/utils/hash/dynahash.c</code> 内部で具体的な構造体メンバが定義されており、ローカルメモリおよび共有メモリ上のハッシュテーブルの状態（セグメント、ハッシュ関数、比較関数、メモリコンテキスト、各種制御フラグなど）を保持します。</p>
+<h2>なぜ重要か</h2>
+<p><code>HTAB</code> は、メモリ内での効率的なデータ検索、挿入、削除を行うための基盤を提供します。</p>
+<ul>
+<li>**競合の低減**: <code>keysize</code> や <code>ssize</code> などの固定値を構造体内に保持することで、共有メモリ上のヘッダー（<code>HASHHDR</code>）へのアクセス頻度を抑え、プロセス間の競合を最小化します。</li>
+<li>**高い汎用性**: 共有メモリとローカルメモリの両方に対応しており、<code>contrib/dblink</code> や <code>contrib/pg_stat_statements</code> などの多くの拡張モジュールで幅広く利用されています。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/hash</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/hsearch.h#HTAB</code>**: 外部に公開される不透明な構造体定義。</li>
+<li>**<code>symbol:src/backend/utils/hash/dynahash.c#HTAB</code>**: 内部状態（<code>HASHHDR</code> へのポインタ、セグメントディレクトリ、関数ポインタ、メモリコンテキストなど）を保持する具体的な構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたソースコードの定義から、一般的な利用の流れは以下の通りです。</p>
+<p>1. **初期化**: <code>HASHCTL</code> 構造体で設定を指定し、<code>hash_create()</code> を呼び出して <code>HTAB</code> を生成・初期化します。 2. **操作**: <code>hash_search()</code> 等の関数に <code>HTAB</code> のポインタを渡すことで、指定されたキーに対する検索、挿入、削除を行います。この際、<code>HTAB</code> 内に登録された関数ポインタ（<code>hash</code>, <code>match</code>, <code>keycopy</code>, <code>alloc</code>）が動的に呼び出されます。 3. **スキャン**: 全要素を走査する場合、<code>hash_seq_init()</code> および <code>hash_seq_search()</code> を用いてシーケンシャルスキャンを行います。 4. **破棄**: <code>hash_destroy()</code> を呼び出すことで、<code>HTAB</code> に関連するメモリリソースを解放します。</p>
+<p>※なお、バケット分割のトリガー条件や、共有メモリ上での排他制御の厳密な同期手順など、詳細な内部フローのすべては提供されたコンテキストからは明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**カプセル化の維持**: 呼び出し側は <code>HTAB</code> の内部メンバに直接アクセスせず、必ず提供される API（<code>hsearch.h</code>）を介して操作しなければなりません。</li>
+<li>**セグメントサイズ**: 構造体内の <code>ssize</code>（セグメントサイズ）は必ず2のべき乗でなければなりません。</li>
+<li>**共有メモリの設定**: 共有メモリ上で使用する場合は、作成時に <code>HASH_SHARED_MEM</code> フラグを指定する必要があります。</li>
+<li>**挿入禁止状態**: <code>frozen</code> フラグが <code>true</code> の場合、テーブルへの新規挿入は許可されません。</li>
+<li>**ユーザーデータの配置**: ユーザーデータは <code>HASHELEMENT</code> の直後に配置され、ハッシュキーはユーザーデータの先頭に存在する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**動的拡張の制限**: </li>
+<li><code>isfixed</code> が <code>true</code> に設定されている場合、テーブルの拡張は行われません。</li>
+<li>共有メモリ上のテーブルは、<code>hash_create</code> 時に指定した初期サイズを超えて動的にディレクトリを拡張することができません。</li>
+<li>**スキャン中の操作**: シーケンシャルスキャン中に要素を削除することは可能ですが、スキャン中に他の要素を追加・削除すると未定義の挙動を引き起こす可能性があります。</li>
+<li>**初期化フラグの欠如**: 共有メモリ使用時のフラグ指定ミスや、必須である <code>HASH_ELEM</code> フラグの欠如は、予期せぬ動作を引き起こす原因となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/utils/hsearch.h</code>**: 外部向け API、<code>HASHCTL</code>、<code>HASH_SEQ_STATUS</code> などの関連データ構造の定義。</li>
+<li>**<code>src/backend/utils/hash/dynahash.c</code>**: <code>HTAB</code> の具体的な構造体定義、および <code>hash_create</code> や <code>hash_search</code> などの実装詳細。</li>
+</ul></body></html>

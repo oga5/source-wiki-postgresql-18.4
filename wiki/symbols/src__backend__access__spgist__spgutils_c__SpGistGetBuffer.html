@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgutils_c__SpGistGetBuffer.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SpGistGetBuffer</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/spgist/spgutils.c:568</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiSTインデックスにおいて、指定された条件（リーフ/内部ノード、NULL格納の有無）を満たす空き領域を持つバッファを取得または新規割り当てする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Buffer SpGistGetBuffer(Relation index, int flags, int needSpace, bool *isNew)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>index</code>: 対象のインデックスリレーション。</li>
+<li><code>flags</code>: ページの種類を指定するフラグ（<code>GBUF_LEAF</code>, <code>GBUF_NULLS</code> 等）。</li>
+<li><code>needSpace</code>: 要求する最小空きバイト数。</li>
+<li>**出力**:</li>
+<li><code>isNew</code>: 取得したバッファが新規初期化されたものである場合に <code>true</code> が設定される。</li>
+<li>**戻り値**: ロックされた <code>Buffer</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>needSpace</code> は <code>SPGIST_PAGE_CAPACITY</code> を超えてはならない。</li>
+<li>キャッシュされたページ（<code>lup-&gt;blkno</code>）が固定ページ（<code>SpGistBlockIsFixed</code>）であってはならない。</li>
+<li>取得したバッファは呼び出し元で適切に解放する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **要求サイズの調整**: <code>SpGistGetTargetPageFreeSpace</code> を加算し、<code>SPGIST_PAGE_CAPACITY</code> を上限として調整する。 2. **キャッシュ確認**: <code>GET_LUP</code> でキャッシュされたページ情報を取得。キャッシュがない場合は <code>allocNewBuffer</code> を呼び出す。 3. **ページ検証**:</p>
+<ul>
+<li>キャッシュされたページを <code>ReadBuffer</code> で読み込み、<code>ConditionalLockBuffer</code> を試行。ロック失敗時は <code>allocNewBuffer</code> へフォールバック。</li>
+<li>ページが空または削除済みの場合、<code>SpGistInitBuffer</code> で初期化して返す。</li>
+<li>ページの種類（リーフ/内部、NULL対応）と空き容量が要求を満たすか確認し、適合すればそのバッファを返す。</li>
+<p>4. **フォールバック**: キャッシュされたページが不適合な場合、<code>allocNewBuffer</code> を呼び出して新規ページを確保する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/spgist/spgdoinsert.c</code> 内の各所（インデックス挿入処理）。</li>
+<li>**呼び出し先**: <code>spgGetCache</code>, <code>allocNewBuffer</code> (内部関数), <code>ReadBuffer</code>, <code>ConditionalLockBuffer</code>, <code>BufferGetPage</code>, <code>PageIsNew</code>, <code>SpGistPageIsDeleted</code>, <code>PageIsEmpty</code>, <code>SpGistInitBuffer</code>, <code>PageGetExactFreeSpace</code>, <code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SpGistCache</code>: インデックスの実行時状態を保持。</li>
+<li><code>SpGistLastUsedPage</code>: 直近で使用されたページのキャッシュ情報。</li>
+<li><code>Buffer</code>: PostgreSQLのバッファ管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>needSpace</code> が <code>SPGIST_PAGE_CAPACITY</code> を超える場合、<code>elog(ERROR)</code> で停止する。</li>
+<li>ページロックの競合が発生した場合、キャッシュを無視して <code>allocNewBuffer</code> を呼び出し、新規ページ確保を試みる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>lastUsedPages</code> キャッシュは必ずしも最新ではないため、ページ取得後に型や空き容量の再検証を行っている。</li>
+<li><code>fillfactor</code> を考慮した空き容量計算を行っているため、タプル挿入時のページ選択効率に影響を与える。</li>
+</ul></body></html>

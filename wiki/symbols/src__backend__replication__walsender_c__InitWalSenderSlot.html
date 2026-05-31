@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walsender_c__InitWalSenderSlot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitWalSenderSlot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walsender.c:2947</code></li>
+</ul>
+<h2>目的</h2>
+<p>現在のプロセスをWAL送信プロセス（walsender）として登録するため、共有メモリ上の空き <code>WalSnd</code> スロットを検索・確保し、初期化を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>void InitWalSenderSlot(void)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし（グローバル変数 <code>WalSndCtl</code> および <code>MyDatabaseId</code> を参照）</li>
+<li>**出力**: なし（副作用として共有メモリ上の <code>WalSnd</code> スロットを更新し、グローバル変数 <code>MyWalSnd</code> を設定する）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>WalSndCtl</code> が初期化済みであること。</li>
+<li><code>MyWalSnd</code> が <code>NULL</code> であること（未初期化状態）。</li>
+<li><code>max_wal_senders</code> 分の共有メモリ領域が確保されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>WalSndCtl-&gt;walsnds</code> 配列を走査し、<code>pid</code> が 0 の空きスロットを探す。 2. 空きスロットを発見した場合、スピンロックを取得して以下の初期化を行う：</p>
+<ul>
+<li><code>pid</code> に <code>MyProcPid</code> を設定。</li>
+<li><code>state</code> を <code>WALSNDSTATE_STARTUP</code> に設定。</li>
+<li>各種LSNポインタ（<code>sentPtr</code>, <code>write</code>, <code>flush</code>, <code>apply</code>）を <code>InvalidXLogRecPtr</code> にリセット。</li>
+<li>ラグ情報および同期レプリケーション関連のカウンタを初期化。</li>
+<li><code>MyDatabaseId</code> が <code>InvalidOid</code> であれば <code>REPLICATION_KIND_PHYSICAL</code>、そうでなければ <code>REPLICATION_KIND_LOGICAL</code> を <code>kind</code> に設定。</li>
+<p>3. スピンロックを解放し、<code>MyWalSnd</code> に確保したスロットのアドレスを格納する。 4. <code>on_shmem_exit</code> を登録し、プロセス終了時に <code>WalSndKill</code> が実行されるようにする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walsender.c</code> 内の初期化プロセス（<code>InitWalSender</code> 等から参照される）。</li>
+<li>**呼び出し先**: <code>SpinLockAcquire</code>, <code>SpinLockRelease</code>, <code>on_shmem_exit</code>, <code>WalSndKill</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSndCtl</code>: 全WAL送信プロセスの状態を保持する共有メモリ上の制御構造体。</li>
+<li><code>WalSnd</code>: 個別のWAL送信プロセス用スロット構造体。</li>
+<li><code>MyWalSnd</code>: 現在のプロセスが使用するスロットへのポインタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>max_wal_senders</code> を超える接続要求がある場合、空きスロットが見つからずループが終了する。この場合、<code>Assert(MyWalSnd != NULL)</code> によりアボートする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>fork()</code> 後に呼び出されることを前提としている。</li>
+<li><code>kind</code> の判定は、物理レプリケーションと論理レプリケーションの区別を決定する重要な処理である。</li>
+<li>プロセス終了時のクリーンアップ処理（<code>WalSndKill</code>）の登録を忘れないこと。</li>
+</ul></body></html>

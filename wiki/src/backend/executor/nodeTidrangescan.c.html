@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeTidrangescan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeTidrangescan.c</h1>
+<h2>概要</h2>
+<p><code>nodeTidrangescan.c</code> は、PostgreSQL における「TID範囲スキャン（TID Range Scan）」を実行するための実行ノードです。特定のテーブルに対して、<code>ctid</code>（物理的なタプル位置）の範囲指定に基づいた効率的なスキャンを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、クエリ実行エンジンにおけるスキャンノードの一つです。<code>nodeTidscan.c</code> が特定の <code>ctid</code> リストを対象とするのに対し、本ファイルは <code>ctid</code> の範囲（下限〜上限）を動的に評価してスキャンを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**TID範囲の評価**: クエリ内の <code>ctid</code> に関する比較演算子（<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>）を解析し、スキャン対象となる <code>ctid</code> の下限・上限を算出する。</li>
+<li>**スキャン実行**: テーブルアクセス層（Table AM）の <code>table_beginscan_tidrange</code> 等を呼び出し、指定範囲内のタプルを順次取得する。</li>
+<li>**状態管理**: スキャンノードの初期化、再スキャン（ReScan）、終了処理、および実行中の状態保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitTidRangeScan</code>: ノードの初期化を行い、スキャン対象リレーションのオープンや式評価の準備を行う。</li>
+<li><code>TidRangeEval</code>: クエリの <code>qual</code> から <code>ctid</code> の範囲を計算する。範囲が空と判定された場合はスキャンをスキップする。</li>
+<li><code>TidRangeNext</code>: テーブルアクセス層を介して、次のタプルを取得するメインループ。</li>
+<li><code>TidOpExpr</code>: <code>ctid</code> の比較条件を保持する内部構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndTidRangeScan</code></li>
+<li><code>ExecReScanTidRangeScan</code></li>
+<li><code>ExecTidRangeScan</code></li>
+<li><code>MakeTidOpExpr</code></li>
+<li><code>TidExprListCreate</code></li>
+<li><code>TidExprType</code></li>
+<li><code>TidRangeRecheck</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitTidRangeScan</code> が呼ばれ、<code>TidExprListCreate</code> により <code>ctid</code> 関連の式がコンパイルされる。 2. **評価**: <code>TidRangeNext</code> が最初に呼ばれると <code>TidRangeEval</code> が実行され、実行時の式評価結果から <code>trss_mintid</code> と <code>trss_maxtid</code> が決定される。 3. **スキャン**: <code>table_beginscan_tidrange</code> でスキャンを開始し、<code>table_scan_getnextslot_tidrange</code> でタプルを順次取得する。 4. **再スキャン**: <code>ExecReScanTidRangeScan</code> が呼ばれると <code>trss_inScan</code> フラグがリセットされ、次回呼び出し時に範囲の再計算が行われる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセス層の抽象インターフェース。</li>
+<li><code>executor/nodeTidrangescan.h</code>: 公開ヘッダー。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式評価やノード操作のユーティリティ。</li>
+<li><code>utils/rel.h</code>: リレーション記述子の操作。</li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeTidscan.c</code>: 特定の <code>ctid</code> 値を直接指定するスキャン。</li>
+<li><code>src/backend/executor/execScan.c</code>: スキャンノードの共通基盤処理。</li>
+<li><code>src/include/nodes/execnodes.h</code>: <code>TidRangeScanState</code> 等の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ノードは <code>ctid</code> を含むクエリの最適化において、インデックスを使用せずに物理的な位置情報で範囲を絞り込む際に使用されます。</li>
+<li><code>TidRangeEval</code> 内で <code>ItemPointer</code> の比較を行っていますが、範囲が非包含（<code>inclusive = false</code>）の場合の正規化処理（<code>ItemPointerInc</code>/<code>Dec</code>）が含まれている点に注意してください。</li>
+<li><code>table_scan_getnextslot_tidrange</code> は Table AM に依存するため、特定のストレージエンジンがこのインターフェースを実装している必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidExprType.html" target="wiki-view"><code>TidExprType</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidOpExpr.html" target="wiki-view"><code>TidOpExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__MakeTidOpExpr.html" target="wiki-view"><code>MakeTidOpExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidExprListCreate.html" target="wiki-view"><code>TidExprListCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidRangeEval.html" target="wiki-view"><code>TidRangeEval</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidRangeNext.html" target="wiki-view"><code>TidRangeNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__TidRangeRecheck.html" target="wiki-view"><code>TidRangeRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__ExecTidRangeScan.html" target="wiki-view"><code>ExecTidRangeScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__ExecReScanTidRangeScan.html" target="wiki-view"><code>ExecReScanTidRangeScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__ExecEndTidRangeScan.html" target="wiki-view"><code>ExecEndTidRangeScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTidrangescan_c__ExecInitTidRangeScan.html" target="wiki-view"><code>ExecInitTidRangeScan</code></a></li>
+</ul></body></html>

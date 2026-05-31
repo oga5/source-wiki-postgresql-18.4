@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__vacuumparallel_c__ParallelVacuumState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelVacuumState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/commands/vacuumparallel.c:162</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL の <code>VACUUM</code> 処理において、インデックスのバルク削除およびクリーンアップを並列実行するための状態を保持するメイン構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct ParallelVacuumState {
+    ParallelContext *pcxt;
+    Relation        heaprel;
+    Relation       *indrels;
+    int             nindexes;
+    PVShared       *shared;
+    PVIndStats     *indstats;
+    TidStore       *dead_items;
+    BufferUsage    *buffer_usage;
+    WalUsage       *wal_usage;
+    bool           *will_parallel_vacuum;
+    int             nindexes_parallel_bulkdel;
+    int             nindexes_parallel_cleanup;
+    int             nindexes_parallel_condcleanup;
+    BufferAccessStrategy bstrategy;
+    char           *relnamespace;
+    char           *relname;
+    char           *indname;
+    PVIndVacStatus  status;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>parallel_vacuum_init</code> により初期化され、リーダープロセスおよびワーカープロセス間で共有されるコンテキスト情報。</li>
+<li>**出力**: 並列処理終了後、各インデックスの統計情報（<code>IndexBulkDeleteResult</code>）が DSM から回収され、ローカルメモリへコピーされます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pcxt</code> はワーカープロセスでは <code>NULL</code> となります。</li>
+<li><code>indstats</code> 配列は、並列処理の可否（<code>will_parallel_vacuum</code>）に関わらず、すべてのインデックスに対して確保されます。</li>
+<li><code>maintenance_work_mem</code> はワーカー間で共有・分配されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>リーダープロセスが <code>ParallelContext</code> を作成し、DSM 上に共有リソース（<code>PVShared</code>、<code>TidStore</code> 等）を確保します。</li>
+<li>インデックスの並列安全性に基づき、タスクを動的に割り当てます。</li>
+<li>各ワーカーは <code>shared-&gt;idx</code> をアトミックにインクリメントしながら、未処理のインデックスを順次処理します。</li>
+<li>エラー発生時は <code>parallel_vacuum_error_callback</code> が呼び出され、失敗したインデックス名が報告されます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/vacuumlazy.c</code>（Lazy Vacuum のメインロジック）。</li>
+<li>**呼び出し先**: <code>parallel_vacuum_init</code>（初期化）、<code>parallel_vacuum_end</code>（終了・解放）、<code>parallel_vacuum_get_dead_items</code>（タプル情報取得）等の <code>vacuumparallel.c</code> 内関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PVShared</code>: 全ワーカーで共有される制御情報。</li>
+<li><code>PVIndStats</code>: インデックスごとの統計情報。</li>
+<li><code>TidStore</code>: 削除対象タプルを格納する共有領域。</li>
+<li><code>ParallelContext</code>: 並列実行のための基盤構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>min_parallel_index_scan_size</code> 未満の小さなインデックスは並列処理の対象外となり、リーダーが単独で処理します。</li>
+<li>並列ワーカー内でエラーが発生した場合、<code>PVIndVacStatus</code> を通じて状態が管理されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>src/backend/commands/vacuum.h</code> にも定義が存在します。</li>
+<li>並列処理の可否は <code>amparallelvacuumoptions</code> に依存するため、インデックスの特性変更時には注意が必要です。</li>
+</ul></body></html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_basebackup__receivelog_c__HandleCopyStream.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HandleCopyStream</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_basebackup/receivelog.c:743</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのストリーミングレプリケーションにおける <code>COPY</code> プロトコルを通じたWALデータ受信ループを管理し、サーバーとの同期およびデータ書き込み処理を実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static PGresult *HandleCopyStream(PGconn *conn, StreamCtl *stream, XLogRecPtr *stoppos)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: サーバーへの接続用 <code>PGconn</code> ポインタ。</li>
+<li><code>stream</code>: ストリーミング設定を保持する <code>StreamCtl</code> 構造体。</li>
+<li><code>stoppos</code>: ストリーミング終了位置を格納するポインタ。</li>
+<li>**出力**:</li>
+<li>成功時: 終了時の <code>PGresult</code> ポインタ。</li>
+<li>失敗時: <code>NULL</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>stream-&gt;startpos</code> が有効なWAL開始位置であること。</li>
+<li><code>walfile</code> がオープンされている場合、その書き込みメソッドが有効であること。</li>
+<li><code>still_sending</code> フラグがループ開始時に <code>true</code> に設定される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ループ処理**: <code>CopyStreamReceive</code> を呼び出し、サーバーからのメッセージを待機・受信する。 2. **同期書き込み**: <code>stream-&gt;synchronous</code> が有効な場合、未フラッシュのWALデータがあれば <code>walmethod-&gt;ops-&gt;sync</code> を実行し、サーバーへフィードバックを送信する。 3. **生存確認**: <code>standby_message_timeout</code> に基づき、定期的にサーバーへフィードバックを送信する。 4. **メッセージ処理**:</p>
+<ul>
+<li><code>&#x27;k&#x27;</code> (Keepalive): <code>ProcessKeepaliveMsg</code> を呼び出し、サーバーの生存確認に応答する。</li>
+<li><code>&#x27;w&#x27;</code> (XLogData): <code>ProcessXLogDataMsg</code> を呼び出し、WALデータをローカルへ書き込む。</li>
+<p>5. **終了判定**: <code>CheckCopyStreamStop</code> によりストリーミング継続可否を判定し、終了条件を満たした場合は <code>HandleEndOfCopyStream</code> を経由して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ReceiveXlogStream</code> (同ファイル内)</li>
+<li>**呼び出し先**:</li>
+<li><code>CheckCopyStreamStop</code>, <code>feGetCurrentTimestamp</code>, <code>feTimestampDifferenceExceeds</code>, <code>sendFeedback</code>, <code>CalculateCopyStreamSleeptime</code>, <code>PQfreemem</code>, <code>CopyStreamReceive</code>, <code>HandleEndOfCopyStream</code>, <code>ProcessKeepaliveMsg</code>, <code>ProcessXLogDataMsg</code>, <code>pg_fatal</code>, <code>pg_log_error</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>StreamCtl</code>: ストリーミングの動作パラメータを保持。</li>
+<li><code>PGconn</code>: libpqの接続ハンドル。</li>
+<li><code>WalWriteMethod</code>: WAL書き込みの抽象化インターフェース。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>CopyStreamReceive</code> が <code>-1</code> を返した場合、エラーとして終了する。</li>
+<li>未知のメッセージヘッダーを受信した場合、エラーログを出力して終了する。</li>
+<li><code>fsync</code> 失敗時、<code>pg_fatal</code> によりプロセスが終了する。</li>
+<li><code>CheckCopyStreamStop</code> が <code>false</code> を返した場合、ループを抜けて終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>walmethod-&gt;ops-&gt;sync</code> はファイルシステムへの物理的な書き込みを伴うため、パフォーマンスに影響を与える。</li>
+<li><code>copybuf</code> のメモリ管理は <code>PQfreemem</code> を介して行われており、ループ内でのリークに注意すること。</li>
+<li><code>still_sending</code> はグローバル変数として参照されている可能性があるため、並行実行時の競合に注意が必要。</li>
+</ul></body></html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/freepagespanleader.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>FreePageSpanLeader</h1>
+<h2>概念</h2>
+<p><code>FreePageSpanLeader</code> は、PostgreSQLのメモリ管理サブシステム（<code>FreePageManager</code>）において、連続する空きページ領域（スパン）の先頭ページに配置されるヘッダ構造体です。この構造体は、フリーリストのノードとして機能し、空き領域の追跡、分割、マージ、および再利用リストへの追加・削除を管理するために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p>共有メモリ環境において、動的なメモリ（ページ）の割り当てと解放を効率的かつ安全に行うために重要です。<code>FreePageSpanLeader</code> は、管理対象のメモリ領域自体にメタデータを埋め込むことで、追加の管理用メモリ消費を抑えつつ、双方向リストを介して空きスパンを迅速に走査・再利用できるようにします。また、相対ポインタ（<code>Relptr</code>）を使用することで、共有メモリのベースアドレスがプロセス間で異なる場合でも正しく動作します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/mmgr</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>struct FreePageSpanLeader</code>** (<code>symbol:src/backend/utils/mmgr/freepage.c#FreePageSpanLeader</code> / <code>symbol:src/include/utils/freepage.h#FreePageSpanLeader</code>):</li>
+<p>空きページスパンの先頭に配置される構造体。以下のメンバを持ちます。</p>
+<li><code>magic</code>: 常に <code>FREE_PAGE_SPAN_LEADER_MAGIC</code> が格納されるマジックナンバー。</li>
+<li><code>npages</code>: スパンに含まれるページ数。</li>
+<li><code>prev</code> / <code>next</code>: 隣接するスパンを指す相対ポインタ（<code>RelptrFreePageSpanLeader</code>）。</li>
+<li>**<code>FreePageManager</code>**: 本構造体を管理するメインの管理構造体。</li>
+<li>**<code>RelptrFreePageSpanLeader</code>**: 共有メモリ内で安全にポインタを扱うための、本構造体への相対ポインタ型。</li>
+<li>**<code>FreePageBtree</code>**: 空き領域の断片化を防ぐために併用される B-tree 構造。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>詳細なエンドツーエンドの割り当て・解放アルゴリズムの全容や、B-tree とフリーリスト間の完全な相互作用の流れは、提供された情報からは完全には明らかになっていません。</p>
+<p>ただし、部分的な流れとして以下が判明しています： 1. **初期化/登録**: 空きページスパンが生成されると、その先頭ページに <code>FreePageSpanLeader</code> が配置され、<code>magic</code> や <code>npages</code> が設定されます。 2. **リスト管理**: <code>FreePageManager</code> の各関数（<code>FreePageManagerGet</code> や <code>FreePageManagerPut</code> など）が、<code>relptr_access</code> や <code>relptr_store</code> を介して <code>prev</code> および <code>next</code> を操作し、双方向フリーリストへ追加・削除します。 3. **検索と再利用**: メモリ要求が発生すると、フリーリストや B-tree を走査して適切なサイズの <code>FreePageSpanLeader</code> を探索し、必要に応じてスパンを分割またはマージして再利用します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**マジックナンバーの一致**: <code>magic</code> フィールドは常に <code>FREE_PAGE_SPAN_LEADER_MAGIC</code> でなければなりません。これ以外の値が検出された場合は、メモリ破壊や不正なポインタ操作が発生していることを示します。</li>
+<li>**相対ポインタの使用**: 共有メモリセグメント内で動作するため、<code>prev</code> および <code>next</code> などのポインタはすべて絶対アドレスではなく、<code>Relptr</code>（相対ポインタ）型で保持されなければなりません。</li>
+<li>**終端の表現**: リストの終端や空の状態は、<code>relptr_store</code> を用いてポインタに <code>NULL</code> を格納することで表現されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ枯渇時の再帰的制約**: 管理対象領域が完全に枯渇すると、新しい <code>FreePageSpanLeader</code> を配置するためのページ自体が確保できなくなるという再帰的な制約が存在します。</li>
+<li>**共有メモリのベースアドレス依存**: 共有メモリセグメントのベースアドレスが正しく設定されていない場合、相対ポインタ（<code>Relptr</code>）の解決に失敗します。</li>
+<li>**構造体定義の二重管理**: 本構造体は <code>freepage.h</code> で typedef され、<code>freepage.c</code> で詳細が定義されています。メンバの変更や型キャスト（<code>FreePageSpanLeader *</code>）を行う際は、両ファイルおよび <code>freepage.c</code> 内のすべての参照箇所で整合性を保つ必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/freepage.h</code>: 構造体の宣言および関連する <code>FreePageManager</code> などのインターフェイス定義。</li>
+<li><code>src/backend/utils/mmgr/freepage.c</code>: <code>FreePageSpanLeader</code> の詳細な構造体定義、および <code>FreePageManagerGet</code> / <code>FreePageManagerPut</code> などの具体的な操作ロジック。</li>
+</ul></body></html>

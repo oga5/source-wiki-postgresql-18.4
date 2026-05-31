@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_rewind/libpq_source.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_rewind/libpq_source.c</h1>
+<h2>概要</h2>
+<p><code>libpq_source.c</code> は、<code>pg_rewind</code> がリモートの PostgreSQL サーバーからデータファイルやメタデータを取得するための通信レイヤーを実装しています。<code>libpq</code> を使用して SQL クエリを介したファイル転送を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>rewind_source</code> インターフェースを実装する具象モジュールの一つです。<code>pg_rewind</code> はこのモジュールを通じて、ローカルのデータディレクトリとリモートサーバーのデータディレクトリの差異を埋めるためのファイル読み込みを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**リモート接続の初期化**: タイムアウト設定の無効化や、読み取り専用モードへの移行、安全な <code>search_path</code> の設定。</li>
+<li>**ファイル転送の最適化**: <code>MAX_CHUNK_SIZE</code> および <code>MAX_CHUNKS_PER_QUERY</code> に基づくバッチ処理。複数のファイル範囲リクエストを一つの <code>libpq</code> クエリにまとめ、通信オーバーヘッドを削減します。</li>
+<li>**データ取得**: <code>pg_read_binary_file</code> を利用したリモートファイルの内容取得。</li>
+<li>**ディレクトリ走査**: <code>WITH RECURSIVE</code> クエリを用いたリモートデータディレクトリの再帰的なリスト取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>libpq_source</code>: <code>rewind_source</code> を継承し、<code>PGconn</code> やリクエストキューを保持する構造体。</li>
+<li><code>init_libpq_source()</code>: <code>libpq</code> 接続をラップし、インターフェース関数を初期化するコンストラクタ。</li>
+<li><code>libpq_queue_fetch_range()</code>: ファイルの特定範囲をキューに追加し、必要に応じてバッチ実行をトリガーする関数。</li>
+<li><code>process_queued_fetch_requests()</code>: 蓄積されたリクエストを <code>fetch_chunks_stmt</code> プリペアドステートメントで一括実行する中核関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>fetch_range_request</code></li>
+<li><code>init_libpq_conn</code></li>
+<li><code>init_libpq_source</code></li>
+<li><code>libpq_finish_fetch</code></li>
+<li><code>libpq_get_current_wal_insert_lsn</code></li>
+<li><code>libpq_queue_fetch_file</code></li>
+<li><code>libpq_queue_fetch_range</code></li>
+<li><code>libpq_traverse_files</code></li>
+<li><code>process_queued_fetch_requests</code></li>
+<li><code>run_simple_command</code></li>
+<li><code>run_simple_query</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>init_libpq_source</code> が呼ばれ、リモートサーバー側で <code>fetch_chunks_stmt</code> が準備されます。 2. **キューイング**: <code>libpq_queue_fetch_range</code> が呼び出されるたびに、リクエストが <code>request_queue</code> に蓄積されます。 3. **バッチ処理**: キューが満杯になるか <code>libpq_finish_fetch</code> が呼ばれると、<code>process_queued_fetch_requests</code> が実行されます。 4. **データ転送**: <code>PQsendQueryPrepared</code> でリクエストを送信し、<code>PQsetSingleRowMode</code> を用いてストリーミング形式で結果を受け取り、ローカルのターゲットファイルへ書き込みます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code> (postgres_fe.h 経由)</li>
+<li><code>rewind_source.h</code> (インターフェース定義)</li>
+<li><code>file_ops.h</code> (ターゲットファイル操作)</li>
+<li><code>filemap.h</code> (ファイルマッピング管理)</li>
+<li><code>catalog/pg_type_d.h</code></li>
+<li><code>common/connect.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>pg_rewind.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postgres_fe.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_rewind/local_source.c</code>: ローカルファイルシステムから直接読み込むための対照的な実装。</li>
+<li><code>src/bin/pg_rewind/rewind_source.h</code>: <code>libpq_source</code> が従うべき抽象インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**接続管理**: <code>libpq_destroy</code> は接続を閉じません。これは接続の所有権が呼び出し元にあるためです。</li>
+<li>**エラーハンドリング**: リモートサーバーでファイルが削除されていた場合、<code>process_queued_fetch_requests</code> 内で <code>remove_target_file</code> を呼び出し、ローカル側でも削除を同期します。</li>
+<li>**パフォーマンス**: <code>MAX_CHUNKS_PER_QUERY</code> を調整することで、一度の通信で取得するデータ量を制御しています。大規模な同期を行う際は、このバッチサイズがスループットに影響します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__fetch_range_request.html" target="wiki-view"><code>fetch_range_request</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_source.html" target="wiki-view"><code>libpq_source</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__init_libpq_source.html" target="wiki-view"><code>init_libpq_source</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__init_libpq_conn.html" target="wiki-view"><code>init_libpq_conn</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__run_simple_query.html" target="wiki-view"><code>run_simple_query</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__run_simple_command.html" target="wiki-view"><code>run_simple_command</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_get_current_wal_insert_lsn.html" target="wiki-view"><code>libpq_get_current_wal_insert_lsn</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_traverse_files.html" target="wiki-view"><code>libpq_traverse_files</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_queue_fetch_file.html" target="wiki-view"><code>libpq_queue_fetch_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_queue_fetch_range.html" target="wiki-view"><code>libpq_queue_fetch_range</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__libpq_finish_fetch.html" target="wiki-view"><code>libpq_finish_fetch</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__libpq_source_c__process_queued_fetch_requests.html" target="wiki-view"><code>process_queued_fetch_requests</code></a></li>
+</ul></body></html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/objectaddress.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ObjectAddress</h1>
+<h2>概念</h2>
+<p><code>ObjectAddress</code> は、PostgreSQL 内に存在するあらゆるデータベースオブジェクト（テーブル、関数、型、列など）を、システムカタログテーブルの物理的な構造に依存することなく、一意に識別するための抽象化されたデータ構造です。</p>
+<p>システムカタログ上のオブジェクトを、カタログの OID である <code>classId</code>、オブジェクト自体の OID である <code>objectId</code>、およびオブジェクト内のサブ要素（テーブルの列など）を指す <code>objectSubId</code> の3つの識別子の組み合わせによって特定します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL の内部システム（DDL コマンド、イベントトリガー、権限管理、セキュリティラベルなど）において、オブジェクトの物理的なカタログ構造を直接意識することなく、統一されたインターフェースでオブジェクトを特定・操作できるようにするために極めて重要です。</p>
+<p>これにより、以下のような横断的処理を汎用的に実装できます。</p>
+<ul>
+<li>オブジェクトの所有権確認（<code>check_object_ownership</code>）</li>
+<li>オブジェクトの人間が読める形式への変換（<code>getObjectIdentity</code>, <code>getObjectDescription</code>）</li>
+<li>セキュリティプロバイダー（<code>contrib/sepgsql</code> など）によるアクセス制御やセキュリティラベルの管理</li>
+<li>ユーティリティコマンド実行時のオブジェクト追跡（デパースユーティリティ）</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/catalog</code></li>
+<li><code>module:src/include/catalog</code></li>
+<li><code>module:src/include/commands</code></li>
+<li><code>module:src/include/tcop</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/catalog/objectaddress.h#ObjectAddress</code>**</li>
+<p>オブジェクトを一意に識別するための基本構造体。<code>classId</code>、<code>objectId</code>、<code>objectSubId</code> を保持します。</p>
+<li>**<code>symbol:src/backend/catalog/objectaddress.c#get_object_address</code>**</li>
+<p>パーサーの出力から <code>ObjectAddress</code> を生成する関数。</p>
+<li>**<code>symbol:src/include/catalog/objectaddress.h#ObjectAddressSet</code>**</li>
+<p><code>ObjectAddress</code> の設定や操作に関連するマクロまたはシンボル。</p>
+<li>**<code>symbol:src/include/commands/seclabel.h#ObjectAddress</code>**</li>
+<p>セキュリティラベルの検証（<code>check_object_relabel_type</code> コールバックなど）において、対象オブジェクトを特定するために参照される定義。</p>
+<li>**<code>symbol:src/include/tcop/deparse_utility.h#ObjectAddress</code>**</li>
+<p>ユーティリティコマンドの実行過程を追跡する <code>CollectedCommand</code> 構造体の中で、対象オブジェクト（<code>address</code> や <code>secondaryObject</code>）を保持するために使用される定義。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **生成**: DDL コマンドやユーティリティコマンドの実行時、パーサー出力を基に <code>get_object_address</code> が呼び出され、対象オブジェクトの <code>ObjectAddress</code> が生成されます。 2. **追跡・記録**: ユーティリティコマンドの実行過程において、<code>CollectedCommand</code> 構造体の <code>simple.address</code> や <code>simple.secondaryObject</code> に <code>ObjectAddress</code> が格納され、イベントトリガーや監査ログなどの後続処理に引き渡されます。 3. **検証と適用**:</p>
+<ul>
+<li>セキュリティラベルの変更時（<code>sepgsql_object_relabel</code> など）には、<code>ObjectAddress</code> がセキュリティプロバイダーに渡され、対象オブジェクトに対してラベル付けが可能かどうかの検証（<code>check_object_relabel_type</code>）が行われます。</li>
+<li>メタデータ取得関数（<code>getObjectIdentity</code> など）に渡されることで、オブジェクトの識別情報が人間が読める文字列に変換されます。</li>
+</ul>
+<p>※ 各 DDL コマンドやイベントトリガーにおける具体的な伝播経路など、詳細なエンドツーエンドの実行フローの全容は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>objectSubId</code> の値**: テーブルの列（Column）など、親オブジェクト内のサブ要素を指す場合にのみ非ゼロの値を使用します。それ以外の場合は常に <code>0</code> でなければなりません。</li>
+<li>**同時実行制御**: カタログ操作を行う際は、適切な <code>LOCKMODE</code> を指定して同時実行制御を行う必要があります。</li>
+<li>**有効なオブジェクト参照**: <code>seclabel.h</code> の検証関数などで <code>const ObjectAddress *</code> として参照される際は、対象オブジェクトの識別情報が有効（実在するオブジェクトを指していること）でなければなりません。</li>
+<li>**型チェックの徹底**: <code>deparse_utility.h</code> の <code>CollectedCommand</code> 内で共用体の一部として使用されているため、アクセス時には必ず <code>type</code> フィールドによる型チェックを行う必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**存在しないオブジェクトの指定**: 存在しない OID や無効な <code>classId</code> を指定して <code>ObjectAddress</code> を作成した場合、それを利用するカタログ検索関数やセキュリティプロバイダー側の検証ロジックでエラーが発生します。</li>
+<li>**不適切な <code>objectSubId</code> の使用**: 親オブジェクトが存在しない、あるいはサブ要素を持たないオブジェクトに対して不適切な <code>objectSubId</code> を指定すると、後続の処理で予期せぬエラーを引き起こす原因となります。</li>
+<li>**構造体自体の検証機能の欠如**: <code>ObjectAddress</code> 自体は単なるデータ保持用の構造体であり、自己検証ロジックを持ちません。そのため、無効なデータが格納された場合の挙動は、それを利用する側の関数に依存します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/catalog/objectaddress.c</code>**</li>
+<p><code>ObjectAddress</code> の生成や操作の実装詳細、および <code>ObjectPropertyType</code> によるカタログ属性管理との関連性を理解するために参照してください。</p>
+<li>**<code>src/include/catalog/objectaddress.h</code>**</li>
+<p><code>ObjectAddress</code> 構造体の定義、および <code>ObjectAddresses</code> や <code>ObjectType</code> などの関連データ構造を確認するために参照してください。</p>
+<li>**<code>src/include/commands/seclabel.h</code>**</li>
+<p>セキュリティラベルの検証プロセスにおける <code>ObjectAddress</code> の利用方法を理解するために参照してください。</p>
+<li>**<code>src/include/tcop/deparse_utility.h</code>**</li>
+<p>ユーティリティコマンドの追跡（<code>CollectedCommand</code>）における <code>ObjectAddress</code> の統合方法を確認するために参照してください。</p>
+</ul></body></html>

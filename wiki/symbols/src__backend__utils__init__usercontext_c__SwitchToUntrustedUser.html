@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__init__usercontext_c__SwitchToUntrustedUser.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SwitchToUntrustedUser</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/init/usercontext.c:32</code></li>
+</ul>
+<h2>目的</h2>
+<p>現在のユーザーコンテキストを一時的に別のユーザー（ロール）へ切り替えます。切り替え先ユーザーが現在のユーザーに対して権限を持たない場合、セキュリティ制限を適用し、GUC（設定パラメータ）の変更を隔離するサンドボックス環境を提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SwitchToUntrustedUser(Oid userid, UserContext *context)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>userid</code>: 切り替え先のユーザーID（Oid）。</li>
+<li><code>context</code>: 現在の状態を保存し、切り替え後の管理情報（GUCネストレベル等）を格納するための <code>UserContext</code> 構造体へのポインタ。</li>
+<li>**出力**: なし（<code>void</code>）。<code>context</code> 引数を通じて状態が更新されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>現在のユーザーが <code>userid</code> に対して <code>SET ROLE</code> する権限を持っている必要があります。権限がない場合はエラーが発生します。</li>
+<li>呼び出し側は、後続の処理終了後に必ず <code>RestoreUserContext</code> を呼び出し、状態を復元する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>GetUserIdAndSecContext</code> を呼び出し、現在のユーザーIDとセキュリティコンテキストを <code>context</code> に保存します。 2. <code>member_can_set_role</code> を使用し、現在のユーザーが対象の <code>userid</code> に切り替える権限があるか検証します。権限がない場合は <code>ERRCODE_INSUFFICIENT_PRIVILEGE</code> でエラーを報告します。 3. 相互に <code>SET ROLE</code> が可能な場合は、単純に <code>SetUserIdAndSecContext</code> で切り替えを行い、<code>context-&gt;save_nestlevel</code> を <code>-1</code> に設定します（GUCのロールバック不要）。 4. 片方向のみの権限である場合は、<code>SECURITY_RESTRICTED_OPERATION</code> をセキュリティコンテキストに付与して切り替えを行い、<code>NewGUCNestLevel()</code> を呼び出して <code>context-&gt;save_nestlevel</code> に保存します（GUCの変更を追跡可能にする）。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/tablecmds.c</code></li>
+<li><code>src/backend/replication/logical/tablesync.c</code></li>
+<li><code>src/backend/replication/logical/worker.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>GetUserIdAndSecContext</code></li>
+<li><code>member_can_set_role</code></li>
+<li><code>SetUserIdAndSecContext</code></li>
+<li><code>NewGUCNestLevel</code></li>
+<li><code>ereport</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>UserContext</code>: 切り替え前のユーザーID、セキュリティコンテキスト、およびGUCのネストレベルを保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**権限不足**: 現在のユーザーが対象ロールへ切り替える権限を持たない場合、<code>ereport(ERROR, ...)</code> により処理が中断されます。</li>
+<li>**GUCネストレベル**: <code>save_nestlevel</code> が <code>-1</code> の場合、GUCのロールバック処理は不要とみなされます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>RestoreUserContext</code> と対で使用されることを前提としています。呼び出し忘れはセッション状態の不整合を招くため注意してください。</li>
+<li><code>SECURITY_RESTRICTED_OPERATION</code> が適用されるケースでは、ターゲットユーザーによる悪意のあるGUC変更を防ぐための保護が有効になります。</li>
+</ul></body></html>

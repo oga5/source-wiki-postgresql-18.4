@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/btree_gist/btree_utils_var.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/btree_gist/btree_utils_var.c</h1>
+<h2>概要</h2>
+<p>可変長データ型（<code>bytea</code> ベース）に対する GiST インデックスの構築および操作を支援する汎用ユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/btree_gist</code> において、<code>text</code>、<code>bytea</code>、<code>uuid</code> などの可変長データ型を GiST 索引で扱うための共通基盤です。各データ型固有のロジックを <code>gbtree_vinfo</code> 構造体を通じて抽象化し、GiST の必須メソッド（<code>compress</code>, <code>union</code>, <code>picksplit</code>, <code>consistent</code> 等）を実装するための共通ロジックをカプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**可変長キーの管理**: <code>bytea</code> 形式のキーの読み込み、コピー、およびリーフからノードへの変換。</li>
+<li>**インデックス構造の維持**: <code>union</code> 操作による範囲の拡大と、<code>picksplit</code> によるインデックスの分割。</li>
+<li>**圧縮と最適化**: <code>truncate</code> によるノードキーの共通プレフィックス圧縮と、それに関連するペナルティ計算。</li>
+<li>**検索の適合性判定**: <code>consistent</code> メソッドによる、インデックスノードとクエリ条件の照合。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gbtree_vinfo</code>: 可変長型ごとの比較関数や変換メソッドを保持する設定構造体。</li>
+<li><code>GBT_VARKEY_R</code>: 可変長キーを <code>lower</code>（下限）と <code>upper</code>（上限）のポインタとして扱いやすくした構造体。</li>
+<li><code>gbt_var_union</code>: 複数のエントリを統合し、必要に応じてキーを圧縮する。</li>
+<li><code>gbt_var_picksplit</code>: インデックス分割時にエントリをソートし、効率的なツリー構造を維持する。</li>
+<li><code>gbt_var_consistent</code>: GiST の検索条件（<code>&lt;=</code>, <code>=</code>, <code>&gt;=</code> 等）を評価するコアロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Vsrt</code></li>
+<li><code>gbt_bytea_pf_match</code></li>
+<li><code>gbt_var_bin_union</code></li>
+<li><code>gbt_var_decompress</code></li>
+<li><code>gbt_var_key_copy</code></li>
+<li><code>gbt_var_key_from_datum</code></li>
+<li><code>gbt_var_key_readable</code></li>
+<li><code>gbt_var_leaf2node</code></li>
+<li><code>gbt_var_node_cp_len</code></li>
+<li><code>gbt_var_node_pf_match</code></li>
+<li><code>gbt_var_node_truncate</code></li>
+<li><code>gbt_vsrt_arg</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **圧縮**: <code>gbt_var_compress</code> がリーフエントリを <code>GBT_VARKEY</code> 形式に変換し、インデックスに格納します。 2. **統合**: <code>gbt_var_union</code> は複数のキーを走査し、<code>gbt_var_bin_union</code> を用いて最小包含範囲を計算します。 3. **分割**: <code>gbt_var_picksplit</code> は <code>qsort_arg</code> を使用してエントリをソートし、中央値で左右に分割してバランスを保ちます。 4. **検索**: <code>gbt_var_consistent</code> は、ノードの範囲とクエリ値を比較します。必要に応じて <code>gbt_var_node_pf_match</code> を呼び出し、共通プレフィックスを用いた高速な枝刈りを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型とマクロ。</li>
+<li><code>btree_gist.h</code>: GiST 索引の共通定義。</li>
+<li><code>btree_utils_var.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の長さ計算（<code>pg_mblen_range</code>）。</li>
+<li><code>math.h</code>, <code>limits.h</code>, <code>float.h</code>: 数値計算および定数定義。</li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/btree_gist/btree_utils_num.c</code>: 固定長データ型用の類似ユーティリティ。</li>
+<li><code>contrib/btree_gist/btree_text.c</code>: 本ユーティリティを利用する具体的なデータ型実装の例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「可変長」を扱うため、<code>VARSIZE</code> や <code>VARDATA</code> といった PostgreSQL の <code>varlena</code> 関連マクロが多用されています。</li>
+<li><code>gbt_var_node_cp_len</code> はマルチバイト文字を考慮したプレフィックス計算を行いますが、<code>eml</code>（エンコーディング最大長）が 1 より大きい場合にのみ複雑な処理が走る点に注意してください。</li>
+<li><code>gbt_var_penalty</code> はインデックスのバランスを最適化するためのコスト計算を行いますが、非常に複雑なヒューリスティックが含まれています。デバッグ時は <code>gbt_var_bin_union</code> の結果が期待通りかを確認するのが近道です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__Vsrt.html" target="wiki-view"><code>Vsrt</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_vsrt_arg.html" target="wiki-view"><code>gbt_vsrt_arg</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_decompress.html" target="wiki-view"><code>gbt_var_decompress</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_key_readable.html" target="wiki-view"><code>gbt_var_key_readable</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_key_from_datum.html" target="wiki-view"><code>gbt_var_key_from_datum</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_key_copy.html" target="wiki-view"><code>gbt_var_key_copy</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_leaf2node.html" target="wiki-view"><code>gbt_var_leaf2node</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_node_cp_len.html" target="wiki-view"><code>gbt_var_node_cp_len</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_bytea_pf_match.html" target="wiki-view"><code>gbt_bytea_pf_match</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_node_pf_match.html" target="wiki-view"><code>gbt_var_node_pf_match</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_node_truncate.html" target="wiki-view"><code>gbt_var_node_truncate</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_utils_var_c__gbt_var_bin_union.html" target="wiki-view"><code>gbt_var_bin_union</code></a></li>
+</ul></body></html>

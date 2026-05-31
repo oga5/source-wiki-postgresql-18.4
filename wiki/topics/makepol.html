@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/makepol.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>makepol</h1>
+<h2>概念</h2>
+<p><code>makepol</code> は、PostgreSQLの複数のモジュール（<code>contrib/ltree</code>、<code>contrib/intarray</code>、<code>src/backend/utils/adt</code>）において、検索クエリ文字列を解析し、演算子の優先順位を考慮した逆ポーランド記法（後置記法）のツリー構造へと変換するために用いられる関数です。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ文字列（テキスト検索やツリー構造の検索クエリなど）を効率的に評価するためには、中置記法から逆ポーランド記法への変換が必要です。<code>makepol</code> はこの構文解析（パース）処理の中核を担い、演算子の優先順位や括弧のネストを正しく処理して、実行エンジンが評価しやすい内部表現（ツリー構造）を構築します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/ltree/ltxtquery_io.c#makepol</code> : <code>ltxtq_in</code> 等から呼び出され、<code>QPRS_STATE</code> を用いてクエリを解析する静的関数。</li>
+<li><code>symbol:contrib/intarray/_int_bool.c#makepol</code> : <code>intarray</code> 内でクエリ解析を行う同名関数（詳細な振る舞いは未確定）。</li>
+<li><code>symbol:src/backend/utils/adt/tsquery.c#makepol</code> : テキスト検索（tsquery）内でクエリ解析を行う同名関数（詳細な振る舞いは未確定）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>contrib/ltree</code> における具体的な処理の流れは以下の通りですが、他モジュールを含めた全体的なエンドツーエンドの統一的な流れは完全には判明していません。</p>
+<p>1. **入力と呼び出し**: <code>ltxtq_in</code> などの入力関数から <code>makepol(state)</code> が呼び出されます。 2. **トークン化**: <code>gettoken_query</code> を用いて、クエリ文字列からトークンを順次取得します。 3. **トークン処理**:</p>
+<ul>
+<li>**オペランド (<code>VAL</code>)**: <code>pushval_asis</code> で出力に追加し、スタック上の <code>&amp;</code> または <code>!</code> 演算子を順次処理します。</li>
+<li>**演算子 (<code>OPR</code>)**: <code>|</code> 以外の演算子はスタックに積み、<code>|</code> は優先順位に基づいて処理します。</li>
+<li>**括弧開始 (<code>OPEN</code>)**: <code>makepol</code> を再帰的に呼び出してサブツリーを構築します。</li>
+<li>**括弧終了 (<code>CLOSE</code>)**: スタックに残っている演算子をすべて出力して終了します。</li>
+<p>4. **終了処理**: ループ終了後、スタックに残っている演算子をすべて出力し、成功時は <code>END</code> を、エラー時は <code>ERR</code> を返します。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**スタック深さの制限**: 再帰呼び出しによるスタックオーバーフローを防ぐため、関数内で <code>check_stack_depth()</code> が実行される必要があります。</li>
+<li>**演算子スタックの制限**: 演算子スタックの深さは <code>STACKDEPTH</code> 定数によって制限されており、これを超えると <code>elog(ERROR, &quot;stack too short&quot;)</code> が発生します。</li>
+<li>※ <code>contrib/intarray</code> および <code>src/backend/utils/adt</code> における不変条件が、<code>contrib/ltree</code> と完全に同一であるかは現時点では不明です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**スタックオーバーフローとメモリ制限**: 非常に深いネストを持つクエリや、多数の演算子が連続するクエリを入力した場合、<code>check_stack_depth()</code> によるエラーや <code>STACKDEPTH</code> 溢れが発生します。</li>
+<li>**コードの重複と衝突**: <code>contrib/intarray</code>、<code>contrib/ltree</code>、<code>src/backend/utils/adt/tsquery.c</code> にそれぞれ同名の <code>makepol</code> 関数が独立して存在するため、コードの共通化や保守の際に、それぞれの仕様の違いや命名の衝突に留意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/ltree/ltxtquery_io.c</code> : <code>makepol</code> の具体的な再帰パーサの実装と <code>QPRS_STATE</code> の定義。</li>
+<li><code>contrib/intarray/_int_bool.c</code> : <code>intarray</code> モジュールにおける <code>makepol</code> の実装。</li>
+<li><code>src/backend/utils/adt/tsquery.c</code> : テキスト検索（tsquery）における <code>makepol</code> の実装。</li>
+</ul></body></html>

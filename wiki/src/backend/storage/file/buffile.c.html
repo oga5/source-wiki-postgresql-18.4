@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/file/buffile.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/file/buffile.c</h1>
+<h2>概要</h2>
+<p><code>buffile.c</code> は、PostgreSQL における大規模な一時ファイルのためのバッファ付き I/O インターフェースを提供します。標準ライブラリの <code>stdio</code> に似た機能を提供しますが、<code>fd.c</code> が管理する仮想ファイル記述子（VFD）上で動作し、OS のファイルサイズ制限を超える巨大なファイルを透過的に扱えるように設計されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/file</code> モジュールの一部として、一時的なデータ保持（ソート、ハッシュ結合、パラレルクエリの共有データなど）の基盤を担います。<code>fd.c</code> が低レベルのファイル記述子管理を行うのに対し、本ファイルはアプリケーション層に近いバッファリングと論理的なファイル操作を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファリング**: 物理的な I/O 回数を減らすためのメモリバッファ管理。</li>
+<li>**巨大ファイル対応**: <code>MAX_PHYSICAL_FILESIZE</code>（1GB）ごとにファイルを分割し、論理的に単一の巨大ファイルとして扱う。</li>
+<li>**共有・永続化**: <code>FileSet</code> を介したバックエンド間での一時ファイル共有や、トランザクションを跨ぐ一時ファイルの管理。</li>
+<li>**リソース管理**: <code>ResourceOwner</code> を用いた、エラー発生時やトランザクション終了時の確実なファイルクローズ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BufFile</code>: 複数の物理ファイルから構成される論理的なバッファ付きファイルを表現する構造体。</li>
+<li><code>BufFileCreateTemp</code>: 一時ファイルを作成する主要なエントリポイント。</li>
+<li><code>BufFileRead</code> / <code>BufFileWrite</code>: バッファを介した読み書き操作。</li>
+<li><code>BufFileSeek</code> / <code>BufFileTell</code>: 論理的なファイルポインタの操作。</li>
+<li><code>MAX_PHYSICAL_FILESIZE</code>: 物理的な分割単位（1GB）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BufFileClose</code></li>
+<li><code>BufFileCreateFileSet</code></li>
+<li><code>BufFileDeleteFileSet</code></li>
+<li><code>BufFileDumpBuffer</code></li>
+<li><code>BufFileExportFileSet</code></li>
+<li><code>BufFileLoadBuffer</code></li>
+<li><code>BufFileOpenFileSet</code></li>
+<li><code>BufFileReadCommon</code></li>
+<li><code>FileSetSegmentName</code></li>
+<li><code>MakeNewFileSetSegment</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**読み込み**: <code>BufFileRead</code> が呼び出されると、バッファ内にデータがあればコピーし、なければ <code>BufFileLoadBuffer</code> が <code>FileRead</code> を呼び出して物理ファイルからバッファへデータをロードします。</li>
+<li>**書き込み**: <code>BufFileWrite</code> はデータをバッファに蓄積します。バッファが満杯になると <code>BufFileDumpBuffer</code> が呼び出され、必要に応じて <code>extendBufFile</code> で新しい物理セグメントを作成しつつ、ディスクへフラッシュします。</li>
+<li>**シーク**: <code>BufFileSeek</code> は論理的なオフセットを計算し、必要であれば <code>BufFileFlush</code> でバッファを書き出した後、物理ファイル記述子を切り替えます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: 仮想ファイル記述子（<code>File</code>）の操作。</li>
+<li><code>storage/buffile.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/resowner.h</code>: リソース所有権の管理。</li>
+<li><code>pgstat.h</code>: I/O タイミングの計測。</li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/file/fd.c</code>: <code>BufFile</code> が依存する低レベルのファイル管理。</li>
+<li><code>src/backend/storage/file/fileset.c</code>: <code>FileSet</code> を介した共有一時ファイルの管理。</li>
+<li><code>src/include/storage/buffile.h</code>: 本モジュールの公開ヘッダー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>BufFile</code> は <code>palloc</code> で割り当てられるため、メモリコンテキストの寿命に注意してください。</li>
+<li>巨大なファイルを扱う際、<code>BufFileSeek</code> は論理的なオフセットを <code>int</code> と <code>off_t</code> の組み合わせで管理します。</li>
+<li><code>BufFileAppend</code> は物理セグメントのリストを連結するだけであり、データの内容をコピーするわけではないため非常に高速ですが、ファイル間に「穴」が生じる可能性がある点に留意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFile.html" target="wiki-view"><code>BufFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileCreateTemp.html" target="wiki-view"><code>BufFileCreateTemp</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__FileSetSegmentName.html" target="wiki-view"><code>FileSetSegmentName</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__MakeNewFileSetSegment.html" target="wiki-view"><code>MakeNewFileSetSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileCreateFileSet.html" target="wiki-view"><code>BufFileCreateFileSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileOpenFileSet.html" target="wiki-view"><code>BufFileOpenFileSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileDeleteFileSet.html" target="wiki-view"><code>BufFileDeleteFileSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileExportFileSet.html" target="wiki-view"><code>BufFileExportFileSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileClose.html" target="wiki-view"><code>BufFileClose</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileLoadBuffer.html" target="wiki-view"><code>BufFileLoadBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileDumpBuffer.html" target="wiki-view"><code>BufFileDumpBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__file__buffile_c__BufFileReadCommon.html" target="wiki-view"><code>BufFileReadCommon</code></a></li>
+</ul></body></html>

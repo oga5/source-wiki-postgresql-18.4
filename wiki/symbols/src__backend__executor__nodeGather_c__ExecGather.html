@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeGather_c__ExecGather.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecGather</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeGather.c:136</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、バックグラウンドワーカーが生成したタプルを収集し、単一のストリームとして上位ノードへ提供する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecGather(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>pstate</code> (Gatherノードの実行状態を保持する <code>PlanState</code>)</li>
+<li>**出力**: 収集された <code>TupleTableSlot</code>。タプルが存在しない場合は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>初回実行時に <code>node-&gt;initialized</code> が <code>false</code> であること。</li>
+<li><code>ParallelContext</code> の初期化およびワーカーの起動は、初回実行時にのみ行われる。</li>
+<li>実行ごとに <code>ResetExprContext</code> が呼び出され、タプルごとのメモリが解放される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回呼び出し時、<code>ParallelContext</code> を作成し、<code>LaunchParallelWorkers</code> を通じてワーカーを起動する。ワーカーが起動した場合は <code>TupleQueueReader</code> を作成し、リーダープロセスが読み取る準備を行う。 2. **ローカル実行判定**: ワーカーが利用できない場合、または <code>single_copy</code> が無効かつ <code>parallel_leader_participation</code> が有効な場合、リーダープロセス自身がプランを実行するよう <code>need_to_scan_locally</code> を設定する。 3. **タプル取得**: <code>gather_getnext</code> を呼び出し、ワーカーからのキュー読み取りまたはローカル実行によりタプルを取得する。 4. **射影**: <code>ps_ProjInfo</code> が存在する場合、<code>ExecProject</code> を適用して結果を整形する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecProcNode</code> (実行エンジンにより <code>gatherstate-&gt;ps.ExecProcNode</code> として登録される)。</li>
+<li>**呼び出し先**: </li>
+<li><code>ExecInitParallelPlan</code>, <code>ExecParallelReinitialize</code>, <code>LaunchParallelWorkers</code>, <code>ExecParallelCreateReaders</code> (初期化時)</li>
+<li><code>gather_getnext</code> (タプル取得)</li>
+<li><code>ExecProject</code> (射影)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GatherState</code>: ノードの実行状態を保持。</li>
+<li><code>ParallelContext</code>: 並列実行のコンテキスト。</li>
+<li><code>TupleQueueReader</code>: ワーカーからのタプル読み取り用。</li>
+<li><code>PlanState</code>: 実行プランの共通状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ワーカー起動失敗**: ワーカーが1つも起動しなかった場合、<code>nreaders</code> は 0 となり、リーダープロセスのみで実行される。</li>
+<li>**タプル枯渇**: <code>gather_getnext</code> が <code>NULL</code> を返した場合、本関数も <code>NULL</code> を返す。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、実行中に割り込みが確認された場合は処理を中断する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は初回実行時に重いリソース（共有メモリ等）を確保するため、初期化の遅延評価を行っている。</li>
+<li><code>node-&gt;reader</code> 配列はワーカーの起動数に基づいて動的に確保される。</li>
+<li><code>parallel_leader_participation</code> 設定により、リーダープロセスがワーカーと並行してタプル生成に参加するかどうかが決定される点に注意すること。</li>
+</ul></body></html>

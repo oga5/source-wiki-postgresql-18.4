@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/seg/seg.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/seg/seg.c</h1>
+<h2>概要</h2>
+<p><code>seg.c</code> は、PostgreSQL における「区間（segment）」データ型を実装するコアファイルです。数値の範囲（例: <code>1.23 .. 4.56</code>）を表現し、それに対する比較演算や、GiST インデックスを用いた空間検索を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/seg</code> モジュールの中核であり、<code>segdata.h</code> で定義された <code>SEG</code> 構造体を操作する関数群を提供します。PostgreSQL の型システムと統合するための入出力関数、演算子、および GiST インデックスのサポートメソッドを実装しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ型の入出力**: 文字列から <code>SEG</code> 構造体への変換（<code>seg_in</code>）およびその逆（<code>seg_out</code>）。</li>
+<li>**演算子の提供**: 区間同士の包含関係、重なり、大小比較などの演算。</li>
+<li>**GiST インデックスのサポート**: 範囲検索を高速化するための <code>consistent</code>, <code>union</code>, <code>penalty</code>, <code>picksplit</code> 等のメソッド実装。</li>
+<li>**数値の書式化**: 有効桁数を保持したまま浮動小数点数を文字列化する補助関数（<code>restore</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SEG</code>: 範囲の境界値、有効桁数、境界の型（<code>&lt;</code>, <code>&gt;</code>, <code>~</code> 等）を保持する構造体。</li>
+<li><code>seg_in</code> / <code>seg_out</code>: PostgreSQL の型システムとのインターフェース。</li>
+<li><code>gseg_consistent</code>: GiST インデックス検索時の条件判定関数。</li>
+<li><code>gseg_picksplit</code>: インデックス構築時にノードを分割するアルゴリズム。</li>
+<li><code>seg_cmp</code>: 区間の大小関係を決定する複雑な比較ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>gseg_compress</code></li>
+<li><code>gseg_decompress</code></li>
+<li><code>gseg_penalty</code></li>
+<li><code>gseg_picksplit_item</code></li>
+<li><code>gseg_picksplit_item_cmp</code></li>
+<li><code>gseg_union</code></li>
+<li><code>seg_center</code></li>
+<li><code>seg_lower</code></li>
+<li><code>seg_upper</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**入力**: <code>seg_in</code> が文字列を受け取り、内部のパーサー（<code>seg_yyparse</code>）を呼び出して <code>SEG</code> 構造体を生成します。</li>
+<li>**GiST 検索**: クエリ実行時、<code>gseg_consistent</code> が呼び出され、インデックスのノードがリーフか内部ノードかに応じて <code>gseg_leaf_consistent</code> または <code>gseg_internal_consistent</code> に処理を委譲します。</li>
+<li>**インデックス構築**: <code>gseg_picksplit</code> は、区間の中心値に基づいてソートを行い、効率的なツリー分割を行います。</li>
+<li>**演算**: ほとんどの演算子は <code>DirectFunctionCall2</code> を介して他の <code>seg_*</code> 関数を呼び出し、<code>SEG</code> 構造体のメンバを直接比較・計算します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型とマクロ。</li>
+<li><code>access/gist.h</code>: GiST インデックスのインターフェース。</li>
+<li><code>fmgr.h</code>: 関数マネージャ（<code>PG_FUNCTION_ARGS</code> 等）。</li>
+<li><code>segdata.h</code>: <code>SEG</code> 構造体の定義。</li>
+<li><code>&lt;math.h&gt;</code>, <code>&lt;float.h&gt;</code>: 数値計算および浮動小数点の定数。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>float.h</code></li>
+<li><code>math.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>segdata.h</code>: <code>SEG</code> 構造体の定義と関連する型定義。</li>
+<li><code>seg_gram.y</code> / <code>seg_scanner.l</code> (推測): <code>seg_in</code> が使用するパーサーとスキャナーのソース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**有効桁数の扱い**: このモジュールは単なる数値範囲ではなく、有効桁数（<code>l_sigd</code>, <code>u_sigd</code>）を保持します。<code>seg_cmp</code> や <code>restore</code> 関数は、この「曖昧さ」を考慮した特殊なロジックを含んでいます。</li>
+<li>**GiST 実装**: <code>gseg_picksplit</code> は、Guttman のアルゴリズムではなく、1次元データに適した「中心値によるソートと中央分割」を採用しており、非常にシンプルかつ堅牢です。</li>
+<li>**デバッグ**: <code>GIST_DEBUG</code> マクロを有効にすると、インデックス操作の詳細が <code>stderr</code> に出力されます。開発時のトレースに有用です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_picksplit_item.html" target="wiki-view"><code>gseg_picksplit_item</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__seg_in.html" target="wiki-view"><code>seg_in</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__seg_out.html" target="wiki-view"><code>seg_out</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__seg_center.html" target="wiki-view"><code>seg_center</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__seg_lower.html" target="wiki-view"><code>seg_lower</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__seg_upper.html" target="wiki-view"><code>seg_upper</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_consistent.html" target="wiki-view"><code>gseg_consistent</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_union.html" target="wiki-view"><code>gseg_union</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_compress.html" target="wiki-view"><code>gseg_compress</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_decompress.html" target="wiki-view"><code>gseg_decompress</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_penalty.html" target="wiki-view"><code>gseg_penalty</code></a></li>
+<li><a href="../../symbols/contrib__seg__seg_c__gseg_picksplit_item_cmp.html" target="wiki-view"><code>gseg_picksplit_item_cmp</code></a></li>
+</ul></body></html>

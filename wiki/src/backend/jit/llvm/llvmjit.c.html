@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/jit/llvm/llvmjit.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/jit/llvm/llvmjit.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の LLVM JIT プロバイダーのコア実装です。LLVM のコンテキスト管理、JIT コンパイルのライフサイクル制御、および PostgreSQL の型システムと LLVM IR 間のブリッジ機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/jit/llvm</code> モジュールの中心的なエントリポイントです。JIT コンパイルの初期化、最適化レベルの管理、および生成されたコードの実行エンジン（ORC JIT）への登録を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**セッション管理**: LLVM のターゲットマシン、スレッドセーフコンテキスト、および JIT インスタンスの初期化と終了処理。</li>
+<li>**コンテキスト管理**: <code>LLVMJitContext</code> の生成と破棄。リソースオーナー（<code>ResourceOwner</code>）と連携し、トランザクション終了時のメモリリークを防止。</li>
+<li>**型情報の同期**: <code>llvmjit_types.bc</code> から PostgreSQL のデータ構造定義を読み込み、LLVM IR 上で利用可能な型としてキャッシュ。</li>
+<li>**コード生成と最適化**: モジュールの最適化（Pass Manager の制御）および ORC JIT を介した実行可能コードへの変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LLVMJitContext</code>: JIT コンパイル状態を保持する構造体。</li>
+<li><code>llvm_create_context()</code>: JIT コンテキストの初期化関数。</li>
+<li><code>llvm_compile_module()</code>: IR モジュールの最適化と JIT への登録を行うメインフロー。</li>
+<li><code>llvm_get_function()</code>: JIT コンパイル済みの関数ポインタを取得する関数。</li>
+<li><code>llvm_create_types()</code>: C の構造体定義を LLVM 型へマッピングする初期化処理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LLVMJitHandle</code></li>
+<li><code>ResOwnerReleaseJitContext</code></li>
+<li><code>ResourceOwnerForgetJIT</code></li>
+<li><code>ResourceOwnerRememberJIT</code></li>
+<li><code>llvm_create_context</code></li>
+<li><code>llvm_create_jit_instance</code></li>
+<li><code>llvm_create_object_layer</code></li>
+<li><code>llvm_create_types</code></li>
+<li><code>llvm_get_function</code></li>
+<li><code>llvm_mutable_module</code></li>
+<li><code>llvm_recreate_llvm_context</code></li>
+<li><code>llvm_release_context</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_jit_provider_init</code> が呼ばれ、JIT プロバイダーが登録されます。初回利用時に <code>llvm_session_initialize</code> が実行され、ターゲットマシンと ORC JIT インスタンスが構築されます。 2. **コンテキスト生成**: <code>llvm_create_context</code> が呼ばれると、<code>LLVMJitContext</code> が割り当てられ、リソースオーナーに登録されます。 3. **コンパイル**: <code>llvm_compile_module</code> が呼び出されると、以下の順序で処理が進みます。</p>
+<ul>
+<li>インライン化（<code>llvm_inline</code>）</li>
+<li>最適化（<code>llvm_optimize_module</code>）</li>
+<li>ORC JIT へのモジュール登録（<code>LLVMOrcLLJITAddLLVMIRModuleWithRT</code>）</li>
+<p>4. **実行**: <code>llvm_get_function</code> を通じて、JIT された関数アドレスが解決されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>llvm-c/*</code>: LLVM C API（Core, Orc, ExecutionEngine 等）。</li>
+<li><code>jit/llvmjit.h</code>: 共有データ構造と関数宣言。</li>
+<li><code>utils/resowner.h</code>: トランザクション単位のリソース管理。</li>
+<li><code>storage/ipc.h</code>: プロセス終了時のクリーンアップ処理。</li>
+<li><code>jit/llvmjit_backport.h</code></li>
+<li><code>jit/llvmjit_emit.h</code></li>
+<li><code>llvm-c/Analysis.h</code></li>
+<li><code>llvm-c/BitReader.h</code></li>
+<li><code>llvm-c/BitWriter.h</code></li>
+<li><code>llvm-c/Core.h</code></li>
+<li><code>llvm-c/ExecutionEngine.h</code></li>
+<li><code>llvm-c/LLJIT.h</code></li>
+<li><code>llvm-c/Orc.h</code></li>
+<li><code>llvm-c/OrcEE.h</code></li>
+<li><code>llvm-c/Support.h</code></li>
+<li><code>llvm-c/Target.h</code></li>
+<li><code>llvm-c/Transforms/IPO.h</code></li>
+<li><code>llvm-c/Transforms/PassBuilder.h</code></li>
+<li><code>llvm-c/Transforms/PassManagerBuilder.h</code></li>
+<li><code>llvm-c/Transforms/Scalar.h</code></li>
+<li><code>llvm-c/Transforms/Utils.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>portability/instr_time.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/jit/llvm/llvmjit_types.c</code>: LLVM 用の型定義を生成するためのソース。</li>
+<li><code>src/backend/jit/llvm/llvmjit_inline.cpp</code>: インライン化ロジック。</li>
+<li><code>src/backend/jit/llvm/SectionMemoryManager.cpp</code>: メモリ管理のカスタマイズ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: LLVM のコンテキストはメモリ消費が大きいため、<code>LLVMJIT_LLVM_CONTEXT_REUSE_MAX</code> に達すると定期的にリセットされます。</li>
+<li>**エラーハンドリング**: LLVM 内部でのエラーは <code>elog(ERROR)</code> を通じて PostgreSQL のエラー処理系に伝播しますが、FATAL エラー発生時の再入には注意が必要です。</li>
+<li>**デバッグ**: <code>jit_dump_bitcode</code> を有効にすると、最適化前後のビットコードがファイルに出力され、生成された IR の確認が可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__LLVMJitHandle.html" target="wiki-view"><code>LLVMJitHandle</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__ResourceOwnerRememberJIT.html" target="wiki-view"><code>ResourceOwnerRememberJIT</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__ResourceOwnerForgetJIT.html" target="wiki-view"><code>ResourceOwnerForgetJIT</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_recreate_llvm_context.html" target="wiki-view"><code>llvm_recreate_llvm_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_create_context.html" target="wiki-view"><code>llvm_create_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_release_context.html" target="wiki-view"><code>llvm_release_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_mutable_module.html" target="wiki-view"><code>llvm_mutable_module</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_get_function.html" target="wiki-view"><code>llvm_get_function</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_create_types.html" target="wiki-view"><code>llvm_create_types</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_create_object_layer.html" target="wiki-view"><code>llvm_create_object_layer</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__llvm_create_jit_instance.html" target="wiki-view"><code>llvm_create_jit_instance</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_c__ResOwnerReleaseJitContext.html" target="wiki-view"><code>ResOwnerReleaseJitContext</code></a></li>
+</ul></body></html>

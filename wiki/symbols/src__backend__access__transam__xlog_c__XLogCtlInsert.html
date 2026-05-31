@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlog_c__XLogCtlInsert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogCtlInsert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xlog.c:397</code></li>
+</ul>
+<h2>目的</h2>
+<p>WAL（Write-Ahead Log）挿入プロセスにおける共有状態を管理し、複数のバックエンドによる WAL 挿入の同期と、挿入に関連するグローバルな制御パラメータを保持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct XLogCtlInsert
+{
+    slock_t     insertpos_lck;
+    uint64      CurrBytePos;
+    uint64      PrevBytePos;
+    char        pad[PG_CACHE_LINE_SIZE];
+    XLogRecPtr  RedoRecPtr;
+    bool        fullPageWrites;
+    int         runningBackups;
+    XLogRecPtr  lastBackupStart;
+    WALInsertLockPadded *WALInsertLocks;
+} XLogCtlInsert;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造であるため、直接的な入力・出力はない。各フィールドは共有メモリ上で管理され、WAL 挿入時に各バックエンドによって読み書きされる。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>CurrBytePos</code> および <code>PrevBytePos</code> の更新には <code>insertpos_lck</code>（スピンロック）が必要。</li>
+<li><code>fullPageWrites</code> や <code>RedoRecPtr</code> などのフィールドを読み取るには、いずれかの挿入ロック（<code>WALInsertLock</code>）の保持が必要。</li>
+<li>これらのフィールドを更新（変更）するには、すべての挿入ロックを保持する必要がある。</li>
+<li><code>CurrBytePos</code> と <code>PrevBytePos</code> は、キャッシュラインの競合を避けるため、他のフィールドとは別のキャッシュラインに配置される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**WAL 予約**: <code>CurrBytePos</code> を用いて、次に挿入される WAL レコードの領域を予約する。</li>
+<li>**リンク管理**: <code>PrevBytePos</code> は直前に予約されたレコードの開始位置を保持し、新しいレコードの prev-link として使用される。</li>
+<li>**設定の伝播**: <code>fullPageWrites</code> はプロセスローカルな値ではなく、本構造体の共有値が使用される。これにより、<code>SIGHUP</code> 等による設定変更が全バックエンドに即座に反映される。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>XLogCtl</code> 構造体の一部として、<code>src/backend/access/transam/xlog.c</code> 内の WAL 管理関数群（<code>XLogInsertRecord</code> 等）から参照される。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはない。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogCtlData</code>: 本構造体を含む、WAL 管理の全状態を保持する親構造体。</li>
+<li><code>WALInsertLockPadded</code>: WAL 挿入の競合を制御するためのロック構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**競合**: 複数のバックエンドが同時に WAL を挿入しようとする際、<code>insertpos_lck</code> や <code>WALInsertLocks</code> による同期が不十分な場合、データ破損や LSN の不整合が発生する可能性がある。</li>
+<li>**キャッシュライン**: <code>pad</code> フィールドによるパディングが不十分な環境では、<code>CurrBytePos</code> への頻繁なアクセスが他のフィールドの読み取り性能を低下させる可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>CurrBytePos</code> と <code>PrevBytePos</code> は <code>XLogRecPtr</code> ではなく「使用可能なバイト位置」として格納されている点に注意すること（変換には <code>XLogBytePosToRecPtr()</code> を使用）。</li>
+<li><code>fullPageWrites</code> の更新は、全挿入ロックを必要とするため非常に高コストである。頻繁な変更は避ける設計となっている。</li>
+</ul></body></html>

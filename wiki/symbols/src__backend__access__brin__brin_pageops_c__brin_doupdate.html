@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_pageops_c__brin_doupdate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>brin_doupdate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_pageops.c:52</code></li>
+</ul>
+<h2>目的</h2>
+<p>BRINインデックス内の既存タプルを新しい値で更新します。同一ページ内での更新を優先し、領域不足の場合は別ページへの移動を試みます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
+                   BrinRevmap *revmap, BlockNumber heapBlk,
+                   Buffer oldbuf, OffsetNumber oldoff,
+                   const BrinTuple *origtup, Size origsz,
+                   const BrinTuple *newtup, Size newsz,
+                   bool samepage)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>idxrel</code>: 対象のインデックスリレーション。</li>
+<li><code>oldbuf</code>, <code>oldoff</code>: 更新対象タプルのバッファとオフセット。</li>
+<li><code>origtup</code>, <code>origsz</code>: 更新前のタプルデータとそのサイズ。</li>
+<li><code>newtup</code>, <code>newsz</code>: 更新後のタプルデータとそのサイズ。</li>
+<li><code>samepage</code>: 同一ページ内での更新を強制するかどうか。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 更新が成功した場合は <code>true</code>、失敗（競合や領域不足）した場合は <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>newsz</code> は <code>MAXALIGN</code> でアラインメントされている必要があります。</li>
+<li><code>newsz</code> が <code>BrinMaxItemSize</code> を超える場合、エラーが発生します。</li>
+<li>ページ操作はクリティカルセクション内で行われ、WAL記録と整合性が保証されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **事前チェック**: <code>newsz</code> のサイズ制限を確認し、Revmapを拡張します。 2. **バッファ確保**: <code>samepage</code> が <code>false</code> の場合、<code>brin_getinsertbuffer</code> を用いて挿入先バッファを確保します。 3. **整合性検証**:</p>
+<ul>
+<li>ページが正規のBRINページであるか、オフセットが有効かを確認します。</li>
+<li><code>brin_tuples_equal</code> を用いて、対象タプルが更新前と一致するか（並行更新による不整合がないか）を確認します。</li>
+<p>4. **更新実行**:</p>
+<li>同一ページ内に十分な空きがある場合、<code>PageIndexTupleOverwrite</code> で上書きし、WALを記録します。</li>
+<p>5. **後処理**: ロックの解放および、必要に応じて確保したバッファの初期化・解放を行います。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/brin/brin.c</code> (複数箇所)</li>
+<li><code>src/backend/access/brin/brin_pageops.c</code> (内部再帰的呼び出しの可能性あり)</li>
+<li>**呼び出し先**:</li>
+<li><code>brinRevmapExtend</code>, <code>brin_getinsertbuffer</code>, <code>brin_initialize_empty_new_buffer</code>, <code>brin_can_do_samepage_update</code>, <code>brin_tuples_equal</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BrinTuple</code>: インデックスに格納されるタプル構造。</li>
+<li><code>BrinRevmap</code>: ヒープブロックとインデックスの対応表。</li>
+<li><code>Buffer</code>, <code>Page</code>: PostgreSQLのバッファおよびページ管理構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**サイズ超過**: <code>newsz &gt; BrinMaxItemSize</code> の場合、エラー終了します。</li>
+<li>**並行更新**: ページの状態変更やタプルの不一致が検出された場合、<code>false</code> を返して更新を中断します。</li>
+<li>**領域不足**: <code>samepage</code> が <code>true</code> でかつページ内に空きがない場合、<code>false</code> を返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>ページ退避（<code>BRIN_EVACUATE_PAGE</code>）フラグが立っている場合、同一ページ内更新はスキップされます。</li>
+<li>失敗時にバッファを拡張していた場合は、<code>brin_initialize_empty_new_buffer</code> を呼び出し、FSMを適切にクリーンアップする必要があります。</li>
+</ul></body></html>

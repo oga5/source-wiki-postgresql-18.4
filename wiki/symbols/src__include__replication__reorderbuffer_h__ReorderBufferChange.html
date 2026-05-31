@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__reorderbuffer_h__ReorderBufferChange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReorderBufferChange</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/include/replication/reorderbuffer.h:76</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングにおいて、WALから読み取られた個別の変更内容（挿入、更新、削除、メッセージ、内部状態変更など）を保持し、トランザクション単位で管理・処理するためのデータ構造です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ReorderBufferChange {
+    XLogRecPtr lsn;
+    ReorderBufferChangeType action;
+    struct ReorderBufferTXN *txn;
+    RepOriginId origin_id;
+    union {
+        struct { ... } tp;          /* INSERT/UPDATE/DELETE */
+        struct { ... } truncate;    /* TRUNCATE */
+        struct { ... } msg;         /* Message */
+        Snapshot snapshot;          /* INTERNAL_SNAPSHOT */
+        CommandId command_id;       /* INTERNAL_COMMAND_ID */
+        struct { ... } tuplecid;    /* INTERNAL_TUPLECID */
+        struct { ... } inval;       /* Invalidation */
+    } data;
+    dlist_node node;
+} ReorderBufferChange;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: WALレコードから抽出された情報（LSN、変更タイプ、関連するタプルデータ、メッセージ内容、無効化メッセージ等）。</li>
+<li>**出力**: <code>ReorderBufferTXN</code> 内のリストへの格納、または出力プラグインのコールバック関数への引数として渡されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>data</code> 共用体の有効なメンバは <code>action</code> フィールドの値に依存します。</li>
+<li><code>node</code> フィールドにより、トランザクション内の変更リスト（<code>dlist</code>）にリンクされます。</li>
+<li>処理対象のトランザクション（<code>txn</code>）が正しく設定されている必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **保持**: WALから読み取られた変更が <code>ReorderBufferChange</code> としてインスタンス化されます。 2. **分類**: <code>action</code> に基づき、<code>data</code> 共用体の適切な構造体にデータが格納されます。 3. **管理**: <code>dlist_node</code> を介して、所属する <code>ReorderBufferTXN</code> の変更リストに連結されます。 4. **消費**: トランザクションのコミットや準備のタイミングで、出力プラグインのコールバックへ渡され、最終的に解放されます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元（直接的な言及）**:</li>
+<li><code>src/backend/replication/logical/decode.c</code>: WALデコード処理中にインスタンス化されます。</li>
+<li>**呼び出し先（利用側）**:</li>
+<li><code>contrib/test_decoding/test_decoding.c</code>: 出力プラグインのテスト実装において、変更内容の解析に使用されています。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReorderBufferTXN</code>: この変更が所属するトランザクション。</li>
+<li><code>ReorderBufferChangeType</code>: <code>action</code> の種類を定義する列挙型。</li>
+<li><code>dlist_node</code>: トランザクション内の変更リストを管理するための二重連結リストノード。</li>
+<li><code>HeapTuple</code>, <code>Snapshot</code>, <code>RelFileLocator</code>: 変更内容の詳細を保持する各データ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ制限（<code>logical_decoding_work_mem</code>）を超過した場合、この構造体を含むトランザクション全体がディスクへシリアライズ（スプール）される可能性があります。</li>
+<li><code>action</code> と <code>data</code> 共用体の不整合は、デコード処理時のデータ破損やクラッシュを招く可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共用体を使用しているため、新しい <code>action</code> タイプを追加する際は <code>data</code> 共用体の定義と、それを利用するすべてのコールバック実装を更新する必要があります。</li>
+<li><code>dlist_node</code> を使用しているため、リスト操作時のメモリ管理（確保と解放）には注意が必要です。</li>
+</ul></body></html>

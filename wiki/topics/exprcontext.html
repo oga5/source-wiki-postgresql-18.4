@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/exprcontext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExprContext</h1>
+<h2>概念</h2>
+<p><code>ExprContext</code> は、PostgreSQLのクエリ実行エンジン（Executor）において、式（Expression）の評価に必要な変数、状態、およびメモリコンテキストを保持するための構造体です。式評価のステップ（<code>ExprEvalStep</code>）や式評価関数（<code>ExprStateEvalFunc</code>）に対して現在の実行環境を提供し、変数取得や関数呼び出しの結果を管理する役割を担います。</p>
+<h2>なぜ重要か</h2>
+<p><code>ExprContext</code> は、クエリ実行時における式評価のメモリ管理と状態保持の基盤となるため重要です。式評価の過程で必要となる一時的なメモリ（タプルごとのメモリコンテキストなど）を提供し、評価終了時には登録されたコールバックを実行して適切にクリーンアップを行うことで、メモリリークを防ぎ効率的な実行を可能にします。</p>
+<h2>関与するモジュール</h2>
+<p>本トピックには以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/executor</code></li>
+<li><code>module:src/include/nodes</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関与する主要なエンティティは以下の通りです。</p>
+<ul>
+<li>**<code>struct ExprContext</code>** (<code>symbol:src/include/executor/execExpr.h#ExprContext</code>, <code>symbol:src/include/nodes/execnodes.h#ExprContext</code>): 式評価のコンテキストを保持する構造体。</li>
+<li>**<code>CreateExprContext</code>** (<code>symbol:src/backend/executor/execUtils.c#CreateExprContext</code>): <code>EState</code> を受け取り、デフォルトのメモリサイズ（<code>ALLOCSET_DEFAULT_SIZES</code>）を用いて <code>ExprContext</code> を生成する関数。</li>
+<li>**<code>FreeExprContext</code>** (<code>symbol:src/backend/executor/execUtils.c#FreeExprContext</code>): <code>ExprContext</code> を破棄し、登録されたコールバックの実行、メモリコンテキストの削除、および構造体自体のメモリ解放を行う関数。</li>
+<li>**<code>ResetExprContext</code>** (<code>symbol:src/include/executor/executor.h#ResetExprContext</code>): <code>ExprContext</code> をリセットするためのマクロまたは関数（詳細な定義は提供されたコンテキストに含まれていません）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、クエリ解析から実行、評価、破棄に至る完全なエンドツーエンドのライフサイクルは完全には明らかになっていません。しかし、部分的な流れとして以下のプロセスが判明しています。</p>
+<p>1. **生成**: クエリ実行の準備段階などで <code>CreateExprContext</code>（または内部関数 <code>CreateExprContextInternal</code>）が呼び出され、<code>EState</code> に関連付けられた <code>ExprContext</code> が生成されます。 2. **評価時の利用**: 実行ノード（<code>PlanState</code>）がタプルを処理する際、そのタプルを <code>ExprContext</code>（<code>ecxt_scantuple</code> など）にセットし、式評価関数（<code>ExprStateEvalFunc</code>）に引数として渡して式を評価します。 3. **破棄**: <code>FreeExprContext</code> が呼び出されると、まず <code>ShutdownExprContext</code> により登録されたすべてのクリーンアップコールバックが実行され、タプルごとのメモリコンテキスト（<code>ecxt_per_tuple_memory</code>）が削除されます。その後、<code>EState</code> の <code>es_exprcontexts</code> リストから当該コンテキストのリンクが解除され、構造体自体のメモリが解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効な参照**: 実行エンジンが式を評価する際、常に有効な <code>ExprContext</code> が提供されていなければなりません。</li>
+<li>**EStateとの関連性**: <code>ExprContext</code> が <code>EState</code> に所有されている場合、<code>FreeExprContext</code> による破棄時に <code>estate-&gt;es_exprcontexts</code> リストから適切にリンクが解除される必要があります。</li>
+<li>**メモリ管理の整合性**: <code>CreateExprContext</code> は内部的に <code>ALLOCSET_DEFAULT_SIZES</code> を使用して初期化され、<code>FreeExprContext</code> は <code>ecxt_per_tuple_memory</code> を <code>MemoryContextDelete</code> で解放します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**定義の重複**: <code>ExprContext</code> 構造体は <code>src/include/executor/execExpr.h</code> と <code>src/include/nodes/execnodes.h</code> の両方で定義（または宣言）されているため、変更時には両方の定義の整合性に注意する必要があります。</li>
+<li>**NULLポインタの引き渡し**: <code>FreeExprContext</code> に <code>NULL</code> ポインタを渡した場合の挙動は定義されておらず、ポインタ参照によりクラッシュする可能性があります。</li>
+<li>**非サポート操作**: 本構造体は実行時専用のデータ構造であり、<code>copyObject</code> や <code>equal</code> といったノードサポート関数はサポートしていません。</li>
+<li>**クリーンアップの依存関係**: コールバックの実行順序やメモリ解放のタイミングは、<code>ExprContext</code> を利用する他のプランノードのクリーンアップ処理と密接に関係しているため、変更時は注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/executor/execUtils.c</code>**: <code>CreateExprContext</code> や <code>FreeExprContext</code> などのライフサイクル管理関数の具体的な実装。</li>
+<li>**<code>src/include/executor/execExpr.h</code>**: <code>ExprContext</code> 構造体の定義および式評価に関連する定義。</li>
+<li>**<code>src/include/nodes/execnodes.h</code>**: <code>ExprContext</code> 構造体の定義および実行ノードに関連する定義。</li>
+<li>**<code>src/include/executor/executor.h</code>**: <code>ResetExprContext</code> などのマクロや関連する実行エンジンAPIの定義。</li>
+</ul></body></html>

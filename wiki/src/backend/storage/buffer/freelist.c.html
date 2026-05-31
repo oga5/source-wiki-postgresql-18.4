@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/buffer/freelist.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/buffer/freelist.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバッファプールにおける「バッファ置換戦略（Replacement Strategy）」を管理するモジュールです。共有バッファの再利用アルゴリズム（クロック掃引法）と、特定の操作（スキャンやバルク処理）に最適化された「バッファアクセス戦略（BufferAccessStrategy）」の実装を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>bufmgr.c</code> がバッファの割り当てを要求した際、次にどのバッファを再利用すべきかを決定する意思決定エンジンとして機能します。共有メモリ上のバッファ管理構造と、バックエンドプロセスごとのプライベートなリングバッファ管理を橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**クロック掃引（Clock Sweep）**: 使用頻度の低いバッファを効率的に特定し、再利用候補として提供する。</li>
+<li>**フリーリスト管理**: 未使用バッファのリストを管理し、高速な割り当てを可能にする。</li>
+<li>**アクセス戦略の提供**: <code>BAS_BULKREAD</code> や <code>BAS_BULKWRITE</code> などの戦略に基づき、特定のプロセスが使用するバッファリングを制御する。</li>
+<li>**統計情報の収集**: バッファ割り当て回数やクロック掃引の進捗を追跡し、バックグラウンドライター（bgwriter）の動作を支援する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BufferStrategyControl</code>: 共有メモリ上に配置される、バッファ置換戦略のグローバル状態構造体。</li>
+<li><code>StrategyGetBuffer()</code>: バッファマネージャが新しいバッファを必要とする際に呼び出すメイン関数。</li>
+<li><code>ClockSweepTick()</code>: クロック掃引のハンドを移動させ、候補バッファを特定する内部関数。</li>
+<li><code>BufferAccessStrategyData</code>: 特定の操作（スキャン等）で再利用するバッファリングを保持する構造体。</li>
+<li><code>StrategyFreeBuffer()</code>: 使用済みバッファをフリーリストへ戻す際に使用。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ClockSweepTick</code></li>
+<li><code>FreeAccessStrategy</code></li>
+<li><code>GetAccessStrategy</code></li>
+<li><code>GetAccessStrategyWithSize</code></li>
+<li><code>StrategyFreeBuffer</code></li>
+<li><code>StrategyGetBuffer</code></li>
+<li><code>StrategyInitialize</code></li>
+<li><code>StrategyNotifyBgWriter</code></li>
+<li><code>StrategyShmemSize</code></li>
+<li><code>StrategySyncStart</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て要求**: <code>StrategyGetBuffer</code> が呼び出されると、まず <code>BufferAccessStrategy</code>（リングバッファ）を確認し、利用可能なバッファがあれば即座に返却する。 2. **フリーリスト確認**: リングバッファが使えない場合、共有のフリーリストをロックして空きバッファを取得する。 3. **クロック掃引**: フリーリストも空の場合、<code>ClockSweepTick</code> を用いて全バッファを巡回する。各バッファの <code>usage_count</code> を減らしながら、再利用可能な（ピンされておらず、かつ使用頻度が低い）バッファを探す。 4. **通知**: 必要に応じて <code>bgwriter</code> のラッチをセットし、バッファのフラッシュを促す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buf_internals.h</code>: バッファ記述子（<code>BufferDesc</code>）やバッファ状態の定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファマネージャの公開インターフェース。</li>
+<li><code>port/atomics.h</code>: 高速なカウンタ操作のためのアトミック演算。</li>
+<li><code>storage/proc.h</code>: プロセスラッチの操作。</li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/buffer/bufmgr.c</code>: 本モジュールの主要な呼び出し元。</li>
+<li><code>src/backend/storage/buffer/buf_init.c</code>: 共有メモリの初期化と <code>StrategyInitialize</code> の呼び出し元。</li>
+<li><code>src/backend/access/heap/syncscan.c</code>: <code>BAS_BULKREAD</code> のリングサイズ決定に関連するロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スピンロックの粒度**: <code>buffer_strategy_lock</code> はフリーリストの操作にのみ使用され、クロック掃引のメインループでは可能な限りロックを避ける設計になっています。</li>
+<li>**リングバッファの意図**: <code>BufferAccessStrategy</code> は、大量のデータスキャン時にバッファプール全体を汚染（キャッシュの追い出し）しないようにするための仕組みです。</li>
+<li>**注意点**: <code>ClockSweepTick</code> 内での <code>completePasses</code> の更新は、<code>StrategySyncStart</code> が一貫した統計情報を取得できるように慎重に設計されています。コードを読む際は、アトミック操作とスピンロックの使い分けに注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__BufferStrategyControl.html" target="wiki-view"><code>BufferStrategyControl</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__BufferAccessStrategyData.html" target="wiki-view"><code>BufferAccessStrategyData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__ClockSweepTick.html" target="wiki-view"><code>ClockSweepTick</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategyGetBuffer.html" target="wiki-view"><code>StrategyGetBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategyFreeBuffer.html" target="wiki-view"><code>StrategyFreeBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategySyncStart.html" target="wiki-view"><code>StrategySyncStart</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategyNotifyBgWriter.html" target="wiki-view"><code>StrategyNotifyBgWriter</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategyShmemSize.html" target="wiki-view"><code>StrategyShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__StrategyInitialize.html" target="wiki-view"><code>StrategyInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__GetAccessStrategy.html" target="wiki-view"><code>GetAccessStrategy</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__GetAccessStrategyWithSize.html" target="wiki-view"><code>GetAccessStrategyWithSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__freelist_c__FreeAccessStrategy.html" target="wiki-view"><code>FreeAccessStrategy</code></a></li>
+</ul></body></html>

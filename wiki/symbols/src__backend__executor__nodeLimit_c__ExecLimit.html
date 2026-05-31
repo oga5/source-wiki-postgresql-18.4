@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeLimit_c__ExecLimit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecLimit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeLimit.c:39</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQL の <code>LIMIT</code> および <code>OFFSET</code> 句に基づき、下位ノードから取得したタプルのストリームをフィルタリングして返却する実行ノードのメイン処理関数です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecLimit(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code>（<code>LimitState</code> 構造体を含むプラン実行状態）</li>
+<li>**出力**: フィルタリングを通過した <code>TupleTableSlot</code>、またはストリーム終了・範囲外の場合は <code>NULL</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>LimitState</code> 型にキャスト可能であること。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> が呼び出され、割り込みがチェックされる。</li>
+<li><code>LIMIT_INITIAL</code> 状態では、パラメータ評価のために <code>recompute_limits</code> が実行される必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>状態マシンとして動作し、<code>node-&gt;lstate</code> に基づいて以下の処理を行う： 1. **<code>LIMIT_INITIAL</code>**: <code>recompute_limits</code> を呼び出し、<code>LIMIT_RESCAN</code> へ遷移。 2. **<code>LIMIT_RESCAN</code>**: 順方向スキャンのみ許可。<code>offset</code> 分のタプルをスキップし、<code>LIMIT_INWINDOW</code> へ遷移。<code>WITH TIES</code> 指定時は境界タプルを <code>last_slot</code> に保持。 3. **<code>LIMIT_INWINDOW</code>**:</p>
+<ul>
+<li>順方向: <code>count</code> に達するまでタプルを返却。終了時に <code>LIMIT_WINDOWEND</code> または <code>LIMIT_WINDOWEND_TIES</code> へ遷移。</li>
+<li>逆方向: <code>offset</code> を下回らない範囲でタプルを返却。</li>
+<p>4. **<code>LIMIT_EMPTY</code>**: 常に <code>NULL</code> を返却。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecProcNode</code> を介して実行エンジンから呼び出される（<code>limitstate-&gt;ps.ExecProcNode = ExecLimit;</code> による登録）。</li>
+<li>**呼び出し先**: </li>
+<li><code>recompute_limits</code>（初期化時）</li>
+<li><code>ExecProcNode(outerPlan)</code>（下位ノードからのタプル取得）</li>
+<li><code>ExecCopySlot</code>（<code>WITH TIES</code> 時の境界タプル保存）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LimitState</code>: ノードの状態（<code>lstate</code>）、現在の位置（<code>position</code>）、<code>offset</code>/<code>count</code> 値、境界タプル（<code>last_slot</code>）を保持。</li>
+<li><code>PlanState</code>: 実行中のプランツリーの状態。</li>
+<li><code>TupleTableSlot</code>: タプルを保持するスロット。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**逆方向スキャン**: <code>LIMIT_INWINDOW</code> 状態で <code>position</code> が <code>offset + 1</code> 以下の場合、<code>LIMIT_WINDOWSTART</code> へ遷移し <code>NULL</code> を返す。</li>
+<li>**サブプラン終了**: <code>ExecProcNode</code> が <code>NULL</code> を返した場合、<code>LIMIT_EMPTY</code> または <code>LIMIT_SUBPLANEOF</code> へ遷移。</li>
+<li>**エラー**: 逆方向スキャン時にサブプランからタプルが取得できない場合、<code>elog(ERROR)</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>WITH TIES</code> 処理時は <code>last_slot</code> を使用するため、メモリ管理に注意が必要。</li>
+<li>並列実行時のリソース解放については、再スキャンの可能性を考慮した設計上の課題が残されている。</li>
+</ul></body></html>

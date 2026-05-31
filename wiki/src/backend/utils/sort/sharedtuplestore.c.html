@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/sort/sharedtuplestore.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/sort/sharedtuplestore.c</h1>
+<h2>概要</h2>
+<p><code>sharedtuplestore.c</code> は、PostgreSQL の並列クエリ実行において、複数のバックエンド間でタプルを共有・交換するための軽量な一時ストレージ機構を提供します。<code>tuplestore.c</code> の機能を並列処理向けに限定・拡張したもので、各バックエンドが個別のファイルに書き込み、それらを並列にスキャンするモデルを採用しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/sort</code> モジュールにおいて、並列実行時のデータ受け渡しを担うインフラストラクチャです。主に並列ハッシュ結合や並列ソートなど、複数のプロセスが生成したタプルを統合して処理する場面で使用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリ管理**: 参加プロセス数に応じた共有状態（<code>SharedTuplestore</code>）の初期化と見積もり。</li>
+<li>**並列書き込み**: 各バックエンドが自身の担当する一時ファイルへタプルを書き込む機能。</li>
+<li>**並列スキャン**: 複数のバックエンドが協力して、全参加者が書き込んだタプルを重複なく読み出すための同期制御。</li>
+<li>**チャンク化**: データを <code>STS_CHUNK_PAGES</code> 単位で管理し、巨大なタプルのオーバーフロー処理を透過的に行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SharedTuplestore</code>: 共有メモリ上に配置される制御構造体。参加者ごとのロックと読み取り位置を保持。</li>
+<li><code>SharedTuplestoreAccessor</code>: 各バックエンドが保持するローカルな操作用構造体。ファイルハンドルやバッファを管理。</li>
+<li><code>sts_puttuple</code>: タプルを共有ストアに書き込む。必要に応じてメタデータも付与可能。</li>
+<li><code>sts_parallel_scan_next</code>: 並列スキャンで次のタプルを取得する。内部でロックを取得し、読み取り位置を更新する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SharedTuplestoreChunk</code></li>
+<li><code>SharedTuplestoreParticipant</code></li>
+<li><code>sts_attach</code></li>
+<li><code>sts_begin_parallel_scan</code></li>
+<li><code>sts_end_parallel_scan</code></li>
+<li><code>sts_end_write</code></li>
+<li><code>sts_estimate</code></li>
+<li><code>sts_flush_chunk</code></li>
+<li><code>sts_initialize</code></li>
+<li><code>sts_reinitialize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>sts_initialize</code> で共有メモリを確保し、各参加者が <code>sts_attach</code> で接続します。 2. **書き込み**: 各バックエンドは <code>sts_puttuple</code> を呼び出し、<code>BufFile</code> を介して自身の担当ファイルにデータを書き込みます。書き込み終了時は <code>sts_end_write</code> でバッファをフラッシュします。 3. **スキャン**: <code>sts_begin_parallel_scan</code> 後、各バックエンドは <code>sts_parallel_scan_next</code> をループで呼び出します。</p>
+<ul>
+<li>読み取り側は <code>LWLock</code> を用いて、他のプロセスと競合しないように <code>read_page</code> を進め、チャンクを確保します。</li>
+<li>チャンク内のタプルを読み終えると、次のチャンクを確保しに行きます。全参加者のファイルを読み終えるとスキャンが終了します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buffile.h</code>: 一時ファイルの読み書き。</li>
+<li><code>storage/lwlock.h</code>: 並列スキャン時の排他制御。</li>
+<li><code>storage/sharedfileset.h</code>: 共有一時ファイルの管理。</li>
+<li><code>access/htup.h</code>, <code>access/htup_details.h</code>: タプル構造の操作。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/sharedtuplestore.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/sharedtuplestore.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/utils/sort/tuplestore.c</code>: 非並列版のタプルストア。設計思想の比較対象。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの粒度**: <code>SharedTuplestoreParticipant</code> ごとにロックが存在し、読み取り位置の更新時にのみ使用されます。書き込みは各プロセスが専用ファイルを持つため、書き込み時のロックは不要です。</li>
+<li>**オーバーフロー処理**: チャンクサイズを超える巨大なタプルは、複数の「オーバーフローチャンク」に分割されます。読み取り側は <code>chunk_header.overflow</code> を参照して、これらのチャンクをスキップまたは連続して読み込む必要があります。</li>
+<li>**スキャン順序**: 並列スキャンは「全参加者の全タプル」を読み出しますが、特定の順序（ソート順など）は保証されません。あくまで並列処理のデータ分配用です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__SharedTuplestoreChunk.html" target="wiki-view"><code>SharedTuplestoreChunk</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__SharedTuplestoreParticipant.html" target="wiki-view"><code>SharedTuplestoreParticipant</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__SharedTuplestore.html" target="wiki-view"><code>SharedTuplestore</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__SharedTuplestoreAccessor.html" target="wiki-view"><code>SharedTuplestoreAccessor</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_estimate.html" target="wiki-view"><code>sts_estimate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_initialize.html" target="wiki-view"><code>sts_initialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_attach.html" target="wiki-view"><code>sts_attach</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_flush_chunk.html" target="wiki-view"><code>sts_flush_chunk</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_end_write.html" target="wiki-view"><code>sts_end_write</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_reinitialize.html" target="wiki-view"><code>sts_reinitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_begin_parallel_scan.html" target="wiki-view"><code>sts_begin_parallel_scan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__sharedtuplestore_c__sts_end_parallel_scan.html" target="wiki-view"><code>sts_end_parallel_scan</code></a></li>
+</ul></body></html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeCtescan_c__CteScanNext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CteScanNext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeCtescan.c:30</code></li>
+</ul>
+<h2>目的</h2>
+<p>共通テーブル式（CTE）の結果を保持する <code>Tuplestore</code> からタプルを読み取る、または必要に応じて CTE サブプランを実行してタプルを生成・蓄積する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static TupleTableSlot *CteScanNext(CteScanState *node)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>CteScanState *node</code>（CTE スキャンノードの実行時状態）</li>
+<li>**出力**: <code>TupleTableSlot *</code>（取得したタプル、または EOF の場合は空のスロット）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>node-&gt;leader</code> が有効であり、共有の <code>Tuplestorestate</code> が保持されていること。</li>
+<li><code>node-&gt;readptr</code> が現在のスキャン位置として正しく設定されていること。</li>
+<li><code>Tuplestore</code> は他のノードと共有される可能性があるため、タプル取得時にはコピーが必要となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **状態取得**: ノードから実行状態、スキャン方向、および共有 <code>Tuplestore</code> を取得し、現在の読み取りポインタを選択する。 2. **逆方向スキャンの調整**: 逆方向スキャンかつ <code>Tuplestore</code> の EOF に達している場合、必要に応じて <code>tuplestore_advance</code> を呼び出し、末尾のタプルを適切に取得する。 3. **既存データの取得**: <code>Tuplestore</code> からタプルを試行的に取得する。成功すればそのスロットを返す。 4. **遅延評価（CTE サブプラン実行）**: <code>Tuplestore</code> が EOF であり、かつ CTE の実行が完了していない場合、<code>ExecProcNode</code> を呼び出してサブプランを実行する。</p>
+<ul>
+<li>サブプランからタプルが得られた場合、それを <code>Tuplestore</code> に保存し、自身のスロットにコピーして返す。</li>
+<li>サブプランが終了（NULL を返却）した場合は、<code>leader-&gt;eof_cte</code> を真に設定し、終了する。</li>
+<p>5. **終了処理**: 取得できるタプルがない場合は <code>ExecClearTuple</code> を呼び出し、空のスロットを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeCtescan.c</code> 内の <code>ExecScan</code> インターフェース経由で呼び出される（直接的な呼び出し元関数の詳細はソースコード内の静的解析結果からは特定不可）。</li>
+<li>**呼び出し先**: </li>
+<li><code>tuplestore_select_read_pointer</code>, <code>tuplestore_ateof</code>, <code>tuplestore_advance</code>, <code>tuplestore_gettupleslot</code>, <code>tuplestore_puttupleslot</code></li>
+<li><code>ExecProcNode</code> (サブプラン実行用)</li>
+<li><code>ExecCopySlot</code>, <code>ExecClearTuple</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CteScanState</code>: CTE スキャンの実行状態を保持。</li>
+<li><code>Tuplestorestate</code>: CTE の結果を格納する共有ストレージ。</li>
+<li><code>TupleTableSlot</code>: タプルを保持するメモリ領域。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**CTE の空**: サブプランが最初から NULL を返す場合、即座に EOF となる。</li>
+<li>**共有状態**: 他のノードが <code>Tuplestore</code> に書き込みを行う可能性があるため、<code>tuplestore_gettupleslot</code> 呼び出し時にはコピーが必須。</li>
+<li>**サブプランの非堅牢性**: 一度 NULL を返した後に再度呼び出されると不安定になるノードがあるため、<code>eof_cte</code> フラグによるショートサーキットが必須。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>tuplestore_select_read_pointer</code> は、サブプラン実行後に読み取りポインタが変更される可能性があるため、再選択を行う必要がある。</li>
+<li><code>forward</code> 方向のスキャンのみがサブプランの実行をトリガーする。</li>
+</ul></body></html>

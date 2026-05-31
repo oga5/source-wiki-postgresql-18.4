@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/misc/timeout.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/misc/timeout.c</h1>
+<h2>概要</h2>
+<p><code>timeout.c</code> は、PostgreSQL プロセス内における複数のタイムアウトイベントを単一の <code>SIGALRM</code> シグナルで多重化（マルチプレクス）して管理するためのモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/misc</code> ディレクトリに位置し、クエリのタイムアウト（<code>statement_timeout</code>）やデッドロックチェックなど、バックエンドプロセスが非同期に実行すべき時間依存のタスクを統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シグナル多重化**: 複数のタイムアウト要求を <code>active_timeouts</code> 配列で管理し、最も近い期限のものを <code>setitimer</code> でスケジュールする。</li>
+<li>**コールバック実行**: <code>SIGALRM</code> 受信時に期限切れのタスクを特定し、登録されたハンドラ関数を呼び出す。</li>
+<li>**競合回避**: シグナルハンドラとメイン処理間のデータ競合を防ぐため、<code>alarm_enabled</code> フラグを用いた排他制御を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TimeoutId</code>: タイムアウト理由を識別する列挙型。</li>
+<li><code>all_timeouts</code>: 全てのタイムアウト設定を保持する静的配列。</li>
+<li><code>active_timeouts</code>: 現在有効なタイムアウトを期限順に並べた配列。</li>
+<li><code>handle_sig_alarm</code>: <code>SIGALRM</code> を処理するメインのシグナルハンドラ。</li>
+<li><code>schedule_alarm</code>: 次のタイムアウト時刻を計算し、<code>setitimer</code> を呼び出す関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InitializeTimeouts</code></li>
+<li><code>RegisterTimeout</code></li>
+<li><code>enable_timeout</code></li>
+<li><code>enable_timeout_after</code></li>
+<li><code>enable_timeout_every</code></li>
+<li><code>find_active_timeout</code></li>
+<li><code>insert_timeout</code></li>
+<li><code>remove_timeout_index</code></li>
+<li><code>reschedule_timeouts</code></li>
+<li><code>timeout_params</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <code>enable_timeout_after</code> 等が呼び出されると、<code>disable_alarm()</code> でシグナルを抑制し、<code>active_timeouts</code> にタスクを挿入後、<code>schedule_alarm()</code> でタイマーを再設定する。 2. **シグナル発生**: <code>SIGALRM</code> が発生すると <code>handle_sig_alarm</code> が起動。<code>HOLD_INTERRUPTS()</code> で割り込みを禁止し、期限切れのタスクを順次実行する。 3. **再スケジュール**: 繰り返し実行が必要なタスク（<code>TMPARAM_EVERY</code>）は、次回の期限を計算して再度 <code>active_timeouts</code> に挿入し、最後に <code>schedule_alarm()</code> を呼び出して次のシグナルを予約する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>sys/time.h</code>: <code>setitimer</code> および <code>itimerval</code> 構造体。</li>
+<li><code>storage/latch.h</code>: <code>SetLatch</code> によるプロセスウェイクアップ。</li>
+<li><code>utils/timeout.h</code>: 公開 API 定義。</li>
+<li><code>utils/timestamp.h</code>: <code>TimestampTz</code> 等の時間計算関数。</li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/timeout.h</code>: タイムアウト理由の定義と公開関数のヘッダ。</li>
+<li><code>src/backend/storage/ipc/latch.c</code>: <code>SetLatch</code> の実装。タイムアウト発生時に待機中のプロセスを叩き起こすために重要。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**シグナル安全性**: 本モジュールは <code>volatile</code> 変数と <code>sig_atomic_t</code> を多用しています。ハンドラ内での <code>elog(FATAL)</code> や <code>longjmp</code> は、状態の不整合を招く可能性があるため注意が必要です。</li>
+<li>**効率化**: <code>setitimer</code> の呼び出しはコストが高いため、<code>schedule_alarm</code> は「現在設定されているタイマーが十分有効か」を判定し、不要なシステムコールを抑制するロジックを含んでいます。</li>
+<li>**デバッグ**: タイムアウトが期待通りに発生しない場合、<code>signal_pending</code> フラグの状態や、<code>active_timeouts</code> のソート順序を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__timeout_params.html" target="wiki-view"><code>timeout_params</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__find_active_timeout.html" target="wiki-view"><code>find_active_timeout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__insert_timeout.html" target="wiki-view"><code>insert_timeout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__remove_timeout_index.html" target="wiki-view"><code>remove_timeout_index</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__enable_timeout.html" target="wiki-view"><code>enable_timeout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__schedule_alarm.html" target="wiki-view"><code>schedule_alarm</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__handle_sig_alarm.html" target="wiki-view"><code>handle_sig_alarm</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__InitializeTimeouts.html" target="wiki-view"><code>InitializeTimeouts</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__RegisterTimeout.html" target="wiki-view"><code>RegisterTimeout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__reschedule_timeouts.html" target="wiki-view"><code>reschedule_timeouts</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__enable_timeout_after.html" target="wiki-view"><code>enable_timeout_after</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__misc__timeout_c__enable_timeout_every.html" target="wiki-view"><code>enable_timeout_every</code></a></li>
+</ul></body></html>

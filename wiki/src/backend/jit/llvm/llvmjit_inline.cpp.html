@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/jit/llvm/llvmjit_inline.cpp.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/jit/llvm/llvmjit_inline.cpp</h1>
+<h2>概要</h2>
+<p>PostgreSQL の JIT コンパイルにおいて、モジュール境界を越えた関数インライン展開（Cross-module inlining）を実現するための実装です。LLVM のビットコードインデックスを利用し、外部モジュールやコアコードから関数定義を検索・取得して現在のモジュールに統合します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/jit/llvm</code> サブシステムの一部として、JIT コンパイルの最適化フェーズを担います。<code>llvmjit.c</code> 等で生成された LLVM モジュールに対し、実行時に外部関数をインライン化することで、関数呼び出しのオーバーヘッドを削減し、最適化の余地を広げます。</p>
+<h2>責務</h2>
+<ul>
+<li>**インライン計画の策定**: 外部関数参照を解析し、コストベースのヒューリスティックに基づいてインライン化すべき関数を特定する。</li>
+<li>**ビットコードの管理**: 外部モジュールのビットコードをキャッシュし、必要に応じてロードする。</li>
+<li>**コードの統合**: <code>llvm::IRMover</code> を使用して、外部モジュールから関数定義を現在のモジュールへ安全に移動・統合する。</li>
+<li>**再帰的解析**: インライン化対象の関数が依存する他の関数やグローバル変数を再帰的に探索し、インライン化の可否を判定する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>llvm_inline</code>: インライン化処理のメインエントリポイント。</li>
+<li><code>llvm_build_inline_plan</code>: インライン化すべき関数とモジュールのリスト（<code>ImportMapTy</code>）を構築する。</li>
+<li><code>llvm_execute_inline_plan</code>: 計画に基づき、実際に <code>IRMover</code> を用いて関数をインポートする。</li>
+<li><code>module_cache</code> / <code>summary_cache</code>: LLVM モジュールとインデックスを保持する <code>ManagedStatic</code> キャッシュ。</li>
+<li><code>FunctionInlineState</code>: 各関数のインライン化コストや状態を管理する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FunctionInlineStates</code></li>
+<li><code>InlineSearchPath</code></li>
+<li><code>InlineWorkList</code></li>
+<li><code>InlineWorkListItem</code></li>
+<li><code>LinkageTypes</code></li>
+<li><code>ModuleCache</code></li>
+<li><code>SummaryCache</code></li>
+<li><code>llvm_inline_reset_caches</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>llvm_inline</code> が呼び出されると、現在のモジュール内の外部関数参照をスキャンする。 2. **計画構築**: <code>llvm_build_inline_plan</code> が <code>InlineWorkList</code> を用いて、コスト制限内でインライン化可能な関数を探索する。</p>
+<ul>
+<li><code>summaries_for_guid</code> でインデックスから定義を検索。</li>
+<li><code>function_inlinable</code> で再帰的にコストを計算し、依存関係を特定。</li>
+<p>3. **実行**: <code>llvm_execute_inline_plan</code> が <code>ImportMapTy</code> に基づき、必要なモジュールをキャッシュから取得。 4. **統合**: <code>IRMover</code> を使用して、対象関数を現在のモジュールへ移動し、必要に応じてリダイレクト関数（ラッパー）を生成してリンクを解決する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**PostgreSQL**: <code>postgres.h</code>, <code>miscadmin.h</code>, <code>storage/fd.h</code> 等。</li>
+<li>**LLVM Core**: <code>llvm-c/Core.h</code>, <code>llvm/IR/IRBuilder.h</code>, <code>llvm/Linker/IRMover.h</code> 等。</li>
+<li>**LLVM Analysis/Bitcode**: <code>llvm/Analysis/ModuleSummaryAnalysis.h</code>, <code>llvm/Bitcode/BitcodeReader.h</code> 等。</li>
+<li><code>common/string.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>jit/llvmjit.h</code></li>
+<li><code>llvm-c/BitReader.h</code></li>
+<li><code>llvm/ADT/SetVector.h</code></li>
+<li><code>llvm/ADT/StringMap.h</code></li>
+<li><code>llvm/ADT/StringSet.h</code></li>
+<li><code>llvm/IR/Attributes.h</code></li>
+<li><code>llvm/IR/DebugInfo.h</code></li>
+<li><code>llvm/IR/IntrinsicInst.h</code></li>
+<li><code>llvm/IR/ModuleSummaryIndex.h</code></li>
+<li><code>llvm/Support/ManagedStatic.h</code></li>
+<li><code>llvm/Support/MemoryBuffer.h</code></li>
+<li><code>sys/mman.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/types.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/jit/llvm/llvmjit.c</code>: JIT の全体的なライフサイクルとコンテキスト管理。</li>
+<li><code>src/backend/jit/llvm/llvmjit_expr.c</code>: 式のコンパイルと JIT 実行の基盤。</li>
+<li><code>src/backend/jit/llvm/SectionMemoryManager.cpp</code>: JIT 生成コードのメモリ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの生存期間**: <code>module_cache</code> と <code>summary_cache</code> は <code>llvm::ManagedStatic</code> で管理されており、<code>llvm_inline_reset_caches</code> を適切に呼び出さないと、LLVM コンテキスト破棄後に不正な参照が残るリスクがあります。</li>
+<li>**コスト制限**: <code>inline_cost_decay_factor</code> (0.5) により、再帰的なインライン化が進むほどコスト許容値が厳しくなる仕組みです。</li>
+<li>**デバッグ**: <code>INLINE_DEBUG</code> マクロを有効にすると、インライン化の判定プロセスが <code>elog</code> で詳細に出力されます。開発時には非常に有用です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__InlineSearchPath.html" target="wiki-view"><code>InlineSearchPath</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__InlineWorkListItem.html" target="wiki-view"><code>InlineWorkListItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__InlineWorkList.html" target="wiki-view"><code>InlineWorkList</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__FunctionInlineState.html" target="wiki-view"><code>FunctionInlineState</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__FunctionInlineStates.html" target="wiki-view"><code>FunctionInlineStates</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__ImportMapTy.html" target="wiki-view"><code>ImportMapTy</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__ModuleCache.html" target="wiki-view"><code>ModuleCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__SummaryCache.html" target="wiki-view"><code>SummaryCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__llvm_inline_reset_caches.html" target="wiki-view"><code>llvm_inline_reset_caches</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__llvm_inline.html" target="wiki-view"><code>llvm_inline</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__llvm_build_inline_plan.html" target="wiki-view"><code>llvm_build_inline_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_inline_cpp__LinkageTypes.html" target="wiki-view"><code>LinkageTypes</code></a></li>
+</ul></body></html>

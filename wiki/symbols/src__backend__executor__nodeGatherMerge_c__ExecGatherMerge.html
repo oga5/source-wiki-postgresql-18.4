@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeGatherMerge_c__ExecGatherMerge.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecGatherMerge</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeGatherMerge.c:182</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列クエリ実行において、複数のワーカープロセスから送られてくるソート済みのタプルストリームをマージし、単一の順序付きストリームとして出力する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecGatherMerge(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code> （<code>GatherMergeState</code> 構造体としてキャストされる）</li>
+<li>**出力**: マージされた次の <code>TupleTableSlot</code>。ストリームが終了した場合は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>ノードが未初期化（<code>node-&gt;initialized</code> が <code>false</code>）の場合、ワーカーの起動とリーダーの参加設定が行われる。</li>
+<li>並列モードが有効かつワーカーが存在する場合、<code>LaunchParallelWorkers</code> によりワーカーが起動される。</li>
+<li>実行ごとに <code>ResetExprContext</code> が呼び出され、前回のタプルサイクルで割り当てられた式評価用メモリが解放される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回実行時にワーカーを起動し、タプルキューリーダーを作成する。リーダープロセスが参加すべき場合は <code>need_to_scan_locally</code> を設定する。 2. **メモリリセット**: <code>ResetExprContext</code> を呼び出し、式評価用コンテキストをクリーンアップする。 3. **タプル取得**: <code>gather_merge_getnext</code> を呼び出し、バイナリヒープを用いて各ソースから最小のタプルを選択する。 4. **終了判定**: 取得したスロットが <code>NULL</code> であれば終了。 5. **投影**: <code>ps_ProjInfo</code> が存在する場合、<code>ExecProject</code> を適用して結果を整形し、それ以外の場合は取得したスロットをそのまま返す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 実行エンジン（<code>ExecProcNode</code> 経由での呼び出しが想定される）。</li>
+<li>**呼び出し先**: </li>
+<li><code>ExecInitParallelPlan</code>, <code>ExecParallelReinitialize</code>, <code>LaunchParallelWorkers</code>, <code>ExecParallelCreateReaders</code>（並列実行制御）</li>
+<li><code>gather_merge_getnext</code>（タプル取得）</li>
+<li><code>ExecProject</code>（投影処理）</li>
+<li><code>ResetExprContext</code>（メモリ管理）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GatherMergeState</code>: 本ノードの実行状態を保持する構造体。</li>
+<li><code>TupleTableSlot</code>: タプルを保持するコンテナ。</li>
+<li><code>ParallelContext</code>: 並列実行のコンテキスト。</li>
+<li><code>TupleQueueReader</code>: ワーカーからのタプル読み込み用リーダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ワーカー不在**: ワーカーが起動できない、または存在しない場合、リーダープロセスのみで処理を行う。</li>
+<li>**タプル枯渇**: 全てのソースからタプルが供給されなくなった場合、<code>gather_merge_getnext</code> は <code>NULL</code> を返し、本関数も <code>NULL</code> を返す。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、実行中に割り込み要求がある場合は処理を中断する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>node-&gt;initialized</code> フラグにより、ワーカーの起動は初回実行時まで遅延される。</li>
+<li>リーダープロセスの参加可否は <code>parallel_leader_participation</code> 設定またはリーダーが唯一の読み込み元であるかによって決定される。</li>
+<li><code>ps_ProjInfo</code> が設定されている場合、投影処理が必須となるため、<code>ExecProject</code> の戻り値が最終的な出力となる。</li>
+</ul></body></html>

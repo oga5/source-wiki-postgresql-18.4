@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/time/combocid.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/time/combocid.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのタプルヘッダーにおける <code>cmin</code> と <code>cmax</code> のオーバーレイ（領域共有）を管理するモジュールです。同一トランザクション内でタプルの挿入と削除が連続して行われる際、限られたヘッダー領域を効率的に利用するために「Combo CID」という抽象化されたIDを導入します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/time</code> サブシステムの一部として、トランザクションのライフサイクルに紐づくコマンドIDの変換ロジックを提供します。タプルヘッダーの物理的な制約を解消し、論理的なコマンドIDの整合性を維持する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**Combo CIDの生成と管理**: <code>cmin</code> と <code>cmax</code> のペアを単一のID（Combo CID）にマッピングし、バックエンドプライベートなメモリ上に保持する。</li>
+<li>**タプルヘッダーの解釈**: <code>HEAP_COMBOCID</code> フラグが立っている場合に、Combo CIDから元の <code>cmin</code>/<code>cmax</code> を復元する。</li>
+<li>**トランザクション終了時のクリーンアップ**: トランザクション終了時にメモリ上のハッシュテーブルと配列を破棄する。</li>
+<li>**状態のシリアライズ/デシリアライズ**: パラレルクエリ等で必要となるCombo CID状態の移行をサポートする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>HeapTupleHeaderGetCmin</code> / <code>HeapTupleHeaderGetCmax</code>: タプルヘッダーから正しいコマンドIDを取得する公開API。</li>
+<li><code>HeapTupleHeaderAdjustCmax</code>: タプル削除時にCombo CIDが必要か判定し、必要であれば生成する。</li>
+<li><code>comboHash</code>: <code>cmin</code>/<code>cmax</code> ペアからCombo CIDを高速検索するためのハッシュテーブル。</li>
+<li><code>comboCids</code>: Combo CIDをインデックスとして <code>cmin</code>/<code>cmax</code> を保持する配列。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_ComboCid</code></li>
+<li><code>ComboCidEntry</code></li>
+<li><code>ComboCidEntryData</code></li>
+<li><code>ComboCidKey</code></li>
+<li><code>ComboCidKeyData</code></li>
+<li><code>EstimateComboCIDStateSpace</code></li>
+<li><code>GetComboCommandId</code></li>
+<li><code>GetRealCmax</code></li>
+<li><code>GetRealCmin</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **生成**: <code>HeapTupleHeaderAdjustCmax</code> が呼び出されると、<code>GetComboCommandId</code> を経由して <code>comboHash</code> を検索。存在しなければ新規エントリを作成し、<code>comboCids</code> 配列に格納する。 2. **参照**: <code>HeapTupleHeaderGetCmin/Cmax</code> がタプルを読み取る際、<code>HEAP_COMBOCID</code> フラグを確認。立っていれば <code>comboCids</code> 配列をインデックス参照して実値を返す。 3. **破棄**: <code>AtEOXact_ComboCid</code> により、トランザクション終了時にポインタをリセットし、<code>TopTransactionContext</code> の解放に委ねる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/htup_details.h</code>: タプルヘッダー構造とフラグ定義。</li>
+<li><code>access/xact.h</code>: トランザクション状態の判定。</li>
+<li><code>utils/hsearch.h</code>: Combo CID管理用ハッシュテーブルの構築。</li>
+<li><code>utils/memutils.h</code>: <code>TopTransactionContext</code> へのメモリ確保。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/shmem.h</code></li>
+<li><code>utils/combocid.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/combocid.h</code>: 本モジュールの外部公開インターフェース定義。</li>
+<li><code>src/backend/utils/time/snapmgr.c</code>: スナップショット管理。Combo CIDと密接に関連するトランザクションの可視性判定を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本モジュールのデータ構造は <code>TopTransactionContext</code> に確保されます。明示的な <code>pfree</code> は行わず、トランザクション終了時のコンテキスト破棄に依存しています。</li>
+<li>**制約**: <code>ComboCidKeyData</code> に構造体のパディングが存在しないことを前提としたハッシュ操作が行われています。変更を加える際は注意が必要です。</li>
+<li>**利用シーン**: この仕組みは、同一トランザクション内で「挿入したタプルを即座に削除する」という特殊なケースでのみ有効化されます。通常の読み取り操作ではオーバーヘッドは最小限です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__ComboCidKeyData.html" target="wiki-view"><code>ComboCidKeyData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__ComboCidKey.html" target="wiki-view"><code>ComboCidKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__ComboCidEntryData.html" target="wiki-view"><code>ComboCidEntryData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__ComboCidEntry.html" target="wiki-view"><code>ComboCidEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__HeapTupleHeaderGetCmin.html" target="wiki-view"><code>HeapTupleHeaderGetCmin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__HeapTupleHeaderGetCmax.html" target="wiki-view"><code>HeapTupleHeaderGetCmax</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__HeapTupleHeaderAdjustCmax.html" target="wiki-view"><code>HeapTupleHeaderAdjustCmax</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__AtEOXact_ComboCid.html" target="wiki-view"><code>AtEOXact_ComboCid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__GetComboCommandId.html" target="wiki-view"><code>GetComboCommandId</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__GetRealCmin.html" target="wiki-view"><code>GetRealCmin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__GetRealCmax.html" target="wiki-view"><code>GetRealCmax</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__combocid_c__EstimateComboCIDStateSpace.html" target="wiki-view"><code>EstimateComboCIDStateSpace</code></a></li>
+</ul></body></html>

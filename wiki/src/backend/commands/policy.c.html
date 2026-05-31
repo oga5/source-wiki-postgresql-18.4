@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/policy.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/policy.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの行レベルセキュリティ（RLS: Row Level Security）ポリシーを管理するためのコマンド処理を実装するファイルです。<code>CREATE POLICY</code>、<code>ALTER POLICY</code>、<code>DROP POLICY</code> などのDDL操作を処理し、システムカタログ <code>pg_policy</code> を操作します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、テーブルに対するセキュリティ制約の定義と変更を担います。リレーショナルキャッシュ（relcache）と連携し、ポリシー定義の変更を即座に反映させる役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**ポリシーの定義と変更**: <code>CREATE POLICY</code> および <code>ALTER POLICY</code> 文の解析とカタログへの永続化。</li>
+<li>**ポリシーの削除**: <code>RemovePolicyById</code> によるポリシーの除去と依存関係のクリーンアップ。</li>
+<li>**キャッシュ管理**: ポリシー変更時に <code>CacheInvalidateRelcache</code> を呼び出し、プランナや実行エンジンが古いポリシー定義を使用しないように強制する。</li>
+<li>**RLS記述子の構築**: <code>RelationBuildRowSecurity</code> を通じて、テーブルの relcache エントリにポリシー定義をロードする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RelationBuildRowSecurity</code>: テーブルの relcache エントリにポリシー情報を構築する。</li>
+<li><code>CreatePolicy</code> / <code>AlterPolicy</code>: DDL文の実行関数。</li>
+<li><code>RemovePolicyById</code>: 指定されたOIDのポリシーを削除する。</li>
+<li><code>RangeVarCallbackForPolicy</code>: ポリシー操作対象が有効なテーブルか、また操作権限があるかを検証するコールバック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RemoveRoleFromObjectPolicy</code></li>
+<li><code>get_relation_policy_oid</code></li>
+<li><code>parse_policy_command</code></li>
+<li><code>policy_role_list_to_array</code></li>
+<li><code>relation_has_policies</code></li>
+<li><code>rename_policy</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL解析**: <code>CreatePolicy</code> 等が呼び出されると、<code>RangeVarCallbackForPolicy</code> で対象テーブルの所有権と型（テーブルであること）を検証します。 2. **式変換**: <code>transformWhereClause</code> を使用して、ポリシー内の <code>USING</code> や <code>WITH CHECK</code> 句を解析し、実行可能な式ツリーに変換します。 3. **カタログ更新**: <code>pg_policy</code> カタログに対して <code>CatalogTupleInsert</code> や <code>CatalogTupleUpdate</code> を実行します。 4. **依存関係の記録**: <code>recordDependencyOn</code> を使用して、ポリシーとテーブル、ロール間の依存関係を <code>pg_depend</code> および <code>pg_shdepend</code> に登録します。 5. **キャッシュ無効化**: <code>CacheInvalidateRelcache</code> を呼び出し、全バックエンドに対してポリシー変更を通知します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_policy.h</code>: ポリシーカタログの定義。</li>
+<li><code>rewrite/rowsecurity.h</code>: RLSの内部データ構造（<code>RowSecurityDesc</code> 等）。</li>
+<li><code>access/table.h</code> / <code>access/sysscan.h</code>: カタログスキャンとテーブル操作。</li>
+<li><code>parser/parse_node.h</code>: SQL式の解析と変換。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/policy.h</code>: 本ファイルのプロトタイプ定義。</li>
+<li><code>src/backend/rewrite/rowsecurity.c</code>: ロードされたポリシーを実際にクエリ実行時に適用するロジック。</li>
+<li><code>src/backend/catalog/pg_policy.c</code>: カタログ定義そのもの。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはポリシーの「定義」を管理するものであり、クエリ実行時にポリシーを「適用」するロジックは <code>rewrite/rowsecurity.c</code> にあります。</li>
+<li><code>RelationBuildRowSecurity</code> は relcache の構築時に呼ばれるため、メモリリークを防ぐために <code>MemoryContext</code> の管理が厳密に行われています。</li>
+<li><code>pg_policy</code> の <code>polroles</code> は配列として格納されており、<code>policy_role_list_to_array</code> で <code>RoleSpec</code> から OID 配列への変換が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__policy_c__RangeVarCallbackForPolicy.html" target="wiki-view"><code>RangeVarCallbackForPolicy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__parse_policy_command.html" target="wiki-view"><code>parse_policy_command</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__policy_role_list_to_array.html" target="wiki-view"><code>policy_role_list_to_array</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__RelationBuildRowSecurity.html" target="wiki-view"><code>RelationBuildRowSecurity</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__RemovePolicyById.html" target="wiki-view"><code>RemovePolicyById</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__RemoveRoleFromObjectPolicy.html" target="wiki-view"><code>RemoveRoleFromObjectPolicy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__CreatePolicy.html" target="wiki-view"><code>CreatePolicy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__AlterPolicy.html" target="wiki-view"><code>AlterPolicy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__rename_policy.html" target="wiki-view"><code>rename_policy</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__get_relation_policy_oid.html" target="wiki-view"><code>get_relation_policy_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__policy_c__relation_has_policies.html" target="wiki-view"><code>relation_has_policies</code></a></li>
+</ul></body></html>

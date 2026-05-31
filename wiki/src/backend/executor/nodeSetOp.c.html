@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeSetOp.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeSetOp.c</h1>
+<h2>概要</h2>
+<p><code>nodeSetOp.c</code> は、SQL の集合演算である <code>INTERSECT</code> および <code>EXCEPT</code> を実行するための実行ノードです。入力された2つのリレーション（外部・内部）のタプルを比較し、指定された演算ルールに基づいて結果を生成します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> におけるクエリ実行エンジンの一部として、プランナーが生成した <code>SetOp</code> ノードを実行します。<code>UNION</code> 演算とは異なり、重複排除だけでなく「出現回数」をカウントする必要があるため、専用のロジックが実装されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**戦略の切り替え**: 入力データがソート済みか否かに応じ、<code>SETOP_SORTED</code>（マージベース）または <code>SETOP_HASHED</code>（ハッシュベース）のアルゴリズムを選択・実行する。</li>
+<li>**出現回数の集計**: 各グループ内のタプル出現数をカウントし、SQL 標準（<code>INTERSECT ALL</code> 等）に従って出力すべき行数を決定する。</li>
+<li>**リソース管理**: ハッシュテーブルの構築、メモリコンテキストの管理、および再スキャン時の状態リセット。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecSetOp</code>: ノードのメイン実行関数。現在の戦略に応じて適切な取得関数を呼び出す。</li>
+<li><code>SetOpStatePerGroupData</code>: 各グループの左側・右側の出現回数を保持する構造体。</li>
+<li><code>set_output_count</code>: SQL 仕様に基づき、現在のグループから何行出力するかを決定するロジック。</li>
+<li><code>build_hash_table</code>: ハッシュ戦略時に使用するハッシュテーブルを初期化する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndSetOp</code></li>
+<li><code>ExecInitSetOp</code></li>
+<li><code>ExecReScanSetOp</code></li>
+<li><code>SetOpStatePerGroup</code></li>
+<li><code>setop_compare_slots</code></li>
+<li><code>setop_fill_hash_table</code></li>
+<li><code>setop_load_group</code></li>
+<li><code>setop_retrieve_sorted</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化 (<code>ExecInitSetOp</code>)**: 実行戦略（Sorted/Hashed）を判定し、必要なメモリコンテキストや比較関数を準備する。 2. **実行 (<code>ExecSetOp</code>)**:</p>
+<ul>
+<li>**Sorted**: <code>setop_retrieve_sorted</code> がマージジョインのように両入力を順次読み込み、グループごとに比較・カウントを行う。</li>
+<li>**Hashed**: <code>setop_fill_hash_table</code> で全入力を読み込みハッシュテーブルを構築した後、<code>setop_retrieve_hash_table</code> で結果を順次出力する。</li>
+<p>3. **終了 (<code>ExecEndSetOp</code>)**: ハッシュテーブル用のメモリコンテキストを解放し、子ノードを終了させる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/executor.h</code>: 実行エンジン共通のインターフェース。</li>
+<li><code>executor/nodeSetOp.h</code>: ノードの公開インターフェース。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code>: タプル操作の補助。</li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/nodes/execnodes.h</code>: <code>SetOpState</code> 構造体の定義。</li>
+<li><code>src/backend/executor/execGrouping.c</code>: グループ化処理の共通ロジック。</li>
+<li><code>src/backend/executor/nodeHash.c</code>: ハッシュテーブル構築の基盤となる機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**UNION は対象外**: <code>UNION</code> や <code>UNION ALL</code> はこのノードではなく、<code>nodeUnique.c</code> や <code>nodeAppend.c</code> 等で処理されるため、このファイルには含まれません。</li>
+<li>**射影の欠如**: <code>SetOp</code> ノードは射影（Projection）やクオリファイア（Qual）のチェックを行いません。入力されたタプルをそのまま出力するため、必要な場合は上位ノードで処理されます。</li>
+<li>**メモリ管理**: Hashed モードでは <code>tableContext</code> を使用してハッシュテーブルを保持します。再スキャン（<code>ExecReScanSetOp</code>）時にこのコンテキストをリセットすることで、効率的にメモリを再利用しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__SetOpStatePerGroupData.html" target="wiki-view"><code>SetOpStatePerGroupData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__SetOpStatePerGroup.html" target="wiki-view"><code>SetOpStatePerGroup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__build_hash_table.html" target="wiki-view"><code>build_hash_table</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__set_output_count.html" target="wiki-view"><code>set_output_count</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__ExecSetOp.html" target="wiki-view"><code>ExecSetOp</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__setop_retrieve_sorted.html" target="wiki-view"><code>setop_retrieve_sorted</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__setop_load_group.html" target="wiki-view"><code>setop_load_group</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__setop_compare_slots.html" target="wiki-view"><code>setop_compare_slots</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__setop_fill_hash_table.html" target="wiki-view"><code>setop_fill_hash_table</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__ExecInitSetOp.html" target="wiki-view"><code>ExecInitSetOp</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__ExecEndSetOp.html" target="wiki-view"><code>ExecEndSetOp</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeSetOp_c__ExecReScanSetOp.html" target="wiki-view"><code>ExecReScanSetOp</code></a></li>
+</ul></body></html>

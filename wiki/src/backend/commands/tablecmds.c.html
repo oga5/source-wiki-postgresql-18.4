@@ -1,0 +1,173 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/tablecmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/tablecmds.c</h1>
+<h2>概要</h2>
+<p><code>tablecmds.c</code> は、PostgreSQL におけるテーブル、インデックス、シーケンス、ビュー、マテリアライズドビュー、外部テーブルの構造変更（DDL）を司る中核的なソースファイルです。<code>CREATE</code>, <code>ALTER</code>, <code>DROP</code>, <code>TRUNCATE</code> コマンドの実行ロジックを保持し、システムカタログの更新、物理ストレージの再構築、依存関係の管理、およびパーティショニングに関連する複雑な状態遷移を制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムにおいて、DDL コマンドの実行エンジンとして機能します。パーサーが生成した構文木を受け取り、カタログ操作（<code>catalog/</code>）やストレージ管理（<code>storage/</code>）と連携して、データベーススキーマの変更をトランザクションの整合性を保ちながら実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL コマンドのディスパッチと実行**: <code>DefineRelation</code> や <code>AlterTable</code> を中心としたコマンドのライフサイクル管理。</li>
+<li>**スキーマ変更の多段階実行**: <code>ALTER TABLE</code> におけるフェーズ 1（準備・検証）、フェーズ 2（カタログ更新）、フェーズ 3（データスキャン・再構築）の制御。</li>
+<li>**継承とパーティショニングの管理**: 継承関係のカタログ更新、パーティションのバインド管理、インデックスやトリガーのクローン作成。</li>
+<li>**制約の管理**: <code>CHECK</code>, <code>NOT NULL</code>, <code>FOREIGN KEY</code> 制約の追加・削除・検証。</li>
+<li>**物理ストレージの再構築**: <code>TRUNCATE</code> や <code>ALTER TABLE</code> によるテーブル再構築時のファイル操作。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ALTER TABLE 制御構造</h3>
+<ul>
+<li><code>AlteredTableInfo</code>: <code>ALTER TABLE</code> 実行中にテーブルごとの変更状態を保持する構造体。</li>
+<li><code>AlterTablePass</code>: コマンド実行順序を制御するフェーズ（DROP, ADD_COL, ADD_CONSTR 等）。</li>
+<li><code>AT_NUM_PASSES</code>: 実行フェーズの総数。</li>
+</ul>
+<h3>制約・列管理</h3>
+<ul>
+<li><code>NewConstraint</code>: フェーズ 3 で検証が必要な制約情報を保持。</li>
+<li><code>NewColumnValue</code>: 型変更やデフォルト値計算が必要な列の情報を保持。</li>
+</ul>
+<h3>ユーティリティ・コールバック</h3>
+<ul>
+<li><code>DefineRelation</code>: <code>CREATE TABLE</code> のメインエントリポイント。</li>
+<li><code>RemoveRelations</code>: <code>DROP</code> コマンドの共通処理。</li>
+<li><code>ExecuteTruncate</code>: <code>TRUNCATE</code> コマンドの実行。</li>
+<li><code>RangeVarCallbackFor...</code>: <code>RangeVar</code> 解決時に権限やロックを検証するコールバック群。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterTablePass</code></li>
+<li><code>AlteredTableInfo</code></li>
+<li><code>AttachIndexCallbackState</code></li>
+<li><code>DropRelationCallbackState</code></li>
+<li><code>ForeignTruncateInfo</code></li>
+<li><code>NewColumnValue</code></li>
+<li><code>NewConstraint</code></li>
+<li><code>OnCommitItem</code></li>
+<li><code>addFkConstraintSides</code></li>
+<li><code>dropmsgstrings</code></li>
+<li><code>truncate_check_perms</code></li>
+<li><code>truncate_check_rel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **フェーズ 1 (Prep)**: <code>ATController</code> が <code>ATPrepCmd</code> を呼び出し、サブコマンドを <code>AlteredTableInfo</code> の <code>subcmds</code> 配列（<code>AlterTablePass</code> ごとに分類）にキューイングします。 2. **フェーズ 2 (Catalogs)**: <code>ATRewriteCatalogs</code> が各パスを順に実行し、<code>ATExecCmd</code> を通じてカタログを更新します。 3. **フェーズ 3 (Rewrite)**: <code>ATRewriteTables</code> が必要に応じてテーブルをスキャンまたは再構築します。制約の検証やデフォルト値の計算はここで実行されます。 4. **依存関係**: <code>find_composite_type_dependencies</code> や <code>RememberAllDependentForRebuilding</code> を使用して、変更対象に依存するオブジェクトを特定し、再構築を予約します。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>catalog/heap.h</code>, <code>catalog/index.h</code>, <code>catalog/pg_class.h</code> 等、システムカタログの操作。</li>
+<li>**アクセス手法**: <code>access/heapam.h</code>, <code>access/tableam.h</code> 等、テーブルデータへのアクセス。</li>
+<li>**ストレージ**: <code>storage/lmgr.h</code> (ロック管理), <code>storage/smgr.h</code> (物理ファイル操作)。</li>
+<li>**ユーティリティ**: <code>utils/relcache.h</code> (リレーションキャッシュ), <code>utils/syscache.h</code> (システムキャッシュ)。</li>
+<li><code>access/attmap.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/gist.h</code></li>
+<li><code>access/heapam_xlog.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/toast_compression.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/partition.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_attrdef.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_depend.h</code></li>
+<li><code>catalog/pg_foreign_table.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_policy.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_publication_rel.h</code></li>
+<li><code>catalog/pg_rewrite.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>catalog/toasting.h</code></li>
+<li><code>commands/cluster.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><code>commands/user.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>foreign/foreign.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/parsenodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>parser/parser.h</code></li>
+<li><code>partitioning/partbounds.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteDefine.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/lock.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>utils/usercontext.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/tablecmds.h</code>: 本ファイルのプロトタイプ定義。</li>
+<li><code>src/backend/catalog/heap.c</code>: <code>heap_create_with_catalog</code> 等の低レベルなカタログ操作。</li>
+<li><code>src/backend/parser/parse_utilcmd.c</code>: DDL コマンドの変換処理。</li>
+<li><code>src/backend/commands/indexcmds.c</code>: インデックス作成の詳細ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**複雑性**: 本ファイルは非常に巨大であり、継承、パーティショニング、外部テーブル、型変更など、多くの機能が混在しています。特定の機能（例: <code>ALTER TABLE</code>）を追う場合は、<code>ATController</code> からの呼び出し階層を追うのが推奨されます。</li>
+<li>**メモリ管理**: <code>AlteredTableInfo</code> は <code>CacheMemoryContext</code> 等の適切なメモリコンテキストで管理される必要があります。</li>
+<li>**ロック**: <code>AccessExclusiveLock</code> が多用されます。デッドロックを避けるため、親テーブルから子テーブル、あるいはテーブルからインデックスという順序でロックを取得する設計になっています。</li>
+<li>**省略**: 本ファイルには <code>TRUNCATE</code> の詳細な物理削除ロジックや、パーティションのバインド検証ロジックが含まれますが、これらは非常に詳細なため、必要に応じて個別のヘルパー関数を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__OnCommitItem.html" target="wiki-view"><code>OnCommitItem</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__AlterTablePass.html" target="wiki-view"><code>AlterTablePass</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__AlteredTableInfo.html" target="wiki-view"><code>AlteredTableInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__NewConstraint.html" target="wiki-view"><code>NewConstraint</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__NewColumnValue.html" target="wiki-view"><code>NewColumnValue</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__dropmsgstrings.html" target="wiki-view"><code>dropmsgstrings</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__DropRelationCallbackState.html" target="wiki-view"><code>DropRelationCallbackState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__ForeignTruncateInfo.html" target="wiki-view"><code>ForeignTruncateInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__addFkConstraintSides.html" target="wiki-view"><code>addFkConstraintSides</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__truncate_check_rel.html" target="wiki-view"><code>truncate_check_rel</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__truncate_check_perms.html" target="wiki-view"><code>truncate_check_perms</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tablecmds_c__AttachIndexCallbackState.html" target="wiki-view"><code>AttachIndexCallbackState</code></a></li>
+</ul></body></html>

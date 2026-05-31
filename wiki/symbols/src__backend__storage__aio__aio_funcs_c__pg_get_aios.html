@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__aio_funcs_c__pg_get_aios.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_get_aios</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/aio/aio_funcs.c:47</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの非同期I/O（AIO）サブシステムの稼働状況をSQLインターフェース経由で可視化し、現在実行中または完了したI/O操作の状態をテーブル形式（SRF）で返却します。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum pg_get_aios(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PG_FUNCTION_ARGS</code>（SQL関数呼び出しの引数）</li>
+<li>**出力**: <code>tuplestore</code> に格納された15列のレコードセット（SRF）。各レコードにはPID、I/O ID、世代番号、状態、操作種別、オフセット、サイズ、ターゲット名、結果などが含まれます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>ロックフリーで共有メモリ上の <code>PgAioHandle</code> を読み取るため、<code>pg_read_barrier()</code> を使用してメモリ整合性を保証しています。</li>
+<li>世代番号（<code>generation</code>）の不一致は、I/Oの再利用（完了後の新規開始）を意味し、その場合は表示をスキップします。</li>
+<li>状態（<code>state</code>）の変更は、楽観的並行制御により再試行（<code>retry</code>）で解決されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>InitMaterializedSRF</code> で結果セットを初期化します。 2. <code>pgaio_ctl-&gt;io_handles</code> を走査し、各ハンドルに対して以下を実行します。</p>
+<ul>
+<li>世代番号と状態を記録し、ハンドルと <code>iovec</code> をローカルメモリにコピーします。</li>
+<li>読み取り後に世代番号が変化した場合はスキップし、状態が変化した場合は <code>retry</code> ラベルへ戻ります。</li>
+<p>3. 取得したデータを <code>Datum</code> 配列に変換し、<code>tuplestore_putvalues</code> で結果セットに追加します。 4. <code>PGAIO_HS_HANDED_OUT</code> 状態の場合は、一部の列をNULLとして出力します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQLインターフェース（システムビュー等からの呼び出しが想定されますが、ソースコード上での具体的な呼び出し元は明示されていません）。</li>
+<li>**呼び出し先**: <code>InitMaterializedSRF</code>, <code>pgaio_io_get_id</code>, <code>GetPGProcByNumber</code>, <code>pg_read_barrier</code>, <code>memcpy</code>, <code>pgaio_io_get_state_name</code>, <code>pgaio_io_get_op_name</code>, <code>iov_byte_length</code>, <code>pgaio_io_get_target_name</code>, <code>pgaio_result_status_string</code>, <code>pgaio_io_get_target_description</code>, <code>tuplestore_putvalues</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioHandle</code>: I/O操作の管理構造体。</li>
+<li><code>pgaio_ctl</code>: AIOサブシステム全体の制御構造体。</li>
+<li><code>tuplestore</code>: SRFの結果を保持するメモリ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ライブロックの回避**: I/O状態の変化に対して再試行を行いますが、状態遷移は一方向であるため、無限ループの危険性は低い設計となっています。</li>
+<li>**IDの再利用**: 世代番号のチェックにより、I/O完了後に同じIDで開始された新しい操作を誤って表示することを防ぎます。</li>
+<li>**PIDの欠落**: プロセスが終了している場合など、PIDが取得できない場合はNULLを返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はロックを使用しないため、共有メモリへのアクセスには常に <code>pg_read_barrier()</code> を伴う必要があります。</li>
+<li><code>PG_GET_AIOS_COLS</code>（15列）の定義を変更する場合は、<code>values</code> および <code>nulls</code> 配列のサイズと、<code>tuplestore_putvalues</code> への入力を整合させる必要があります。</li>
+</ul></body></html>

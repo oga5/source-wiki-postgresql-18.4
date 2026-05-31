@@ -1,0 +1,158 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/dependency.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/dependency.c</h1>
+<h2>概要</h2>
+<p><code>dependency.c</code> は、PostgreSQL におけるオブジェクト間の依存関係（<code>pg_depend</code>）を管理し、<code>DROP</code> コマンド実行時の連鎖削除（<code>CASCADE</code>）を制御する中核的なモジュールです。オブジェクトの削除が他のオブジェクトに与える影響をグラフとして探索し、整合性を保ちながら削除順序を決定する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムにおいて、オブジェクトのライフサイクル管理の最終段階を担います。<code>commands/</code> 以下の DDL ハンドラがオブジェクトの物理削除を要求する際、本モジュールが「削除して良いか」「他に何を削除すべきか」を判断します。</p>
+<h2>責務</h2>
+<ul>
+<li>**依存関係の探索**: <code>pg_depend</code> をスキャンし、削除対象オブジェクトに依存する全オブジェクトを再帰的に特定。</li>
+<li>**削除順序の決定**: 依存関係グラフをトポロジカルソートに近い順序で並べ替え、安全な削除順序を生成。</li>
+<li>**削除の実行**: <code>doDeletion</code> を通じて各オブジェクトの型に応じた削除関数をディスパッチ。</li>
+<li>**整合性チェック**: <code>RESTRICT</code> モード時の依存関係違反の検出と、エラーメッセージの生成。</li>
+<li>**メタデータ整理**: 削除に伴う <code>pg_depend</code>、<code>pg_shdepend</code>、コメント、セキュリティラベル、初期権限のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>削除制御・実行</h3>
+<ul>
+<li><code>performDeletion()</code>: 単一オブジェクト削除のメインエントリポイント。</li>
+<li><code>performMultipleDeletions()</code>: 複数オブジェクトを同時に削除する際の制御関数。</li>
+<li><code>findDependentObjects()</code>: 依存関係グラフを再帰的に探索し、削除対象リストを構築する中核関数。</li>
+<li><code>deleteObjectsInList()</code>: 構築されたリストに基づき、適切な順序で削除を実行。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>ObjectAddresses</code>: 削除対象オブジェクトのリストを保持する動的配列。</li>
+<li><code>ObjectAddressExtra</code>: 削除対象のフラグ（<code>DEPFLAG_*</code>）や依存元情報を保持する補助構造体。</li>
+<li><code>ObjectAddressStack</code>: 再帰探索中の循環参照を検出し、無限ループを防ぐためのスタック。</li>
+</ul>
+<h3>依存関係探索（式）</h3>
+<ul>
+<li><code>recordDependencyOnExpr()</code>: 式ツリーを走査し、参照されているオブジェクトを特定して依存関係を記録。</li>
+<li><code>find_expr_references_walker()</code>: 式ツリーを再帰的に歩き、<code>Var</code> や <code>FuncExpr</code> 等からオブジェクト参照を抽出する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AcquireDeletionLock</code></li>
+<li><code>DeleteInitPrivs</code></li>
+<li><code>DropObjectById</code></li>
+<li><code>ObjectAddressAndFlags</code></li>
+<li><code>ObjectAddressExtra</code></li>
+<li><code>ObjectAddressStack</code></li>
+<li><code>ObjectAddresses</code></li>
+<li><code>ReleaseDeletionLock</code></li>
+<li><code>eliminate_duplicate_dependencies</code></li>
+<li><code>find_expr_references_context</code></li>
+<li><code>find_expr_references_walker</code></li>
+<li><code>process_function_rte_ref</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>performDeletion</code> が <code>pg_depend</code> を開き、<code>new_object_addresses</code> で空のリストを作成。 2. **探索**: <code>findDependentObjects</code> が再帰的に呼び出され、<code>pg_depend</code> をスキャンして依存先をリストに追加。</p>
+<ul>
+<li>循環参照は <code>ObjectAddressStack</code> で管理。</li>
+<li><code>DEPFLAG_</code> を用いて、削除理由（<code>AUTO</code>, <code>INTERNAL</code> 等）を追跡。</li>
+<p>3. **検証**: <code>reportDependentObjects</code> がリストを走査し、<code>RESTRICT</code> モード違反がないか確認。 4. **実行**: <code>deleteObjectsInList</code> がリストを順に処理。</p>
+<li><code>deleteOneObject</code> が <code>doDeletion</code> を呼び出し、各カタログの削除関数（<code>heap_drop_with_catalog</code> 等）を実行。</li>
+<li>関連する <code>pg_depend</code> レコードや権限情報を削除。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_depend.h</code>: 依存関係のスキーマ定義。</li>
+<li><code>access/table.h</code>, <code>access/genam.h</code>: カタログテーブルへのアクセスとスキャン。</li>
+<li><code>utils/syscache.h</code>: オブジェクトの高速検索。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式ツリーの走査（<code>query_tree_walker</code> 等）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_amop.h</code></li>
+<li><code>catalog/pg_amproc.h</code></li>
+<li><code>catalog/pg_attrdef.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_cast.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_conversion.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_default_acl.h</code></li>
+<li><code>catalog/pg_event_trigger.h</code></li>
+<li><code>catalog/pg_extension.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_init_privs.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_parameter_acl.h</code></li>
+<li><code>catalog/pg_policy.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_publication.h</code></li>
+<li><code>catalog/pg_publication_namespace.h</code></li>
+<li><code>catalog/pg_publication_rel.h</code></li>
+<li><code>catalog/pg_rewrite.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_transform.h</code></li>
+<li><code>catalog/pg_trigger.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_ts_parser.h</code></li>
+<li><code>catalog/pg_ts_template.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/extension.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteRemove.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/dependency.h</code>: 依存関係タイプ（<code>DependencyType</code>）の定義。</li>
+<li><code>src/backend/catalog/objectaddress.c</code>: <code>ObjectAddress</code> 構造体の操作ユーティリティ。</li>
+<li><code>src/backend/commands/</code>: 各種 <code>DROP</code> コマンドの実装（<code>trigger.c</code>, <code>typecmds.c</code> 等）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ObjectAddresses</code> は <code>palloc</code> を使用し、<code>free_object_addresses</code> で明示的に解放する必要があります。</li>
+<li>**再帰の深さ**: 複雑な依存関係を持つデータベースでは再帰が深くなるため、<code>check_stack_depth()</code> でスタックオーバーフローを防止しています。</li>
+<li>**ロック**: <code>AcquireDeletionLock</code> は削除対象に対して <code>AccessExclusiveLock</code> を取得します。デッドロックを避けるため、再帰探索中にロックを解放・再取得する複雑なロジックが含まれています。</li>
+<li>**省略された詳細**: <code>doDeletion</code> 内の各オブジェクト型ごとの具体的な削除ロジックは、各カタログのハンドラ関数に委譲されており、本ファイルではディスパッチのみを行っています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__ObjectAddressExtra.html" target="wiki-view"><code>ObjectAddressExtra</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__ObjectAddresses.html" target="wiki-view"><code>ObjectAddresses</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__ObjectAddressStack.html" target="wiki-view"><code>ObjectAddressStack</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__ObjectAddressAndFlags.html" target="wiki-view"><code>ObjectAddressAndFlags</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__find_expr_references_context.html" target="wiki-view"><code>find_expr_references_context</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__DropObjectById.html" target="wiki-view"><code>DropObjectById</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__AcquireDeletionLock.html" target="wiki-view"><code>AcquireDeletionLock</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__ReleaseDeletionLock.html" target="wiki-view"><code>ReleaseDeletionLock</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__find_expr_references_walker.html" target="wiki-view"><code>find_expr_references_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__process_function_rte_ref.html" target="wiki-view"><code>process_function_rte_ref</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__eliminate_duplicate_dependencies.html" target="wiki-view"><code>eliminate_duplicate_dependencies</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__dependency_c__DeleteInitPrivs.html" target="wiki-view"><code>DeleteInitPrivs</code></a></li>
+</ul></body></html>

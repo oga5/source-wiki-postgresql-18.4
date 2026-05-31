@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__dsm_c__dsm_detach.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>dsm_detach</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/dsm.c:802</code></li>
+</ul>
+<h2>目的</h2>
+<p>動的共有メモリ（DSM）セグメントのデタッチ処理を行い、参照カウントがゼロに達した場合はセグメントの破棄を試行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void dsm_detach(dsm_segment *seg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>seg</code> (デタッチ対象の <code>dsm_segment</code> 構造体へのポインタ)</li>
+<li>**出力**: なし（戻り値なし）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>seg</code> は有効な <code>dsm_segment</code> を指している必要がある。</li>
+<li>割り込みを禁止した状態でコールバックを実行し、完了後に復帰させる。</li>
+<li>参照カウントが 1 の場合、そのセグメントはピン留め（pinned）されていない必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **コールバック実行**: <code>seg-&gt;on_detach</code> リストに登録された全コールバックを順次実行し、実行後にリストから削除する。 2. **マッピング解除**: <code>seg-&gt;mapped_address</code> が存在する場合、<code>dsm_impl_op</code> を用いてメモリマッピングを解除する。 3. **参照カウント更新**: <code>DynamicSharedMemoryControlLock</code> を取得し、制御セグメント内の参照カウントをデクリメントする。 4. **セグメント破棄**: 参照カウントが 1 になった場合、<code>dsm_impl_op</code> (DSM_OP_DESTROY) を呼び出してセグメントの破棄を試みる。成功時は制御セグメントのスロットを解放する。 5. **リソース解放**: <code>ResourceOwner</code> からの登録解除を行い、<code>dsm_segment</code> 構造体自体を <code>pfree</code> する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>contrib/pg_prewarm/autoprewarm.c</code></li>
+<li><code>src/backend/access/common/session.c</code></li>
+<li><code>src/backend/access/transam/parallel.c</code></li>
+<li><code>src/backend/replication/logical/applyparallelworker.c</code></li>
+<li><code>src/backend/storage/ipc/dsm.c</code> (内部のクリーンアップ処理)</li>
+<li>**呼び出し先**:</li>
+<li><code>dsm_impl_op</code> (OS 依存のメモリ操作)</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>ResourceOwnerForgetDSM</code></li>
+<li><code>slist_pop_head_node</code> / <code>pfree</code> 等のメモリ・リスト管理関数</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>dsm_segment</code>: バックエンドローカルなセグメント管理構造体。</li>
+<li><code>dsm_control_header</code> / <code>dsm_control_item</code>: 共有メモリ上の制御領域。</li>
+<li><code>ResourceOwner</code>: リソース管理用構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**マッピング解除の失敗**: マッピング解除に失敗しても、エラーを投げずに処理を続行する。</li>
+<li>**破棄の失敗**: セグメントの破棄に失敗した場合、参照カウントは 1 のまま維持される。これは将来的な再試行（ポストマスター終了時など）に委ねられる。</li>
+<li>**割り込み**: 割り込みによる中断を防ぐため、コールバック実行中は <code>HOLD_INTERRUPTS()</code> を使用する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はエラーを投げない設計となっている。これはトランザクションアボート時のクリーンアップ中にさらなるエラーが発生するのを防ぐためである。</li>
+<li><code>is_main_region_dsm_handle</code> で判定されるメイン領域の DSM は、OS 依存の操作ではなく <code>FreePageManager</code> を通じて管理される。</li>
+</ul></body></html>

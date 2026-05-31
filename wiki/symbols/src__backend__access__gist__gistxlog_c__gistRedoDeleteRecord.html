@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistxlog_c__gistRedoDeleteRecord.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistRedoDeleteRecord</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistxlog.c:171</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスの削除操作に関するWALレコードをリプレイし、対象ページから指定されたタプルを削除してインデックスの整合性を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gistRedoDeleteRecord(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの更新とロック解除を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> は <code>gistxlogDelete</code> 構造体を含む有効なWALレコードであること。</li>
+<li>ホットスタンバイ環境下では、ページ更新前に <code>ResolveRecoveryConflictWithSnapshot</code> による競合解決が必須である。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>gistxlogDelete</code> データを抽出する。 2. ホットスタンバイ環境であれば、<code>ResolveRecoveryConflictWithSnapshot</code> を呼び出し、削除操作がスタンバイ側のクエリと競合しないことを保証する。 3. <code>XLogReadBufferForRedo</code> を使用して対象ページを読み込む。 4. <code>BLK_NEEDS_REDO</code> が返された場合:</p>
+<ul>
+<li><code>PageIndexMultiDelete</code> を実行し、指定されたオフセットのタプルを削除する。</li>
+<li><code>GistClearPageHasGarbage</code> および <code>GistMarkTuplesDeleted</code> を呼び出し、ページの状態を更新する。</li>
+<li>ページのLSNを更新し、<code>MarkBufferDirty</code> でダーティ状態にする。</li>
+<p>5. バッファが有効であれば、<code>UnlockReleaseBuffer</code> でロックを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gist_redo</code>（<code>src/backend/access/gist/gistxlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: </li>
+<li><code>ResolveRecoveryConflictWithSnapshot</code></li>
+<li><code>XLogReadBufferForRedo</code></li>
+<li><code>PageIndexMultiDelete</code></li>
+<li><code>GistClearPageHasGarbage</code></li>
+<li><code>GistMarkTuplesDeleted</code></li>
+<li><code>PageSetLSN</code></li>
+<li><code>MarkBufferDirty</code></li>
+<li><code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>gistxlogDelete</code>: 削除対象のオフセット情報や競合解決に必要なメタデータを含む構造体。</li>
+<li><code>XLogReaderState</code>: WALレコードの読み取り状態を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、ページ更新はスキップされる。</li>
+<li>ホットスタンバイ環境での競合解決に失敗した場合、リカバリプロセスが停止または待機する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はGiSTの削除操作に特化している。バキューム処理による削除と混同しないこと（バキュームの競合解決は別途 <code>XLOG_HEAP2_PRUNE_VACUUM_SCAN</code> 等で処理済みであるため）。</li>
+<li>ページ内のタプル削除後に <code>GistClearPageHasGarbage</code> を呼び出すことで、ページ内の不要領域フラグを適切にクリアしている点に注意。</li>
+</ul></body></html>

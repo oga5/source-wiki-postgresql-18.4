@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>modules/src__backend__access__gist.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>src/backend/access/gist</h1>
+<h2>システム内での役割</h2>
+<p><code>src/backend/access/gist</code> は、PostgreSQLにおける汎用検索木（GiST: Generalized Search Tree）インデックスアクセスメソッドを実装するモジュールです。R-treeなどの木構造を抽象化し、空間データやテキスト検索など、多様なデータ型に対するインデックス構築、検索、およびメンテナンス機能を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス操作の統括**: 挿入、検索、削除、およびページ分割の制御。</li>
+<li>**データ型固有のロジック抽象化**: 演算子クラス（opclass）を介した一致判定、ペナルティ計算、分割戦略の提供。</li>
+<li>**物理構造の維持**: インデックスページの初期化、WAL（Write-Ahead Log）による整合性確保、および並行制御。</li>
+<li>**効率的な構築**: 大規模データに対するソート済み構築やバッファリング構築の実行。</li>
+</ul>
+<h2>このモジュールのファイル</h2>
+<ul>
+<li>**コア制御**: <code>gist.c</code> (挿入・分割制御), <code>gistutil.c</code> (共通ユーティリティ)</li>
+<li>**構築**: <code>gistbuild.c</code> (構築戦略), <code>gistbuildbuffers.c</code> (バッファリング管理)</li>
+<li>**検索・スキャン**: <code>gistget.c</code> (タプル取得), <code>gistscan.c</code> (スキャン管理)</li>
+<li>**メンテナンス**: <code>gistvacuum.c</code> (VACUUM処理), <code>gistvalidate.c</code> (定義検証)</li>
+<li>**分割・WAL**: <code>gistsplit.c</code> (分割アルゴリズム), <code>gistxlog.c</code> (WALリプレイ)</li>
+<li>**サポート関数**: <code>gistproc.c</code> (幾何データ型等のサポート)</li>
+</ul>
+<h2>主要なデータ構造</h2>
+<ul>
+<li><code>GISTSTATE</code>: インデックス操作に必要なサポート関数のキャッシュと状態管理。</li>
+<li><code>GISTInsertStack</code>: ツリー降下時のパスを保持し、分割時の親ノード更新に使用。</li>
+<li><code>GISTScanOpaque</code>: スキャン中の検索キュー（<code>pairingheap</code>）やメモリコンテキストを保持。</li>
+<li><code>GistBuildMode</code>: インデックス構築戦略（ソート、バッファリング等）の定義。</li>
+<li><code>GistSplitUnion</code>: ページ分割時にユニオンキーを計算するための作業用構造体。</li>
+</ul>
+<h2>主なフロー</h2>
+<p>1. **挿入**: <code>gistinsert</code> がルートからリーフまで降下し、<code>gistchoose</code> で最適ノードを選択。溢れる場合は <code>gistSplit</code> でページを分割し、親ノードへ再帰的に更新を伝播。 2. **検索**: <code>gistgettuple</code> が <code>GISTScanOpaque</code> を利用し、<code>Consistent</code> 関数で条件判定を行いながらインデックスを走査。順序付き検索では <code>pairingheap</code> を用いて距離順にタプルを抽出。 3. **構築**: <code>gistbuild</code> がデータ量に応じて「ソート済み構築」または「バッファリング構築」を選択し、効率的にインデックスを生成。 4. **WALリプレイ**: <code>gist_redo</code> がWALレコードを解析し、ページ更新や分割を再実行してクラッシュリカバリを実現。</p>
+<h2>外部依存</h2>
+<ul>
+<li><code>postgres.h</code> (基本定義)</li>
+<li><code>access/gist_private.h</code> (GiST内部構造体)</li>
+<li><code>storage/bufmgr.h</code> (バッファ管理)</li>
+<li><code>storage/indexfsm.h</code> (空き領域マップ)</li>
+<li><code>utils/memutils.h</code> (メモリコンテキスト管理)</li>
+<li><code>access/xloginsert.h</code> (WAL生成)</li>
+</ul>
+<h2>内部構成</h2>
+<p>本モジュールは単一のディレクトリで構成されており、サブモジュールは存在しません。各ファイルは役割ごとに明確に分離されています。</p>
+<h2>推奨読書順</h2>
+<p>1. <code>gistproc.c</code> (opclassの役割を理解) 2. <code>gistutil.c</code> (共通基盤の理解) 3. <code>gist.c</code> (挿入・分割の制御フロー) 4. <code>gistbuild.c</code> (構築アルゴリズム) 5. <code>gistget.c</code> (検索ロジック) 6. <code>gistsplit.c</code> (分割戦略) 7. <code>gistxlog.c</code> (永続化とリカバリ) 8. <code>gistvacuum.c</code> (メンテナンス) 9. <code>gistscan.c</code> (スキャンライフサイクル) 10. <code>gistbuildbuffers.c</code> (バッファリング詳細) 11. <code>gistvalidate.c</code> (検証ロジック)</p>
+<h2>未解決の問い</h2>
+<ul>
+<li>LLMベースのモジュール合成を完了させた後、各ファイル間の複雑な依存関係（特に <code>gist.c</code> と <code>gistutil.c</code> の境界）をさらに精緻化する。</li>
+</ul></body></html>

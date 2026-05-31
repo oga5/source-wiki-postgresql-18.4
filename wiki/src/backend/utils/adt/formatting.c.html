@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/formatting.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/formatting.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL におけるデータ型（Timestamp, Numeric, int, float 等）のフォーマット変換関数（<code>to_char</code>, <code>to_timestamp</code>, <code>to_date</code>, <code>to_number</code>）および文字列の大文字・小文字変換関数を実装するモジュールです。Oracle の同名ルーチンに触発された設計となっており、複雑なフォーマット文字列を解析・キャッシュし、内部表現と文字列間の相互変換を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> サブシステムの一部として、SQL レベルの型変換関数を提供します。特に日時型と数値型のシリアライズ・デシリアライズにおいて、ロケールやフォーマット指定子を考慮した柔軟な変換ロジックを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**フォーマット解析**: SQL で指定されたフォーマット文字列を <code>FormatNode</code> ツリーに変換し、効率的な変換処理を可能にする。</li>
+<li>**変換処理**: 内部バイナリ表現（<code>TmToChar</code> 等）から文字列への変換（<code>to_char</code>）、および文字列から内部表現への逆変換（<code>to_timestamp</code> 等）。</li>
+<li>**キャッシュ管理**: 解析済みのフォーマットツリーを <code>DCHCache</code> および <code>NUMCache</code> に保持し、トランザクションを跨いで再利用する。</li>
+<li>**文字列操作**: ロケールを考慮した大文字・小文字変換（<code>lower</code>, <code>upper</code>, <code>initcap</code>）の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>フォーマット解析・キャッシュ</h3>
+<ul>
+<li><code>FormatNode</code>: フォーマット文字列を分解した最小単位（アクション、文字、セパレータ等）。</li>
+<li><code>DCHCacheEntry</code> / <code>NUMCacheEntry</code>: 解析済みフォーマットのキャッシュ構造体。<code>age</code> フィールドによる LRU 的なキャッシュ管理を行う。</li>
+<li><code>parse_format()</code>: フォーマット文字列を <code>FormatNode</code> のリストに変換するパーサ。</li>
+</ul>
+<h3>日時変換</h3>
+<ul>
+<li><code>TmToChar</code>: <code>to_char</code> 処理用の内部日時構造体。<code>fmt_tm</code> をラップし、タイムゾーンや小数秒を保持。</li>
+<li><code>TmFromChar</code>: <code>to_timestamp</code> 等の逆変換用構造体。解析された各フィールド（年、月、日、時、分、秒、TZ 等）を保持。</li>
+<li><code>do_to_timestamp()</code>: 逆変換のコアロジック。文字列を解析し、<code>TmFromChar</code> を経由して <code>pg_tm</code> に変換する。</li>
+</ul>
+<h3>数値変換</h3>
+<ul>
+<li><code>NUMDesc</code>: 数値フォーマットの属性（精度、スケール、符号、ロケール設定等）を保持する記述子。</li>
+<li><code>NUMProc</code>: <code>to_number</code> / <code>to_char</code> 実行時の状態を管理するプロセッサ構造体。</li>
+<li><code>NUM_processor()</code>: 数値変換のメインループ。フォーマットノードに従い、数値と文字列を相互に走査・変換する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DCHCacheEntry</code></li>
+<li><code>DCH_poz</code></li>
+<li><code>FormatNode</code></li>
+<li><code>FromCharDateMode</code></li>
+<li><code>KeySuffix</code></li>
+<li><code>KeyWord</code></li>
+<li><code>NUMCacheEntry</code></li>
+<li><code>NUMDesc</code></li>
+<li><code>TmFromChar</code></li>
+<li><code>TmToChar</code></li>
+<li><code>fmt_tm</code></li>
+<li><code>fmt_tz</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析フェーズ**: <code>parse_format()</code> がフォーマット文字列を走査し、<code>KeyWord</code>（<code>DCH_keywords</code> / <code>NUM_keywords</code>）と <code>KeySuffix</code> を照合して <code>FormatNode</code> 配列を構築する。 2. **キャッシュ**: <code>DCH_cache_fetch()</code> / <code>NUM_cache_fetch()</code> がキャッシュを検索し、ヒットしなければ解析を実行してキャッシュに保存する。 3. **変換フェーズ**:</p>
+<ul>
+<li><code>to_char</code>: <code>DCH_to_char()</code> が <code>FormatNode</code> を順次走査し、<code>TmToChar</code> の値を文字列バッファに書き出す。</li>
+<li><code>to_number</code>: <code>NUM_processor()</code> が <code>FormatNode</code> を走査し、入力文字列から数値を抽出し、<code>NUMDesc</code> に基づいて <code>numeric</code> 型へ変換する。</li>
+<p>4. **逆変換**: <code>do_to_timestamp()</code> が <code>DCH_from_char()</code> を呼び出し、入力文字列を <code>TmFromChar</code> に分解した後、最終的な日時型（<code>Timestamp</code> 等）を構築する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/datetime.h</code>, <code>utils/numeric.h</code>: 日時・数値型の基本操作。</li>
+<li><code>utils/pg_locale.h</code>: ロケール依存の文字列処理。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の処理。</li>
+<li><code>catalog/pg_type.h</code>: 型 OID 定義。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/unicode_case.h</code></li>
+<li><code>common/unicode_category.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>float.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>unicode/ustring.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>varatt.h</code></li>
+<li><code>wctype.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/formatting.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/utils/adt/datetime.c</code>: 日時型の基本演算。</li>
+<li><code>src/backend/utils/adt/numeric.c</code>: 数値型の基本演算。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: キャッシュされた <code>FormatNode</code> は <code>TopMemoryContext</code> に割り当てられ、永続的です。キャッシュサイズは <code>DCH_CACHE_SIZE</code> 等の定数で制限されています。</li>
+<li>**ロケール**: <code>str_tolower</code> 等の関数は、<code>collid</code> を受け取り、C/POSIX ロケールとそれ以外で処理パスを切り替えます。</li>
+<li>**制限事項**: <code>to_char</code> の数値変換において、<code>EEEE</code>（科学的表記）は他のフォーマット指定子と併用できない制限があります。</li>
+<li>**未実装**: 数値のスペルアウト（<code>TO_CHAR(123, &#x27;SP&#x27;)</code>）などは未実装です。</li>
+<li>**注意**: <code>DCH_from_char</code> 等の逆変換関数は、入力文字列の解析において <code>ErrorSaveContext</code> を介したソフトエラー処理をサポートしており、プランナやバリデーションでの利用を想定しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__KeySuffix.html" target="wiki-view"><code>KeySuffix</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__FromCharDateMode.html" target="wiki-view"><code>FromCharDateMode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__KeyWord.html" target="wiki-view"><code>KeyWord</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__FormatNode.html" target="wiki-view"><code>FormatNode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__NUMDesc.html" target="wiki-view"><code>NUMDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__DCHCacheEntry.html" target="wiki-view"><code>DCHCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__NUMCacheEntry.html" target="wiki-view"><code>NUMCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__TmFromChar.html" target="wiki-view"><code>TmFromChar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__fmt_tz.html" target="wiki-view"><code>fmt_tz</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__fmt_tm.html" target="wiki-view"><code>fmt_tm</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__TmToChar.html" target="wiki-view"><code>TmToChar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__formatting_c__DCH_poz.html" target="wiki-view"><code>DCH_poz</code></a></li>
+</ul></body></html>

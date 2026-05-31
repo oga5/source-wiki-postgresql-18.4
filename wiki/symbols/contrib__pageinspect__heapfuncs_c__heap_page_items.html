@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pageinspect__heapfuncs_c__heap_page_items.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_page_items</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pageinspect/heapfuncs.c:129</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のヒープページ（テーブルデータ）を低レベルで解析し、ページ内の各行ポインタおよびタプルヘッダ情報を SQL レベルで抽出・可視化します。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum heap_page_items(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>bytea</code> 型の生ページデータ（<code>PG_GETARG_BYTEA_P(0)</code>）。</li>
+<li>**出力**: ページ内の各アイテムに対応する行情報を含む複合型（SRF: Set Returning Function）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>実行にはスーパーユーザー権限が必要。</li>
+<li>入力ページサイズが <code>SizeOfPageHeaderData</code> 以上であること。</li>
+<li>ページ内の各アイテム（行ポインタ）は、ページ境界内に収まっている必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>SRF_IS_FIRSTCALL</code> でページヘッダを検証し、<code>heap_page_items_state</code> を初期化して走査範囲（<code>max_calls</code>）を決定。 2. **走査**: <code>offset</code> をインクリメントしながらページ内の各行ポインタを順次処理。 3. **バリデーション**: 行ポインタの <code>lp_offset</code> や <code>lp_len</code> がページ範囲内か、<code>t_hoff</code> が妥当かをチェックし、破損ページでもクラッシュを防ぐ。 4. **抽出**:</p>
+<ul>
+<li>行ポインタ情報（オフセット、フラグ、長さ）を取得。</li>
+<li>タプルヘッダ情報（Xmin, Xmax, CommandId, ctid, infomask 等）を抽出。</li>
+<li><code>HEAP_HASNULL</code> フラグがある場合は NULL ビットマップをテキスト化。</li>
+<li><code>HEAP_HASOID_OLD</code> フラグがある場合は OID を取得。</li>
+<li>タプルの実データを <code>bytea</code> として抽出。</li>
+<p>5. **返却**: <code>heap_form_tuple</code> で構築した結果を <code>SRF_RETURN_NEXT</code> で返し、全走査完了後に <code>SRF_RETURN_DONE</code> を発行。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQL インターフェース経由で呼び出される（<code>PG_FUNCTION_INFO_V1</code> マクロによる登録）。</li>
+<li>**呼び出し先**: <code>superuser()</code>, <code>PageGetMaxOffsetNumber</code>, <code>PageGetItemId</code>, <code>PageGetItem</code>, <code>bits_to_text</code>, <code>HeapTupleHeaderGetOidOld</code>, <code>heap_form_tuple</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>heap_page_items_state</code>: SRF 呼び出し間でページ走査の状態（現在のオフセット、ページポインタ、タプル記述子）を保持。</li>
+<li><code>HeapTupleHeaderData</code>: タプルのヘッダ情報。</li>
+<li><code>ItemIdData</code>: 行ポインタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**権限不足**: スーパーユーザーでない場合、エラーを報告。</li>
+<li>**ページサイズ異常**: 入力ページが <code>SizeOfPageHeaderData</code> 未満の場合、エラーを報告。</li>
+<li>**破損データ**: ページが破損している場合、バリデーションチェックにより一部フィールドを NULL に設定し、クラッシュを回避して可能な限りの情報を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は破損したページを読み込む可能性があるため、メモリ破壊を防ぐための境界チェックが厳格に行われています。</li>
+<li><code>values[14]</code> および <code>nulls[14]</code> は、返される複合型のカラム数に対応しています。スキーマ変更時はこの配列サイズとインデックスの整合性に注意してください。</li>
+</ul></body></html>

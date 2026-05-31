@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/statscmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/statscmds.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの拡張統計情報（Extended Statistics）オブジェクトの作成、変更、および削除を管理するコマンド実装ファイルです。<code>CREATE STATISTICS</code>、<code>ALTER STATISTICS</code>、<code>DROP STATISTICS</code> などのDDL操作のバックエンド処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> ディレクトリの一部として、統計情報サブシステムとカタログ（<code>pg_statistic_ext</code>）の橋渡しを行います。オプティマイザが利用する多変量統計情報のライフサイクルを制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計オブジェクトの作成**: <code>CREATE STATISTICS</code> 文の解析、列や式の妥当性検証、カタログへの登録、および依存関係の構築。</li>
+<li>**統計オブジェクトの変更**: <code>ALTER STATISTICS</code> による統計ターゲット（<code>stxstattarget</code>）の更新。</li>
+<li>**統計オブジェクトの削除**: 関連するカタログエントリ（<code>pg_statistic_ext</code> および <code>pg_statistic_ext_data</code>）のクリーンアップとリレーションキャッシュの無効化。</li>
+<li>**命名規則の管理**: 統計オブジェクト名が重複しないよう、自動生成時の名前解決を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CreateStatistics</code>: <code>CREATE STATISTICS</code> 文を実行し、カタログへの挿入と依存関係の記録を行うメイン関数。</li>
+<li><code>AlterStatistics</code>: 既存の統計オブジェクトの属性（主に統計ターゲット）を更新する。</li>
+<li><code>RemoveStatisticsById</code>: 統計オブジェクトを削除し、関連するデータとキャッシュをクリーンアップする。</li>
+<li><code>StatisticsGetRelation</code>: 統計オブジェクトのOIDから、それが定義されているテーブルのOIDを取得するユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ChooseExtendedStatisticName</code></li>
+<li><code>ChooseExtendedStatisticNameAddition</code></li>
+<li><code>RemoveStatisticsDataById</code></li>
+<li><code>compare_int16</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検証**: <code>CreateStatistics</code> は対象リレーションのロックを取得し、所有権やシステムカタログへの操作制限を確認します。 2. **解析**: <code>stmt-&gt;exprs</code> を走査し、列参照や式を抽出。型キャッシュを用いてB-tree演算子クラスの存在を確認します。 3. **カタログ操作**: <code>pg_statistic_ext</code> に新しいタプルを挿入し、<code>InvokeObjectPostCreateHook</code> を呼び出します。 4. **依存関係**: <code>recordDependencyOn</code> を使用し、対象テーブルの列や式に対する依存関係を記録します。これにより、テーブルや列の削除時に統計情報も自動的に削除されます。 5. **キャッシュ無効化**: <code>CacheInvalidateRelcache</code> を呼び出し、新しい統計情報がプランナに即座に反映されるようにします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic_ext.h</code>: 統計情報カタログの定義。</li>
+<li><code>utils/syscache.h</code>: システムキャッシュによる高速なメタデータ検索。</li>
+<li><code>utils/lsyscache.h</code>: 型や属性情報の取得。</li>
+<li><code>catalog/dependency.h</code>: オブジェクト間の依存関係管理。</li>
+<li><code>optimizer/optimizer.h</code>: 統計情報に関連する最適化機能の参照。</li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_statistic_ext_data.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/statistics/</code>: 統計情報の計算ロジックそのもの（<code>mcv.c</code>, <code>dependencies.c</code> など）が配置されています。</li>
+<li><code>src/backend/catalog/pg_statistic_ext.c</code>: カタログ操作の低レベルな補助関数。</li>
+<li><code>src/backend/commands/analyze.c</code>: 統計情報を実際に収集するプロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはDDLの「定義」を扱うものであり、実際の統計情報の「計算」は <code>ANALYZE</code> 実行時に別のモジュールで行われます。</li>
+<li>統計オブジェクトは、テーブルの列や式に対して <code>DEPENDENCY_AUTO</code> で紐付けられています。そのため、テーブルや列を削除すると統計情報も自動的に削除される設計になっています。</li>
+<li><code>ChooseExtendedStatisticName</code> は、名前が指定されていない場合に自動生成するロジックですが、同時実行環境での衝突を避けるため、必要に応じて <code>CommandCounterIncrement</code> を挟む設計が推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__compare_int16.html" target="wiki-view"><code>compare_int16</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__CreateStatistics.html" target="wiki-view"><code>CreateStatistics</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__AlterStatistics.html" target="wiki-view"><code>AlterStatistics</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__RemoveStatisticsDataById.html" target="wiki-view"><code>RemoveStatisticsDataById</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__RemoveStatisticsById.html" target="wiki-view"><code>RemoveStatisticsById</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__ChooseExtendedStatisticName.html" target="wiki-view"><code>ChooseExtendedStatisticName</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__ChooseExtendedStatisticNameAddition.html" target="wiki-view"><code>ChooseExtendedStatisticNameAddition</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__statscmds_c__StatisticsGetRelation.html" target="wiki-view"><code>StatisticsGetRelation</code></a></li>
+</ul></body></html>

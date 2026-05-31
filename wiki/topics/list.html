@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/list.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>List</h1>
+<h2>概念</h2>
+<p><code>List</code> は、PostgreSQL全体で広く使用される汎用的な連結リストおよび拡張可能配列（expansible array）のデータ構造です。<code>src/include/nodes/pg_list.h</code> において <code>struct List</code> として定義されており、ノードタグ（<code>NodeTag</code>）、要素数（<code>length</code>）、最大容量（<code>max_length</code>）、および要素の配列（<code>ListCell *elements</code>）から構成されます。クエリツリー、プランツリー、演算子、関数、オプション、属性情報など、多様なノードやオブジェクトの集合を保持・管理するための標準的なコンテナとして機能します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのほぼすべての主要サブシステム（パーサ、プランナ、エグゼキュータ、インデックスアクセスメソッド、FDW、キャッシュ管理など）において、動的な要素の集合をやり取りするための標準的なインターフェースとして機能しているためです。</p>
+<ul>
+<li>**エグゼキュータ (<code>executor.h</code>)**: 範囲テーブルやパーミッション情報の管理、フック関数での権限チェック対象の走査に使用されます。</li>
+<li>**インデックスAM (<code>amapi.h</code>)**: 演算子や関数のリストを調整・検証するために使用されます。</li>
+<li>**FDW (<code>fdwapi.h</code>)**: 外部データラッパー固有の計画情報（<code>fdw_private</code>）やオプションの保持に使用されます。</li>
+<li>**プランナ (<code>paths.h</code>)**: リレーションやパスの管理に使用されます。</li>
+<li>**計画キャッシュ (<code>plancache.h</code>)**: 書き換え後のクエリツリーリストの管理に使用されます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/executor</code></li>
+<li><code>module:src/include/foreign</code></li>
+<li><code>module:src/include/nodes</code></li>
+<li><code>module:src/include/optimizer</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/nodes/pg_list.h#List</code>**: コアとなる <code>struct List</code> の定義。拡張可能な配列として実装され、小規模リスト向けのメモリ最適化（<code>initial_elements</code>）を備えています。</li>
+<li>**<code>symbol:src/backend/utils/adt/jsonb_gin.c#List</code>**: <code>JsonPathGinExtractNodesFunc</code> のシグネチャ等において、JSONPathの抽出ノードリストを保持するために使用されます。</li>
+<li>**<code>symbol:src/include/access/amapi.h#List</code>**: <code>amadjustmembers_function</code> において、演算子や関数のリストを渡すために使用されます。</li>
+<li>**<code>symbol:src/include/executor/executor.h#List</code>**: <code>ExecutorCheckPerms_hook_type</code> などの実行エンジンフックで、範囲テーブルやパーミッション情報のリストとして使用されます。</li>
+<li>**<code>symbol:src/include/foreign/fdwapi.h#List</code>**: <code>BeginForeignModify_function</code> 等で、FDW固有の計画情報（<code>fdw_private</code>）やオプションを保持するために使用されます。</li>
+<li>**<code>symbol:src/include/optimizer/paths.h#List</code>**: <code>join_search_hook_type</code> 等のプランナインターフェースで、初期リレーションリスト（<code>initial_rels</code>）などの保持に使用されます。</li>
+<li>**<code>symbol:src/include/utils/plancache.h#List</code>**: <code>PostRewriteHook</code> などの計画キャッシュ管理において、クエリツリーのリストを保持するために使用されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供されたソースコードの抜粋からは、システム全体を横断する具体的なエンドツーエンドの制御フロー（例：クエリ入力から実行完了までのリストの完全な変遷）の詳細は完全には明らかになっていません。</p>
+<p>ただし、部分的な流れとして、クエリの解析・書き換えプロセスで生成されたクエリツリーリスト（<code>plancache.h</code> の <code>PostRewriteHook</code> など）が、プランナ（<code>paths.h</code>）を経て、エグゼキュータ（<code>executor.h</code>）に渡され、各段階で <code>List</code> 構造体が情報の受け渡しや走査に利用されることが示されています。また、FDW（<code>fdwapi.h</code>）やインデックスAM（<code>amapi.h</code>）などの拡張インターフェースに対しても、必要な情報が <code>List</code> の形で引き渡されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**空リストの表現**: 空のリストは常に <code>NIL</code>（<code>NULL</code> ポインタ）として表現されます。<code>length == 0</code> である <code>List</code> 構造体インスタンス自体は存在しません。</li>
+<li>**メモリ配置の安定性**: リストが空でない限り、ヘッダと要素配列のメモリ位置は再配置されないことが保証されています。</li>
+<li>**メモリ管理**: PostgreSQLのメモリコンテキスト（<code>MemoryContext</code>）に依存して管理され、メモリ不足時にはリスト操作関数がエラーを発生させます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ループ中の要素削除**: <code>foreach</code> ループでリストを走査している最中に、通常の削除関数を使用して要素を削除すると、イテレータの整合性が崩れます。走査中の削除には必ず <code>foreach_delete_current</code> マクロを使用する必要があります。</li>
+<li>**型安全性**: リスト要素（<code>ListCell</code>）からノードを取り出す際、単純な <code>lfirst</code> ではなく、型安全性を確保するために <code>lfirst_node(type, lc)</code> を使用することが推奨されます。</li>
+<li>**空リスト（NIL）のハンドリング**: <code>List *</code> が <code>NIL</code>（<code>NULL</code>）である可能性を考慮せずにアクセスすると、セグメンテーション違反を引き起こす可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/nodes/pg_list.h</code>**: <code>List</code> 構造体の詳細な定義と、リスト操作マクロ（<code>foreach</code> など）が定義されています。</li>
+<li>**<code>src/backend/nodes/list.c</code>**: リスト操作の具体的な関数群（<code>lappend</code> など）の実装が含まれています。</li>
+<li>**<code>src/include/executor/executor.h</code>**: 実行エンジンにおける <code>List</code> の利用方法（フック定義など）が記載されています。</li>
+<li>**<code>src/include/foreign/fdwapi.h</code>**: FDWにおける <code>List</code>（<code>fdw_private</code> など）の利用方法が記載されています。</li>
+</ul></body></html>

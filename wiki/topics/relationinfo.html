@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/relationinfo.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelationInfo</h1>
+<h2>概念</h2>
+<p><code>RelationInfo</code> というキーワードは、PostgreSQLのコードベースにおいて、バックエンド（クエリ最適化）とフロントエンド（検証ツール）の2つの異なる文脈で異なる役割を持っています。</p>
+<p>1. **バックエンド（オプティマイザ）**: <code>get_relation_info</code> 関数を指します。プランナがクエリ最適化を行うために、対象リレーションの物理的特性（属性、インデックス、統計情報など）を収集し、<code>RelOptInfo</code> 構造体を初期化する役割を担います。 2. **フロントエンド（pg_amcheck）**: <code>RelationInfo</code> 構造体を指します。検証対象となる個々のリレーション（ヒープテーブルまたはB-tree索引）のメタデータを保持し、並列検証プロセスにおける各リレーションの識別とSQL構築を支援します。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**クエリ最適化の基盤**: バックエンドにおいて、プランナが最適な実行計画を立てるためには、正確なリレーション情報（サイズ、インデックスの有効性、並列ワーカー数など）を迅速かつ正確に取得する必要があります。</li>
+<li>**並列検証の効率化**: <code>pg_amcheck</code> において、複数のリレーションを並列に検証する際、各検証タスクのコンテキスト（対象リレーション、検証用SQLなど）を管理するために <code>RelationInfo</code> 構造体が不可欠です。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/optimizer/util</code></li>
+<li><code>module:src/bin/pg_amcheck</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/optimizer/util/plancat.c#get_relation_info</code> (関数)</li>
+<li><code>symbol:src/bin/pg_amcheck/pg_amcheck.c#RelationInfo</code> (構造体)</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>バックエンドとフロントエンドで処理の流れが独立しています。</p>
+<h3>バックエンド（プランナ）における流れ</h3>
+<p>1. 呼び出し元（<code>build_simple_rel</code> など）が、事前に対象リレーションのロックを取得した状態で <code>get_relation_info</code> を呼び出します。 2. <code>table_open</code> を用いて <code>NoLock</code> でリレーションを開き、テーブルAMの存在確認やリカバリ中のアクセス制限をチェックします。 3. <code>RelOptInfo</code> の属性範囲やテーブルスペース情報を設定し、継承親でない場合は <code>estimate_rel_size</code> でサイズを推定します。 4. <code>RelationGetIndexList</code> でインデックス一覧を取得し、有効なインデックスに対して <code>IndexOptInfo</code> を生成して詳細情報を格納します。</p>
+<h3>フロントエンド（pg_amcheck）における流れ</h3>
+<p>1. <code>pg_amcheck</code> のリスト走査処理や並列スロットのコンテキスト初期化において、<code>pg_malloc0</code> を介して <code>RelationInfo</code> 構造体がメモリ確保・初期化されます。 2. <code>prepare_heap_command</code> または <code>prepare_btree_command</code> に <code>RelationInfo</code> が渡され、検証用のSQLコマンドが動的に構築されて <code>sql</code> フィールドに格納されます。 3. 並列実行スロットのハンドラ（<code>verify_heap_slot_handler</code> や <code>verify_btree_slot_handler</code>）内で、この構造体がコンテキストとして参照され、検証が実行されます。 4. 実行後、動的に確保された <code>sql</code> フィールドは <code>pg_free</code> によって解放されます。</p>
+<p>*注意: これら2つのコンテキスト（バックエンドのプランナ処理とフロントエンドのpg_amcheckツール）の間の直接的なエンドツーエンドの連携フロー（例: pg_amcheckがバックエンドのget_relation_infoを直接呼び出す詳細な内部シーケンスなど）は、提供された情報からは不明です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バックエンド (<code>get_relation_info</code>)**:</li>
+<li>対象リレーションは、呼び出し前に既にロックが取得されている必要があります（<code>table_open</code> は <code>NoLock</code> で実行されます）。</li>
+<li><code>rel-&gt;max_attr &gt;= rel-&gt;min_attr</code> である必要があります。</li>
+<li>属性の <code>attnullability</code> は <code>ATTNULLABLE_UNKNOWN</code> であってはなりません。</li>
+<li>**フロントエンド (<code>RelationInfo</code> 構造体)**:</li>
+<li><code>is_heap</code> が <code>true</code> の場合はヒープテーブル、<code>false</code> の場合はB-tree索引として扱われます。</li>
+<li><code>datinfo</code> は他の <code>RelationInfo</code> インスタンスと共有される可能性があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バックエンド**:</li>
+<li><code>get_relation_info</code> はロック管理を呼び出し元に依存しているため、事前に適切なロックを取得せずに呼び出すと競合や一貫性の欠如を招きます。</li>
+<li>継承親テーブルの場合、サイズ推定はスキップされる（後続の <code>set_append_rel_size</code> で処理される）ため、この関数単体でサイズ情報が完結しない点に注意が必要です。</li>
+<li>**フロントエンド**:</li>
+<li><code>RelationInfo</code> の <code>sql</code> フィールドは動的にメモリ確保されるため、適切なタイミングで <code>pg_free</code> による解放を行わないとメモリリークが発生します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/optimizer/util/plancat.c</code> (<code>get_relation_info</code> の実装とフック <code>get_relation_info_hook</code> の詳細)</li>
+<li><code>src/bin/pg_amcheck/pg_amcheck.c</code> (<code>RelationInfo</code> の定義と、<code>prepare_heap_command</code> / <code>prepare_btree_command</code> でのSQL構築ロジック)</li>
+</ul></body></html>

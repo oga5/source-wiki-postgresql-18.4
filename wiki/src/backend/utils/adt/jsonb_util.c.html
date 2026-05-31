@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonb_util.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonb_util.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の <code>jsonb</code> 型における、バイナリ表現とメモリ上の <code>JsonbValue</code> 構造体との相互変換、およびコンテナ（配列・オブジェクト）の反復処理を担うユーティリティモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>jsonb</code> 型のコアロジックを支える基盤層です。<code>jsonb.c</code> が SQL インターフェースや演算子を定義するのに対し、本ファイルはバイナリデータのパース、シリアライズ、およびコンテナ内の要素検索といった低レベルな操作を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**変換**: <code>Jsonb</code>（ディスク上のバイナリ）と <code>JsonbValue</code>（メモリ上の操作用構造体）の相互変換。</li>
+<li>**反復**: <code>JsonbIterator</code> を用いたネストされた JSON 構造の走査。</li>
+<li>**検索**: コンテナ内でのキー検索やインデックス指定による要素取得。</li>
+<li>**構築**: <code>JsonbParseState</code> を介した、メモリ上での <code>jsonb</code> 構築と正規化（重複キーの排除など）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>JsonbToJsonbValue</code> / <code>JsonbValueToJsonb</code>: 変換の主要エントリーポイント。</li>
+<li><code>JsonbIteratorNext</code>: コンテナを走査するためのイテレータ関数。</li>
+<li><code>findJsonbValueFromContainer</code>: 配列やオブジェクトから特定の値を検索する関数。</li>
+<li><code>pushJsonbValue</code>: <code>jsonb</code> 構築時の状態遷移を管理する関数。</li>
+<li><code>JSONB_MAX_ELEMS</code> / <code>JSONB_MAX_PAIRS</code>: コンテナのサイズ制限を定義する定数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>JsonbDeepContains</code></li>
+<li><code>JsonbHashScalarValue</code></li>
+<li><code>JsonbHashScalarValueExtended</code></li>
+<li><code>JsonbIteratorInit</code></li>
+<li><code>freeAndGetParent</code></li>
+<li><code>getIthJsonbValueFromContainer</code></li>
+<li><code>getJsonbLength</code></li>
+<li><code>getJsonbOffset</code></li>
+<li><code>getKeyJsonValueFromContainer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **構築**: <code>pushJsonbValue</code> を呼び出し、<code>JsonbParseState</code> をスタックとして利用して階層構造を構築します。<code>WJB_END_OBJECT</code> などのトークンで <code>uniqueifyJsonbObject</code> が呼ばれ、キーの重複排除が行われます。 2. **シリアライズ**: <code>convertToJsonb</code> が <code>StringInfo</code> バッファを確保し、<code>convertJsonbValue</code> が再帰的に各要素をバイナリ形式へ書き込みます。 3. **走査**: <code>JsonbIteratorInit</code> で初期化し、<code>JsonbIteratorNext</code> をループで回します。ネストされたコンテナに遭遇すると、内部で新しいイテレータを生成して再帰的に処理します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/jsonb.h</code>: <code>jsonb</code> のデータ構造定義。</li>
+<li><code>utils/memutils.h</code>: メモリ管理（<code>palloc</code> 等）。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作用。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/datetime.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/json.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/jsonb.c</code>: 本モジュールを利用して SQL 演算子を実装。</li>
+<li><code>src/backend/utils/adt/jsonb_gin.c</code>: GIN インデックス用のサポート関数。</li>
+<li><code>src/backend/utils/adt/jsonpath_exec.c</code>: <code>jsonpath</code> によるクエリ実行時に本モジュールの反復機能を利用。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>JsonbIteratorNext</code> はネストされたコンテナを処理する際、内部でイテレータを <code>palloc</code> します。長時間の反復処理でメモリリークを防ぐため、イテレータの親子関係を適切に管理する必要があります。</li>
+<li>**バイナリ構造**: <code>jsonb</code> のバイナリは <code>JEntry</code> 配列と可変長データ部で構成されます。<code>getJsonbOffset</code> や <code>getJsonbLength</code> は、この構造を解釈して特定の要素の物理位置を特定するために不可欠です。</li>
+<li>**再帰**: 多くの関数が再帰的です。複雑な JSON 構造を扱う際は <code>check_stack_depth()</code> によるスタックオーバーフロー対策が随所で行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbToJsonbValue.html" target="wiki-view"><code>JsonbToJsonbValue</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbValueToJsonb.html" target="wiki-view"><code>JsonbValueToJsonb</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__getJsonbOffset.html" target="wiki-view"><code>getJsonbOffset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__getJsonbLength.html" target="wiki-view"><code>getJsonbLength</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__getKeyJsonValueFromContainer.html" target="wiki-view"><code>getKeyJsonValueFromContainer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__getIthJsonbValueFromContainer.html" target="wiki-view"><code>getIthJsonbValueFromContainer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbIteratorInit.html" target="wiki-view"><code>JsonbIteratorInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbIteratorNext.html" target="wiki-view"><code>JsonbIteratorNext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__freeAndGetParent.html" target="wiki-view"><code>freeAndGetParent</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbDeepContains.html" target="wiki-view"><code>JsonbDeepContains</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbHashScalarValue.html" target="wiki-view"><code>JsonbHashScalarValue</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_util_c__JsonbHashScalarValueExtended.html" target="wiki-view"><code>JsonbHashScalarValueExtended</code></a></li>
+</ul></body></html>

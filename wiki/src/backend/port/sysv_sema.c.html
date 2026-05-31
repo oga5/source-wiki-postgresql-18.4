@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/port/sysv_sema.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/port/sysv_sema.c</h1>
+<h2>概要</h2>
+<p>System V セマフォ API を使用して、PostgreSQL のセマフォ抽象化（<code>PGSemaphore</code>）を実装するソースファイルです。主に Unix 系システムにおいて、プロセス間同期のための低レベルなセマフォ管理を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/port</code> ディレクトリ内で、OS 固有のセマフォ実装の一つとして機能します。PostgreSQL はビルド時に適切なセマフォ実装（SysV, POSIX, Win32）を選択しますが、本ファイルはそのうちの「SysV」版を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**セマフォのライフサイクル管理**: カーネルリソースとしてのセマフォセットの作成、初期化、および終了時の破棄。</li>
+<li>**リソースの再利用**: クラッシュしたプロセスが残したセマフォセットを検出し、安全に再利用またはクリーンアップする。</li>
+<li>**抽象化レイヤーの提供**: <code>PGSemaphoreLock</code> や <code>PGSemaphoreUnlock</code> などの共通インターフェースを、<code>semop</code> システムコールを用いて実装する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PGSemaphoreData</code>: セマフォセット ID とセット内のインデックスを保持する構造体。</li>
+<li><code>SEMAS_PER_SET</code>: 1 つのセマフォセット内に確保するセマフォの数（識別用 1 つを含む）。</li>
+<li><code>PGReserveSemaphores</code>: セマフォサブシステムを初期化し、共有メモリ領域を確保する関数。</li>
+<li><code>PGSemaphoreCreate</code>: 新しいセマフォを割り当て、必要に応じて新しいセマフォセットを作成する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InternalIpcSemaphoreCreate</code></li>
+<li><code>IpcSemaphoreCreate</code></li>
+<li><code>IpcSemaphoreGetLastPID</code></li>
+<li><code>IpcSemaphoreGetValue</code></li>
+<li><code>IpcSemaphoreId</code></li>
+<li><code>IpcSemaphoreInitialize</code></li>
+<li><code>IpcSemaphoreKey</code></li>
+<li><code>IpcSemaphoreKill</code></li>
+<li><code>PGSemaphoreReset</code></li>
+<li><code>PGSemaphoreShmemSize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PGReserveSemaphores</code> がデータディレクトリの inode をキーのシードとして使用し、共有メモリを確保します。 2. **セマフォ作成**: <code>PGSemaphoreCreate</code> が呼ばれると、現在のセットが満杯か確認し、必要であれば <code>InternalIpcSemaphoreCreate</code> で新しい SysV セマフォセットをカーネルに要求します。 3. **再利用**: <code>IpcSemaphoreCreate</code> は、既存のキーでセマフォセットを作成しようとし、衝突した場合は <code>semctl</code> で所有者 PID を確認し、プロセスが生存していなければクリーンアップを試みます。 4. **操作**: <code>PGSemaphoreLock</code>/<code>Unlock</code> は <code>semop</code> を呼び出し、シグナル割り込み（<code>EINTR</code>）を考慮したループ処理を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>sys/ipc.h</code>, <code>sys/sem.h</code>: System V セマフォ API の定義。</li>
+<li><code>storage/pg_sema.h</code>: PostgreSQL 共通のセマフォインターフェース定義。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ割り当て機能。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/ipc.c</code>: セマフォのクリーンアップ登録に関連。</li>
+<li><code>src/backend/port/posix_sema.c</code>: POSIX セマフォ版の実装（比較対象）。</li>
+<li><code>src/include/storage/pg_sema.h</code>: <code>PGSemaphore</code> 型の定義と API 仕様。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**カーネルパラメータ**: 本実装は <code>SEMMSL</code>（セットあたりのセマフォ数）や <code>SEMMNI</code>（システム全体のセマフォセット数）といったカーネル制限に強く依存します。エラー発生時は <code>ereport</code> のヒントを確認してください。</li>
+<li>**シグナル処理**: <code>semop</code> はシグナルによって中断される可能性があるため、<code>do-while</code> ループで <code>EINTR</code> を明示的にハンドリングしています。</li>
+<li>**識別用セマフォ**: 各セマフォセットの末尾に「識別用」のセマフォを確保し、<code>PGSemaMagic</code> 値を書き込むことで、PostgreSQL が作成したセマフォセットを他アプリケーションと区別しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__PGSemaphoreData.html" target="wiki-view"><code>PGSemaphoreData</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreKey.html" target="wiki-view"><code>IpcSemaphoreKey</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreId.html" target="wiki-view"><code>IpcSemaphoreId</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__InternalIpcSemaphoreCreate.html" target="wiki-view"><code>InternalIpcSemaphoreCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreInitialize.html" target="wiki-view"><code>IpcSemaphoreInitialize</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreKill.html" target="wiki-view"><code>IpcSemaphoreKill</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreGetValue.html" target="wiki-view"><code>IpcSemaphoreGetValue</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreGetLastPID.html" target="wiki-view"><code>IpcSemaphoreGetLastPID</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__IpcSemaphoreCreate.html" target="wiki-view"><code>IpcSemaphoreCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__PGSemaphoreShmemSize.html" target="wiki-view"><code>PGSemaphoreShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__PGSemaphoreCreate.html" target="wiki-view"><code>PGSemaphoreCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__sysv_sema_c__PGSemaphoreReset.html" target="wiki-view"><code>PGSemaphoreReset</code></a></li>
+</ul></body></html>

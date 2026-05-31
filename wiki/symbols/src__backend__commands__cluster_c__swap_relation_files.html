@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__cluster_c__swap_relation_files.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>swap_relation_files</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/cluster.c:1062</code></li>
+</ul>
+<h2>目的</h2>
+<p>2つのリレーション（テーブル）間で物理ファイル（<code>relfilenode</code>）および関連するメタデータを入れ替えます。主に <code>CLUSTER</code> や <code>VACUUM FULL</code> におけるテーブル再構築の最終段階で、新旧テーブルの物理ファイルを差し替えるために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
+                                bool swap_toast_by_content,
+                                bool is_internal,
+                                TransactionId frozenXid,
+                                MultiXactId cutoffMulti,
+                                Oid *mapped_tables)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>r1</code>, <code>r2</code>: 入れ替え対象のリレーションOID。</li>
+<li><code>target_is_pg_class</code>: 対象が <code>pg_class</code> 自体であるかを示すフラグ。</li>
+<li><code>swap_toast_by_content</code>: TOASTテーブルを内容に基づいて入れ替えるか（リンクの入れ替えか）。</li>
+<li><code>frozenXid</code>, <code>cutoffMulti</code>: 更新後の <code>relfrozenxid</code> および <code>relminmxid</code>。</li>
+<li>**出力**:</li>
+<li><code>mapped_tables</code>: マッピングが更新されたテーブルのOIDを格納するポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pg_class</code> の行に対する書き込みロック（<code>RowExclusiveLock</code>）が保持されていること。</li>
+<li>マッピングされたリレーション（<code>mapped_tables</code>）の場合、テーブルスペース、永続性、アクセスメソッドの変更は許可されません。</li>
+<li>呼び出し元で適切な権限チェックが行われていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_class</code> から対象リレーションのタプルをコピーし、<code>relfilenode</code>、<code>reltablespace</code>、<code>relam</code>、<code>relpersistence</code> などの属性を入れ替えます。 2. **非マッピングリレーションの場合**: <code>pg_class</code> タプルの値を直接書き換えます。 3. **マッピングリレーションの場合**: <code>RelationMapUpdateMap</code> を使用してマッピングを更新します。 4. <code>RelationAssumeNewRelfilelocator</code> を呼び出し、リレーションの新しいファイルロケータを認識させます。 5. <code>relfrozenxid</code> および <code>relminmxid</code> を更新します（インデックスを除く）。 6. 統計情報（ページ数、タプル数、可視性情報）を入れ替えます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>rebuild_relation</code>（<code>src/backend/commands/cluster.c</code>）など、テーブル再構築を行う関数群から呼び出されます。</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>SearchSysCacheCopy1</code>, <code>RelationMapOidToFilenumber</code>, <code>RelationMapUpdateMap</code>, <code>RelationAssumeNewRelfilelocator</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Form_pg_class</code>: <code>pg_class</code> システムカタログの行構造。</li>
+<li><code>RelFileNumber</code>: 物理ファイル識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>pg_class</code> のキャッシュルックアップに失敗した場合、<code>ERROR</code> を発生させます。</li>
+<li>マッピングされたリレーションに対して、許可されていない属性（テーブルスペース等）の変更を試みた場合、<code>ERROR</code> を発生させます。</li>
+<li>マッピングが見つからない場合、<code>ERROR</code> を発生させます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はシステムカタログの整合性に直結するクリティカルな操作を行います。</li>
+<li>共有カタログやマッピングされたカタログに対する操作は、<code>CommandCounterIncrement</code> が実行されるまで反映されない点に注意してください。</li>
+<li><code>pg_class</code> 自体を入れ替える際は、統計情報の更新タイミングに注意が必要です。</li>
+</ul></body></html>

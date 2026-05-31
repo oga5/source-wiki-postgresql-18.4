@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpython/plpy_spi.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/pl/plpython/plpy_spi.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の SPI (Server Programming Interface) と Python インターフェースを仲介するレイヤーです。Python コードから SQL クエリの実行、プリペアドステートメントの管理、およびトランザクション制御を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>plpy</code> モジュールのコア機能の一部として、データベース操作の実行エンジンを提供します。<code>plpy_exec.c</code> 等が上位の実行ロジックを担うのに対し、本ファイルは SPI 呼び出しの低レイヤーなラップと、PostgreSQL のエラーを Python 例外へ変換する責務を負います。</p>
+<h2>責務</h2>
+<ul>
+<li>**クエリ実行**: <code>plpy.execute()</code> を通じた SQL クエリの実行と結果の取得。</li>
+<li>**プリペアドステートメント**: <code>plpy.prepare()</code> によるクエリの事前コンパイルと引数型の解決。</li>
+<li>**トランザクション管理**: <code>plpy.commit()</code> / <code>rollback()</code> の提供および内部サブトランザクションの安全な管理。</li>
+<li>**エラー変換**: PostgreSQL の <code>ErrorData</code> を Python の例外オブジェクトへマッピングし、詳細なエラー情報を付与。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PLy_spi_prepare</code>: <code>plpy.prepare</code> の実装。クエリを解析し <code>PLyPlanObject</code> を生成。</li>
+<li><code>PLy_spi_execute</code>: クエリまたはプランを実行するエントリポイント。</li>
+<li><code>PLy_spi_subtransaction_begin/commit/abort</code>: SPI 操作をサブトランザクション内で安全に実行するための定型処理。</li>
+<li><code>PLy_spi_execute_fetch_result</code>: SPI の結果セット（<code>SPITupleTable</code>）を Python の <code>PLyResultObject</code> に変換。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLy_commit</code></li>
+<li><code>PLy_rollback</code></li>
+<li><code>PLy_spi_exception_set</code></li>
+<li><code>PLy_spi_execute_plan</code></li>
+<li><code>PLy_spi_execute_query</code></li>
+<li><code>PLy_spi_subtransaction_abort</code></li>
+<li><code>PLy_spi_subtransaction_begin</code></li>
+<li><code>PLy_spi_subtransaction_commit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **リクエスト**: Python 側から <code>plpy.execute</code> 等が呼ばれると、<code>PLy_spi_subtransaction_begin</code> でサブトランザクションを開始します。 2. **実行**: <code>PG_TRY()</code> ブロック内で <code>SPI_execute</code> または <code>SPI_execute_plan</code> を呼び出します。 3. **変換**: 実行結果が成功すれば <code>PLy_spi_execute_fetch_result</code> で Python オブジェクトへ変換し、失敗すれば <code>PG_CATCH()</code> ブロックへ遷移します。 4. **例外処理**: <code>PG_CATCH()</code> 内で <code>PLy_spi_subtransaction_abort</code> を呼び出し、PostgreSQL のエラー情報を <code>PLy_spi_exception_set</code> で Python 例外として再送出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/spi.h</code>: PostgreSQL SPI API。</li>
+<li><code>plpy_spi.h</code>: 本ファイルのヘッダー。</li>
+<li><code>plpy_planobject.h</code>, <code>plpy_resultobject.h</code>: 実行プランおよび結果オブジェクトの定義。</li>
+<li><code>access/xact.h</code>: トランザクション制御用。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>plpy_elog.h</code></li>
+<li><code>plpy_main.h</code></li>
+<li><code>plpy_plpymodule.h</code></li>
+<li><code>plpy_util.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/pl/plpython/plpy_exec.c</code>: より高位な実行フローの管理。</li>
+<li><code>src/pl/plpython/plpy_typeio.c</code>: データベース型と Python 型の相互変換。</li>
+<li><code>src/pl/plpython/plpy_subxactobject.c</code>: Python 側から明示的にサブトランザクションを制御する機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: SPI 操作は <code>PG_TRY</code> ブロック内でサブトランザクションを伴うことが多いため、メモリコンテキストの切り替え（<code>MemoryContextSwitchTo</code>）が頻繁に行われます。リークを防ぐため、<code>PG_CATCH</code> でのクリーンアップが必須です。</li>
+<li>**エラーハンドリング**: PostgreSQL のエラーは <code>longjmp</code> を伴うため、Python の例外処理と混在させる際は <code>PG_TRY</code> / <code>PG_CATCH</code> を正しく使用する必要があります。</li>
+<li>**サブトランザクション**: SPI 操作中にエラーが発生した場合、サブトランザクションを適切にアボートしないと、メインのトランザクションまで汚染される可能性がある点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_prepare.html" target="wiki-view"><code>PLy_spi_prepare</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_execute.html" target="wiki-view"><code>PLy_spi_execute</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_execute_plan.html" target="wiki-view"><code>PLy_spi_execute_plan</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_execute_query.html" target="wiki-view"><code>PLy_spi_execute_query</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_execute_fetch_result.html" target="wiki-view"><code>PLy_spi_execute_fetch_result</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_commit.html" target="wiki-view"><code>PLy_commit</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_rollback.html" target="wiki-view"><code>PLy_rollback</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_subtransaction_begin.html" target="wiki-view"><code>PLy_spi_subtransaction_begin</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_subtransaction_commit.html" target="wiki-view"><code>PLy_spi_subtransaction_commit</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_subtransaction_abort.html" target="wiki-view"><code>PLy_spi_subtransaction_abort</code></a></li>
+<li><a href="../../../symbols/src__pl__plpython__plpy_spi_c__PLy_spi_exception_set.html" target="wiki-view"><code>PLy_spi_exception_set</code></a></li>
+</ul></body></html>

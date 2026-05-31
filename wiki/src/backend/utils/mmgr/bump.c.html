@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/bump.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/bump.c</h1>
+<h2>概要</h2>
+<p><code>bump.c</code> は、PostgreSQL の <code>MemoryContext</code> インターフェースを実装した「バンプアロケータ」です。個別のメモリチャンクに対する <code>pfree</code> や <code>realloc</code> が不要な、短命かつ大量のメモリ割り当てに特化しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>mmgr</code> サブシステムにおいて、メモリ管理の効率を最大化する役割を担います。チャンクヘッダーを排除することでメモリオーバーヘッドを削減し、キャッシュ局所性を向上させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**高速な割り当て**: 連続したメモリブロックからポインタをずらす（バンプする）だけの単純な割り当て。</li>
+<li>**メモリ管理の制限**: <code>pfree</code> や <code>realloc</code> を禁止し、コンテキスト全体のリセットまたは削除による一括解放のみを許可する。</li>
+<li>**ブロック管理**: 割り当て要求に応じて動的にメモリブロックを確保・連結する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BumpContext</code>: コンテキストのメタデータ（ブロックリスト、サイズ制限など）を保持する構造体。</li>
+<li><code>BumpBlock</code>: 実際に <code>malloc</code> で確保されるメモリの単位。</li>
+<li><code>BumpAlloc</code>: 割り当てのメインエントリポイント。</li>
+<li><code>BumpReset</code>: コンテキスト内の全ブロックを解放（または再利用）する。</li>
+<li><code>BumpContextCreate</code>: 新しいバンプコンテキストを初期化する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BumpAllocLarge</code></li>
+<li><code>BumpBlockFree</code></li>
+<li><code>BumpBlockFreeBytes</code></li>
+<li><code>BumpBlockInit</code></li>
+<li><code>BumpBlockIsEmpty</code></li>
+<li><code>BumpDelete</code></li>
+<li><code>BumpFree</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て要求**: <code>BumpAlloc</code> が呼び出されると、まず現在のブロックに十分な空きがあるか確認します。 2. **ブロック内割り当て**: 空きがあれば <code>BumpAllocChunkFromBlock</code> を呼び出し、<code>freeptr</code> を進めてメモリを返します。 3. **新規ブロック確保**: 現在のブロックで不足する場合、<code>BumpAllocFromNewBlock</code> が新しいブロックを <code>malloc</code> し、リストの先頭に追加します。 4. **巨大な割り当て**: <code>allocChunkLimit</code> を超える要求は <code>BumpAllocLarge</code> に委譲され、専用のブロックが確保されます。 5. **解放**: <code>BumpReset</code> がリストを走査し、<code>KeeperBlock</code>（コンテキスト自体を含むブロック）以外の全ブロックを <code>free</code> します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>lib/ilist.h</code>: ブロック管理用の双方向リスト。</li>
+<li><code>utils/memutils_internal.h</code>: メモリコンテキストの内部インターフェース。</li>
+<li><code>utils/memutils_memorychunk.h</code>: チャンクヘッダーの定義（<code>MEMORY_CONTEXT_CHECKING</code> 有効時のみ）。</li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの基盤となる管理ロジック。</li>
+<li><code>src/backend/utils/mmgr/aset.c</code>: 汎用的なアロケータ（<code>pfree</code> が必要な場合はこちらを使用）。</li>
+<li><code>src/backend/utils/mmgr/memdebug.h</code>: デバッグビルド時のメモリ整合性チェック機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**制限事項**: このアロケータで確保したメモリに対して <code>pfree</code> を呼ぶと <code>ERROR</code> になります。使用箇所が限定されていることを確認してください。</li>
+<li>**パフォーマンス**: チャンクヘッダーがないため、<code>MEMORY_CONTEXT_CHECKING</code> が無効なリリースビルドでは非常に高速です。</li>
+<li>**デバッグ**: <code>MEMORY_CONTEXT_CHECKING</code> を有効にすると、チャンクヘッダーが付与され、不正な操作やメモリ破壊を検知できるようになります。開発時にはこれを有効にすることを推奨します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpBlock.html" target="wiki-view"><code>BumpBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpContext.html" target="wiki-view"><code>BumpContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpContextCreate.html" target="wiki-view"><code>BumpContextCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpReset.html" target="wiki-view"><code>BumpReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpDelete.html" target="wiki-view"><code>BumpDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpAllocLarge.html" target="wiki-view"><code>BumpAllocLarge</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpAlloc.html" target="wiki-view"><code>BumpAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpBlockInit.html" target="wiki-view"><code>BumpBlockInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpBlockIsEmpty.html" target="wiki-view"><code>BumpBlockIsEmpty</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpBlockFreeBytes.html" target="wiki-view"><code>BumpBlockFreeBytes</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpBlockFree.html" target="wiki-view"><code>BumpBlockFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__bump_c__BumpFree.html" target="wiki-view"><code>BumpFree</code></a></li>
+</ul></body></html>

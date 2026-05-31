@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgcrypto/pgp-encrypt.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgcrypto/pgp-encrypt.c</h1>
+<h2>概要</h2>
+<p>OpenPGP 形式のデータ暗号化処理を実装するソースファイルです。<code>pgcrypto</code> モジュールにおいて、平文を暗号化された PGP パケットストリームへ変換するパイプラインを構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgcrypto</code> の暗号化サブシステムにおける「出力フィルタ」の集合体です。<code>mbuf.h</code> で定義されるバッファ操作と、<code>pgp.h</code> で定義される PGP 構造を組み合わせ、暗号化、圧縮、MAC（MDC）計算、パケットヘッダ付与を連鎖的に実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**暗号化パイプラインの構築**: 圧縮、MAC 計算、CFB 暗号化、パケットヘッダ付与を行うフィルタチェーンの生成。</li>
+<li>**PGP パケットの生成**: <code>render_newlen</code> 等による可変長ヘッダの作成と、各種 PGP パケット（セッション鍵、リテラルデータ、圧縮データ）の書き込み。</li>
+<li>**セッション鍵管理**: S2K（String-to-Key）アルゴリズムを用いた鍵導出と、公開鍵/共通鍵によるセッション鍵の保護。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgp_encrypt</code>: 本ファイルのメインエントリポイント。暗号化処理全体を統括する。</li>
+<li><code>encrypt_filter</code>: CFB モードでの暗号化を行う <code>PushFilter</code> 実装。</li>
+<li><code>mdc_filter</code>: SHA-1 を用いた MDC（Modification Detection Code）計算フィルタ。</li>
+<li><code>pkt_stream_filter</code>: ストリーム形式の PGP パケットヘッダを管理するフィルタ。</li>
+<li><code>PGP_Context</code>: 暗号化設定（アルゴリズム、鍵、モード）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>EncStat</code></li>
+<li><code>PktStreamStat</code></li>
+<li><code>encrypt_free</code></li>
+<li><code>encrypt_init</code></li>
+<li><code>encrypt_process</code></li>
+<li><code>mdc_flush</code></li>
+<li><code>mdc_free</code></li>
+<li><code>mdc_init</code></li>
+<li><code>mdc_write</code></li>
+<li><code>render_newlen</code></li>
+<li><code>write_normal_header</code></li>
+<li><code>write_tag_only</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pgp_encrypt</code> が呼び出されると、まず <code>init_s2k_key</code> と <code>init_sess_key</code> で暗号化鍵を準備します。 2. **フィルタチェーン構築**: <code>pushf_create</code> を用いて、データが流れるパイプラインを構築します。</p>
+<ul>
+<li>順序: <code>[データ] -&gt; [CRLF変換] -&gt; [リテラルパケット] -&gt; [圧縮] -&gt; [MDC計算] -&gt; [CFB暗号化] -&gt; [出力]</code></li>
+<p>3. **データ処理**: <code>mbuf_grab</code> で取得した平文をチェーンの先頭に流し込み、各フィルタが順次処理（暗号化・圧縮等）を行いながら最終的な <code>MBuf</code> へ書き出します。 4. **終了処理**: <code>pushf_flush</code> により全フィルタのバッファをフラッシュし、<code>pushf_free_all</code> でリソースを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型定義とメモリ管理（<code>palloc</code> 等）。</li>
+<li><code>time.h</code>: リテラルパケットのタイムスタンプ生成に使用。</li>
+<li><code>mbuf.h</code>: メモリバッファの抽象化。</li>
+<li><code>pgp.h</code>: PGP 形式の定義とコンテキスト構造体。</li>
+<li><code>px.h</code>: 共通暗号化プリミティブ（乱数生成、ハッシュ関数）。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgp-decrypt.c</code>: 対となる復号処理の実装。</li>
+<li><code>pgp-cfb.c</code>: CFB モードの暗号化アルゴリズム詳細。</li>
+<li><code>pgp-s2k.c</code>: パスフレーズから鍵を生成する S2K アルゴリズム。</li>
+<li><code>pgp.c</code>: PGP パケットの共通定義とユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「Push Filter」パターンを採用しています。データは <code>pushf_write</code> を通じてチェーンを通過し、各フィルタが自身の役割（暗号化や圧縮）を適用します。</li>
+<li>MDC（Modification Detection Code）は、暗号化データの改ざん検知に不可欠です。<code>ctx-&gt;disable_mdc</code> が設定されていない限り、デフォルトで有効になるよう設計されています。</li>
+<li><code>render_newlen</code> は PGP 仕様（RFC 4880）に基づく可変長長さをエンコードする重要なヘルパー関数です。パケット形式を理解する際に最初に参照すべき箇所です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__render_newlen.html" target="wiki-view"><code>render_newlen</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__write_tag_only.html" target="wiki-view"><code>write_tag_only</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__write_normal_header.html" target="wiki-view"><code>write_normal_header</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__mdc_init.html" target="wiki-view"><code>mdc_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__mdc_write.html" target="wiki-view"><code>mdc_write</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__mdc_flush.html" target="wiki-view"><code>mdc_flush</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__mdc_free.html" target="wiki-view"><code>mdc_free</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__EncStat.html" target="wiki-view"><code>EncStat</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__encrypt_init.html" target="wiki-view"><code>encrypt_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__encrypt_process.html" target="wiki-view"><code>encrypt_process</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__encrypt_free.html" target="wiki-view"><code>encrypt_free</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-encrypt_c__PktStreamStat.html" target="wiki-view"><code>PktStreamStat</code></a></li>
+</ul></body></html>

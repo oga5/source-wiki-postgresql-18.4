@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__procarray_c__ProcArrayEndTransaction.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcArrayEndTransaction</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/storage/ipc/procarray.c:666</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクション終了時に、当該バックエンドプロセスが保持するトランザクションID（XID）を「実行中」の集合から除外し、共有メモリ上のプロセス状態を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>proc</code>: 対象となるバックエンドの <code>PGPROC</code> 構造体へのポインタ。</li>
+<li><code>latestXid</code>: 終了するトランザクションの最新のXID（有効な場合）。</li>
+<li>**出力**: なし（副作用として共有メモリ上の状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>latestXid</code> が有効な場合、<code>proc-&gt;xid</code> も有効である必要がある。</li>
+<li><code>latestXid</code> が無効な場合、<code>proc-&gt;xid</code> は無効であり、サブトランザクションの状態（<code>subxidStatus</code>）は空である必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **XIDが有効な場合**:</p>
+<ul>
+<li>他のプロセスがスナップショットを取得する際に、当該プロセスが「実行中」として誤認されないよう、<code>ProcArrayLock</code> を取得して状態をクリアする。</li>
+<li><code>LWLockConditionalAcquire</code> でロックが即時取得できれば <code>ProcArrayEndTransactionInternal</code> を呼び出す。</li>
+<li>ロックが取得できない場合は、効率化のため <code>ProcArrayGroupClearXid</code> を使用してグループ単位でクリアを行う。</li>
+<p>2. **XIDが無効な場合**:</p>
+<li>ロックを取得せず、<code>proc-&gt;vxid.lxid</code>、<code>proc-&gt;xmin</code>、<code>proc-&gt;delayChkptFlags</code>、<code>proc-&gt;recoveryConflictPending</code> をリセットする。</li>
+<li>プロセスが <code>PROC_VACUUM_STATE_MASK</code> フラグを保持している場合は、<code>ProcArrayLock</code> を排他取得し、共有メモリ上の <code>ProcGlobal-&gt;statusFlags</code> を更新してフラグをクリアする。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/xact.c</code> (コミット処理時)</li>
+<li><code>src/backend/utils/time/snapmgr.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ProcArrayEndTransactionInternal</code></li>
+<li><code>ProcArrayGroupClearXid</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code> / <code>LWLockConditionalAcquire</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: バックエンドプロセスの状態を保持する構造体。</li>
+<li><code>ProcArrayLock</code>: プロセス配列へのアクセスを制御する LWLock。</li>
+<li><code>ProcGlobal</code>: 共有メモリ上のプロセス状態を管理するグローバル構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ProcArrayLock</code> の競合が発生した場合、<code>ProcArrayGroupClearXid</code> を用いたグループ化処理へフォールバックすることで、パフォーマンス低下を抑制する設計となっている。</li>
+<li>バキューム状態のクリア時には、共有キャッシュラインの不要なダーティ化を避けるため、フラグの変更がある場合のみロックを取得する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は頻繁に呼び出されるため、ロックの取得範囲を最小限に抑えることが重要である。</li>
+<li><code>ProcArrayGroupClearXid</code> への分岐は、高負荷時のスケーラビリティを確保するための最適化である。</li>
+</ul></body></html>

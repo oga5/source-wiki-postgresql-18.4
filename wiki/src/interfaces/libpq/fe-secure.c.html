@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-secure.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-secure.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLクライアントライブラリ（libpq）におけるセキュア通信（SSL/TLSおよびGSSAPI）の抽象化レイヤーを提供します。ネットワークI/Oの低レベルな差異を吸収し、暗号化の有無に関わらず一貫したインターフェースで通信を行うための基盤です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の通信サブシステムの一部であり、<code>fe-secure-openssl.c</code> や <code>fe-secure-gssapi.c</code> といった具体的な暗号化実装と、上位の接続・実行ロジック（<code>fe-connect.c</code> 等）を仲介します。</p>
+<h2>責務</h2>
+<ul>
+<li>**抽象化されたI/O**: 暗号化の有無を意識させない <code>pqsecure_read</code> / <code>pqsecure_write</code> の提供。</li>
+<li>**シグナル制御**: POSIX環境における <code>SIGPIPE</code> の抑制と管理（ネットワーク切断時のプロセス終了を防ぐ）。</li>
+<li>**エラーハンドリング**: 通信エラー発生時の <code>PGconn</code> へのエラーメッセージ格納と、再試行判断のためのステータス管理。</li>
+<li>**後方互換性**: 古いAPI（<code>PQinitSSL</code> 等）のダミー実装の維持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pqsecure_read</code> / <code>pqsecure_write</code>: 暗号化層（SSL/GSS）または生のソケットI/Oを呼び分けるメイン関数。</li>
+<li><code>pqsecure_raw_read</code> / <code>pqsecure_raw_write</code>: 暗号化されていない生のソケット通信を行う低レベル関数。</li>
+<li><code>pq_block_sigpipe</code> / <code>pq_reset_sigpipe</code>: <code>SIGPIPE</code> シグナルを一時的にブロック・復元するためのユーティリティ。</li>
+<li><code>PGconn</code>: 接続状態を保持する主要な構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQdefaultSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQgetSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQgetgssctx</code></li>
+<li><code>PQgetssl</code></li>
+<li><code>PQinitOpenSSL</code></li>
+<li><code>PQinitSSL</code></li>
+<li><code>PQsetSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQsslAttribute</code></li>
+<li><code>PQsslAttributeNames</code></li>
+<li><code>PQsslInUse</code></li>
+<li><code>PQsslStruct</code></li>
+<li><code>sigpipe_info</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **I/O要求**: 上位層が <code>pqsecure_read/write</code> を呼び出す。 2. **分岐**: <code>conn-&gt;ssl_in_use</code> や <code>conn-&gt;gssenc</code> フラグに基づき、適切な暗号化モジュール（<code>pgtls_read</code> 等）へ委譲する。 3. **raw I/O**: 暗号化が不要な場合、<code>pqsecure_raw_read/write</code> が <code>recv</code>/<code>send</code> システムコールを直接実行する。 4. **エラー処理**: <code>send</code>/<code>recv</code> が失敗した場合、<code>errno</code> を解析し、必要に応じて <code>conn-&gt;errorMessage</code> に詳細を記録する。 5. **シグナル保護**: <code>pqsecure_raw_write</code> 内では、<code>DISABLE_SIGPIPE</code> マクロを用いて <code>SIGPIPE</code> を一時的に無効化し、書き込み後に <code>RESTORE_SIGPIPE</code> で復元する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-int.h</code>: <code>PGconn</code> 構造体定義および内部関数プロトタイプ。</li>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>pthread.h</code> / <code>pthread-win32.h</code>: スレッドセーフなシグナルマスク操作用。</li>
+<li><code>sys/socket.h</code> 等: 標準的なネットワークI/Oヘッダー。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe-auth.h</code></li>
+<li><code>libpq-fe.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-secure-openssl.c</code>: OpenSSLを用いた具体的な暗号化通信の実装。</li>
+<li><code>fe-secure-gssapi.c</code>: GSSAPIを用いた認証・暗号化の実装。</li>
+<li><code>fe-connect.c</code>: 接続確立時に <code>ssl_in_use</code> 等のフラグを初期化するコード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**SIGPIPEの扱い**: Windows環境では <code>SIGPIPE</code> が存在しないため、関連するマクロはすべて no-op となります。POSIX環境では、<code>send()</code> が <code>SIGPIPE</code> を発生させないよう細心の注意が払われています。</li>
+<li>**書き込みエラーの遅延報告**: <code>pqsecure_raw_write</code> は、致命的な書き込みエラーが発生しても即座に失敗を返さず、<code>conn-&gt;write_failed</code> をセットして成功を装うことがあります。これは、サーバー側から送られてくるエラーメッセージを読み取る機会を優先するためです。</li>
+<li>**拡張性**: 新しい暗号化プロトコルを追加する場合は、<code>pqsecure_read/write</code> 内の条件分岐を拡張する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__sigpipe_info.html" target="wiki-view"><code>sigpipe_info</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQsslInUse.html" target="wiki-view"><code>PQsslInUse</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQinitSSL.html" target="wiki-view"><code>PQinitSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQinitOpenSSL.html" target="wiki-view"><code>PQinitOpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQgetssl.html" target="wiki-view"><code>PQgetssl</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQsslStruct.html" target="wiki-view"><code>PQsslStruct</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQsslAttribute.html" target="wiki-view"><code>PQsslAttribute</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQsslAttributeNames.html" target="wiki-view"><code>PQsslAttributeNames</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQgetSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQgetSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQsetSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQsetSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQdefaultSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQdefaultSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure_c__PQgetgssctx.html" target="wiki-view"><code>PQgetgssctx</code></a></li>
+</ul></body></html>

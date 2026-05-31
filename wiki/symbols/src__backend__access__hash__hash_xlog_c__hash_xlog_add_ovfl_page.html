@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_add_ovfl_page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hash_xlog_add_ovfl_page</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/hash/hash_xlog.c:172</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスにおけるオーバーフローページの追加操作をWALリプレイ時に再現し、関連するバケットチェーン、ビットマップページ、およびメタページの状態を整合させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void hash_xlog_add_ovfl_page(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）</li>
+<li>**出力**: なし（副作用としてバッファプール上のページを更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>WALリプレイ中であるため、他のプロセスによる同時アクセスは発生しない前提で動作する。</li>
+<li><code>XLogRecGetBlockTag</code> により、対象となるブロック（オーバーフローページ、左隣接ページ、ビットマップページ、メタページ）が正しく特定できること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **オーバーフローページの初期化**: <code>XLogInitBufferForRedo</code> で新しいオーバーフローページを初期化し、<code>hasho_prevblkno</code> を設定して左隣接ページとリンクさせる。 2. **リンク更新**: 左隣接ページが存在する場合、<code>XLogReadBufferForRedo</code> で読み込み、<code>hasho_nextblkno</code> を新しいオーバーフローページに更新する。 3. **ビットマップ更新**: WALレコードにビットマップの参照が含まれる場合、該当ビットをセットする。 4. **新規ビットマップページ作成**: 必要に応じて新しいビットマップページを初期化し、メタページへの登録準備を行う。 5. **メタページ更新**: <code>hashm_firstfree</code> を更新し、必要に応じて <code>hashm_spares</code> や <code>hashm_mapp</code>（新しいビットマップページへの参照）を更新する。 6. **LSN更新と永続化**: 変更した全ページに現在のWAL LSNを書き込み、<code>MarkBufferDirty</code> を呼び出す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/hash/hash_xlog.c</code> 内の <code>hash_redo</code> 関数（WALレコード種別 <code>XLOG_HASH_ADD_OVFL_PAGE</code> に基づくディスパッチ）。</li>
+<li>**呼び出し先**: <code>XLogRecGetBlockTag</code>, <code>XLogInitBufferForRedo</code>, <code>XLogReadBufferForRedo</code>, <code>_hash_initbuf</code>, <code>_hash_initbitmapbuffer</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code> 等のバッファ管理およびハッシュインデックス操作関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_hash_add_ovfl_page</code>: WALレコードのデータ構造。</li>
+<li><code>HashPageOpaque</code>: ページヘッダーのハッシュインデックス固有情報。</li>
+<li><code>HashMetaPage</code>: インデックスのメタデータ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、そのページの更新はスキップされる。</li>
+<li>ビットマップページやメタページの参照がないWALレコードの場合、該当する更新処理は実行されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は冪等である必要がある。</li>
+<li>通常のインデックス操作とは異なり、リプレイ中はロックの保持期間が最適化されている（詳細はソース内のコメント参照）。</li>
+</ul></body></html>

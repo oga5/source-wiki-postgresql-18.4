@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/pg_backup_tar.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/pg_backup_tar.c</h1>
+<h2>概要</h2>
+<p><code>pg_backup_tar.c</code> は、<code>pg_dump</code> におけるアーカイブ形式の一つである「TAR形式」の入出力処理を実装するモジュールです。この形式は、ダンプデータを単一のTARファイルに格納し、人間が読み取り可能な <code>restore.sql</code> スクリプトを同梱します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_dump</code> のアーカイブ形式抽象化レイヤーの一部です。<code>pg_backup_archiver.c</code> が定義するインターフェース（<code>ArchiveHandle</code>）を実装し、特定のフォーマット（TAR）に特化したデータ永続化と復元ロジックを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**TARアーカイブの構築**: ダンプデータを一時ファイルに書き出し、その後TARヘッダーを付与してメインアーカイブへ統合する。</li>
+<li>**メタデータの管理**: <code>toc.dat</code> を用いたTOC（Table of Contents）の読み書き。</li>
+<li>**復元用スクリプトの生成**: 抽出後に手動でリストア可能な <code>restore.sql</code> の生成。</li>
+<li>**ラージオブジェクト（LO）の処理**: <code>blob_*.dat</code> ファイルとしての個別の保存と復元。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>InitArchiveFmt_Tar</code>: アーカイブハンドラの関数ポインタを初期化するエントリポイント。</li>
+<li><code>TAR_MEMBER</code>: TARアーカイブ内の個々のファイル（メンバー）を管理する構造体。</li>
+<li><code>lclContext</code>: TARアーカイブ全体のコンテキスト（ファイルハンドルや位置情報）を保持する構造体。</li>
+<li><code>_tarPositionTo</code>: アーカイブ内の特定のファイルメンバーまでシークする内部関数。</li>
+<li><code>_tarGetHeader</code>: TARヘッダーを読み取り、整合性を検証する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lclTocEntry</code></li>
+<li><code>tarClose</code></li>
+<li><code>tarGets</code></li>
+<li><code>tarOpen</code></li>
+<li><code>tarPrintf</code></li>
+<li><code>tarRead</code></li>
+<li><code>tarWrite</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み時**: <code>_StartData</code> で一時ファイルを作成し、<code>_WriteData</code> でデータを蓄積。<code>_EndData</code> で一時ファイルを閉じ、<code>_tarAddFile</code> を呼び出してTARヘッダーと共にメインアーカイブへ追記します。 2. **読み込み時**: <code>_tarPositionTo</code> を使用してアーカイブ内をスキャンし、目的のファイルメンバーを特定します。<code>_tarReadRaw</code> が低レベルの読み込みを担当し、ルックアヘッドバッファを考慮しながらデータを抽出します。 3. **終了処理**: <code>_CloseArchive</code> がTOCの書き出し、<code>restore.sql</code> の生成、およびTAR形式の終端（NULLブロック）の書き込みを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>pg_backup_archiver.h</code>: アーカイブハンドラの定義。</li>
+<li><code>pg_backup_tar.h</code>: TARヘッダー構造と定数。</li>
+<li><code>pgtar.h</code>: TAR形式特有のユーティリティ関数。</li>
+<li><code>common/file_utils.h</code>, <code>fe_utils/string_utils.h</code>: ファイル操作および文字列処理。</li>
+<li><code>ctype.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>pg_backup_utils.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_dump/pg_backup_directory.c</code>: TAR形式と互換性のあるディレクトリ形式の実装。</li>
+<li><code>src/bin/pg_dump/pg_backup_archiver.c</code>: アーカイブ処理の基盤となる共通ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**圧縮の非サポート**: 本実装はTAR形式での圧縮をサポートしていません。これは、<code>gzdopen</code> 等のバッファリングがファイル位置の正確な制御を阻害するためです。</li>
+<li>**一時ファイル**: 書き込み時には <code>tmpfile()</code>（Windowsでは <code>_tempnam</code> + <code>open</code>）を使用してデータを一時的に保持します。</li>
+<li>**互換性**: このファイルで作成されるTARファイルは、<code>pg_restore</code> での復元だけでなく、標準的な <code>tar</code> コマンドで展開可能です。展開後のファイル構成は <code>directory</code> 形式と同期するように設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__TAR_MEMBER.html" target="wiki-view"><code>TAR_MEMBER</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__lclContext.html" target="wiki-view"><code>lclContext</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__lclTocEntry.html" target="wiki-view"><code>lclTocEntry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__InitArchiveFmt_Tar.html" target="wiki-view"><code>InitArchiveFmt_Tar</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarOpen.html" target="wiki-view"><code>tarOpen</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarClose.html" target="wiki-view"><code>tarClose</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarGets.html" target="wiki-view"><code>tarGets</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarRead.html" target="wiki-view"><code>tarRead</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarWrite.html" target="wiki-view"><code>tarWrite</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_tar_c__tarPrintf.html" target="wiki-view"><code>tarPrintf</code></a></li>
+</ul></body></html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/write-stderr.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>write_stderr</h1>
+<h2>概念</h2>
+<p><code>write_stderr</code> は、PostgreSQLのバックエンドおよび各種フロントエンドツール（<code>pg_ctl</code>、<code>pg_dump</code>、フロントエンド共通ユーティリティなど）において、標準エラー出力（<code>stderr</code>）やプラットフォーム固有のログ記録機構（Windowsイベントログなど）にフォーマット済みのエラーメッセージを出力するために定義されている関数群です。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLは、サーバープロセス（バックエンド）だけでなく、管理ツール（<code>pg_ctl</code>）やバックアップツール（<code>pg_dump</code>）など、多様なコンポーネントで構成されています。それぞれの実行環境（Unix系OSのコンソール、Windowsのコンソール、あるいはWindowsサービスなど）において、エラーメッセージを適切かつ確実にユーザーやシステム管理者に届けるために、各モジュールで最適な <code>write_stderr</code> が定義または利用されています。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/utils/error</code></li>
+<li><code>module:src/bin/pg_ctl</code></li>
+<li><code>module:src/bin/pg_dump</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関与する主要なシンボルは以下の通りです。</p>
+<ul>
+<li><code>symbol:src/backend/utils/error/elog.c#write_stderr</code></li>
+<li><code>symbol:src/bin/pg_ctl/pg_ctl.c#write_stderr</code></li>
+<li><code>symbol:src/bin/pg_dump/parallel.c#write_stderr</code></li>
+<li><code>symbol:src/fe_utils/cancel.c#write_stderr</code></li>
+</ul>
+<p>※現時点で詳細な仕様が判明しているのは <code>src/bin/pg_ctl/pg_ctl.c</code> の実装のみです。</p>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける <code>write_stderr</code> の呼び出しから出力先への到達にいたる全体的なエンドツーエンドの流れは、現時点では完全には解明されていません。</p>
+<p>ただし、<code>src/bin/pg_ctl/pg_ctl.c</code> における流れは以下のように定義されています。</p>
+<p>1. **呼び出し**: 呼び出し元が <code>write_stderr(fmt, ...)</code> を呼び出します。 2. **引数の初期化**: <code>va_start</code> により可変長引数リストを初期化します。 3. **プラットフォーム判定と出力**:</p>
+<ul>
+<li>**Unix系**: <code>vfprintf</code> を使用して <code>stderr</code> へ直接出力します。</li>
+<li>**Windows**: <code>pgwin32_is_service()</code> を確認します。</li>
+<li>**サービスとして実行中の場合**: <code>vsnprintf</code> を用いて最大2048バイトのローカルバッファに書き出し、<code>write_eventlog</code> を介してWindowsイベントログへ出力します。</li>
+<li>**コンソール実行中の場合**: <code>vfprintf</code> を使用して <code>stderr</code> へ直接出力します。</li>
+<p>4. **クリーンアップ**: <code>va_end</code> を呼び出し、引数リストの処理を終了します。</p>
+</ul>
+<p>他のモジュール（<code>elog.c</code>、<code>parallel.c</code>、<code>cancel.c</code>）における具体的な制御フローや、それらがどのように呼び出されるかについては、現時点では未検証です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**可変長引数の規約**: <code>write_stderr</code> は可変長引数を受け取るため、呼び出し元はフォーマット文字列（<code>fmt</code>）と渡す引数の型・数を厳密に一致させる必要があります。</li>
+<li>**プラットフォーム依存の出力先切り替え**: <code>pg_ctl</code> においては、Windows環境でサービスとして動作しているか否かにより、出力先が標準エラー出力からイベントログへと動的に切り替わります。</li>
+<li>その他のモジュールにおける不変条件については、現時点では不明です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**Windowsサービス実行時のバッファ制限**: <code>pg_ctl</code> の実装では、Windowsサービスとして実行される際のエラーメッセージ格納バッファが2048バイトに固定されています。このサイズを超える長大なログメッセージを出力しようとすると、<code>vsnprintf</code> による切り詰めが発生し、重要なエラー情報が欠落する可能性があります。</li>
+<li>**出力の消失**: Unix環境やWindowsコンソール実行時、<code>stderr</code> への書き込みは実行環境の標準エラー出力が適切にリダイレクトまたはキャプチャされているかに依存します。リダイレクト先の設定に不備がある場合、メッセージが消失する恐れがあります。</li>
+<li>**モジュール間の実装の差異**: <code>write_stderr</code> という同名の関数が複数のファイル（<code>elog.c</code>、<code>parallel.c</code>、<code>cancel.c</code> など）に個別に定義されているため、それぞれの関数でバッファサイズ制限やプラットフォーム対応の有無などの挙動が異なる可能性があります。これらを同一視して使用すると、予期しない動作を招く原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_ctl/pg_ctl.c</code> （<code>write_stderr</code> の具体的なプラットフォーム分岐やバッファ処理の実装を確認するため）</li>
+<li><code>src/backend/utils/error/elog.c</code> （バックエンド側でのエラー出力処理の実装を確認するため）</li>
+<li><code>src/bin/pg_dump/parallel.c</code> （並行ダンプ処理におけるエラー出力の役割を確認するため）</li>
+<li><code>src/fe_utils/cancel.c</code> （フロントエンドのキャンセル処理におけるエラー出力の役割を確認するため）</li>
+</ul></body></html>

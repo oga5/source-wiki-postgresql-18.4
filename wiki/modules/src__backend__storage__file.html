@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>modules/src__backend__storage__file.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>src/backend/storage/file</h1>
+<h2>システム内での役割</h2>
+<p>本モジュールは、PostgreSQLにおけるファイルシステム操作の抽象化と管理を行う中核レイヤーです。OSのファイル記述子（FD）制限を回避するための仮想ファイル記述子（VFD）管理から、一時ファイルのライフサイクル管理、ディレクトリの再帰的コピーまで、データベースの物理的なファイルI/Oを安全かつ効率的に制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**FD管理**: LRUアルゴリズムを用いたVFDによるファイル記述子の効率的な再利用と枯渇防止。</li>
+<li>**一時ファイル管理**: トランザクションやプロセスを跨ぐ一時ファイルの作成・共有・自動削除の制御。</li>
+<li>**データ整合性**: <code>fsync</code> を活用したクラッシュセーフなファイル操作と、アンログドテーブルのリカバリ処理。</li>
+<li>**高レベルI/O**: 巨大ファイルの透過的な分割管理や、ディレクトリ単位の再帰的コピー機能の提供。</li>
+</ul>
+<h2>このモジュールのファイル</h2>
+<ul>
+<li><code>fd.c</code>: VFD管理と低レベルファイルI/Oの基盤。</li>
+<li><code>buffile.c</code>: 巨大ファイル対応のバッファ付きI/Oインターフェース。</li>
+<li><code>fileset.c</code>: 一時ファイルの名前空間とテーブルスペース分散管理。</li>
+<li><code>sharedfileset.c</code>: プロセス間で共有可能な一時ファイルセットの管理。</li>
+<li><code>copydir.c</code>: ディレクトリの再帰的コピーと同期ユーティリティ。</li>
+<li><code>reinit.c</code>: アンログドテーブルのリカバリと初期化処理。</li>
+</ul>
+<h2>主要なデータ構造</h2>
+<ul>
+<li><code>Vfd</code>: 仮想ファイル記述子を保持するキャッシュ構造体。</li>
+<li><code>BufFile</code>: 物理ファイルを論理的に連結・バッファリングする構造体。</li>
+<li><code>FileSet</code> / <code>SharedFileSet</code>: 一時ファイルの集合を管理する名前空間構造体。</li>
+<li><code>unlogged_relation_entry</code>: リカバリ対象のリレーションを追跡するハッシュテーブル用構造体。</li>
+</ul>
+<h2>主なフロー</h2>
+<p>1. **ファイルオープン**: <code>PathNameOpenFile</code> 等が <code>fd.c</code> を経由し、必要に応じてLRUキャッシュからFDを解放してOSのファイルを開く。 2. **バッファ付きアクセス**: <code>BufFile</code> を介した読み書き時、内部で <code>fd.c</code> を呼び出し、1GB単位の物理ファイル分割を透過的に処理する。 3. **共有管理**: <code>SharedFileSet</code> がDSMと連携し、参照カウンタを用いて最後のプロセスが終了した際に一時ファイルを自動クリーンアップする。 4. **リカバリ**: 起動時に <code>ResetUnloggedRelations</code> がディレクトリを走査し、<code>_init</code> フォークを基にメインデータを再構築する。</p>
+<h2>外部依存</h2>
+<ul>
+<li><code>storage/fd.h</code>, <code>storage/buffile.h</code>, <code>storage/fileset.h</code> 等の公開ヘッダー。</li>
+<li><code>utils/resowner.h</code> (リソース所有権管理)。</li>
+<li><code>commands/tablespace.h</code> (テーブルスペースのパス解決)。</li>
+<li><code>storage/dsm.h</code> (共有メモリ連携)。</li>
+<li>標準ライブラリ: <code>&lt;fcntl.h&gt;</code>, <code>&lt;unistd.h&gt;</code>, <code>&lt;sys/stat.h&gt;</code> 等。</li>
+</ul>
+<h2>内部構成</h2>
+<p>本モジュールは、<code>fd.c</code> を最下層の抽象化レイヤーとし、その上に一時ファイル管理（<code>fileset.c</code>, <code>sharedfileset.c</code>）やバッファリング（<code>buffile.c</code>）、特殊なファイル操作（<code>copydir.c</code>, <code>reinit.c</code>）が構築される階層構造を持っています。</p>
+<h2>推奨読書順</h2>
+<p>1. <code>fd.c</code>（全操作の基盤となるVFD管理を理解する） 2. <code>buffile.c</code>（高レベルなファイルI/Oの仕組みを把握する） 3. <code>fileset.c</code>（一時ファイルの管理単位を理解する） 4. <code>sharedfileset.c</code>（プロセス間共有の仕組みを確認する） 5. <code>copydir.c</code>（ディレクトリ操作の堅牢性を確認する） 6. <code>reinit.c</code>（リカバリ時の特殊処理を確認する）</p>
+<h2>未解決の問い</h2>
+<ul>
+<li>各種ファイル操作における <code>fsync</code> の呼び出し頻度とパフォーマンスのトレードオフの最適化。</li>
+<li>OS固有の高速クローン機能（<code>copy_file_range</code>等）のサポート拡充と、プラットフォーム間での整合性保証の精緻化。</li>
+</ul></body></html>

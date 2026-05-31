@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__smgr__md_c__register_dirty_segment.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>register_dirty_segment</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/smgr/md.c:1507</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーションの特定のセグメントがダーティ（未同期）であることを記録し、チェックポインタプロセスに対して <code>fsync</code> を要求する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>reln</code>: 対象リレーションのストレージマネージャ構造体。</li>
+<li><code>forknum</code>: 対象のフォーク番号。</li>
+<li><code>seg</code>: 対象セグメントのファイル記述子およびメタデータを含む <code>MdfdVec</code> 構造体。</li>
+<li>**出力**: なし（副作用として同期要求の登録または直接の <code>fsync</code> 実行を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>一時リレーション（<code>SmgrIsTemp(reln)</code> が真）に対しては呼び出してはならない（アサーションにより強制）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>INIT_MD_FILETAG</code> を使用して、リレーションのロケータ、フォーク番号、セグメント番号から <code>FileTag</code> を生成する。 2. <code>RegisterSyncRequest</code> を呼び出し、チェックポインタへの同期要求を試みる。 3. 要求キューが満杯で登録に失敗した場合:</p>
+<ul>
+<li><code>DEBUG1</code> レベルでログを出力する。</li>
+<li><code>FileSync</code> を呼び出し、当該セグメントに対して直接 <code>fsync</code> を実行する。</li>
+<li>実行した <code>fsync</code> の所要時間を <code>pgstat_count_io_op_time</code> を用いて統計情報に記録する（<code>IOCONTEXT_NORMAL</code> として計上）。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/smgr/md.c</code> 内の複数の箇所（<code>mdextend</code>, <code>mdwritev</code> 等のセグメント更新処理）。</li>
+<li>**呼び出し先**:</li>
+<li><code>RegisterSyncRequest</code> (同期要求の登録)</li>
+<li><code>FileSync</code> (キュー溢れ時の直接同期)</li>
+<li><code>pgstat_prepare_io_time</code> / <code>pgstat_count_io_op_time</code> (統計計測)</li>
+<li><code>data_sync_elevel</code> (エラーレベル判定)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SMgrRelation</code>: ストレージマネージャのリレーション情報。</li>
+<li><code>MdfdVec</code>: セグメントファイル記述子とセグメント番号を保持する構造体。</li>
+<li><code>FileTag</code>: 同期対象ファイルを一意に識別するためのタグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キュー溢れ**: <code>RegisterSyncRequest</code> が失敗した場合、バックエンドプロセス自身が <code>FileSync</code> を実行して同期を完了させる。</li>
+<li>**同期失敗**: <code>FileSync</code> がエラーを返した場合、<code>data_sync_elevel</code> に基づいてエラー（通常は <code>ERROR</code>）を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はチェックポインタへの非同期通知を優先する設計である。</li>
+<li><code>fsync</code> を直接実行する場合、現在の <code>IOContext</code> を特定できないため、統計上は一律 <code>IOCONTEXT_NORMAL</code> として記録される。</li>
+</ul></body></html>

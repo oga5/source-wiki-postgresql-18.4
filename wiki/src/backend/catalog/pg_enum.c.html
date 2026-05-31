@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_enum.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_enum.c</h1>
+<h2>概要</h2>
+<p><code>pg_enum.c</code> は、PostgreSQL の列挙型（ENUM）の定義を保持するシステムカタログ <code>pg_enum</code> を操作するためのルーチン群を提供します。列挙型の作成、ラベルの追加、名前変更、およびトランザクション内での整合性維持を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> モジュールの一部として、データ定義言語（DDL）の実行時にシステムカタログを更新する役割を持ちます。特に <code>pg_type</code> と密接に関連し、列挙型の内部表現を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**列挙型定義の管理**: <code>CREATE TYPE AS ENUM</code> による初期値の挿入。</li>
+<li>**ラベル操作**: <code>ALTER TYPE ... ADD VALUE</code> によるラベルの追加（順序指定含む）および名前変更。</li>
+<li>**トランザクション整合性**: 未コミットの列挙型・ラベルを追跡し、インデックス破損を防ぐための安全策を提供。</li>
+<li>**順序の再計算**: ラベル間の隙間がなくなった際の <code>enumsortorder</code> の再割り当て。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>EnumValuesCreate</code>: 列挙型の初期値を <code>pg_enum</code> に挿入する。</li>
+<li><code>AddEnumLabel</code>: 新しいラベルを既存の列挙型に追加する。</li>
+<li><code>RenumberEnumType</code>: 順序値の精度不足時に既存のラベルを再採番する。</li>
+<li><code>uncommitted_enum_types / values</code>: トランザクション内で作成された未コミットの列挙型・値を追跡するハッシュテーブル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_Enum</code></li>
+<li><code>EnumTypeUncommitted</code></li>
+<li><code>EnumUncommitted</code></li>
+<li><code>EnumValuesDelete</code></li>
+<li><code>EstimateUncommittedEnumsSpace</code></li>
+<li><code>RenameEnumLabel</code></li>
+<li><code>RestoreUncommittedEnums</code></li>
+<li><code>SerializeUncommittedEnums</code></li>
+<li><code>init_uncommitted_enum_types</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **追加処理**: <code>AddEnumLabel</code> が呼ばれると、まず <code>LockDatabaseObject</code> で対象型を排他ロックし、競合を防ぎます。 2. **順序決定**: 既存のラベルを <code>SearchSysCacheList1</code> で取得し、<code>qsort</code> でソート。新しいラベルの挿入位置に基づき <code>enumsortorder</code> を計算します。 3. **再採番**: <code>float4</code> の精度限界で挿入できない場合、<code>RenumberEnumType</code> を呼び出し、全ラベルの順序を 1 から順に再割り当てして再試行します。 4. **永続化**: <code>CatalogTupleInsert</code> を使用してシステムカタログを更新し、必要に応じて <code>CommandCounterIncrement</code> で可視性を制御します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>table.h</code>, <code>htup_details.h</code> 等による低レベルなタプル操作。</li>
+<li><code>catalog/</code>: <code>pg_enum.h</code>, <code>pg_type.h</code>, <code>indexing.h</code> 等のカタログ定義とインデックス操作。</li>
+<li><code>utils/</code>: <code>syscache.h</code>（カタログキャッシュ）、<code>hsearch.h</code>（未コミット追跡用ハッシュ）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/value.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_enum.h</code>: <code>pg_enum</code> のスキーマ定義と関数プロトタイプ。</li>
+<li><code>src/backend/commands/typecmds.c</code>: 列挙型に関連する DDL コマンドの実行ロジック。</li>
+<li><code>src/backend/utils/adt/enum.c</code>: 列挙型の比較や入出力など、実行時の型操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**順序の仕組み**: <code>enumsortorder</code> は <code>float4</code> 型です。これはラベルの挿入を容易にするための設計ですが、精度限界に達すると <code>RenumberEnumType</code> が走るため、カタログ更新のコストが発生します。</li>
+<li>**バイナリアップグレード**: <code>pg_upgrade</code> 実行時は <code>IsBinaryUpgrade</code> フラグにより、OID の割り当てが制御されます。このモードでは <code>BEFORE/AFTER</code> を指定したラベル追加は禁止されています。</li>
+<li>**未コミットの扱い**: トランザクションがロールバックされた際にインデックスが破損しないよう、未コミットの列挙型値はハッシュテーブルで追跡され、安全性が確認されるまで使用が制限されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__EnumValuesCreate.html" target="wiki-view"><code>EnumValuesCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__EnumValuesDelete.html" target="wiki-view"><code>EnumValuesDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__init_uncommitted_enum_types.html" target="wiki-view"><code>init_uncommitted_enum_types</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__AddEnumLabel.html" target="wiki-view"><code>AddEnumLabel</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__RenameEnumLabel.html" target="wiki-view"><code>RenameEnumLabel</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__EnumTypeUncommitted.html" target="wiki-view"><code>EnumTypeUncommitted</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__EnumUncommitted.html" target="wiki-view"><code>EnumUncommitted</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__AtEOXact_Enum.html" target="wiki-view"><code>AtEOXact_Enum</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__RenumberEnumType.html" target="wiki-view"><code>RenumberEnumType</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__EstimateUncommittedEnumsSpace.html" target="wiki-view"><code>EstimateUncommittedEnumsSpace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__SerializeUncommittedEnums.html" target="wiki-view"><code>SerializeUncommittedEnums</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_enum_c__RestoreUncommittedEnums.html" target="wiki-view"><code>RestoreUncommittedEnums</code></a></li>
+</ul></body></html>

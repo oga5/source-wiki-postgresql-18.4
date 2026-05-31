@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/syslogger.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/syslogger.c</h1>
+<h2>概要</h2>
+<p><code>syslogger.c</code> は、PostgreSQL のログ収集プロセス（SysLogger）を実装するモジュールです。Postmaster および全バックエンドプロセスから出力される <code>stderr</code> をパイプ経由で集約し、設定に基づいたローテーション（サイズ・時間）を行いながらファイルへ書き出します。</p>
+<h2>モジュール内での役割</h2>
+<p>Postmaster の補助プロセスの一つとして動作します。他のプロセスが直接ファイルへ書き込むのではなく、パイプ経由で本プロセスにログを転送することで、ログファイルの排他制御やローテーションの複雑さを一元化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ログ集約**: パイプ経由で送られてくる各プロセスのログを、PID 単位で再構成（プロトコル解析）して集約。</li>
+<li>**ログローテーション**: 設定（<code>Log_RotationAge</code>, <code>Log_RotationSize</code>）に基づき、ログファイルを切り替える。</li>
+<li>**メタデータ管理**: 現在使用中のログファイル名を外部から参照可能なファイル（<code>current_logfiles</code>）に書き出す。</li>
+<li>**プラットフォーム適応**: Windows と Unix で異なるパイプ処理やスレッド/プロセスモデルを抽象化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス管理・メインループ</h3>
+<ul>
+<li><code>SysLoggerMain</code>: プロセスのメインエントリポイント。イベントループを回し、ログの読み込みとローテーションを制御。</li>
+<li><code>SysLogger_Start</code>: Postmaster が SysLogger を起動する際に呼び出す関数。パイプの作成と初期ファイルオープンを担当。</li>
+</ul>
+<h3>ログ処理・プロトコル</h3>
+<ul>
+<li><code>process_pipe_input</code>: パイプから読み込んだデータを解析し、<code>PipeProtoHeader</code> に基づいてメッセージを再構築。</li>
+<li><code>write_syslogger_file</code>: 最終的なログファイルへの書き込みを行う。<code>elog.c</code> からも呼び出される。</li>
+<li><code>save_buffer</code>: PID ごとに断片化されたログを一時保持するための構造体。<code>buffer_lists</code> で管理。</li>
+</ul>
+<h3>ローテーション・設定</h3>
+<ul>
+<li><code>logfile_rotate</code>: ローテーションの実行関数。</li>
+<li><code>set_next_rotation_time</code>: 次回の時間ベースのローテーション時刻を計算。</li>
+<li><code>update_metainfo_datafile</code>: <code>current_logfiles</code> を更新し、外部ツールが現在のログパスを追跡できるようにする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckLogrotateSignal</code></li>
+<li><code>RemoveLogrotateSignalFiles</code></li>
+<li><code>SysLoggerMain</code></li>
+<li><code>SysLogger_Start</code></li>
+<li><code>SysloggerStartupData</code></li>
+<li><code>flush_pipe_input</code></li>
+<li><code>logfile_open</code></li>
+<li><code>process_pipe_input</code></li>
+<li><code>save_buffer</code></li>
+<li><code>syslogger_fdget</code></li>
+<li><code>syslogger_fdopen</code></li>
+<li><code>write_syslogger_file</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>SysLogger_Start</code> がパイプを作成し、Postmaster が stderr をパイプの書き込み端にリダイレクト。 2. **集約**: <code>SysLoggerMain</code> が <code>WaitEventSet</code> を使用してパイプの読み込みを待機。 3. **解析**: <code>process_pipe_input</code> がパイプから <code>PipeProtoHeader</code> を読み取り、PID 単位で <code>save_buffer</code> に蓄積。<code>PIPE_PROTO_IS_LAST</code> フラグが立つと、完全なメッセージとして <code>write_syslogger_file</code> へ渡す。 4. **ローテーション**: <code>SIGHUP</code>（設定変更）またはサイズ/時間制限に達した際、<code>logfile_rotate</code> が新しいファイルハンドルを開き、古いものを閉じる。 5. **終了**: パイプの EOF を検知すると、全バックエンドが終了したと判断し <code>proc_exit</code> を呼び出す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postmaster/syslogger.h</code>: プロトコル定義と外部公開関数。</li>
+<li><code>storage/fd.h</code>: ファイルディスクリプタ管理。</li>
+<li><code>storage/latch.h</code>: プロセス間通知（イベントループ）。</li>
+<li><code>lib/stringinfo.h</code>: ログ断片のバッファリング。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>pgtime.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/dsm.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pg_shmem.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/error/elog.c</code>: ログ出力の発生源。<code>write_syslogger_file</code> を呼び出す。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: プロセスの起動と監視を担当。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>save_buffer</code> 内の <code>StringInfo</code> は <code>palloc</code> されており、メッセージ完了時に <code>pfree</code> されます。</li>
+<li>**Windows 特有の挙動**: Windows ではパイプの読み込みに専用スレッド (<code>pipeThread</code>) を使用します。これは <code>ReadFile</code> がブロッキングするためで、メインスレッドがシグナルやラッチを処理できるようにするためです。</li>
+<li>**エラーパス**: ログファイルオープン失敗時は <code>ereport(FATAL)</code> が基本ですが、ローテーション時の失敗は <code>rotation_disabled</code> フラグを立てて継続を試みます。</li>
+<li>**制約**: <code>syslogPipe</code> は Postmaster から継承されるため、Postmaster 終了後も SysLogger が生き残ることで、全プロセスの「最後の喘ぎ」まで確実にログを回収する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__save_buffer.html" target="wiki-view"><code>save_buffer</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__SysloggerStartupData.html" target="wiki-view"><code>SysloggerStartupData</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__SysLoggerMain.html" target="wiki-view"><code>SysLoggerMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__SysLogger_Start.html" target="wiki-view"><code>SysLogger_Start</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__syslogger_fdget.html" target="wiki-view"><code>syslogger_fdget</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__syslogger_fdopen.html" target="wiki-view"><code>syslogger_fdopen</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__process_pipe_input.html" target="wiki-view"><code>process_pipe_input</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__flush_pipe_input.html" target="wiki-view"><code>flush_pipe_input</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__write_syslogger_file.html" target="wiki-view"><code>write_syslogger_file</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__logfile_open.html" target="wiki-view"><code>logfile_open</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__CheckLogrotateSignal.html" target="wiki-view"><code>CheckLogrotateSignal</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__syslogger_c__RemoveLogrotateSignalFiles.html" target="wiki-view"><code>RemoveLogrotateSignalFiles</code></a></li>
+</ul></body></html>

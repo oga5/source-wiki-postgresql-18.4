@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pgstattuple__pgstattuple_c__pgstat_btree_page.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_btree_page</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pgstattuple/pgstattuple.c:410</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスの指定されたページを走査し、統計情報（空き容量やタプル数）を収集・集計する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgstat_btree_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno, BufferAccessStrategy bstrategy)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>stat</code>: 統計情報を格納する <code>pgstattuple_type</code> 構造体へのポインタ。</li>
+<li><code>rel</code>: 対象のインデックスリレーション。</li>
+<li><code>blkno</code>: 走査対象のブロック番号。</li>
+<li><code>bstrategy</code>: バッファアクセスのための戦略オブジェクト。</li>
+<li>**出力**: なし（<code>stat</code> 構造体のフィールドを直接更新する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>rel</code> は B-tree インデックスである必要がある。</li>
+<li>呼び出し元で適切なロック（<code>AccessShareLock</code> 等）が保持されていること。</li>
+<li>ページ読み込み時に <code>BT_READ</code> モードでロックを取得し、処理終了後に解放する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ReadBufferExtended</code> を使用して指定ブロックを読み込み、<code>BT_READ</code> モードでロックする。 2. ページが新規（<code>PageIsNew</code>）の場合、ページ全体を空き容量として <code>stat-&gt;free_space</code> に加算する。 3. ページが B-tree 構造を持つ場合、<code>BTPageOpaqueData</code> を取得して以下の判定を行う：</p>
+<ul>
+<li><code>P_IGNORE</code>（削除済みまたは半死状態）の場合、ページ全体を空き容量として加算する。</li>
+<li>リーフページ（<code>P_ISLEAF</code>）の場合、<code>pgstat_index_page</code> を呼び出し、ページ内のタプルを走査して統計を更新する。</li>
+<li>内部ページの場合、統計更新は行わずスキップする。</li>
+<p>4. <code>_bt_relbuf</code> を呼び出し、バッファのロックを解放して読み込みを終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/pgstattuple/pgstattuple.c</code> 内のインデックス走査ロジック（<code>pgstat_index</code> 等から間接的に呼び出される）。</li>
+<li>**呼び出し先**:</li>
+<li><code>ReadBufferExtended</code>, <code>LockBuffer</code>, <code>BufferGetPage</code>, <code>_bt_relbuf</code>（PostgreSQL ストレージマネージャ）</li>
+<li><code>PageIsNew</code>, <code>PageGetSpecialSize</code>, <code>BTPageGetOpaque</code>, <code>P_IGNORE</code>, <code>P_ISLEAF</code>, <code>P_FIRSTDATAKEY</code>, <code>PageGetMaxOffsetNumber</code>（B-tree アクセスメソッド）</li>
+<li><code>pgstat_index_page</code>（統計集計用ヘルパー）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgstattuple_type</code>: 統計結果を保持する構造体。</li>
+<li><code>BTPageOpaqueData</code>: B-tree ページのメタデータ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ページが破損している場合、PostgreSQL のバッファマネージャまたは B-tree アクセスメソッドの内部チェックによりエラーが発生する可能性がある。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> は直接含まれていないが、呼び出し元の走査ループに含まれていることが想定される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は B-tree 特有のページ構造に依存している。他のインデックス型（Hash, GiST 等）については、それぞれ <code>pgstat_hash_page</code> や <code>pgstat_gist_page</code> が対応する。</li>
+<li>内部ページ（非リーフ）の統計は現在無視されているため、将来的にインデックスの深さや内部ノードの統計が必要になった場合は拡張が必要である。</li>
+</ul></body></html>

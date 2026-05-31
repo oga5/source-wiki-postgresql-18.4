@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/nodes/bitmapset.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/nodes/bitmapset.c</h1>
+<h2>概要</h2>
+<p><code>bitmapset.c</code> は、非負整数の集合を効率的に表現・操作するためのビットマップデータ構造（<code>Bitmapset</code>）を実装するモジュールです。クエリ最適化におけるテーブルのインデックスや属性の集合管理など、PostgreSQL の内部で頻繁に使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/nodes</code> サブシステムの一部として、ノードツリーの走査やプランニングの過程で必要となる「集合演算」の基盤を提供します。<code>List</code> 構造よりもメモリ効率と検索速度に優れるため、要素数が数百以下の集合管理に最適化されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**集合のライフサイクル管理**: 生成、コピー、破棄、およびメモリ再配置。</li>
+<li>**集合演算**: 和（union）、積（intersect）、差（difference）の計算。</li>
+<li>**メンバーシップ判定**: 特定の要素の包含判定、集合の比較、および要素数のカウント。</li>
+<li>**イテレーション**: 集合内の要素を順方向・逆方向に走査するためのインターフェース提供。</li>
+<li>**ハッシュ化**: ハッシュテーブルのキーとして利用するためのハッシュ値計算と比較関数の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクルと生成</h3>
+<ul>
+<li><code>bms_make_singleton(int x)</code>: 単一要素を持つ集合を生成。</li>
+<li><code>bms_copy(const Bitmapset *a)</code>: 集合のディープコピーを作成。</li>
+<li><code>bms_free(Bitmapset *a)</code>: 集合を解放。</li>
+</ul>
+<h3>集合演算（非破壊的）</h3>
+<ul>
+<li><code>bms_union</code>, <code>bms_intersect</code>, <code>bms_difference</code>: 2つの集合から新しい集合を生成。</li>
+</ul>
+<h3>集合演算（破壊的・リサイクル）</h3>
+<ul>
+<li><code>bms_add_member</code>, <code>bms_del_member</code>: 集合に要素を追加・削除。</li>
+<li><code>bms_add_members</code>, <code>bms_int_members</code>, <code>bms_del_members</code>: 集合同士の演算を行い、入力集合を再利用（リサイクル）してメモリ効率を向上させる。</li>
+</ul>
+<h3>判定・比較</h3>
+<ul>
+<li><code>bms_equal</code>, <code>bms_compare</code>: 集合の等価性および順序比較。</li>
+<li><code>bms_is_subset</code>, <code>bms_subset_compare</code>: 部分集合関係の判定。</li>
+<li><code>bms_is_member</code>, <code>bms_overlap</code>: 要素の包含や集合の重なりを判定。</li>
+</ul>
+<h3>イテレーション</h3>
+<ul>
+<li><code>bms_next_member</code>, <code>bms_prev_member</code>: 集合内の要素を順次取得するためのカーソル操作。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>bms_compare</code></li>
+<li><code>bms_copy</code></li>
+<li><code>bms_copy_and_free</code></li>
+<li><code>bms_difference</code></li>
+<li><code>bms_equal</code></li>
+<li><code>bms_free</code></li>
+<li><code>bms_get_singleton_member</code></li>
+<li><code>bms_intersect</code></li>
+<li><code>bms_is_subset</code></li>
+<li><code>bms_is_valid_set</code></li>
+<li><code>bms_subset_compare</code></li>
+<li><code>bms_union</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**データ構造**: <code>Bitmapset</code> は <code>nwords</code> と可変長配列 <code>words</code> を持つ構造体です。空集合は <code>NULL</code> ポインタとして表現されます。</li>
+<li>**最適化**: 多くの関数は <code>do-while</code> ループを採用し、最初のループ条件チェックを省略してパフォーマンスを向上させています。</li>
+<li>**メモリ管理**: <code>REALLOCATE_BITMAPSETS</code> が定義されている場合、破壊的演算は常に新しいメモリを確保し、古いメモリを解放することで、ダングリングポインタの検出を容易にします。</li>
+<li>**正規化**: 常に末尾のゼロワードを削除する（<code>nwords</code> を最小化する）不変条件を維持します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型とエラー処理。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用。</li>
+<li><code>nodes/bitmapset.h</code>: データ構造定義。</li>
+<li><code>port/pg_bitutils.h</code>: <code>popcount</code> やビット位置計算などの低レベルビット操作。</li>
+<li><code>nodes/pg_list.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/nodes/tidbitmap.c</code>: より複雑なTID（Tuple ID）管理用のビットマップ。</li>
+<li><code>src/backend/nodes/list.c</code>: 汎用的なリスト構造。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**空集合の扱い**: <code>NULL</code> は空集合を意味します。関数を呼び出す際は、戻り値を必ず受け取り、ポインタが更新される可能性があることに注意してください。</li>
+<li>**パフォーマンス**: <code>bms_next_member</code> を用いたループは、集合の要素を列挙する際の標準的なパターンです。</li>
+<li>**制約**: 負の整数はメンバーとして許可されません。</li>
+<li>**省略された詳細**: <code>REALLOCATE_BITMAPSETS</code> はデバッグ専用のビルドオプションであり、本番環境では無効です。また、ビット操作の詳細は <code>pg_bitutils.h</code> に委譲されており、本ファイルでは集合論的なロジックに集中しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_is_valid_set.html" target="wiki-view"><code>bms_is_valid_set</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_copy_and_free.html" target="wiki-view"><code>bms_copy_and_free</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_copy.html" target="wiki-view"><code>bms_copy</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_equal.html" target="wiki-view"><code>bms_equal</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_compare.html" target="wiki-view"><code>bms_compare</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_free.html" target="wiki-view"><code>bms_free</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_union.html" target="wiki-view"><code>bms_union</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_intersect.html" target="wiki-view"><code>bms_intersect</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_difference.html" target="wiki-view"><code>bms_difference</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_is_subset.html" target="wiki-view"><code>bms_is_subset</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_subset_compare.html" target="wiki-view"><code>bms_subset_compare</code></a></li>
+<li><a href="../../../symbols/src__backend__nodes__bitmapset_c__bms_get_singleton_member.html" target="wiki-view"><code>bms_get_singleton_member</code></a></li>
+</ul></body></html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execExpr.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execExpr.c</h1>
+<h2>概要</h2>
+<p><code>execExpr.c</code> は、PostgreSQL の式評価エンジンにおける「コンパイル」フェーズを担う中核ファイルです。プランナが生成した式ツリー（<code>Expr</code> ノード）を、実行時に高速に評価可能な「フラットな命令リスト（<code>ExprEvalStep</code> の配列）」へと変換します。この変換プロセスは、実行エンジンがインタプリタ、JIT コンパイル、あるいは他の技術を柔軟に選択できるように設計されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、式評価の「準備（初期化）」を担当します。</p>
+<ul>
+<li>**入力**: プランナが生成した <code>Expr</code> ツリー。</li>
+<li>**出力**: 実行時に <code>execExprInterp.c</code> 等で消費される <code>ExprState</code> 構造体。</li>
+<li>**連携**: <code>execMain.c</code> や各プランノード（<code>nodeAgg.c</code> 等）から呼び出され、クエリ実行に必要な式評価環境を構築します。</li>
+</ul>
+<h2>責務</h2>
+<ul>
+<li>**式ツリーのコンパイル**: 再帰的なツリー探索を行い、各ノードに対応する <code>ExprEvalStep</code> を生成・連結する。</li>
+<li>**実行環境のセットアップ**: 必要なタプルスロットのデフォーム（<code>FETCHSOME</code>）や、サブプランの初期化、定数の事前計算を行う。</li>
+<li>**最適化**: 頻出する単純な式（Var 参照等）に対する高速パスの生成や、不要な評価のスキップ。</li>
+<li>**制約と検証**: <code>CHECK</code> 制約や <code>Projection</code>（射影）の構築、型変換の検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンパイル・初期化関数</h3>
+<ul>
+<li><code>ExecInitExpr</code>: 式ツリーを <code>ExprState</code> に変換するメインエントリポイント。</li>
+<li><code>ExecInitQual</code>: <code>WHERE</code> 句などの条件式を最適化して初期化。</li>
+<li><code>ExecBuildProjectionInfo</code>: 射影（Projection）のための <code>ExprState</code> を構築。</li>
+<li><code>ExecInitExprRec</code>: 再帰的に式ツリーを探索し、<code>ExprEvalStep</code> を生成するコア関数。</li>
+</ul>
+<h3>状態管理・ユーティリティ</h3>
+<ul>
+<li><code>ExprState</code>: コンパイルされた式評価の実行状態を保持する構造体。</li>
+<li><code>ExprEvalStep</code>: 評価エンジンが実行する個々の命令（オペコードとデータ）。</li>
+<li><code>ExprEvalPushStep</code>: <code>ExprState</code> に命令を追加するヘルパー。</li>
+<li><code>ExecReadyExpr</code>: コンパイル完了後の最終準備（JIT 起動やインタプリタ用テーブルの準備）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecCreateExprSetupSteps</code></li>
+<li><code>ExecInitCheck</code></li>
+<li><code>ExecInitExpr</code></li>
+<li><code>ExecInitExprList</code></li>
+<li><code>ExecInitExprRec</code></li>
+<li><code>ExecInitExprWithParams</code></li>
+<li><code>ExecInitFunc</code></li>
+<li><code>ExecInitQual</code></li>
+<li><code>ExecInitSubPlanExpr</code></li>
+<li><code>ExecInitWholeRowVar</code></li>
+<li><code>ExecPrepareCheck</code></li>
+<li><code>ExprSetupInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitExpr</code> が呼ばれると、まず <code>ExecCreateExprSetupSteps</code> で必要なデータ準備（スロットのデフォーム等）を先行して命令リストに追加します。 2. **再帰的コンパイル**: <code>ExecInitExprRec</code> が式ツリーを走査し、<code>NodeTag</code> に応じて適切な <code>ExprEvalStep</code> を <code>ExprState-&gt;steps</code> にプッシュします。 3. **命令の連結**: <code>AND</code>/<code>OR</code> や <code>CASE</code> 式など、制御フローが必要な場合は、<code>jumpdone</code> フィールドを用いて命令リスト内でのジャンプ先を計算・設定します。 4. **準備**: 全てのステップが追加された後、<code>ExecReadyExpr</code> が呼ばれ、JIT コンパイルの試行やインタプリタ用ディスパッチテーブルの準備が行われます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>Expr</code>, <code>PlanState</code>, <code>TargetEntry</code> 等のノード定義。</li>
+<li><code>executor/execExpr.h</code>: <code>ExprEvalOp</code>（命令セット）や <code>ExprEvalStep</code> の定義。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>（型情報）、<code>typcache.h</code>（型キャッシュ）、<code>builtins.h</code> 等。</li>
+<li><code>catalog/</code>: <code>pg_proc.h</code>, <code>pg_type.h</code> 等のシステムカタログ定義。</li>
+<li><code>access/nbtree.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/subscripting.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/jsonfuncs.h</code></li>
+<li><code>utils/jsonpath.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execExprInterp.c</code>: 本ファイルで生成された <code>ExprEvalStep</code> を実際に実行するインタプリタ。</li>
+<li><code>src/include/executor/execnodes.h</code>: <code>ExprState</code> や <code>ExprEvalStep</code> の詳細な構造体定義。</li>
+<li><code>src/backend/jit/jit.c</code>: <code>jit_compile_expr</code> を通じて、式を LLVM IR に変換する際の連携先。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ExprState</code> はクエリ実行コンテキスト（<code>EState</code>）内で生存する必要があります。<code>ExecEndExpr</code> は存在せず、メモリコンテキストの解放によってリソースが回収される設計です。</li>
+<li>**命令の順序**: <code>ExprEvalStep</code> の命令順序は、<code>execExprInterp.c</code> のディスパッチテーブルと厳密に同期している必要があります。</li>
+<li>**安全性**: <code>ExecInitExprRec</code> は再帰関数であるため、複雑な式ツリーに対しては <code>check_stack_depth()</code> でスタックオーバーフローを防止しています。</li>
+<li>**省略された詳細**: 本ファイルはコンパイルロジックに特化しており、実際の評価ロジック（<code>ExecInterpExpr</code>）は <code>execExprInterp.c</code> に委譲されています。また、JIT コンパイルの内部実装も本ファイルからは抽象化されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExprSetupInfo.html" target="wiki-view"><code>ExprSetupInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitExpr.html" target="wiki-view"><code>ExecInitExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitExprWithParams.html" target="wiki-view"><code>ExecInitExprWithParams</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitQual.html" target="wiki-view"><code>ExecInitQual</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitCheck.html" target="wiki-view"><code>ExecInitCheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitExprList.html" target="wiki-view"><code>ExecInitExprList</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecPrepareCheck.html" target="wiki-view"><code>ExecPrepareCheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitExprRec.html" target="wiki-view"><code>ExecInitExprRec</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitFunc.html" target="wiki-view"><code>ExecInitFunc</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitSubPlanExpr.html" target="wiki-view"><code>ExecInitSubPlanExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecCreateExprSetupSteps.html" target="wiki-view"><code>ExecCreateExprSetupSteps</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExpr_c__ExecInitWholeRowVar.html" target="wiki-view"><code>ExecInitWholeRowVar</code></a></li>
+</ul></body></html>

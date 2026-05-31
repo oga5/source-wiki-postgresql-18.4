@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/xlogpagereadprivate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogPageReadPrivate</h1>
+<h2>概念</h2>
+<p><code>XLogPageReadPrivate</code> は、WAL（Write-Ahead Log）の読み込み処理において、WALリーダー（<code>XLogReaderState</code>）がコールバック関数内で利用するコンテキスト情報や制御状態を保持するためのプライベートデータ構造体です。</p>
+<p>PostgreSQLのバックエンドにおけるリカバリ処理と、外部ツールである <code>pg_rewind</code> の両方で同名の構造体が定義されていますが、それぞれ保持するフィールドや具体的な役割が異なります。</p>
+<h2>なぜ重要か</h2>
+<p>WALの読み込み処理は汎用的な <code>XLogReaderState</code> を介して実行されますが、読み込みが行われる文脈（システムリカバリ中なのか、<code>pg_rewind</code> による解析中なのか）によって必要な制御情報が異なります。<code>XLogPageReadPrivate</code> は、<code>XLogReaderState</code> の <code>private_data</code> ポインタを介して、それぞれの文脈に応じたプライベートな状態（タイムライン、チェックポイント取得フラグ、復元コマンドなど）を安全に引き渡す役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/bin/pg_rewind</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/transam/xlogrecovery.c#XLogPageReadPrivate</code>**</li>
+<p>バックエンドのリカバリ処理用。以下のフィールドを持ちます。</p>
+<li><code>emode</code>: エラーモード</li>
+<li><code>fetching_ckpt</code>: チェックポイントレコードの取得中かを示すフラグ</li>
+<li><code>randAccess</code>: ランダムアクセスの有無</li>
+<li><code>replayTLI</code>: 現在リプレイ対象としているタイムラインID</li>
+</ul>
+<ul>
+<li>**<code>symbol:src/bin/pg_rewind/parsexlog.c#XLogPageReadPrivate</code>**</li>
+<p><code>pg_rewind</code> のWAL解析用。以下のフィールドを持ちます。</p>
+<li><code>restoreCommand</code>: アーカイブからWALセグメントを復元するためのコマンド文字列</li>
+<li><code>tliIndex</code>: 現在のタイムラインインデックス</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<h3>1. バックエンド（リカバリ時）</h3>
+<ul>
+<li>**初期化**: リカバリ開始時に <code>palloc0</code> によって <code>XLogPageReadPrivate</code> が割り当てられ、<code>XLogReaderState</code> の <code>private_data</code> に設定されます。</li>
+<li>**読み込みと参照**: <code>XLogPageRead</code> などのWAL読み込み関数が呼び出された際、<code>xlogreader-&gt;private_data</code> を本構造体にキャストして参照します。<code>fetching_ckpt</code> や <code>replayTLI</code> を用いて、現在のリカバリ状態に応じた読み込み制御が行われます。</li>
+</ul>
+<h3>2. pg_rewind（WAL解析時）</h3>
+<ul>
+<li>**初期化**: <code>extractPageMap</code>、<code>findLastCheckpoint</code>、<code>readOneRecord</code> などの関数内で <code>XLogPageReadPrivate</code> がインスタンス化され、<code>XLogReader</code> に渡されます。</li>
+<li>**読み込みと参照**: コールバック関数 <code>SimpleXLogPageRead</code> 内で <code>xlogreader-&gt;private_data</code> をキャストして参照します。<code>restoreCommand</code> を用いて適切なWALセグメントの取得元（ローカルまたはアーカイブ）を判断し、<code>tliIndex</code> を用いて複数タイムラインにまたがるWAL読み込みを管理します。</li>
+</ul>
+<p>*注意: エラーハンドリングの全容や、他モジュールとの詳細な相互作用など、上記以外の詳細なエンドツーエンドのフローは完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>private_data</code> への格納**: 本構造体は必ず <code>XLogReaderState</code>（または <code>XLogReader</code>）の <code>private_data</code> フィールドに格納され、対応するコールバック関数内で正しくキャストされて使用されなければなりません。</li>
+<li>**バックエンド側の初期化**: バックエンド側では、リカバリプロセス内で <code>palloc0</code> 等を用いてゼロクリア初期化されることが想定されています。</li>
+<li>**pg_rewind側の制約**: <code>restoreCommand</code> が設定されていない場合、アーカイブからのWAL取得は行われません。また、<code>tliIndex</code> が不正な場合はタイムライン不整合エラーが発生する可能性があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名異構造による混乱**: <code>xlogrecovery.c</code> と <code>parsexlog.c</code> で同名の構造体が定義されていますが、フィールド構成や用途は全く異なります。コードの変更や移植を行う際に、両者を混同しないよう注意が必要です。</li>
+<li>**型安全性の欠如**: <code>private_data</code> は <code>void *</code> 型であるため、キャストミスが発生してもコンパイル時に検出できないリスクがあります。正しくキャストされていることを確認する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/transam/xlogrecovery.c</code></li>
+<li>バックエンド側での <code>XLogPageReadPrivate</code> の定義と、<code>XLogPageRead</code> での利用方法を確認できます。</li>
+<li><code>src/bin/pg_rewind/parsexlog.c</code></li>
+<li><code>pg_rewind</code> 側での <code>XLogPageReadPrivate</code> の定義と、<code>SimpleXLogPageRead</code> での利用方法を確認できます。</li>
+</ul></body></html>

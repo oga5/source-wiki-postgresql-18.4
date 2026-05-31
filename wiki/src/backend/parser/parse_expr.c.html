@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_expr.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_expr.c</h1>
+<h2>概要</h2>
+<p><code>parse_expr.c</code> は、PostgreSQL のパーサーにおいて、SQL 式（Expression）の「意味解析（Transformation）」を担う中核ファイルです。構文解析器（Bison）が生成した生の構文木（<code>A_Expr</code>, <code>FuncCall</code> 等）を、プランナが処理可能な意味的に確定したノード（<code>OpExpr</code>, <code>FuncExpr</code> 等）へ変換します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> モジュールにおいて、式レベルの型解決、演算子・関数のオーバーロード解決、および名前解決を行うためのディスパッチャーとして機能します。<code>analyze.c</code> から呼び出され、クエリの各句（SELECT リスト、WHERE 句など）に含まれる式を再帰的に変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**式変換のディスパッチ**: ノードの種類に応じて適切な変換関数を呼び出す。</li>
+<li>**型解決とキャスト**: 式の型を決定し、必要に応じて暗黙的な型変換（Coercion）を挿入する。</li>
+<li>**名前解決**: <code>ColumnRef</code> を <code>Var</code> ノードや関数呼び出しに解決する。</li>
+<li>**SQL/JSON 変換**: SQL/JSON 関連の式（<code>JSON_VALUE</code>, <code>JSON_TABLE</code> 等）の複雑な型解決とバリデーション。</li>
+<li>**エラー報告**: 式が許可されていない場所（例: DEFAULT 句内のサブクエリ）でのエラー検出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>エントリポイント</h3>
+<ul>
+<li><code>transformExpr</code>: 式解析の公開インターフェース。<code>ParseState</code> を更新し、再帰的な変換を開始する。</li>
+<li><code>transformExprRecurse</code>: 式ノードのタグに基づいて変換関数を振り分けるメインループ。</li>
+</ul>
+<h3>変換関数群</h3>
+<ul>
+<li><code>transformColumnRef</code>: 列参照（<code>table.col</code> 等）を解決し、名前空間から <code>Var</code> を生成する。</li>
+<li><code>transformFuncCall</code>: 関数呼び出しを解決し、<code>FuncExpr</code> や集約関数へ変換する。</li>
+<li><code>transformAExprOp</code>: 演算子式（<code>=</code>, <code>+</code> 等）を解決し、<code>OpExpr</code> 等へ変換する。</li>
+<li><code>transformCaseExpr</code>: <code>CASE</code> 文を変換し、型整合性をチェックする。</li>
+<li><code>transformSubLink</code>: サブクエリ式を解析し、<code>SubLink</code> ノードを構築する。</li>
+<li><code>transformTypeCast</code>: 明示的なキャスト（<code>::</code>）を処理する。</li>
+</ul>
+<h3>JSON 関連</h3>
+<ul>
+<li><code>transformJsonFuncExpr</code>: SQL/JSON 関数（<code>JSON_VALUE</code> 等）の変換。</li>
+<li><code>transformJsonConstructorExpr</code>: <code>JSON_OBJECT</code> 等のコンストラクタ変換。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetJsonBehaviorConst</code></li>
+<li><code>ParseExprKindName</code></li>
+<li><code>ValidJsonBehaviorDefaultExpr</code></li>
+<li><code>getJsonEncodingConst</code></li>
+<li><code>make_distinct_op</code></li>
+<li><code>make_nulltest_from_distinct</code></li>
+<li><code>make_row_comparison_op</code></li>
+<li><code>make_row_distinct_op</code></li>
+<li><code>transformExpr</code></li>
+<li><code>transformExprRecurse</code></li>
+<li><code>transformIndirection</code></li>
+<li><code>unknown_attribute</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>transformExpr</code> が <code>ParseState</code> の <code>p_expr_kind</code> を設定し、解析コンテキストを保持する。 2. **再帰的走査**: <code>transformExprRecurse</code> がノードを走査。スタックオーバーフローを防ぐため <code>check_stack_depth()</code> を呼び出す。 3. **解決**: 各変換関数が <code>catalog</code> を参照し、演算子や関数の OID を特定。型が不一致な場合は <code>parse_coerce.c</code> を利用してキャストを挿入する。 4. **名前空間参照**: <code>transformColumnRef</code> が <code>parse_relation.c</code> の <code>refnameNamespaceItem</code> 等を呼び出し、現在のスコープ内のテーブルや列を特定する。 5. **完了**: 変換されたノードがツリーとして組み立てられ、最終的に <code>Query</code> 構造体の一部となる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/</code>: <code>parse_coerce.h</code>, <code>parse_func.h</code>, <code>parse_oper.h</code>, <code>parse_relation.h</code> 等（型・関数・演算子解決のロジック）。</li>
+<li><code>catalog/</code>: <code>pg_type.h</code>, <code>pg_aggregate.h</code>（システムカタログ情報）。</li>
+<li><code>nodes/</code>: <code>makefuncs.h</code>, <code>nodeFuncs.h</code>（ノード操作）。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>（カタログキャッシュ検索）。</li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/xml.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/parse_coerce.c</code>: 型変換のルールと実装。</li>
+<li><code>src/backend/parser/parse_func.c</code>: 関数・演算子のオーバーロード解決の詳細。</li>
+<li><code>src/backend/parser/parse_relation.c</code>: 名前空間と RTE（RangeTblEntry）の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本ファイルで生成されるノードは <code>CurrentMemoryContext</code>（通常は <code>ParseState</code> のコンテキスト）に割り当てられます。</li>
+<li>**再帰の深さ**: 非常に深い式ツリーはスタックオーバーフローを引き起こす可能性があるため、<code>check_stack_depth()</code> が各再帰ステップで呼び出されています。</li>
+<li>**JSON 変換**: JSON 関連の変換ロジックは非常に複雑で、<code>JsonReturning</code> や <code>JsonFormat</code> といった専用の構造体を介して型とエンコーディングを厳密に管理しています。</li>
+<li>**未実装/浅い部分**: <code>transformIndirection</code> は配列添字とフィールド選択を分離して処理しますが、複雑な多次元配列のインデックス操作は <code>parse_coerce.c</code> 等のヘルパーに強く依存しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__transformExpr.html" target="wiki-view"><code>transformExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__transformExprRecurse.html" target="wiki-view"><code>transformExprRecurse</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__unknown_attribute.html" target="wiki-view"><code>unknown_attribute</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__transformIndirection.html" target="wiki-view"><code>transformIndirection</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__make_row_comparison_op.html" target="wiki-view"><code>make_row_comparison_op</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__make_row_distinct_op.html" target="wiki-view"><code>make_row_distinct_op</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__make_distinct_op.html" target="wiki-view"><code>make_distinct_op</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__make_nulltest_from_distinct.html" target="wiki-view"><code>make_nulltest_from_distinct</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__ParseExprKindName.html" target="wiki-view"><code>ParseExprKindName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__getJsonEncodingConst.html" target="wiki-view"><code>getJsonEncodingConst</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__ValidJsonBehaviorDefaultExpr.html" target="wiki-view"><code>ValidJsonBehaviorDefaultExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_expr_c__GetJsonBehaviorConst.html" target="wiki-view"><code>GetJsonBehaviorConst</code></a></li>
+</ul></body></html>

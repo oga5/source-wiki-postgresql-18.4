@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/snapbuild.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/snapbuild.c</h1>
+<h2>概要</h2>
+<p><code>snapbuild.c</code> は、論理デコーディングにおいてWALから「歴史的カタログスナップショット」を構築・管理するためのインフラです。WALレコードをデコードする際、その時点のシステムカタログの状態を再現するために、MVCCスナップショットをWALストリームから動的に再構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> サブシステムにおいて、<code>ReorderBuffer</code> がトランザクションの変更を保持するのに対し、<code>SnapBuild</code> はそれらの変更がどのカタログ状態に対して適用されるべきかを定義する「可視性制御」の役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**スナップショット状態遷移**: WALの <code>xl_running_xacts</code> レコードを解析し、デコーディング可能な状態（<code>CONSISTENT</code>）へ至るまでの状態遷移を管理。</li>
+<li>**カタログ可視性の再現**: カタログ変更トランザクションを追跡し、特定のLSNにおけるカタログの可視性を保証するスナップショットを構築。</li>
+<li>**永続化と復旧**: 構築したスナップショットをディスクにシリアライズし、再起動時やスロットの再開時に復元。</li>
+<li>**リソース管理**: スナップショットの参照カウント管理および、不要になった古いスナップショットファイルのクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクル管理</h3>
+<ul>
+<li><code>AllocateSnapshotBuilder</code>: <code>SnapBuild</code> 構造体の初期化とメモリコンテキストの作成。</li>
+<li><code>FreeSnapshotBuilder</code>: スナップショット構築器の破棄とリソース解放。</li>
+</ul>
+<h3>スナップショット操作</h3>
+<ul>
+<li><code>SnapBuildBuildSnapshot</code>: 現在の <code>committed</code> トランザクションリストに基づき、新しい <code>SNAPSHOT_HISTORIC_MVCC</code> を構築。</li>
+<li><code>SnapBuildInitialSnapshot</code>: スロット作成時に、WALから構築したスナップショットを通常のMVCCスナップショットへ変換。</li>
+<li><code>SnapBuildGetOrBuildSnapshot</code>: 現在のトランザクション用のスナップショットを取得または生成。</li>
+</ul>
+<h3>状態遷移とWAL処理</h3>
+<ul>
+<li><code>SnapBuildProcessRunningXacts</code>: <code>xl_running_xacts</code> を読み込み、<code>START</code> → <code>BUILDING_SNAPSHOT</code> → <code>FULL_SNAPSHOT</code> → <code>CONSISTENT</code> の状態遷移を制御。</li>
+<li><code>SnapBuildCommitTxn</code>: トランザクションコミット時に、カタログ変更の有無を判定し、必要に応じてスナップショットを更新・配布。</li>
+</ul>
+<h3>永続化</h3>
+<ul>
+<li><code>SnapBuildSerialize</code> / <code>SnapBuildRestore</code>: スナップショット状態のディスクへの書き出しと読み込み。</li>
+<li><code>CheckPointSnapBuild</code>: 不要になった古いスナップショットファイルの削除。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AllocateSnapshotBuilder</code></li>
+<li><code>FreeSnapshotBuilder</code></li>
+<li><code>SnapBuildBuildSnapshot</code></li>
+<li><code>SnapBuildCurrentState</code></li>
+<li><code>SnapBuildFreeSnapshot</code></li>
+<li><code>SnapBuildGetTwoPhaseAt</code></li>
+<li><code>SnapBuildInitialSnapshot</code></li>
+<li><code>SnapBuildResetExportedSnapshotState</code></li>
+<li><code>SnapBuildSetTwoPhaseAt</code></li>
+<li><code>SnapBuildSnapDecRefcount</code></li>
+<li><code>SnapBuildSnapIncRefcount</code></li>
+<li><code>SnapBuildXactNeedsSkip</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>AllocateSnapshotBuilder</code> で専用のメモリコンテキストを確保。 2. **状態遷移**: <code>SnapBuildProcessRunningXacts</code> がWALをスキャンし、<code>running_xacts</code> レコードに基づいて <code>SnapBuildState</code> を進める。 3. **変更追跡**: <code>SnapBuildCommitTxn</code> がコミットレコードを処理し、カタログ変更を行ったXIDを <code>committed</code> リストに追加。 4. **スナップショット構築**: <code>SnapBuildBuildSnapshot</code> が <code>committed</code> リストをソートし、<code>SnapshotData</code> を生成。 5. **配布**: <code>SnapBuildDistributeSnapshotAndInval</code> が、現在実行中のトランザクションに対して新しいスナップショットと無効化メッセージを配布し、カタログキャッシュの整合性を保つ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/reorderbuffer.h</code>: トランザクションの変更蓄積とカタログ変更の追跡。</li>
+<li><code>access/heapam_xlog.h</code>: <code>XLOG_HEAP2_NEW_CID</code> 等のWALレコード解析。</li>
+<li><code>storage/procarray.h</code>: <code>xl_running_xacts</code> の解析とXID horizonの管理。</li>
+<li><code>utils/snapshot.h</code>: <code>SnapshotData</code> 構造体と可視性判定の基盤。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/snapbuild_internal.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>reorderbuffer.c</code>: <code>SnapBuild</code> が構築したスナップショットを実際に利用してデコードを行う。</li>
+<li><code>decode.c</code>: WALレコードを読み込み、<code>SnapBuild</code> の各関数を呼び出すメインループ。</li>
+<li><code>logical.c</code>: 論理レプリケーションスロットの管理と <code>SnapBuild</code> の連携。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>SnapBuild</code> は独自のメモリコンテキストを持ち、<code>FreeSnapshotBuilder</code> で一括解放されます。スナップショット自体は参照カウント (<code>active_count</code>) で管理され、<code>SnapBuildSnapDecRefcount</code> を通じて解放されます。</li>
+<li>**不変条件**: <code>CONSISTENT</code> 状態に達するまでは、カタログのデコードは行えません。また、<code>SnapBuild</code> が構築するスナップショットは <code>SNAPSHOT_HISTORIC_MVCC</code> 型であり、通常のMVCCスナップショットとは可視性判定ロジックが異なります。</li>
+<li>**エッジケース**: <code>xl_running_xacts</code> が存在しない場合や、カタログ変更が頻繁に発生する場合のパフォーマンスに注意が必要です。特に <code>SnapBuildPurgeOlderTxn</code> によるリストの整理は、トランザクション数が多い場合にコストがかかります。</li>
+<li>**省略箇所**: <code>SnapBuild</code> 内部の <code>bsearch</code> や <code>qsort</code> を用いたXIDリストの操作は、コードの可読性を優先して詳細なアルゴリズム解説を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__AllocateSnapshotBuilder.html" target="wiki-view"><code>AllocateSnapshotBuilder</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__FreeSnapshotBuilder.html" target="wiki-view"><code>FreeSnapshotBuilder</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildFreeSnapshot.html" target="wiki-view"><code>SnapBuildFreeSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildCurrentState.html" target="wiki-view"><code>SnapBuildCurrentState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildGetTwoPhaseAt.html" target="wiki-view"><code>SnapBuildGetTwoPhaseAt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSetTwoPhaseAt.html" target="wiki-view"><code>SnapBuildSetTwoPhaseAt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildXactNeedsSkip.html" target="wiki-view"><code>SnapBuildXactNeedsSkip</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapIncRefcount.html" target="wiki-view"><code>SnapBuildSnapIncRefcount</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapDecRefcount.html" target="wiki-view"><code>SnapBuildSnapDecRefcount</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildBuildSnapshot.html" target="wiki-view"><code>SnapBuildBuildSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildInitialSnapshot.html" target="wiki-view"><code>SnapBuildInitialSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildResetExportedSnapshotState.html" target="wiki-view"><code>SnapBuildResetExportedSnapshotState</code></a></li>
+</ul></body></html>

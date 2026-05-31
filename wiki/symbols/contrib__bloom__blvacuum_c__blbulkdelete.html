@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__bloom__blvacuum_c__blbulkdelete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>blbulkdelete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/bloom/blvacuum.c:29</code></li>
+</ul>
+<h2>目的</h2>
+<p>Bloom フィルタインデックスに対する <code>VACUUM</code> 操作の一環として、指定されたヒープタプルに対応するインデックスエントリを削除し、インデックスのストレージ効率を維持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>IndexBulkDeleteResult *blbulkdelete(
+    IndexVacuumInfo *info, 
+    IndexBulkDeleteResult *stats,
+    IndexBulkDeleteCallback callback, 
+    void *callback_state
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>info</code>: インデックス情報を含む <code>IndexVacuumInfo</code> 構造体。</li>
+<li><code>stats</code>: 削除統計を保持する <code>IndexBulkDeleteResult</code> 構造体。</li>
+<li><code>callback</code>: 削除対象を判定するコールバック関数。</li>
+<li><code>callback_state</code>: コールバック関数に渡す状態データ。</li>
+<li>**出力**: 削除されたタプル数などの統計情報を含む <code>IndexBulkDeleteResult</code> 構造体。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>インデックスのメタページおよび各データページに対して排他ロックを取得して処理を行う。</li>
+<li>ページ内のタプルを詰め直すことで削除を実現する。</li>
+<li>ページが完全に空になった場合のみ、<code>BloomPageSetDeleted</code> をマークする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. インデックスの全ページを <code>BLOOM_HEAD_BLKNO</code> から順に走査する。 2. 各ページに対して排他ロックを取得し、<code>callback</code> を用いて削除対象のタプルを判定する。 3. 削除対象外のタプルをページ内で前方に詰め直す（<code>memmove</code> を使用）。 4. ページ内のタプルが変更された場合、<code>GenericXLog</code> を使用して WAL ログを記録し、ページヘッダーの <code>pd_lower</code> を更新する。 5. ページが空になった場合は <code>BloomPageSetDeleted</code> をマークする。 6. 処理の最後に、メタページの <code>notFullPage</code> リストを更新し、空き領域を持つページ情報を最新化する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>contrib/bloom/blutils.c</code> 内で <code>ambulkdelete</code> フィールドに割り当てられている。</li>
+<li>**呼び出し先**:</li>
+<li><code>initBloomState</code>, <code>RelationGetNumberOfBlocks</code>, <code>vacuum_delay_point</code>, <code>ReadBufferExtended</code>, <code>LockBuffer</code>, <code>GenericXLogStart</code>, <code>GenericXLogRegisterBuffer</code>, <code>PageIsNew</code>, <code>BloomPageIsDeleted</code>, <code>UnlockReleaseBuffer</code>, <code>GenericXLogAbort</code>, <code>BloomPageGetTuple</code>, <code>BloomPageGetMaxOffset</code>, <code>callback</code>, <code>BloomPageGetOpaque</code>, <code>BloomPageGetNextTuple</code>, <code>BloomPageGetFreeSpace</code>, <code>BloomPageSetDeleted</code>, <code>GenericXLogFinish</code>, <code>ReadBuffer</code>, <code>BloomPageGetMeta</code>, <code>memcpy</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexVacuumInfo</code>, <code>IndexBulkDeleteResult</code>: <code>VACUUM</code> 処理の制御と統計用。</li>
+<li><code>BloomState</code>: Bloom インデックスの状態管理。</li>
+<li><code>BloomMetaPageData</code>: メタページ内の空き領域管理情報。</li>
+<li><code>BloomTuple</code>: インデックス内のタプル構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ページが既に削除済みまたは新規作成中の場合はスキップされる。</li>
+<li>削除が発生しなかった場合は <code>GenericXLogAbort</code> を呼び出し、WAL ログ出力を抑制する。</li>
+<li>メタページの更新時に、現在の <code>notFullPage</code> 情報が一時的に古くなる可能性があるが、<code>blinsert()</code> 側で補完される設計となっている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はページ単位で排他ロックを取得するため、並行して行われる挿入処理との競合に注意が必要。</li>
+<li><code>GenericXLog</code> を使用した WAL 記録は、変更がない場合に <code>GenericXLogAbort</code> を呼び出すことで効率化されている。</li>
+</ul></body></html>

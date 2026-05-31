@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__signalfuncs_c__pg_signal_backend.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_signal_backend</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/signalfuncs.c:50</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたPIDを持つPostgreSQLバックエンドプロセスに対して、権限チェックを行った上でシグナルを送信する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int pg_signal_backend(int pid, int sig);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>pid</code>: 対象となるバックエンドプロセスのプロセスID。</li>
+<li><code>sig</code>: 送信するシグナル番号（例: <code>SIGINT</code>, <code>SIGTERM</code>）。</li>
+<li>**出力**:</li>
+<li>成功時は <code>SIGNAL_BACKEND_SUCCESS</code> を返す。</li>
+<li>失敗時は <code>SIGNAL_BACKEND_ERROR</code>、<code>SIGNAL_BACKEND_NOAUTOVAC</code>、<code>SIGNAL_BACKEND_NOSUPERUSER</code>、または <code>SIGNAL_BACKEND_NOPERMISSION</code> のいずれかを返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>BackendPidGetProc(pid)</code> により、対象PIDが有効なバックエンドプロセスとして認識される必要がある。</li>
+<li>呼び出し元は、対象プロセスに対する適切な権限（スーパーユーザー権限、または対象ロールの権限）を有している必要がある。</li>
+<li>オートバキュームワーカに対しては、<code>ROLE_PG_SIGNAL_AUTOVACUUM_WORKER</code> 権限が必要。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>BackendPidGetProc</code> を呼び出し、PIDから <code>PGPROC</code> 構造体を取得する。取得できない場合は警告を発しエラーを返す。 2. ターゲットのロール権限を検証する。</p>
+<ul>
+<li>スーパーユーザーまたはロール未設定のプロセスの場合、スーパーユーザー権限を要求する（ただし、オートバキュームワーカは例外）。</li>
+<li>それ以外の場合、呼び出し元がターゲットロールの権限を持つか、<code>ROLE_PG_SIGNAL_BACKEND</code> 権限を持つかを確認する。</li>
+<p>3. 権限検証を通過した場合、<code>kill()</code> システムコールを実行する。</p>
+<li><code>HAVE_SETSID</code> が定義されている環境では、プロセスグループ全体（<code>-pid</code>）に対してシグナルを送信する。</li>
+<li>それ以外の場合は、単一プロセス（<code>pid</code>）に対して送信する。</li>
+<p>4. <code>kill()</code> が失敗した場合は警告を発し、エラーコードを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>pg_cancel_backend</code> (SQL関数)</li>
+<li><code>pg_terminate_backend</code> (SQL関数)</li>
+<li>**呼び出し先**:</li>
+<li><code>BackendPidGetProc</code></li>
+<li><code>GetNumberFromPGProc</code></li>
+<li><code>pgstat_get_backend_type_by_proc_number</code></li>
+<li><code>superuser</code> / <code>superuser_arg</code></li>
+<li><code>has_privs_of_role</code></li>
+<li><code>kill</code> (システムコール)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: バックエンドプロセスの状態を保持する構造体。</li>
+<li><code>BackendType</code>: プロセスの種類（<code>B_AUTOVAC_WORKER</code> 等）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**PID無効**: 対象PIDがバックエンドとして存在しない場合、警告を出して終了する。</li>
+<li>**権限不足**: 必要な権限がない場合、適切なエラーコードを返してシグナル送信を拒否する。</li>
+<li>**競合状態**: <code>BackendPidGetProc</code> 呼び出し後から <code>kill</code> 実行までの間にプロセスが終了した場合、<code>kill</code> が失敗する可能性があるが、これは警告として処理される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はSQLインターフェースのバックエンドロジックとして機能する。</li>
+<li>PIDの再利用による誤ったプロセスへのシグナル送信リスクは、現在のPID割り当てロジック上極めて低いと想定されている。</li>
+<li>権限エラーは呼び出し元で <code>ereport(ERROR, ...)</code> を発行してトランザクションを中断させる設計となっている。</li>
+</ul></body></html>

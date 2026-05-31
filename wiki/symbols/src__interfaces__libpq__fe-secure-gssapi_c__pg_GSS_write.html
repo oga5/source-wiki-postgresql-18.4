@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__interfaces__libpq__fe-secure-gssapi_c__pg_GSS_write.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_GSS_write</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/interfaces/libpq/fe-secure-gssapi.c:92</code></li>
+</ul>
+<h2>目的</h2>
+<p>GSSAPI を用いてデータを暗号化し、ネットワーク経由で安全に送信する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ssize_t pg_GSS_write(PGconn *conn, const void *ptr, size_t len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: 接続状態を保持する <code>PGconn</code> 構造体。</li>
+<li><code>ptr</code>: 送信対象のデータバッファ。</li>
+<li><code>len</code>: 送信データのバイト数。</li>
+<li>**出力**:</li>
+<li>成功時: 送信したバイト数（<code>len</code> と一致）。</li>
+<li>失敗時: <code>-1</code>（エラー詳細は <code>conn-&gt;errorMessage</code> に格納）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conn-&gt;gctx</code> が有効な GSSAPI コンテキストであること。</li>
+<li>処理完了時、<code>PqGSSSendConsumed</code> は <code>0</code> にリセットされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **再送チェック**: <code>len &lt; PqGSSSendConsumed</code> の場合、エラーとして終了する。 2. **送信バッファ処理**: <code>PqGSSSendLength</code> にデータが残っている場合、<code>pqsecure_raw_write</code> を呼び出し、バッファ内の暗号化済みデータを優先して送信する。 3. **暗号化ループ**:</p>
+<ul>
+<li>未暗号化データがある限り、<code>gss_wrap</code> を用いてデータを暗号化する。</li>
+<li>暗号化パケットに <code>uint32</code> のネットワークバイトオーダーの長さヘッダーを付与し、<code>PqGSSSendBuffer</code> に格納する。</li>
+<li><code>pqsecure_raw_write</code> を呼び出し、暗号化データを送信する。</li>
+<p>4. **バッファ管理**: <code>gss_release_buffer</code> を呼び出し、GSSAPI が割り当てた一時バッファを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/interfaces/libpq/fe-secure.c</code>（<code>pg_GSS_write</code> を呼び出す上位のセキュリティ抽象化層）。</li>
+<li>**呼び出し先**: <code>gss_wrap</code>（GSSAPI）、<code>pqsecure_raw_write</code>（低レベルソケット送信）、<code>gss_release_buffer</code>（GSSAPI）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: 接続状態および GSSAPI コンテキスト（<code>gctx</code>）を保持。</li>
+<li><code>PqGSSSendBuffer</code>, <code>PqGSSSendLength</code>, <code>PqGSSSendConsumed</code>: 送信用の内部バッファおよび状態管理変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ハードエラー**: <code>gss_wrap</code> の失敗、暗号化後のパケットサイズ超過、または機密性（confidentiality）が保証されない場合は <code>-1</code> を返す。</li>
+<li>**入力検証**: 送信データが <code>PqGSSSendConsumed</code> より小さい場合は <code>EINVAL</code> を設定して失敗する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は非同期 I/O を前提としており、部分的な書き込みが発生した場合は呼び出し元が同じデータで再試行する必要がある。</li>
+<li>パケット境界を維持するため、<code>uint32</code> の長さヘッダー付与は必須であり、変更不可。</li>
+<li>過去のバグ（commit d053a879b）を避けるため、部分的な書き込み完了の報告は行わず、全データの送信完了まで待機する設計となっている。</li>
+</ul></body></html>

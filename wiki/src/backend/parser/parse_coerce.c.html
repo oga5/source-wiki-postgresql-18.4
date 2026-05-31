@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_coerce.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_coerce.c</h1>
+<h2>概要</h2>
+<p><code>parse_coerce.c</code> は、PostgreSQL の意味解析フェーズにおいて、データ型の変換（Coercion）と型制約（Typmod）の適用を管理するモジュールです。SQL の <code>CAST</code> 構文や、関数呼び出し・演算子適用時の暗黙的な型変換、代入時の型整合性チェックなどを一手に引き受けます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムの一部として、<code>parse_expr.c</code> や <code>analyze.c</code> から呼び出されます。システムカタログ（<code>pg_cast</code>, <code>pg_type</code>）を参照し、型変換が可能かどうかの判定から、実行時に必要な変換ノード（<code>FuncExpr</code>, <code>RelabelType</code>, <code>CoerceToDomain</code> 等）の構築までを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換の判定**: 2つの型間で変換が可能か（<code>can_coerce_type</code>）、どのような変換パスが必要か（<code>find_coercion_pathway</code>）を決定する。</li>
+<li>**変換ノードの生成**: 構文木に型変換のためのノードを挿入する。</li>
+<li>**ドメイン制約の適用**: ドメイン型への変換時に、制約チェックを行うノードを構築する。</li>
+<li>**ポリモーフィック型の解決**: <code>ANYELEMENT</code> や <code>ANYCOMPATIBLE</code> などのポリモーフィック型関数の引数・戻り値の型を、実際の入力に基づいて解決する。</li>
+<li>**共通型の選択**: <code>CASE</code> 文や <code>UNION</code> などで複数の式から共通の型を導出する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>エントリーポイント（型変換）</h3>
+<ul>
+<li><code>coerce_to_target_type</code>: 型変換の汎用的な入り口。呼び出し元がエラーハンドリングを制御できるよう、失敗時に <code>NULL</code> を返す。</li>
+<li><code>coerce_type</code>: 変換の核心。式ノードに対して変換ノードを付与する。</li>
+<li><code>can_coerce_type</code>: 変換が可能かどうかの事前チェック。</li>
+</ul>
+<h3>ポリモーフィック型解決</h3>
+<ul>
+<li><code>enforce_generic_type_consistency</code>: 関数シグネチャのポリモーフィック型を実際の型に解決し、矛盾がないか検証する。</li>
+<li><code>check_generic_type_consistency</code>: 実際の引数型がポリモーフィックな宣言と整合しているかを確認する。</li>
+</ul>
+<h3>共通型導出</h3>
+<ul>
+<li><code>select_common_type</code>: 式リストから共通のスーパータイプを導出する。</li>
+<li><code>coerce_to_common_type</code>: 式を導出された共通型へ変換する。</li>
+</ul>
+<h3>内部変換パス</h3>
+<ul>
+<li><code>find_coercion_pathway</code>: <code>pg_cast</code> を検索し、変換手法（関数呼び出し、バイナリ互換、I/O変換など）を特定する。</li>
+<li><code>build_coercion_expression</code>: 決定されたパスに基づいて、具体的な変換ノードを生成する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **変換パスの特定**: <code>find_coercion_pathway</code> が <code>pg_cast</code> を参照し、<code>CoercionPathType</code>（関数、リラベル、配列変換、I/O変換）を返す。 2. **ノード構築**: <code>build_coercion_expression</code> が、特定されたパスに従って <code>FuncExpr</code> や <code>ArrayCoerceExpr</code> などのノードを生成する。 3. **ドメイン処理**: ターゲットがドメイン型の場合、<code>coerce_to_domain</code> が呼び出され、制約チェックのためのノードがラップされる。 4. **ポリモーフィック解決**: <code>enforce_generic_type_consistency</code> が引数リストを走査し、<code>ANYELEMENT</code> 等の型を具体的な OID に置換する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_cast.h</code>, <code>pg_type.h</code>: 型変換ルールと型定義の参照。</li>
+<li><code>utils/lsyscache.h</code>, <code>typcache.h</code>: 型情報やキャッシュの取得。</li>
+<li><code>nodes/makefuncs.h</code>: 変換ノードの生成補助。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/parser/parse_coerce.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 式解析のメインロジック。</li>
+<li><code>src/backend/utils/adt/ruleutils.c</code>: 変換ノードの表示制御（<code>hide_coercion_node</code> との関連）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本モジュールは既存の式ノードを破壊せず、新しいノードをラップして返す設計です。</li>
+<li>**<code>hide_coercion_node</code>**: 複数の変換ステップを重ねる際、中間ノードを <code>COERCE_IMPLICIT_CAST</code> に設定することで、<code>EXPLAIN</code> 等の出力で冗長な変換を表示させない工夫がなされています。</li>
+<li>**未実装部分**: <code>RECORDARRAYOID</code> と複合型配列の変換など、一部の複雑なケースは将来的な拡張のためにコメントアウトされています。</li>
+<li>**注意点**: <code>coerce_type</code> は <code>pstate</code> が <code>NULL</code> でも動作しますが、<code>Param</code> の型解決など一部の機能は <code>pstate</code> に依存します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__coerce_to_target_type.html" target="wiki-view"><code>coerce_to_target_type</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__coerce_type.html" target="wiki-view"><code>coerce_type</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__can_coerce_type.html" target="wiki-view"><code>can_coerce_type</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__coerce_to_domain.html" target="wiki-view"><code>coerce_to_domain</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__coerce_type_typmod.html" target="wiki-view"><code>coerce_type_typmod</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__hide_coercion_node.html" target="wiki-view"><code>hide_coercion_node</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__build_coercion_expression.html" target="wiki-view"><code>build_coercion_expression</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__coerce_record_to_complex.html" target="wiki-view"><code>coerce_record_to_complex</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__TypeCategory.html" target="wiki-view"><code>TypeCategory</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__IsPreferredType.html" target="wiki-view"><code>IsPreferredType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__IsBinaryCoercible.html" target="wiki-view"><code>IsBinaryCoercible</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_coerce_c__IsBinaryCoercibleWithCast.html" target="wiki-view"><code>IsBinaryCoercibleWithCast</code></a></li>
+</ul></body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/executequery.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>executeQuery</h1>
+<h2>概念</h2>
+<p><code>executeQuery</code> は、PostgreSQLのフロントエンドツール（<code>pg_dump</code> や <code>pg_amcheck</code> など）において、データベースに対してSQLクエリを実行し、その結果を検証するためのユーティリティ/ラッパー関数です。この関数は、クエリの実行結果が正常（<code>PGRES_TUPLES_OK</code>）であることを前提とし、エラーが発生した場合には自動的にエラーログを出力してプログラムを終了させる「失敗即終了（fail-fast）」の設計パターンを採用しています。</p>
+<h2>なぜ重要か</h2>
+<p>フロントエンドのコマンドラインツール（CLI）では、データベース接続やクエリ実行の失敗は致命的なエラーであり、それ以上の処理を継続できないケースが多々あります。各呼び出し箇所で個別にエラーハンドリング、接続のクローズ（<code>PQfinish</code>）、および終了処理（<code>exit</code> や <code>exit_nicely</code>）を記述するとコードが冗長になります。<code>executeQuery</code> はこれらの共通処理をカプセル化することで、呼び出し側のコードを大幅に簡略化し、保守性を向上させる役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_dump</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/bin/pg_dump/connectdb.c#executeQuery</code></li>
+<li><code>pg_dump</code> 内部で利用されるクエリ実行ラッパー。エラー時には <code>exit_nicely(1)</code> を呼び出して終了します。</li>
+<li><code>symbol:src/fe_utils/query_utils.c#executeQuery</code></li>
+<li>フロントエンド共通ユーティリティとして提供されるクエリ実行関数。クエリの標準出力へのエコーバック（<code>echo</code> フラグ）をサポートし、エラー時には <code>exit(1)</code> を呼び出して終了します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **クエリの準備と呼び出し**: 呼び出し元（<code>pg_dump</code>、<code>pg_dumpall</code>、<code>pg_amcheck</code> など）が、有効な <code>PGconn</code> 接続オブジェクトと SQL クエリ文字列を引数として <code>executeQuery</code> を呼び出します。<code>fe_utils</code> 版では、実行前にクエリを表示するかどうかを制御する <code>echo</code> フラグも渡します。 2. **ログ出力と実行**:</p>
+<ul>
+<li><code>pg_dump</code> 版：<code>pg_log_info</code> でクエリ内容をログ出力します。</li>
+<li><code>fe_utils</code> 版：<code>echo</code> が真の場合、クエリを標準出力に書き出します。</li>
+<li>その後、いずれの実装も <code>libpq</code> の <code>PQexec</code> を呼び出してクエリを実行します。</li>
+<p>3. **結果の検証**:</p>
+<li>**成功時**: クエリ結果のステータスが <code>PGRES_TUPLES_OK</code> である場合、取得した <code>PGresult</code> ポインタを呼び出し元に返します。</li>
+<li>**失敗時（エラー発生時）**: 結果オブジェクトが空（<code>NULL</code>）であるか、ステータスが <code>PGRES_TUPLES_OK</code> 以外の場合、以下のエラーハンドリングフローが実行されます。</li>
+<li>エラーメッセージと実行を試みたクエリの詳細をログ出力します（<code>pg_log_error</code> / <code>pg_log_error_detail</code> などを使用）。</li>
+<li><code>PQfinish(conn)</code> を呼び出して、データベース接続を安全に解放します。</li>
+<li><code>exit_nicely(1)</code>（<code>pg_dump</code> 版）または <code>exit(1)</code>（<code>fe_utils</code> 版）を呼び出し、プロセスを異常終了させます。</li>
+</ul>
+<p>※なお、呼び出し元（<code>pg_amcheck</code> や <code>pg_dump</code> 関連ファイル）がこれら2つの <code>executeQuery</code> 実装をどのように使い分けているか、あるいは統合されているかといった詳細なエンドツーエンドの制御フローの全容は、提供された情報からは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**接続の有効性**: 入力される <code>conn</code>（<code>PGconn</code> オブジェクト）は、呼び出し時点で有効なデータベース接続でなければなりません。</li>
+<li>**期待されるステータス**: 実行されるクエリは、成功時に必ず <code>PGRES_TUPLES_OK</code> を返すものである必要があります。</li>
+<li>**失敗時のプロセス終了**: クエリ実行に失敗した場合、関数は呼び出し元に制御を戻さず、必ずプロセスを終了させます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**エラーハンドリングの欠如**: 本関数はエラー発生時にプロセスを即座に終了させるため、呼び出し側でエラーをキャッチして回復処理（リトライや代替処理など）を行うことはできません。トランザクション制御やエラー回復が必要な処理には適していません。</li>
+<li>**期待されるステータスの不一致**: <code>PGRES_TUPLES_OK</code> 以外の正常ステータス（例えば、タプルを返さないコマンドの成功を示す <code>PGRES_COMMAND_OK</code> など）を期待するクエリに対して本関数を使用すると、クエリ自体は成功していてもエラーとみなされ、プログラムが終了してしまいます。そのような場合は、<code>executeCommand</code> などの別の適切な関数を使用する必要があります。</li>
+<li>**メモリリーク**: 正常終了時に返される <code>PGresult</code> オブジェクトの所有権は呼び出し元に移るため、不要になった段階で呼び出し側が <code>PQclear</code> を呼び出して明示的にメモリを解放する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_dump/connectdb.c</code></li>
+<li><code>pg_dump</code> 固有の接続管理および <code>executeQuery</code> の実装と利用箇所を確認できます。</li>
+<li><code>src/fe_utils/query_utils.c</code></li>
+<li>フロントエンド共通のクエリ実行ユーティリティとしての <code>executeQuery</code> の実装を確認できます。</li>
+</ul></body></html>

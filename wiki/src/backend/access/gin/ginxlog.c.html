@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginxlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginxlog.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスのWAL（Write-Ahead Log）リプレイ処理を実装するモジュールです。クラッシュリカバリやレプリケーションのスタンバイ側で、WALレコードを読み取り、インデックスページの状態を正しく復元する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>GINインデックスの物理的な構造（B-tree構造やポスティングリスト）に対する変更をWAL経由で再適用するための「実行エンジン」です。<code>gin_redo</code> を中心に、各WAL操作に対応する再実行関数を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALリプレイのディスパッチ**: <code>gin_redo</code> 関数がWALレコードの種別を判別し、適切な処理関数へ振り分けます。</li>
+<li>**ページ状態の復元**: <code>XLogReadBufferForRedo</code> を使用して、必要なページを読み込み、WALの内容に基づいてインデックスの論理構造（挿入、分割、削除、メタページ更新）を再構築します。</li>
+<li>**データ圧縮の管理**: ポスティングリストの再圧縮（<code>ginRedoRecompress</code>）など、GIN特有の複雑なデータ構造の更新を安全に実行します。</li>
+<li>**整合性チェックのサポート**: <code>gin_mask</code> を提供し、ページの内容をマスクすることで、リカバリ後のページ整合性チェックを可能にします。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gin_redo</code>: GINインデックスのWALリプレイのメインエントリポイント。</li>
+<li><code>ginRedoRecompress</code>: ポスティングリストの変更を再適用する複雑なロジック。</li>
+<li><code>gin_mask</code>: ページの内容をマスクし、チェックサムやLSNの差異を無視して検証を行うための関数。</li>
+<li><code>opCtx</code>: リプレイ処理中に使用される一時的なメモリコンテキスト。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ginRedoClearIncompleteSplit</code></li>
+<li><code>ginRedoCreatePTree</code></li>
+<li><code>ginRedoDeleteListPages</code></li>
+<li><code>ginRedoDeletePage</code></li>
+<li><code>ginRedoInsert</code></li>
+<li><code>ginRedoInsertData</code></li>
+<li><code>ginRedoInsertEntry</code></li>
+<li><code>gin_xlog_cleanup</code></li>
+<li><code>gin_xlog_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>gin_xlog_startup</code> でリプレイ用メモリコンテキストを作成。 2. **ディスパッチ**: <code>gin_redo</code> がWALレコードの <code>info</code> コードを読み取り、対応する <code>ginRedo*</code> 関数を呼び出します。 3. **バッファ操作**: 各 <code>ginRedo*</code> 関数は <code>XLogReadBufferForRedo</code> を呼び出し、対象ページをロック・取得します。 4. **変更適用**: ページ内のデータ（タプルやポスティングリスト）をWALレコードの内容で更新し、<code>MarkBufferDirty</code> で変更をマークします。 5. **終了**: <code>UnlockReleaseBuffer</code> でバッファを解放し、<code>gin_xlog_cleanup</code> でメモリを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GINの内部構造体やマクロ定義。</li>
+<li><code>access/ginxlog.h</code>: WALレコードのデータ構造定義。</li>
+<li><code>access/xlogutils.h</code>: WALリプレイ用のバッファ管理ユーティリティ。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/bufmask.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/ginxlog.h</code>: このファイルで処理されるWALレコードの構造体定義が記載されています。</li>
+<li><code>src/backend/access/gin/gininsert.c</code>: インデックス挿入時のWAL生成ロジックが含まれており、対になる処理を理解するのに役立ちます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**複雑性**: <code>ginRedoRecompress</code> は、ポスティングリストの断片化や再圧縮を扱うため、このファイル内で最も複雑な関数です。WALリプレイ時にページを直接操作する際の注意点（tailのコピーなど）が凝縮されています。</li>
+<li>**冪等性**: GINのリプレイ処理は、基本的に「ページの状態をWALの内容に合わせる」という冪等な操作として設計されています。</li>
+<li>**マスク処理**: <code>gin_mask</code> は、リカバリ後の検証（<code>wal_consistency_checking</code>）で重要です。新しいWALレコードタイプを追加した場合は、この関数で適切にマスク対象を定義する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoClearIncompleteSplit.html" target="wiki-view"><code>ginRedoClearIncompleteSplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoCreatePTree.html" target="wiki-view"><code>ginRedoCreatePTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoInsertEntry.html" target="wiki-view"><code>ginRedoInsertEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoRecompress.html" target="wiki-view"><code>ginRedoRecompress</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoInsertData.html" target="wiki-view"><code>ginRedoInsertData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoInsert.html" target="wiki-view"><code>ginRedoInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoDeletePage.html" target="wiki-view"><code>ginRedoDeletePage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__ginRedoDeleteListPages.html" target="wiki-view"><code>ginRedoDeleteListPages</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__gin_redo.html" target="wiki-view"><code>gin_redo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__gin_xlog_startup.html" target="wiki-view"><code>gin_xlog_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__gin_xlog_cleanup.html" target="wiki-view"><code>gin_xlog_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginxlog_c__gin_mask.html" target="wiki-view"><code>gin_mask</code></a></li>
+</ul></body></html>

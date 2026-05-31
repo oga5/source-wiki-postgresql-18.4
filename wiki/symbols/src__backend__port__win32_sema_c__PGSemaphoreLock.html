@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32_sema_c__PGSemaphoreLock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PGSemaphoreLock</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/win32_sema.c:131</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows環境において、指定されたセマフォの取得（ロック）を試みます。待機中にPostgreSQLのシグナルイベントを監視し、割り込みを適切に処理することでデッドロックや応答不能を防ぎます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void PGSemaphoreLock(PGSemaphore sema)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>sema</code> (PGSemaphore型) - 取得対象のセマフォハンドル。</li>
+<li>**出力**: なし（void型）。成功した場合はセマフォを取得して復帰します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pgwin32_signal_event</code> が初期化されている必要があります。</li>
+<li>呼び出し元は、セマフォが利用可能になるまでこの関数内でブロックされることを許容する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pgwin32_signal_event</code> と <code>sema</code> を監視対象として <code>WaitForMultipleObjectsEx</code> を呼び出します。 2. ループ内で <code>CHECK_FOR_INTERRUPTS()</code> を実行し、割り込みを確認します。 3. <code>WaitForMultipleObjectsEx</code> の戻り値に応じて以下の処理を行います：</p>
+<ul>
+<li><code>WAIT_OBJECT_0</code>: シグナルイベントが発生。<code>pgwin32_dispatch_queued_signals()</code> を呼び出してシグナルを処理し、待機を継続します。</li>
+<li><code>WAIT_OBJECT_0 + 1</code>: セマフォを取得成功。ループを終了します。</li>
+<li><code>WAIT_IO_COMPLETION</code>: システムによるI/O完了ルーチン等の割り込み。待機を再開します。</li>
+<li><code>WAIT_FAILED</code>: <code>GetLastError()</code> を用いてエラーを報告し、<code>FATAL</code> で終了します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/clog.c</code></li>
+<li><code>src/backend/storage/ipc/procarray.c</code></li>
+<li><code>src/backend/storage/lmgr/lwlock.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code></li>
+<li><code>WaitForMultipleObjectsEx</code> (Win32 API)</li>
+<li><code>pgwin32_dispatch_queued_signals()</code></li>
+<li><code>ereport()</code> / <code>elog()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGSemaphore</code> (セマフォハンドル)</li>
+<li><code>pgwin32_signal_event</code> (シグナル監視用イベント)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>WaitForMultipleObjectsEx</code> が <code>WAIT_FAILED</code> を返した場合、<code>GetLastError()</code> を出力して <code>FATAL</code> エラーとなります。</li>
+<li>予期しない戻り値が返された場合、<code>elog(FATAL)</code> によりプロセスが終了します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pgwin32_signal_event</code> を優先的に監視する設計です。これは、セマフォ待機中であってもPostgreSQLのシグナル処理を確実に行うための重要な不変条件です。</li>
+<li><code>WAIT_IO_COMPLETION</code> は、外部DLL等による非同期プロシージャ呼び出しが発生した場合に備えて無視（待機継続）する設計となっています。</li>
+</ul></body></html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistxlog_c__gistRedoPageDelete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistRedoPageDelete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistxlog.c:341</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスのページ削除操作をWALリプレイ時に再実行し、対象リーフページの削除フラグ設定と親ページからのダウンリンク削除を同期的に適用する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gistRedoPageDelete(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。レコード内には <code>gistxlogPageDelete</code> 構造体が含まれ、削除対象のトランザクションIDおよび親ページ内のダウンリンクオフセットが格納されている。</li>
+<li>**出力**: なし（副作用としてバッファの状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> を使用して、リーフページ（ブロック0）および親ページ（ブロック1）を読み込む必要がある。</li>
+<li>ページ更新後は <code>MarkBufferDirty</code> を呼び出し、変更を永続化対象とする必要がある。</li>
+<li>処理終了時に、読み込んだバッファが有効であれば <code>UnlockReleaseBuffer</code> を呼び出して解放する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>gistxlogPageDelete</code> データを取得する。 2. **リーフページの処理**: <code>XLogReadBufferForRedo</code> でブロック0を読み込み、<code>BLK_NEEDS_REDO</code> の場合に <code>GistPageSetDeleted</code> を用いて削除済みフラグを立て、LSNを更新してダーティにする。 3. **親ページの処理**: <code>XLogReadBufferForRedo</code> でブロック1を読み込み、<code>BLK_NEEDS_REDO</code> の場合に <code>PageIndexTupleDelete</code> を用いて該当するダウンリンクを削除し、LSNを更新してダーティにする。 4. **クリーンアップ**: 読み込んだバッファ（親、リーフ）が有効な場合、それぞれロックを解除し解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>gist_redo</code>（<code>src/backend/access/gist/gistxlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: <code>XLogReadBufferForRedo</code>, <code>GistPageSetDeleted</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>PageIndexTupleDelete</code>, <code>BufferIsValid</code>, <code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogReaderState</code>: WALレコードの読み取り状態を保持。</li>
+<li><code>gistxlogPageDelete</code>: 削除操作に必要なメタデータ（削除XID、ダウンリンクオフセット）を保持する構造体。</li>
+<li><code>Buffer</code>: PostgreSQLのバッファ管理用ハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、そのページに対する更新はスキップされる。</li>
+<li>バッファが有効でない場合、<code>UnlockReleaseBuffer</code> は呼び出されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はGiSTのページ削除の不可分性を保証するために、リーフと親の両方の更新を単一のWALレコード内で処理する。</li>
+<li>ページ削除後のスタンバイ競合解決については、本関数を呼び出す上位の <code>gist_redo</code> ロジックや、関連する <code>gistRedoPageReuse</code> 等の処理との整合性に注意すること。</li>
+</ul></body></html>

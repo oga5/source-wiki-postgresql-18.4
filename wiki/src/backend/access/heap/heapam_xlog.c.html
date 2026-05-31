@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/heapam_xlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/heapam_xlog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのヒープアクセスメソッド（HeapAM）におけるWAL（Write-Ahead Log）のリプレイロジックを実装するファイルです。クラッシュリカバリやスタンバイサーバーでのデータ同期において、WALレコードを読み取り、ヒープページの状態を再現する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールの一部として、<code>heapam.c</code> で行われたデータ操作（挿入、更新、削除、ロック等）が生成したWALレコードを解釈し、物理的なページ構造に反映させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALリプレイの実行**: <code>heap_redo</code> および <code>heap2_redo</code> エントリポイントを通じ、各オペコードに対応する復元処理を呼び出す。</li>
+<li>**ページ整合性の維持**: ページ上のタプルヘッダー（infomask等）の更新、可視性マップ（Visibility Map）の同期、および必要に応じたフリースペースマップ（FSM）の更新。</li>
+<li>**Hot Standby対応**: リカバリ中に発生する可能性のあるコンフリクト（可視性やXIDの競合）を検知し、解決する。</li>
+<li>**テスト用マスク**: <code>heap_mask</code> を提供し、WALリプレイ後のページ内容と期待値の比較時に、非決定的なビット（ヒントビット等）を無視するための処理を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>heap_redo</code>: <code>RM_HEAP_ID</code> に属するWALレコードを処理するメイン関数。</li>
+<li><code>heap2_redo</code>: <code>RM_HEAP2_ID</code> に属するWALレコード（主にプリューニングや可視性関連）を処理するメイン関数。</li>
+<li><code>heap_xlog_insert</code> / <code>heap_xlog_update</code> / <code>heap_xlog_delete</code>: 各操作に対応する具体的なリプレイロジック。</li>
+<li><code>heap_mask</code>: ページ検証用のマスク関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>fix_infomask_from_infobits</code></li>
+<li><code>heap_xlog_confirm</code></li>
+<li><code>heap_xlog_inplace</code></li>
+<li><code>heap_xlog_lock</code></li>
+<li><code>heap_xlog_lock_updated</code></li>
+<li><code>heap_xlog_multi_insert</code></li>
+<li><code>heap_xlog_prune_freeze</code></li>
+<li><code>heap_xlog_visible</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **エントリ**: <code>XLogReader</code> がWALレコードを読み込み、<code>heap_redo</code> または <code>heap2_redo</code> を呼び出す。 2. **ディスパッチ**: <code>info</code> フィールドのオペコードに基づき、対応する <code>heap_xlog_*</code> 関数へ分岐する。 3. **バッファ取得**: <code>XLogReadBufferForRedo</code> を使用して対象ページを読み込み、必要に応じてロックを取得する。 4. **ページ更新**: WALレコードに含まれるデータ（タプル情報やオフセット）を基に、ページ上のデータを書き換える。 5. **後処理**: <code>PageSetLSN</code> でLSNを更新し、<code>MarkBufferDirty</code> でバッファをダーティにする。必要に応じてFSMや可視性マップを更新する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>: ヒープアクセスメソッドの定義。</li>
+<li><code>access/xlog.h</code> / <code>access/xlogutils.h</code>: WALリプレイ用ユーティリティ。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップ操作。</li>
+<li><code>storage/freespace.h</code>: フリースペースマップ操作。</li>
+<li><code>storage/standby.h</code>: Hot Standbyのコンフリクト解決。</li>
+<li><code>access/bufmask.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/heapam_xlog.h</code>: WALレコードの構造体定義やオペコード定数。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: WALレコードを生成する側の実装。</li>
+<li><code>src/backend/access/heap/visibilitymap.c</code>: 可視性マップの物理的な管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「物理的なページ操作」に特化しています。論理的な整合性チェックの多くは、WALを生成する <code>heapam.c</code> 側で完了している前提で動作します。</li>
+<li><code>heap_mask</code> は、リカバリテスト（<code>pg_rewind</code> や <code>wal_consistency_check</code>）において非常に重要です。新しいWALレコードタイプを追加した際は、この関数で適切にマスク処理を行わないと、テストが偽陽性で失敗する原因となります。</li>
+<li><code>XLogReadBufferForRedo</code> は、ページが既に最新である場合（LSNがレコードのLSN以上である場合）に自動的にスキップする仕組みを備えています。この挙動を理解しておくことが、リプレイロジックのデバッグにおいて重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_prune_freeze.html" target="wiki-view"><code>heap_xlog_prune_freeze</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_visible.html" target="wiki-view"><code>heap_xlog_visible</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__fix_infomask_from_infobits.html" target="wiki-view"><code>fix_infomask_from_infobits</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_delete.html" target="wiki-view"><code>heap_xlog_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_insert.html" target="wiki-view"><code>heap_xlog_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_multi_insert.html" target="wiki-view"><code>heap_xlog_multi_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_update.html" target="wiki-view"><code>heap_xlog_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_confirm.html" target="wiki-view"><code>heap_xlog_confirm</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_lock.html" target="wiki-view"><code>heap_xlog_lock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_lock_updated.html" target="wiki-view"><code>heap_xlog_lock_updated</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_inplace.html" target="wiki-view"><code>heap_xlog_inplace</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_xlog_c__heap_redo.html" target="wiki-view"><code>heap_redo</code></a></li>
+</ul></body></html>

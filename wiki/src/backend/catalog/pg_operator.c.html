@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_operator.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_operator.c</h1>
+<h2>概要</h2>
+<p><code>pg_operator.c</code> は、PostgreSQL のシステムカタログ <code>pg_operator</code> に対する操作を管理するモジュールです。演算子の定義、検索、および「シェル（未定義の演算子プレースホルダー）」の作成と解決を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> ディレクトリにおいて、演算子というデータベースオブジェクトのライフサイクル（作成・更新・依存関係管理）を定義する中心的な役割を果たします。<code>pg_operator.h</code> で定義されたカタログ構造を実体として操作します。</p>
+<h2>責務</h2>
+<ul>
+<li>**演算子の作成と更新**: <code>CREATE OPERATOR</code> 文のバックエンド処理を実装し、カタログへの挿入や更新を行います。</li>
+<li>**シェル演算子の管理**: 相互参照（交換子や否定子）が必要な場合、未定義の演算子を「シェル」として先行作成し、後に実体化する仕組みを提供します。</li>
+<li>**妥当性検証**: 演算子名が構文的に正しいか、また指定された属性（Commutator, Negator 等）が型定義と矛盾しないかを検証します。</li>
+<li>**依存関係の構築**: 演算子が依存する型、名前空間、関数、所有者との関係を <code>pg_depend</code> に記録します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>OperatorCreate</code>: 演算子作成のメインエントリポイント。</li>
+<li><code>OperatorShellMake</code>: 演算子のシェルを作成する内部関数。</li>
+<li><code>OperatorLookup</code>: 既存の演算子を名前と型から検索する。</li>
+<li><code>OperatorUpd</code>: 演算子の交換子（Commutator）や否定子（Negator）のリンクを更新する。</li>
+<li><code>makeOperatorDependencies</code>: 演算子に関連するオブジェクト間の依存関係を登録する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>OperatorGet</code></li>
+<li><code>OperatorValidateParams</code></li>
+<li><code>get_other_operator</code></li>
+<li><code>validOperatorName</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成要求**: <code>OperatorCreate</code> が呼び出されると、まず <code>validOperatorName</code> で名前を検証し、<code>OperatorValidateParams</code> で属性の整合性を確認します。 2. **シェル解決**: 関連する交換子や否定子が未定義の場合、<code>get_other_operator</code> を経由して <code>OperatorShellMake</code> を呼び出し、仮の OID を確保します。 3. **カタログ更新**: <code>table_open</code> で <code>pg_operator</code> を開き、<code>heap_form_tuple</code> または <code>heap_modify_tuple</code> を使用してカタログを更新します。 4. **依存関係登録**: <code>makeOperatorDependencies</code> を呼び出し、型や関数への依存関係を <code>pg_depend</code> に書き込みます。 5. **リンク更新**: <code>OperatorUpd</code> を呼び出し、相互参照する演算子側のフィールドを更新して整合性を保ちます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_operator.h</code>: カタログの構造定義と外部公開関数。</li>
+<li><code>access/table.h</code>, <code>access/htup_details.h</code>: カタログテーブルへの低レベルアクセス。</li>
+<li><code>utils/syscache.h</code>: カタログ検索の高速化（<code>OPERNAMENSP</code> 等）。</li>
+<li><code>catalog/dependency.h</code>: 依存関係の記録用。</li>
+<li><code>parser/parse_oper.h</code>: 演算子名解決の補助。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_operator.h</code>: カタログのスキーマ定義。</li>
+<li><code>src/backend/commands/define.c</code>: <code>CREATE OPERATOR</code> コマンドの実行ロジック（本ファイルが処理を委譲される側）。</li>
+<li><code>src/backend/parser/scan.l</code>: 演算子名の字句解析ルール（<code>validOperatorName</code> との整合性が重要）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**シェル演算子の概念**: PostgreSQL では、演算子 A が演算子 B を参照し、B が A を参照する場合、どちらかを先に作成する必要があります。この際、中身が空の「シェル」を作成して OID を確定させる手法が取られています。</li>
+<li>**整合性チェック**: <code>OperatorUpd</code> は、既に別の演算子とリンクされているフィールドを上書きしようとするとエラーを発生させます。これはカタログの破損を防ぐための重要なガードレールです。</li>
+<li>**依存関係の特殊性**: 演算子は <code>oprcom</code> や <code>oprnegate</code> に依存しているように見えますが、これらは <code>pg_depend</code> には記録されません。これらは <code>RemoveOperatorById</code> 等で手動でリンクを解除する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__validOperatorName.html" target="wiki-view"><code>validOperatorName</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorGet.html" target="wiki-view"><code>OperatorGet</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorLookup.html" target="wiki-view"><code>OperatorLookup</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorShellMake.html" target="wiki-view"><code>OperatorShellMake</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorCreate.html" target="wiki-view"><code>OperatorCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorValidateParams.html" target="wiki-view"><code>OperatorValidateParams</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__get_other_operator.html" target="wiki-view"><code>get_other_operator</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__OperatorUpd.html" target="wiki-view"><code>OperatorUpd</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_operator_c__makeOperatorDependencies.html" target="wiki-view"><code>makeOperatorDependencies</code></a></li>
+</ul></body></html>

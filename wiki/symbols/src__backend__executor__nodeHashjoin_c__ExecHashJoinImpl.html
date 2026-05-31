@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeHashjoin_c__ExecHashJoinImpl.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecHashJoinImpl</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeHashjoin.c:220</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハイブリッド・ハッシュ結合アルゴリズムの実行本体。シリアル実行および並列実行の両方において、ハッシュテーブルの構築からタプルの結合処理までをステートマシンとして駆動する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static pg_attribute_always_inline TupleTableSlot *
+ExecHashJoinImpl(PlanState *pstate, bool parallel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>pstate</code>: 実行対象の <code>HashJoinState</code> を含む <code>PlanState</code>。</li>
+<li><code>parallel</code>: 並列実行モードであるかを示すフラグ。</li>
+<li>**出力**:</li>
+<li>結合された <code>TupleTableSlot</code>。処理が完了または中断した場合は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>HashJoinState</code> にキャスト可能であること。</li>
+<li><code>always_inline</code> 指定されており、コンパイラによる最適化を前提としている。</li>
+<li>並列実行時は、バリア同期（<code>Barrier</code>）のフェーズ管理が正しく行われていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>ResetExprContext</code> を呼び出し、前回のタプル処理で確保されたメモリを解放する。 2. **ステートマシン駆動**: <code>node-&gt;hj_JoinState</code> に基づきループ処理を行う。</p>
+<ul>
+<li><code>HJ_BUILD_HASHTABLE</code>: ハッシュテーブルを構築する。</li>
+<li>並列実行時は、最初の参加者がテーブルを作成し、後続はアタッチする。</li>
+<li>外部リレーションが空の場合の最適化（シリアル時のみ）や、バッチ分割の準備を行う。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code>: ループの各反復で割り込みチェックを行い、応答性を確保する。</li>
+<p>3. **並列同期**: 並列実行時は <code>Barrier</code> を使用して、各フェーズ（<code>PHJ_BUILD_HASH_OUTER</code> 等）で全バックエンドの足並みを揃える。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>ExecHashJoin</code> (シリアル実行用エントリーポイント)</li>
+<li><code>ExecParallelHashJoin</code> (並列実行用エントリーポイント)</li>
+<li>**呼び出し先**:</li>
+<li><code>ExecHashTableCreate</code>: ハッシュテーブルの生成。</li>
+<li><code>MultiExecProcNode</code>: ハッシュテーブル構築のための内側リレーション実行。</li>
+<li><code>ExecProcNode</code>: 外部リレーションからのタプル取得。</li>
+<li><code>BarrierArriveAndWait</code>: 並列実行時の同期。</li>
+<li><code>ExecParallelHashJoinPartitionOuter</code>: 並列時の外部リレーションパーティション分割。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HashJoinState</code>: 結合ノードの状態管理。</li>
+<li><code>HashJoinTable</code>: ハッシュテーブルの実体。</li>
+<li><code>ParallelHashJoinState</code>: 並列実行時の共有状態。</li>
+<li><code>Barrier</code>: 並列処理の同期用構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: バッチ分割が必要な場合、<code>nbatch</code> を増加させディスク退避を行う。</li>
+<li>**空のリレーション**: 外部リレーションが空の場合、結合をスキップして早期終了する（シリアル実行時）。</li>
+<li>**並列実行の制約**: 並列版では、バリア待機中にタプルを返さないという制約がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>always_inline</code> されているため、変更時はシリアル版と並列版の両方のコードパスに影響を与える点に注意すること。</li>
+<li>ステートマシンの遷移（<code>hj_JoinState</code>）が複雑であるため、デバッグ時はこの遷移を追跡することが推奨される。</li>
+</ul></body></html>

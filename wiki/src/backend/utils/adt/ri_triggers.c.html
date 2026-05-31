@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/ri_triggers.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/ri_triggers.c</h1>
+<h2>概要</h2>
+<p>参照整合性（Referential Integrity: RI）制約を強制するための汎用トリガープロシージャを実装するモジュールです。外部キー（FK）制約の挿入・更新・削除イベントに対し、SPI（Server Programming Interface）を用いて制約チェックやカスケード操作（CASCADE, SET NULL, SET DEFAULT, RESTRICT, NO ACTION）を実行します。</p>
+<h2>モジュール内での役割</h2>
+<p>PostgreSQL のトリガーシステムと SQL レベルの制約定義を繋ぐブリッジです。<code>pg_constraint</code> カタログから制約情報を抽出し、実行時に必要なクエリを動的に生成・キャッシュして実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**制約チェック**: 外部キーの整合性検証（INSERT/UPDATE 時）。</li>
+<li>**参照アクション**: 削除・更新時のカスケード処理（RESTRICT, CASCADE, SET NULL/DEFAULT）。</li>
+<li>**クエリ最適化**: 実行計画（SPI Plan）のキャッシュと再利用。</li>
+<li>**メタデータ管理**: <code>pg_constraint</code> からの制約情報の抽出とキャッシュ。</li>
+<li>**検証**: <code>ALTER TABLE ADD FOREIGN KEY</code> 時の初期データ検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>制約情報管理</h3>
+<ul>
+<li><code>RI_ConstraintInfo</code>: 外部キー制約の定義（列番号、演算子、アクション種別等）を保持するキャッシュ構造体。</li>
+<li><code>ri_constraint_cache</code>: 制約情報を保持するハッシュテーブル。</li>
+<li><code>ri_LoadConstraintInfo()</code>: <code>pg_constraint</code> から情報を読み込みキャッシュを構築する。</li>
+</ul>
+<h3>クエリ実行とキャッシュ</h3>
+<ul>
+<li><code>RI_QueryKey</code>: キャッシュされた SPI 計画を識別するためのキー。</li>
+<li><code>ri_query_cache</code>: 実行計画を保持するハッシュテーブル。</li>
+<li><code>ri_PlanCheck()</code>: 制約チェック用のクエリを準備し、キャッシュに保存する。</li>
+<li><code>ri_PerformCheck()</code>: キャッシュされた計画を用いて実際に SPI クエリを実行する。</li>
+</ul>
+<h3>トリガー関数（エントリポイント）</h3>
+<ul>
+<li><code>RI_FKey_check_ins</code>, <code>RI_FKey_check_upd</code>: FK 側の挿入・更新チェック。</li>
+<li><code>RI_FKey_cascade_del</code>, <code>RI_FKey_cascade_upd</code>: PK 側の削除・更新に伴うカスケード処理。</li>
+<li><code>RI_FKey_restrict_del</code>, <code>RI_FKey_noaction_del</code> 等: 削除・更新時の制限処理。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **トリガー起動**: トリガーマネージャが <code>RI_FKey_...</code> 関数を呼び出す。 2. **情報取得**: <code>ri_FetchConstraintInfo</code> がキャッシュから制約定義を取得（なければロード）。 3. **クエリ構築**: <code>ri_BuildQueryKey</code> でクエリ種別を特定し、キャッシュに計画が存在するか確認。存在しない場合は <code>ri_PlanCheck</code> でクエリ文字列を生成し、SPI 計画を準備。 4. **実行**: <code>ri_PerformCheck</code> が SPI を介して対象テーブルの行を操作・検証。 5. **エラー報告**: 制約違反時は <code>ri_ReportViolation</code> がエラーメッセージを構築し、トランザクションをアボートする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/spi.h</code>: SQL クエリ実行用インターフェース。</li>
+<li><code>utils/syscache.h</code>: <code>pg_constraint</code> 等のシステムカタログキャッシュ。</li>
+<li><code>access/table.h</code>, <code>access/tableam.h</code>: テーブルアクセス層。</li>
+<li><code>lib/ilist.h</code>: キャッシュ管理用のリスト構造。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>commands/trigger.c</code>: トリガーの登録と実行管理。</li>
+<li><code>catalog/pg_constraint.h</code>: 外部キー制約のカタログ定義。</li>
+<li><code>executor/spi.c</code>: SPI の実装詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: キャッシュ（<code>ri_constraint_cache</code> 等）はバックエンドの生存期間中保持されます。SPI 計画は <code>SPI_keepplan()</code> で保存され、メモリリークを防ぐため再利用されます。</li>
+<li>**制約の継承**: パーティションテーブルの FK 制約において、共通の祖先を持つ制約はクエリ計画を共有する最適化が行われています。</li>
+<li>**制約の浅い部分**: <code>MATCH PARTIAL</code> は現在未実装です。</li>
+<li>**セキュリティ**: クエリ実行時は <code>SetUserIdAndSecContext</code> を使用し、制約定義テーブルの所有者の権限で実行されます。</li>
+<li>**注意**: <code>ri_constraint_cache</code> のエントリは <code>InvalidateConstraintCacheCallBack</code> によって無効化されますが、メモリ解放は行われません。これはアクティブな参照を安全に扱うためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_ConstraintInfo.html" target="wiki-view"><code>RI_ConstraintInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_QueryKey.html" target="wiki-view"><code>RI_QueryKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_QueryHashEntry.html" target="wiki-view"><code>RI_QueryHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_CompareKey.html" target="wiki-view"><code>RI_CompareKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_CompareHashEntry.html" target="wiki-view"><code>RI_CompareHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_check.html" target="wiki-view"><code>RI_FKey_check</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_check_ins.html" target="wiki-view"><code>RI_FKey_check_ins</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_check_upd.html" target="wiki-view"><code>RI_FKey_check_upd</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_noaction_del.html" target="wiki-view"><code>RI_FKey_noaction_del</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_restrict_del.html" target="wiki-view"><code>RI_FKey_restrict_del</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_FKey_noaction_upd.html" target="wiki-view"><code>RI_FKey_noaction_upd</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__ri_triggers_c__RI_Initial_Check.html" target="wiki-view"><code>RI_Initial_Check</code></a></li>
+</ul></body></html>

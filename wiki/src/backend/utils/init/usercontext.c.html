@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/init/usercontext.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/init/usercontext.c</h1>
+<h2>概要</h2>
+<p><code>usercontext.c</code> は、PostgreSQL のバックエンド処理において、一時的に別のデータベースユーザー（ロール）としてコードを実行するためのユーティリティ関数を提供します。主に、権限の昇格や切り替えが必要な内部処理において、安全かつ一貫性のあるユーザーコンテキストの管理を目的としています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/init</code> ディレクトリの一部として、セッションの初期化やユーザー管理に関連する機能を提供します。特に、<code>miscinit.c</code> 等で扱われるグローバルなユーザー状態を、特定の処理ブロック内でのみ安全に切り替えるためのラッパーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ユーザーコンテキストの保存と切り替え**: 現在のユーザーIDとセキュリティコンテキストを <code>UserContext</code> 構造体に退避し、指定されたユーザーへ切り替える。</li>
+<li>**権限チェック**: <code>member_can_set_role</code> を用いて、現在のユーザーが対象ユーザーへ切り替える権限を持っているかを検証する。</li>
+<li>**セキュリティ制限の適用**: 切り替え先ユーザーが現在のユーザーに対して権限を持たない場合、<code>SECURITY_RESTRICTED_OPERATION</code> を適用し、GUC（設定パラメータ）の変更を隔離する。</li>
+<li>**コンテキストの復元**: 切り替え前の状態へ戻し、必要に応じて GUC の変更をロールバックする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>UserContext</code>: 切り替え前の状態（ユーザーID、セキュリティコンテキスト、GUCネストレベル）を保持する構造体。</li>
+<li><code>SwitchToUntrustedUser()</code>: 指定したユーザーへ切り替える関数。セキュリティ制限が必要な場合は GUC のネストレベルを新規作成する。</li>
+<li><code>RestoreUserContext()</code>: <code>UserContext</code> を用いて元のユーザー状態へ戻し、GUC の変更を破棄する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RestoreUserContext</code></li>
+<li><code>SwitchToUntrustedUser</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **切り替え時**:</p>
+<ul>
+<li><code>GetUserIdAndSecContext</code> で現在の状態を <code>UserContext</code> に保存。</li>
+<li><code>member_can_set_role</code> で権限を確認。</li>
+<li>相互に権限がある場合は単純に <code>SetUserIdAndSecContext</code> を実行。</li>
+<li>片方向のみの場合は <code>SECURITY_RESTRICTED_OPERATION</code> を付与し、<code>NewGUCNestLevel()</code> で GUC の変更を追跡可能にする。</li>
+<p>2. **復元時**:</p>
+<li><code>AtEOXact_GUC</code> を呼び出し、<code>save_nestlevel</code> 以降の GUC 変更をロールバック。</li>
+<li><code>SetUserIdAndSecContext</code> で元のユーザーIDとコンテキストを復元。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>miscadmin.h</code>: <code>GetUserIdAndSecContext</code> 等のユーザー管理関数。</li>
+<li><code>utils/acl.h</code>: <code>member_can_set_role</code> 等の権限チェック。</li>
+<li><code>utils/guc.h</code>: <code>NewGUCNestLevel</code> 等の GUC 管理。</li>
+<li><code>utils/usercontext.h</code>: <code>UserContext</code> 構造体の定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/usercontext.h</code>: 本ファイルのヘッダー。構造体定義とプロトタイプ宣言。</li>
+<li><code>src/backend/utils/init/miscinit.c</code>: ユーザーIDやセキュリティコンテキストの低レベルな管理を行う。</li>
+<li><code>src/backend/utils/misc/guc.c</code>: GUC のネストレベル管理の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本モジュールは、信頼できないコードや外部からの要求を処理する際に、意図しない権限昇格や設定変更を防ぐための「サンドボックス」的な役割を担います。</li>
+<li><code>save_nestlevel</code> が <code>-1</code> の場合は GUC のロールバックが不要であることを示します。</li>
+<li><code>RestoreUserContext</code> を呼び出し忘れると、セッションのユーザー状態が不正なまま残る可能性があるため、呼び出し側では必ずペアで使用してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__init__usercontext_c__SwitchToUntrustedUser.html" target="wiki-view"><code>SwitchToUntrustedUser</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__usercontext_c__RestoreUserContext.html" target="wiki-view"><code>RestoreUserContext</code></a></li>
+</ul></body></html>

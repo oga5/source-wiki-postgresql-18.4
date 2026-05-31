@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/subselect.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/subselect.c</h1>
+<h2>概要</h2>
+<p><code>subselect.c</code> は、PostgreSQL のプランナにおいて、クエリ内の <code>SubLink</code>（サブクエリ式）および <code>CTE</code>（Common Table Expressions）を、実行エンジンが処理可能な <code>SubPlan</code> または <code>InitPlan</code> へ変換する責務を負うモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p>プランニングの「論理から物理への変換」フェーズにおいて、サブクエリの相関関係を解決し、実行計画のノードとして埋め込むための変換処理を行います。<code>planner.c</code> や <code>subquery_planner</code> から呼び出され、サブクエリの最適化と物理プランへの昇格を仲介します。</p>
+<h2>責務</h2>
+<ul>
+<li>**サブクエリの変換**: <code>SubLink</code> を <code>SubPlan</code>（実行時に評価される）または <code>InitPlan</code>（クエリ開始時に一度だけ評価される）に変換する。</li>
+<li>**相関変数の解決**: サブクエリ内の外部参照（相関変数）を <code>Param</code> ノードに置き換え、実行時に値を渡せるようにする。</li>
+<li>**CTE の処理**: <code>WITH</code> 句のインライン化（サブクエリへの変換）または <code>InitPlan</code> への変換を判断・実行する。</li>
+<li>**最適化**: <code>EXISTS</code> サブクエリの簡略化や、<code>ANY</code> サブクエリのハッシュ結合への変換など、実行効率を向上させるための変換を行う。</li>
+<li>**パラメータ管理**: 実行計画全体で必要な <code>PARAM_EXEC</code> パラメータの依存関係を最終化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>サブクエリ変換・構築</h3>
+<ul>
+<li><code>make_subplan</code>: <code>SubLink</code> を <code>SubPlan</code> または <code>InitPlan</code> に変換するメインエントリーポイント。</li>
+<li><code>build_subplan</code>: <code>SubPlan</code> ノードを構築し、<code>PlannerInfo</code> のグローバルリストに登録する。</li>
+<li><code>convert_testexpr</code>: サブクエリの出力結果を <code>Param</code> に置き換え、実行可能な式ツリーを生成する。</li>
+</ul>
+<h3>CTE 処理</h3>
+<ul>
+<li><code>SS_process_ctes</code>: クエリの <code>WITH</code> リストを走査し、各 CTE をインライン化するか <code>InitPlan</code> にするかを決定する。</li>
+<li><code>inline_cte</code>: CTE を <code>RTE_SUBQUERY</code> に変換してインライン化する。</li>
+</ul>
+<h3>パラメータ・参照解決</h3>
+<ul>
+<li><code>SS_replace_correlation_vars</code>: サブクエリ内の相関変数を <code>Param</code> に置換する。</li>
+<li><code>SS_finalize_plan</code>: プランツリー全体を走査し、各ノードが必要とする <code>PARAM_EXEC</code> パラメータ（<code>extParam</code>, <code>allParam</code>）を計算する。</li>
+<li><code>SS_identify_outer_params</code>: 上位クエリレベルから供給されるパラメータを特定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SS_attach_initplans</code></li>
+<li><code>SS_charge_for_initplans</code></li>
+<li><code>SS_compute_initplan_cost</code></li>
+<li><code>SS_finalize_plan</code></li>
+<li><code>SS_identify_outer_params</code></li>
+<li><code>SS_process_ctes</code></li>
+<li><code>SS_process_sublinks</code></li>
+<li><code>SS_replace_correlation_vars</code></li>
+<li><code>convert_testexpr_context</code></li>
+<li><code>finalize_primnode_context</code></li>
+<li><code>inline_cte_walker_context</code></li>
+<li><code>process_sublinks_context</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **サブクエリのプランニング**: <code>make_subplan</code> がサブクエリを <code>subquery_planner</code> に渡し、<code>Path</code> を生成させる。 2. **変換判断**: <code>build_subplan</code> が相関変数の有無や <code>SubLinkType</code> に基づき、<code>SubPlan</code>（相関あり）か <code>InitPlan</code>（相関なし）かを決定する。 3. **式変換**: <code>convert_testexpr</code> がパーサー生成の <code>PARAM_SUBLINK</code> を、実行時に値がバインドされる <code>PARAM_EXEC</code> に書き換える。 4. **最終化**: <code>SS_finalize_plan</code> がプランツリーを再帰的に巡回し、各ノードのパラメータ依存関係（<code>extParam</code>）を確定させる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>SubPlan</code>, <code>SubLink</code>, <code>Param</code> 等のノード定義。</li>
+<li><code>optimizer/</code>: <code>planner.h</code> (サブクエリプランニング), <code>cost.h</code> (コスト計算), <code>pathnode.h</code> (Path操作)。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code> (演算子や型のキャッシュアクセス)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paramassign.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeSubplan.c</code>: ここで生成された <code>SubPlan</code> ノードを実行するランタイムロジック。</li>
+<li><code>src/backend/optimizer/plan/setrefs.c</code>: <code>SubPlan</code> のパラメータ参照を最終的に解決する。</li>
+<li><code>src/backend/optimizer/plan/planner.c</code>: プランニングの全体フローを制御する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PlannerInfo</code> 構造体はプランニング中生存し、<code>glob</code> 経由で <code>subplans</code> や <code>subroots</code> を管理します。これらは <code>copyObject</code> で複製されることが多く、メモリ消費に注意が必要です。</li>
+<li>**制約**: <code>SS_finalize_plan</code> はプランニングの最終段階で実行される必要があり、それ以前に <code>SS_replace_correlation_vars</code> 等が完了していることが不変条件です。</li>
+<li>**未実装・浅い部分**: <code>convert_ANY_sublink_to_join</code> 等の変換ロジックは、特定の条件（相関の有無や演算子の性質）を満たす場合にのみ動作します。複雑なサブクエリは変換されず、そのまま <code>SubPlan</code> として残ります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__convert_testexpr_context.html" target="wiki-view"><code>convert_testexpr_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__process_sublinks_context.html" target="wiki-view"><code>process_sublinks_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__finalize_primnode_context.html" target="wiki-view"><code>finalize_primnode_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__inline_cte_walker_context.html" target="wiki-view"><code>inline_cte_walker_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_process_ctes.html" target="wiki-view"><code>SS_process_ctes</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_replace_correlation_vars.html" target="wiki-view"><code>SS_replace_correlation_vars</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_process_sublinks.html" target="wiki-view"><code>SS_process_sublinks</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_identify_outer_params.html" target="wiki-view"><code>SS_identify_outer_params</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_charge_for_initplans.html" target="wiki-view"><code>SS_charge_for_initplans</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_compute_initplan_cost.html" target="wiki-view"><code>SS_compute_initplan_cost</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_attach_initplans.html" target="wiki-view"><code>SS_attach_initplans</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__subselect_c__SS_finalize_plan.html" target="wiki-view"><code>SS_finalize_plan</code></a></li>
+</ul></body></html>

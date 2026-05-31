@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execScan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execScan.c</h1>
+<h2>概要</h2>
+<p><code>execScan.c</code> は、PostgreSQL の実行エンジンにおいて、スキャンノード（テーブルスキャン、インデックススキャン等）の共通処理を抽象化したユーティリティ群を提供します。個別のスキャンノードが持つ「タプル取得」という固有の責務を、共通の「フィルタリング（Qual）」および「プロジェクション」処理と分離することで、コードの重複を排除しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、スキャン系ノード（<code>nodeSeqscan.c</code>, <code>nodeIndexscan.c</code> など）の基盤として機能します。各スキャンノードは、自身のアクセス手法を <code>ExecScan</code> にコールバックとして渡すことで、実行時の定型的なオーバーヘッドをこのファイルに委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン実行の抽象化**: アクセス手法（<code>accessMtd</code>）を呼び出し、取得したタプルに対して <code>Qual</code>（条件式）の評価と <code>Projection</code>（射影）を適用する。</li>
+<li>**EvalPlanQual (EPQ) 対応**: 同時実行制御（MVCC）下での再チェック処理を統合し、正しいタプルが返されることを保証する。</li>
+<li>**プロジェクション管理**: スキャン結果のタプル記述子（TupleDesc）に基づき、必要な射影情報を設定する。</li>
+<li>**再スキャン（ReScan）の管理**: スキャン状態のクリアおよび EPQ 状態の初期化を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecScan</code>: スキャンノードのメインループ。アクセス手法からタプルを取得し、Qual 評価と射影を行う。</li>
+<li><code>ExecScanFetch</code> (ヘッダー定義): <code>execScan.h</code> で定義されるインライン関数。EPQ 状態を考慮したタプル取得の分岐を担う。</li>
+<li><code>ExecAssignScanProjectionInfo</code>: スキャンノードの射影情報を設定する。不要なプロジェクションを回避する最適化を含む。</li>
+<li><code>ExecScanReScan</code>: スキャンノードの再実行時に、スロットのクリアと EPQ 状態の同期を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecAssignScanProjectionInfoWithVarno</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **タプル取得**: <code>ExecScan</code> が <code>accessMtd</code> を呼び出し、ストレージ層からタプルを取得する。 2. **EPQ チェック**: <code>ExecScanFetch</code> が、現在 EPQ 再チェック中であれば、通常のテーブルスキャンではなく EPQ 用のテストタプルを優先的に返す。 3. **フィルタリング**: 取得したタプルが <code>node-&gt;ps.qual</code> を満たすか評価する。 4. **射影**: <code>node-&gt;ps.ps_ProjInfo</code> が設定されていれば、タプルをターゲットリストに合わせて変換し、結果を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>executor/executor.h</code>: 実行エンジンの主要構造体（<code>ScanState</code>, <code>EState</code> 等）。</li>
+<li><code>executor/execScan.h</code>: <code>ExecScanFetch</code> 等のインライン関数定義。</li>
+<li><code>miscadmin.h</code>: <code>CHECK_FOR_INTERRUPTS()</code> 等の管理用マクロ。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/execScan.h</code>: このファイルで利用される関数プロトタイプとインライン関数の定義。</li>
+<li><code>src/backend/executor/execExprInterp.c</code>: <code>Qual</code> や <code>Projection</code> の評価ロジックの実体。</li>
+<li><code>src/backend/executor/nodeSeqscan.c</code> 等: <code>ExecScan</code> を実際に呼び出す具体的なスキャンノードの実装例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>ExecScan</code> は直接呼び出されるだけでなく、<code>ExecScanExtended</code> を介してより詳細な制御が行われる場合があります。</li>
+<li>EPQ（EvalPlanQual）のロジックは複雑ですが、<code>ExecScanFetch</code> 内で完結するように設計されています。デバッグ時は、EPQ 状態（<code>es_epq_active</code>）が有効かどうかをまず確認してください。</li>
+<li>プロジェクションの最適化（<code>ExecAssignScanProjectionInfo</code>）は、プランナーが生成したターゲットリストと物理タプルの構造が一致する場合に、射影処理をスキップする重要な最適化です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execScan_c__ExecScan.html" target="wiki-view"><code>ExecScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execScan_c__ExecAssignScanProjectionInfo.html" target="wiki-view"><code>ExecAssignScanProjectionInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execScan_c__ExecAssignScanProjectionInfoWithVarno.html" target="wiki-view"><code>ExecAssignScanProjectionInfoWithVarno</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execScan_c__ExecScanReScan.html" target="wiki-view"><code>ExecScanReScan</code></a></li>
+</ul></body></html>

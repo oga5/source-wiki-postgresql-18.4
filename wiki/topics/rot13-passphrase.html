@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/rot13-passphrase.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>rot13_passphrase</h1>
+<h2>概念</h2>
+<p><code>rot13_passphrase</code> は、PostgreSQLのテスト用モジュールにおいて、パスワードやパスフレーズを難読化（ROT13変換）するために使用される関数の名前です。同名の関数が2つの異なるテストモジュールに存在しますが、それぞれシグネチャと目的が異なる独立した実装となっています。</p>
+<h2>なぜ重要か</h2>
+<p>これらの関数は、PostgreSQLのテスト環境において、認証プロセス（LDAP認証やSSLパスフレーズのコールバック）の動作を検証するために重要です。実運用環境でのセキュリティ保護を目的としたものではなく、テスト目的でパスワードやパスフレーズを簡易的に難読化・変換する仕組みを提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/test/modules/ldap_password_func</code></li>
+<li><code>module:src/test/modules/ssl_passphrase_callback</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/test/modules/ldap_password_func/ldap_password_func.c#rot13_passphrase</code>**:</li>
+<p>LDAP認証プロセス用の関数。シグネチャは <code>static char *rot13_passphrase(char *pw)</code>。入力されたパスワードを <code>palloc</code> で確保した新しい領域にコピーし、ROT13変換を施して返します。</p>
+<li>**<code>symbol:src/test/modules/ssl_passphrase_callback/ssl_passphrase_func.c#rot13_passphrase</code>**:</li>
+<p>OpenSSLのパスフレーズ要求用のコールバック関数。シグネチャは <code>static int rot13_passphrase(char *buf, int size, int rwflag, void *userdata)</code>。静的変数 <code>ssl_passphrase</code> の内容をバッファにコピーしてROT13変換を施し、その長さを返します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>これら2つのモジュールはそれぞれ独立して動作し、相互に連携するエンドツーエンドのフローは存在しません。それぞれの動作フローは以下の通りです。</p>
+<h3>1. LDAPパスワードファンクションの流れ</h3>
+<ul>
+<li>モジュールの初期化時（<code>_PG_init</code>）に、本関数が <code>ldap_password_hook</code> に登録されます。</li>
+<li>コアシステム（<code>src/backend/libpq/auth.c</code>）が認証を行う際、このフックを介して本関数が呼び出され、入力されたパスワードがROT13変換されます。</li>
+</ul>
+<h3>2. SSLパスフレーズコールバックの流れ</h3>
+<ul>
+<li><code>SSL_CTX_set_default_passwd_cb</code> を介して、本関数がOpenSSLライブラリにコールバックとして登録されます。</li>
+<li>OpenSSLがパスフレーズを要求した際、このコールバックが起動し、静的変数 <code>ssl_passphrase</code> をROT13変換した値がバッファに書き込まれて返されます。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**変換対象文字**: どちらの実装においても、ROT13変換の対象はアルファベット（A-Z, a-z）のみであり、数字や記号、マルチバイト文字などは変換されずそのまま維持されます。</li>
+<li>**LDAP側**: 入力文字列 <code>pw</code> はヌル終端されている必要があります。また、<code>palloc</code> を使用するため、PostgreSQLのメモリコンテキスト内で呼び出される必要があります。</li>
+<li>**SSL側**: 静的変数 <code>ssl_passphrase</code> が <code>NULL</code> でないことが <code>Assert</code> により保証されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>ldap_password_func.c</code> と <code>ssl_passphrase_func.c</code> に定義されている <code>rot13_passphrase</code> は、名前は同じですがシグネチャ（引数や戻り値）も目的も全く異なります。コードの変更や参照の際には、どちらのモジュールを扱っているかを明確に区別する必要があります。</li>
+<li>**セキュリティ上の誤解**: これらはテスト用の難読化処理に過ぎず、暗号学的なセキュリティ保護機能はありません。実運用環境で使用してはなりません。</li>
+<li>**バッファオーバーフロー/切り詰め**: SSL側の実装では、提供されたバッファサイズ <code>size</code> を超えるパスフレーズは <code>strlcpy</code> によって切り詰められます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/test/modules/ldap_password_func/ldap_password_func.c</code></li>
+<li><code>src/test/modules/ssl_passphrase_callback/ssl_passphrase_func.c</code></li>
+</ul></body></html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/lockcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/lockcmds.c</h1>
+<h2>概要</h2>
+<p><code>lockcmds.c</code> は、PostgreSQL の <code>LOCK TABLE</code> SQL コマンドを実行するためのバックエンドロジックを実装しています。指定されたリレーションに対して明示的なロックを獲得し、継承関係にあるテーブルやビューの定義に含まれる依存リレーションに対しても再帰的にロックを適用する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、DDL やコマンド実行系とストレージマネージャ（ロック管理）の橋渡しを行います。主に <code>storage/lmgr.h</code> の低レベルなロック関数を呼び出し、SQL レベルのセマンティクス（継承やビューの再帰的ロック）を適用します。</p>
+<h2>責務</h2>
+<ul>
+<li>**コマンド実行**: <code>LockTableCommand</code> を通じて、ユーザーが指定したリレーションのロック処理を開始する。</li>
+<li>**権限チェック**: <code>LockTableAclCheck</code> を使用し、ロック対象のリレーションに対してユーザーが適切な権限（<code>UPDATE</code>, <code>DELETE</code> 等）を持っているか検証する。</li>
+<li>**再帰的ロック**:</li>
+<li>継承テーブルに対しては <code>LockTableRecurse</code> で子テーブルを探索しロックする。</li>
+<li>ビューに対しては <code>LockViewRecurse</code> でビュー定義を解析し、参照されているテーブルやビューを再帰的にロックする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LockTableCommand</code>: <code>LOCK TABLE</code> 文のメインエントリーポイント。</li>
+<li><code>LockTableRecurse</code>: 継承ツリーを辿り、すべての子テーブルにロックを適用する。</li>
+<li><code>LockViewRecurse</code>: ビューのクエリツリーを走査し、依存するリレーションを特定してロックする。</li>
+<li><code>LockTableAclCheck</code>: ロックモードに応じた権限チェックを行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LockViewRecurse_context</code></li>
+<li><code>LockViewRecurse_walker</code></li>
+<li><code>RangeVarCallbackForLockTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **解析**: <code>LockTableCommand</code> が <code>LockStmt</code> を受け取り、対象リレーションを一つずつ処理する。 2.  **検証**: <code>RangeVarCallbackForLockTable</code> が呼び出され、リレーションの存在確認、型チェック（テーブル/ビューのみ許可）、および権限チェックを行う。 3.  **再帰処理**:</p>
+<ul>
+<li>継承テーブルの場合: <code>find_all_inheritors</code> で全子テーブルを取得し、順次ロックする。</li>
+<li>ビューの場合: <code>LockViewRecurse</code> がビューのクエリ定義を読み込み、<code>LockViewRecurse_walker</code>（<code>query_tree_walker</code> を利用）がクエリ内の <code>RangeTblEntry</code> を再帰的に探索してロックを適用する。</li>
+<p>4.  **ロック適用**: <code>LockRelationOid</code> または <code>ConditionalLockRelationOid</code>（<code>NOWAIT</code> 指定時）を使用してロックを獲得する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/lmgr.h</code>: ロック獲得・解放の基盤。</li>
+<li><code>utils/acl.h</code>: 権限チェック用。</li>
+<li><code>utils/lsyscache.h</code> / <code>utils/syscache.h</code>: リレーションのメタデータ（型、所有者など）取得用。</li>
+<li><code>access/table.h</code>: リレーションのオープン・クローズ用。</li>
+<li><code>rewrite/rewriteHandler.h</code>: ビューのクエリ定義取得用。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>commands/lockcmds.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/lockcmds.h</code>: 本ファイルのプロトタイプ定義。</li>
+<li><code>src/backend/storage/lmgr/</code>: ロック管理のコア実装。</li>
+<li><code>src/backend/nodes/nodeFuncs.c</code>: <code>query_tree_walker</code> 等のツリー走査ユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ビューのロック**: ビューをロックする場合、そのビューが参照しているすべてのテーブル・ビューもロックされます。これは <code>security_invoker</code> プロパティに応じて、ビュー所有者または現在のユーザーの権限でチェックされます。</li>
+<li>**NOWAIT の挙動**: <code>NOWAIT</code> が指定されている場合、ロックが即座に取得できないとエラーを発生させます。</li>
+<li>**再帰の停止**: ビューの再帰処理中、循環参照を防ぐために <code>ancestor_views</code> リストで既にロック済みのビューを追跡しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockTableCommand.html" target="wiki-view"><code>LockTableCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__RangeVarCallbackForLockTable.html" target="wiki-view"><code>RangeVarCallbackForLockTable</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockTableRecurse.html" target="wiki-view"><code>LockTableRecurse</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockViewRecurse_context.html" target="wiki-view"><code>LockViewRecurse_context</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockViewRecurse_walker.html" target="wiki-view"><code>LockViewRecurse_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockViewRecurse.html" target="wiki-view"><code>LockViewRecurse</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__lockcmds_c__LockTableAclCheck.html" target="wiki-view"><code>LockTableAclCheck</code></a></li>
+</ul></body></html>

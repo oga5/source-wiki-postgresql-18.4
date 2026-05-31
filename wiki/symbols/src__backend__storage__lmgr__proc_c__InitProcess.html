@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__proc_c__InitProcess.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitProcess</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/proc.c:389</code></li>
+</ul>
+<h2>目的</h2>
+<p>バックエンドプロセス（バックグラウンドワーカーや補助プロセスを含む）が共有メモリ上で自身の状態を管理するための <code>PGPROC</code> 構造体を確保し、初期化します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void InitProcess(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし（グローバル変数 <code>ProcGlobal</code> およびプロセス種別判定関数に依存）</li>
+<li>出力: なし（副作用として <code>MyProc</code> グローバル変数へのポインタ設定、および共有メモリ上の <code>PGPROC</code> 構造体の初期化を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ProcGlobal</code> が初期化済みであること。</li>
+<li><code>MyProc</code> がまだ割り当てられていないこと（二重初期化の禁止）。</li>
+<li><code>IsUnderPostmaster</code> の状態に応じて、ポストマスターの子プロセスとして登録されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **プロセス登録**: ポストマスター配下であれば <code>RegisterPostmasterChildActive()</code> を呼び出します。 2. **リスト選択**: プロセス種別（AutoVacuum, BackgroundWorker, WalSender, その他）に基づき、<code>ProcGlobal</code> 内の適切なフリーリストを選択します。 3. **PGPROC確保**: <code>ProcStructLock</code> スピンロックを取得し、フリーリストから <code>PGPROC</code> をポップして <code>MyProc</code> に割り当てます。空きがない場合は <code>FATAL</code> エラーで終了します。 4. **構造体初期化**: <code>MyProc</code> の各フィールド（PID、トランザクションID、待機状態、同期レプリケーション用フラグ、グループロック用フィールド等）を初期状態に設定します。 5. **ラッチ設定**: <code>OwnLatch()</code> および <code>SwitchToSharedLatch()</code> を呼び出し、プロセスラッチを共有メモリ上のものへ切り替えます。 6. **クリーンアップ登録**: <code>on_shmem_exit(ProcKill, 0)</code> を登録し、終了時の解放処理を予約します。 7. **サブシステム初期化**: <code>InitLWLockAccess()</code> および <code>InitDeadLockChecking()</code> を呼び出し、ロックおよびデッドロック検出機能を有効化します。 8. **共有メモリ再アタッチ**: <code>EXEC_BACKEND</code> 定義環境下では、<code>AttachSharedMemoryStructs()</code> を呼び出します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/bootstrap/bootstrap.c</code></li>
+<li><code>src/backend/postmaster/autovacuum.c</code></li>
+<li><code>src/backend/postmaster/bgworker.c</code></li>
+<li><code>src/backend/replication/logical/slotsync.c</code></li>
+<li><code>src/backend/replication/walsender.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>RegisterPostmasterChildActive</code>, <code>SpinLockAcquire/Release</code>, <code>set_spins_per_delay</code>, <code>dlist_pop_head_node</code>, <code>GetNumberFromPGProc</code>, <code>dlist_node_init</code>, <code>OwnLatch</code>, <code>SwitchToSharedLatch</code>, <code>pgstat_set_wait_event_storage</code>, <code>PGSemaphoreReset</code>, <code>on_shmem_exit</code>, <code>InitLWLockAccess</code>, <code>InitDeadLockChecking</code>, <code>AttachSharedMemoryStructs</code> (EXEC_BACKEND時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: プロセスごとの状態管理構造体。</li>
+<li><code>ProcGlobal</code>: 全プロセスの状態を管理する共有メモリ上のグローバルヘッダー。</li>
+<li><code>ProcStructLock</code>: フリーリスト操作を保護するスピンロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ProcGlobal == NULL</code>: <code>PANIC</code> で停止。</li>
+<li><code>MyProc != NULL</code>: <code>ERROR</code> で停止。</li>
+<li>フリーリストが空（<code>PGPROC</code> 不足）: <code>FATAL</code> エラー（接続過多）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>MyProc</code> はプロセス固有の共有メモリ領域を指すため、初期化順序が重要です。</li>
+<li><code>EXEC_BACKEND</code> 環境では、共有メモリ構造体の再アタッチが必須となります。</li>
+<li><code>autovacuum</code> ランチャーは <code>PROC_IS_AUTOVACUUM</code> フラグを意図的に設定しない仕様です。</li>
+</ul></body></html>

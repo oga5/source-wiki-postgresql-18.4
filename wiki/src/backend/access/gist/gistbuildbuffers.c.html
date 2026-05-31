@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistbuildbuffers.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistbuildbuffers.c</h1>
+<h2>概要</h2>
+<p>GiST インデックスの「バッファリングビルド（Buffering Build）」アルゴリズムにおいて、インデックス構築中に各ノードへ挿入されるタプルを一時的に保持するノードバッファを管理するファイルです。メモリ不足時に一時ファイルへデータを退避・復元する仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> サブシステムの一部であり、特に <code>gistbuild.c</code> が行うインデックス構築プロセスを支援します。メモリ上に乗り切らない大量のタプルを効率的に処理し、インデックスの木構造を構築するための「中間ストレージ」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ノードバッファの管理**: 各インデックスブロックに対応するバッファの生成・保持・破棄。</li>
+<li>**メモリとディスクの階層管理**: メモリ上のページが溢れた際に一時ファイル（<code>BufFile</code>）へ書き出し、必要に応じて読み戻す（スワップアウト/イン）。</li>
+<li>**タプルのルーティング**: インデックス分割（Split）発生時に、古いノードバッファ内のタプルを新しいノードへ再分配する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GISTBuildBuffers</code>: バッファリングビルド全体の状態を保持するメイン構造体。</li>
+<li><code>gistGetNodeBuffer</code>: 指定されたブロックに対するバッファを取得または新規作成する。</li>
+<li><code>gistPushItupToNodeBuffer</code>: タプルをバッファに追加する。必要に応じてページ分割やディスクへの書き出しを行う。</li>
+<li><code>gistPopItupFromNodeBuffer</code>: バッファからタプルを取り出す（主に再分配時に使用）。</li>
+<li><code>gistRelocateBuildBuffersOnSplit</code>: ノード分割時に、既存のバッファ内タプルを新しいノードへ振り分ける。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ReadTempFileBlock</code></li>
+<li><code>RelocationBufferInfo</code></li>
+<li><code>WriteTempFileBlock</code></li>
+<li><code>gistAddLoadedBuffer</code></li>
+<li><code>gistAllocateNewPageBuffer</code></li>
+<li><code>gistBuffersGetFreeBlock</code></li>
+<li><code>gistFreeBuildBuffers</code></li>
+<li><code>gistInitBuildBuffers</code></li>
+<li><code>gistLoadNodeBuffer</code></li>
+<li><code>gistUnloadNodeBuffer</code></li>
+<li><code>gistUnloadNodeBuffers</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>gistInitBuildBuffers</code> で一時ファイルとハッシュテーブル（<code>nodeBuffersTab</code>）を準備。 2. **挿入**: <code>gistPushItupToNodeBuffer</code> がタプルを受け取り、メモリ上のページに書き込む。ページが満杯になると <code>gistUnloadNodeBuffer</code> で一時ファイルへ退避。 3. **分割時**: <code>gistRelocateBuildBuffersOnSplit</code> が呼び出されると、古いバッファからタプルを <code>gistPopItupFromNodeBuffer</code> で順次取り出し、<code>gistpenalty</code> を用いて最適な新しいノードへ再挿入する。 4. **終了**: <code>gistFreeBuildBuffers</code> で一時ファイルをクローズし、リソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型・マクロ定義。</li>
+<li><code>access/gist_private.h</code>: GiST 固有の構造体（<code>GISTNodeBuffer</code> 等）。</li>
+<li><code>storage/buffile.h</code>: 一時ファイル操作用。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理関連。</li>
+<li><code>utils/rel.h</code>: リレーション情報。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gistbuild.c</code>: バッファリングビルドのメインロジック。本ファイルの主要な呼び出し元。</li>
+<li><code>gistsplit.c</code>: インデックスの分割ロジック。本ファイルと連携してタプルの再配置を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「Arge et al.」による GiST バッファリングアルゴリズムの実装です。</li>
+<li><code>gistPushItupToNodeBuffer</code> 内の <code>BUFFER_HALF_FILLED</code> チェックは、バッファが溢れた際に効率的に空にするためのヒューリスティックです。</li>
+<li>一時ファイル操作は <code>BufFile</code> を介して行われます。エラー発生時は <code>elog(ERROR)</code> で即座に停止するため、呼び出し側で個別のエラーハンドリングは不要です。</li>
+<li>メモリ管理は <code>gfbb-&gt;context</code>（<code>CurrentMemoryContext</code>）に依存しているため、ビルドプロセス全体のメモリライフサイクルと同期しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistInitBuildBuffers.html" target="wiki-view"><code>gistInitBuildBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistGetNodeBuffer.html" target="wiki-view"><code>gistGetNodeBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistAllocateNewPageBuffer.html" target="wiki-view"><code>gistAllocateNewPageBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistAddLoadedBuffer.html" target="wiki-view"><code>gistAddLoadedBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistLoadNodeBuffer.html" target="wiki-view"><code>gistLoadNodeBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistUnloadNodeBuffer.html" target="wiki-view"><code>gistUnloadNodeBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistUnloadNodeBuffers.html" target="wiki-view"><code>gistUnloadNodeBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistBuffersGetFreeBlock.html" target="wiki-view"><code>gistBuffersGetFreeBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__gistFreeBuildBuffers.html" target="wiki-view"><code>gistFreeBuildBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__RelocationBufferInfo.html" target="wiki-view"><code>RelocationBufferInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__ReadTempFileBlock.html" target="wiki-view"><code>ReadTempFileBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuildbuffers_c__WriteTempFileBlock.html" target="wiki-view"><code>WriteTempFileBlock</code></a></li>
+</ul></body></html>

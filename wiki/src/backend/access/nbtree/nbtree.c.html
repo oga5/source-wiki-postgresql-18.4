@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtree.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtree.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の B-tree インデックスアクセスメソッドの公開インターフェースを実装するファイルです。Lehman &amp; Yao のアルゴリズムに基づいたインデックスの構築、検索、挿入、およびメンテナンス（VACUUM）の主要なエントリポイントを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> モジュールの中心的なハブとして機能します。インデックスのライフサイクル管理（スキャン開始から終了まで）や、並列スキャン時の状態管理、VACUUM 処理のオーケストレーションを担います。具体的なページ操作や比較ロジックは他の <code>nbt*.c</code> ファイルに委譲されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**AM API の提供**: <code>bthandler</code> を通じて、PostgreSQL のインデックスアクセスメソッドとして必要な関数ポインタ群を登録する。</li>
+<li>**スキャン管理**: <code>btbeginscan</code> から <code>btendscan</code> までのスキャンライフサイクルを管理し、並列スキャン時の同期制御を行う。</li>
+<li>**VACUUM 処理**: インデックスの物理的なクリーンアップ（<code>btbulkdelete</code>, <code>btvacuumcleanup</code>）を主導し、不要なタプルの削除や空きページの再利用を管理する。</li>
+<li>**並列処理の同期**: <code>BTParallelScanDescData</code> を用いて、並列クエリ実行時のページスキャン順序と状態を制御する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>bthandler</code>: インデックスの全機能（挿入、検索、VACUUM 等）を定義する <code>IndexAmRoutine</code> を返す。</li>
+<li><code>BTParallelScanDescData</code>: 並列スキャン時の共有状態（現在位置、ロック、条件変数）を保持する構造体。</li>
+<li><code>btgettuple</code> / <code>btgetbitmap</code>: スキャン実行時のメインループ。<code>_bt_first</code> や <code>_bt_next</code> を呼び出し、必要に応じて <code>ScalarArrayOp</code> 等のプリミティブスキャンを繰り返す。</li>
+<li><code>btvacuumscan</code>: VACUUM の実体。インデックス全体を走査し、不要なタプルの削除とページ削除を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BTPS_State</code></li>
+<li><code>BTParallelScanDesc</code></li>
+<li><code>btbeginscan</code></li>
+<li><code>btbuildempty</code></li>
+<li><code>btendscan</code></li>
+<li><code>btinsert</code></li>
+<li><code>btmarkpos</code></li>
+<li><code>btrescan</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャン**: <code>btgettuple</code> が呼び出されると、<code>BTScanOpaque</code> を通じて現在のスキャン位置を維持し、ページ境界を跨ぐ際に <code>_bt_next</code> を使用して兄弟ページへ移動します。 2. **並列スキャン**: <code>_bt_parallel_seize</code> でロックを取得し、共有状態を更新してページを確保します。処理完了後は <code>_bt_parallel_release</code> で他ワーカーに制御を戻します。 3. **VACUUM**: <code>btbulkdelete</code> が <code>btvacuumscan</code> を呼び出し、インデックスを物理的に走査します。<code>btvacuumpage</code> が各ページをロックし、不要なタプルを削除（<code>_bt_delitems_vacuum</code>）またはページ自体を削除（<code>_bt_pagedel</code>）します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree のページ構造や定数定義。</li>
+<li><code>storage/lmgr.h</code>, <code>storage/condition_variable.h</code>: 並列スキャン時の排他制御と同期。</li>
+<li><code>storage/bulk_write.h</code>: インデックス構築時の効率的な書き込み。</li>
+<li><code>commands/vacuum.h</code>: VACUUM 関連のインターフェース。</li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/stratnum.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/indexfsm.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/read_stream.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/index_selfuncs.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/nbtree/nbtsearch.c</code>: 検索ロジック（<code>_bt_first</code>, <code>_bt_next</code>）。</li>
+<li><code>src/backend/access/nbtree/nbtinsert.c</code>: 挿入ロジック（<code>_bt_doinsert</code>）。</li>
+<li><code>src/backend/access/nbtree/nbtpage.c</code>: ページ操作の低レベル実装。</li>
+<li><code>src/backend/access/nbtree/nbtxlog.c</code>: WAL ログ記録。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「公開インターフェース」に特化しています。内部的なアルゴリズムの詳細（特にページ分割や検索の再試行ロジック）を追う場合は、<code>nbtsearch.c</code> や <code>nbtinsert.c</code> を参照してください。</li>
+<li>並列スキャン時の <code>LWLock</code> の取り扱いには注意が必要です。<code>_bt_parallel_seize</code> と <code>_bt_parallel_release</code> のペアが正しく呼び出されているかを確認することが、並列実行時のデバッグの鍵となります。</li>
+<li>VACUUM 処理は非常に複雑です。特に <code>btvacuumpage</code> 内の「バックトラック」処理は、インデックスのページ分割と VACUUM が競合した際の整合性を保つための重要な機構です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__BTPS_State.html" target="wiki-view"><code>BTPS_State</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__BTParallelScanDescData.html" target="wiki-view"><code>BTParallelScanDescData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__BTParallelScanDesc.html" target="wiki-view"><code>BTParallelScanDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__bthandler.html" target="wiki-view"><code>bthandler</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btbuildempty.html" target="wiki-view"><code>btbuildempty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btinsert.html" target="wiki-view"><code>btinsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btgettuple.html" target="wiki-view"><code>btgettuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btgetbitmap.html" target="wiki-view"><code>btgetbitmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btbeginscan.html" target="wiki-view"><code>btbeginscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btrescan.html" target="wiki-view"><code>btrescan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btendscan.html" target="wiki-view"><code>btendscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtree_c__btmarkpos.html" target="wiki-view"><code>btmarkpos</code></a></li>
+</ul></body></html>

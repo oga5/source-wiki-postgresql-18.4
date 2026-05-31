@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/createrestrictedprocess.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CreateRestrictedProcess</h1>
+<h2>概念</h2>
+<p><code>CreateRestrictedProcess</code> は、Windows環境において管理者権限や特定の特権を制限した「制限付きトークン」を作成し、そのトークンを用いて安全に新しい子プロセスを起動するための関数です。</p>
+<p>PostgreSQLのソースコード内には、役割や挙動が異なる2つの同名の実装が存在します。 1. **<code>src/bin/pg_ctl/pg_ctl.c</code> の実装**: <code>pg_ctl</code> 内部のローカル関数。制限付きトークンの適用に加え、ジョブオブジェクトを用いたリソースやシステムパラメータへのアクセス制限も行います。 2. **<code>src/common/restricted_token.c</code> の実装**: フロントエンド共通のライブラリ関数。制限付きトークンを作成してプロセスを起動し、そのトークンハンドルを呼び出し元に返します。</p>
+<h2>なぜ重要か</h2>
+<p>Windows環境において、PostgreSQLのプロセス（<code>pg_ctl</code> やテストツールなど）が管理者権限のまま実行されるのを防ぐために重要です。不要な特権（管理者グループやパワーユーザーグループのSIDなど）を剥奪した安全なセキュリティコンテキストで子プロセスを起動することで、システム全体のセキュリティを向上させます。また、<code>pg_ctl</code> においてはジョブオブジェクトを介してデスクトップやクリップボードへのアクセス、未処理例外時の挙動などを制限し、プロセスの堅牢性を確保します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_ctl</code></li>
+<li><code>module:src/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_ctl/pg_ctl.c#CreateRestrictedProcess</code>**</li>
+<li>シグネチャ: <code>int CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_service)</code></li>
+<li><code>pg_ctl</code> 内部で定義されたローカルな実装。</li>
+<li>**<code>symbol:src/common/restricted_token.c#CreateRestrictedProcess</code>**</li>
+<li>シグネチャ: <code>HANDLE CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)</code></li>
+<li>共通ライブラリとして定義された実装。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>それぞれの実装におけるプロセスの起動フローは以下の通りです。</p>
+<h3><code>src/bin/pg_ctl/pg_ctl.c</code> のフロー</h3>
+<p>1. **標準ハンドルの継承設定**: <code>InheritStdHandles</code> を呼び出し、標準入出力ハンドルを継承可能にします。 2. **制限付きトークンの作成**: 現在のプロセスからトークンを取得し、管理者/パワーユーザーSIDおよび不要な特権を除去した制限付きトークンを作成します。 3. **プロセスの一時停止起動**: <code>CreateProcessAsUser</code> を <code>CREATE_SUSPENDED</code> フラグ付きで呼び出し、一時停止状態で子プロセスを生成します。 4. **ジョブオブジェクトの適用**: プロセスがジョブオブジェクトに属していない場合、新しいジョブオブジェクトを作成し、以下の制限を適用します。</p>
+<ul>
+<li>未処理例外時の終了、優先度クラスの制限。</li>
+<li>デスクトップ、クリップボード、システムパラメータへのアクセス制限。</li>
+<li>セキュリティ制限（管理者権限の無効化）。</li>
+<p>5. **ジョブへの割り当て**: 生成したプロセスをジョブオブジェクトに割り当てます。 6. **プロセスの再開**: <code>ResumeThread</code> を呼び出し、子プロセスの実行を開始します。</p>
+</ul>
+<h3><code>src/common/restricted_token.c</code> のフロー</h3>
+<p>1. **トークンの取得**: <code>OpenProcessToken</code> を使用して現在のプロセスのトークンを取得します。 2. **SIDの生成**: <code>AllocateAndInitializeSid</code> を用いて、管理者（<code>DOMAIN_ALIAS_RID_ADMINS</code>）およびパワーユーザー（<code>DOMAIN_ALIAS_RID_POWER_USERS</code>）のSIDを生成します。 3. **制限付きトークンの作成**: <code>CreateRestrictedToken</code> を呼び出し、<code>DISABLE_MAX_PRIVILEGE</code> フラグを付与して制限付きトークンを作成します。 4. **リソースの解放**: 生成したSIDとトークンハンドルを解放・クローズします。 5. **DACLの調整**: 非Cygwin環境の場合、<code>AddUserToTokenDacl</code> を呼び出してトークンのDACLを調整します。 6. **プロセスの一時停止起動**: <code>CreateProcessAsUser</code> を使用し、制限付きトークンを用いて <code>CREATE_SUSPENDED</code> 状態でプロセスを生成します。 7. **プロセスの再開**: <code>ResumeThread</code> を呼び出して子プロセスの実行を開始し、トークンハンドルを返却します。</p>
+<p>※ 呼び出し元（<code>do_start</code> や <code>pg_regress.c</code> など）からこれらの関数が呼び出された後の、システム全体における完全なエンドツーエンドのライフサイクルや、プロセスツリー全体の詳細な制御フローは完全には示されておらず、一部未検証です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**Windows環境限定**: Windows環境（<code>WIN32</code> マクロ環境下）でのみ動作します。</li>
+<li>**特権の剥奪**: 管理者グループおよびパワーユーザーグループのSID、ならびに不要な特権がトークンから確実に削除されます。</li>
+<li>**一時停止状態での生成と再開**: どちらの実装でも、プロセスは一度 <code>CREATE_SUSPENDED</code>（一時停止状態）で生成され、必要なセットアップ（ジョブオブジェクトの割り当てなど）を終えた後に <code>ResumeThread</code> で実行が開始されます。</li>
+<li>**フロントエンド限定（共通側）**: <code>src/common/restricted_token.c</code> の実装は、呼び出し元で <code>FRONTEND</code> マクロが定義されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ジョブオブジェクトハンドルの生存期間**: <code>pg_ctl.c</code> の実装では、ジョブオブジェクトのハンドルは <code>pg_ctl</code> の終了まで生存させる意図で意図的にクローズされません。これを誤って早期にクローズすると、制限が意図せず解除される可能性があります。</li>
+<li>**環境による挙動の違い**: <code>__CYGWIN__</code> 環境では、<code>src/common/restricted_token.c</code> における <code>AddUserToTokenDacl</code> の呼び出しがスキップされます。</li>
+<li>**同名関数の混在**: <code>pg_ctl.c</code> 内の <code>CreateRestrictedProcess</code> はローカルな実装であり、<code>src/common/restricted_token.c</code> の共通実装とはシグネチャやジョブオブジェクト適用の有無などの挙動が異なります。呼び出し時にどちらが参照されているか注意が必要です。</li>
+<li>**再帰的な起動**: 本関数はプロセスを再帰的に再起動する仕組みの一部であるため、デバッグ時にはプロセスツリーの深さに注意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_ctl/pg_ctl.c</code></li>
+<li><code>src/common/restricted_token.c</code></li>
+</ul></body></html>

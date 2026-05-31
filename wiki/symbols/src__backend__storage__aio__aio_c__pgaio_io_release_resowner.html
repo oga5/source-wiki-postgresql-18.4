@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__aio_c__pgaio_io_release_resowner.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgaio_io_release_resowner</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/aio/aio.c:265</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>ResourceOwner</code> に登録された非同期I/O（AIO）ハンドルを解放し、状態に応じて適切なクリーンアップ処理（ハンドルの再利用、未発行I/Oの強制発行、または警告の出力）を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void pgaio_io_release_resowner(dlist_node *ioh_node, bool on_error)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>ioh_node</code>: 解放対象の <code>PgAioHandle</code> に含まれる <code>resowner_node</code> へのポインタ。</li>
+<li><code>on_error</code>: エラー処理中（トランザクションアボート等）であれば <code>true</code>、正常終了時であれば <code>false</code>。</li>
+<li>戻り値: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ioh_node</code> から導出される <code>PgAioHandle</code> の <code>resowner</code> フィールドが非NULLであること。</li>
+<li>割り込みによる状態不整合を防ぐため、本関数は <code>HOLD_INTERRUPTS()</code> を呼び出し、終了時に <code>RESUME_INTERRUPTS()</code> を呼び出す。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>dlist_container</code> を用いて <code>ioh_node</code> から <code>PgAioHandle</code> を取得する。 2. <code>ResourceOwnerForgetAioHandle</code> を呼び出し、リソース所有者から当該ハンドルを登録解除する。 3. ハンドルの現在の状態（<code>PgAioHandleState</code>）に基づき分岐する：</p>
+<ul>
+<li><code>PGAIO_HS_HANDED_OUT</code>: ハンドルがバックエンドの <code>handed_out_io</code> と一致する場合、それをクリアし、<code>pgaio_io_reclaim</code> を実行してハンドルを回収する。</li>
+<li><code>PGAIO_HS_DEFINED</code> / <code>PGAIO_HS_STAGED</code>: 未発行のI/Oとみなされるため、<code>pgaio_submit_staged</code> を呼び出して発行を試みる。</li>
+<li><code>PGAIO_HS_SUBMITTED</code> 以降の完了状態: 特段の処理は行わない。</li>
+<p>4. <code>on_error</code> が <code>false</code> の場合、ハンドルがリークしているか、未発行のまま解放された際に警告（<code>WARNING</code>）を出力する。 5. <code>ioh-&gt;report_return</code> が設定されている場合、参照先メモリの無効化を想定して <code>NULL</code> にリセットする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元:</li>
+<li><code>src/backend/utils/resowner/resowner.c:743</code>（<code>ResourceOwner</code> のクリーンアップ処理から）</li>
+<li>呼び出し先:</li>
+<li><code>ResourceOwnerForgetAioHandle</code></li>
+<li><code>pgaio_io_reclaim</code></li>
+<li><code>pgaio_submit_staged</code></li>
+<li><code>elog</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioHandle</code>: AIO操作を管理する主要構造体。</li>
+<li><code>dlist_node</code>: リソース所有者管理用のリストノード。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PGAIO_HS_IDLE</code> 状態で本関数が呼び出された場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li><code>on_error</code> が <code>false</code> の場合、意図しないリークや未発行に対して警告ログが出力される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数内での状態遷移は <code>HOLD_INTERRUPTS()</code> で保護されており、割り込みによる再帰的なI/O待ち合わせを防止している。</li>
+<li><code>report_return</code> のリセットは、I/O結果の報告先メモリが解放されることを前提としている。</li>
+</ul></body></html>

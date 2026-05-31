@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeGatherMerge.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeGatherMerge.c</h1>
+<h2>概要</h2>
+<p><code>nodeGatherMerge.c</code> は、PostgreSQL の並列クエリ実行において、複数のワーカープロセスから送られてくるソート済みのタプルをマージし、順序を維持したまま単一のストリームとして出力するための実行ノードです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nodeGather.c</code> が順序を問わないタプルの収集を行うのに対し、本モジュールは <code>MergeAppend</code> と同様のソートキー比較ロジックを並列実行環境に適用します。<code>ExecParallel</code> インフラストラクチャを利用してワーカーを管理し、バイナリヒープを用いて各ワーカーからの入力をマージします。</p>
+<h2>責務</h2>
+<ul>
+<li>並列ワーカーの起動および終了の管理。</li>
+<li>各ワーカーからのタプルストリームの読み込みとバッファリング。</li>
+<li>バイナリヒープを用いた、複数ソース間の順序維持マージ処理。</li>
+<li>リーダープロセス自身が並列実行に参加する場合のローカルスキャン処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecGatherMerge</code>: ノードのメイン実行関数。ワーカーの起動とタプルの取得を行う。</li>
+<li><code>GMReaderTupleBuffer</code>: 各ワーカーからのタプルを一時保持するバッファ構造体。</li>
+<li><code>gather_merge_getnext</code>: ヒープから最小のタプルを選択し、必要に応じて次のタプルを読み込む。</li>
+<li><code>heap_compare_slots</code>: ソートキーに基づき、2つのタプルスロットを比較するコールバック関数。</li>
+<li><code>MAX_TUPLE_STORE</code>: コンテキストスイッチ削減のため、一度の読み込みでバッファする最大タプル数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndGatherMerge</code></li>
+<li><code>ExecInitGatherMerge</code></li>
+<li><code>ExecReScanGatherMerge</code></li>
+<li><code>ExecShutdownGatherMerge</code></li>
+<li><code>ExecShutdownGatherMergeWorkers</code></li>
+<li><code>SlotNumber</code></li>
+<li><code>gather_merge_clear_tuples</code></li>
+<li><code>gather_merge_init</code></li>
+<li><code>gather_merge_setup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitGatherMerge</code> でソートキーを準備し、<code>gather_merge_setup</code> でヒープとバッファを確保。 2. **実行開始**: <code>ExecGatherMerge</code> が呼ばれると、<code>LaunchParallelWorkers</code> でワーカーを起動。 3. **マージ**: <code>gather_merge_init</code> で各ソースから最初のタプルを取得し、バイナリヒープを構築。 4. **反復**: <code>gather_merge_getnext</code> がヒープの先頭（最小値）を返し、該当するソースから次のタプルを補充してヒープを再構築する。 5. **終了**: <code>ExecShutdownGatherMerge</code> を通じてワーカーを停止し、リソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execParallel.h</code>: 並列実行の制御用。</li>
+<li><code>executor/tqueue.h</code>: ワーカーからのタプル転送用。</li>
+<li><code>lib/binaryheap.h</code>: マージ処理の効率化に使用。</li>
+<li><code>optimizer/optimizer.h</code>: ソートキーの準備に使用。</li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeGatherMerge.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeMergeAppend.c</code>: 非並列環境での同様のマージロジック。</li>
+<li><code>src/backend/executor/nodeGather.c</code>: 並列収集の基本実装。</li>
+<li><code>src/backend/executor/execParallel.c</code>: 並列実行の基盤機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ノードは <code>GatherMerge</code> プランノードを処理します。<code>MergeAppend</code> と異なり、入力ソースが動的に増減する可能性があるため、<code>GMReaderTupleBuffer</code> によるバッファリングが重要です。</li>
+<li><code>MAX_TUPLE_STORE</code> はパフォーマンス調整用であり、メモリ消費とコンテキストスイッチのトレードオフを制御しています。</li>
+<li>リーダープロセスが参加する場合、<code>need_to_scan_locally</code> フラグがその状態を管理します。デバッグ時は、このフラグとワーカー側の <code>done</code> フラグの整合性に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__GMReaderTupleBuffer.html" target="wiki-view"><code>GMReaderTupleBuffer</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecInitGatherMerge.html" target="wiki-view"><code>ExecInitGatherMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecGatherMerge.html" target="wiki-view"><code>ExecGatherMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecEndGatherMerge.html" target="wiki-view"><code>ExecEndGatherMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecShutdownGatherMerge.html" target="wiki-view"><code>ExecShutdownGatherMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecShutdownGatherMergeWorkers.html" target="wiki-view"><code>ExecShutdownGatherMergeWorkers</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__ExecReScanGatherMerge.html" target="wiki-view"><code>ExecReScanGatherMerge</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__gather_merge_setup.html" target="wiki-view"><code>gather_merge_setup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__gather_merge_init.html" target="wiki-view"><code>gather_merge_init</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__gather_merge_clear_tuples.html" target="wiki-view"><code>gather_merge_clear_tuples</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__gather_merge_getnext.html" target="wiki-view"><code>gather_merge_getnext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeGatherMerge_c__SlotNumber.html" target="wiki-view"><code>SlotNumber</code></a></li>
+</ul></body></html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/transam.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/transam.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのトランザクション状態（コミット、アボート、進行中）を管理する高レベルなインターフェースを提供します。主に <code>CLOG</code>（Commit Log）へのアクセスを抽象化し、トランザクションID（XID）の比較や状態判定、ツリー構造の更新を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、トランザクションのライフサイクル管理と可視性判定の橋渡しを行います。低レベルな <code>CLOG</code> や <code>SUBTRANS</code> の操作をラップし、上位層（<code>heapam</code> 等）が利用しやすいAPIを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**状態判定**: 特定のXIDがコミット済みか、アボート済みかを判定する（サブトランザクションの再帰的解決を含む）。</li>
+<li>**ツリー更新**: トランザクションとそのサブトランザクション群のステータスを一括更新する。</li>
+<li>**XID比較**: XIDのラップアラウンドを考慮した論理的な前後関係の比較。</li>
+<li>**キャッシュ管理**: 直近のXID状態を保持し、頻繁なCLOG参照を最適化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TransactionLogFetch</code>: 内部関数。CLOGからXIDのステータスを取得し、キャッシュを更新する。</li>
+<li><code>TransactionIdDidCommit</code> / <code>TransactionIdDidAbort</code>: トランザクションの最終結果を判定する主要な公開関数。</li>
+<li><code>TransactionIdCommitTree</code> / <code>TransactionIdAbortTree</code>: トランザクションツリー（親と子）のステータスを一括設定する。</li>
+<li><code>TransactionIdPrecedes</code> 等: XIDのラップアラウンドを正しく処理する比較演算子群。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>TransactionIdAsyncCommitTree</code></li>
+<li><code>TransactionIdFollows</code></li>
+<li><code>TransactionIdFollowsOrEquals</code></li>
+<li><code>TransactionIdGetCommitLSN</code></li>
+<li><code>TransactionIdLatest</code></li>
+<li><code>TransactionIdPrecedesOrEquals</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **判定フロー**: <code>TransactionIdDidCommit</code> 等が呼ばれると、まず <code>cachedFetchXid</code> を確認。キャッシュミス時は <code>TransactionLogFetch</code> が <code>CLOG</code> を参照し、結果をキャッシュする。 2.  **再帰的解決**: ステータスが <code>SUB_COMMITTED</code> の場合、<code>SubTransGetParent</code> を用いて親トランザクションを辿り、最終的なコミット/アボート状態を再帰的に解決する。 3.  **ツリー更新**: <code>TransactionIdSetTreeStatus</code> を経由して、CLOGおよび関連する共有メモリ領域を更新する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/clog.h</code>: トランザクション状態の永続化層へのアクセス。</li>
+<li><code>access/subtrans.h</code>: サブトランザクションの親子関係解決。</li>
+<li><code>access/transam.h</code>: XIDの定義および操作マクロ。</li>
+<li><code>utils/snapmgr.h</code>: トランザクションの可視性判定に必要なスナップショット関連情報。</li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/clog.c</code>: 実際のCLOGの読み書きを行う低レベル実装。</li>
+<li><code>src/backend/access/transam/subtrans.c</code>: サブトランザクションの親子関係を管理するサブシステム。</li>
+<li><code>src/backend/access/heap/heapam_visibility.c</code>: 本ファイルの関数を利用して、タプルの可視性を判定するロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの制約**: <code>TransactionLogFetch</code> のキャッシュは、状態が確定している（<code>IN_PROGRESS</code> や <code>SUB_COMMITTED</code> ではない）トランザクションのみを対象とします。</li>
+<li>**ラップアラウンド**: XIDは32ビットの循環値であるため、比較には必ず <code>TransactionIdPrecedes</code> 等の専用関数を使用してください。直接的な比較演算子は誤動作の原因となります。</li>
+<li>**パフォーマンス**: <code>TransactionIdDidCommit</code> は再帰呼び出しを行う可能性があるため、深いサブトランザクション階層を持つ環境では注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionLogFetch.html" target="wiki-view"><code>TransactionLogFetch</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdDidCommit.html" target="wiki-view"><code>TransactionIdDidCommit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdDidAbort.html" target="wiki-view"><code>TransactionIdDidAbort</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdCommitTree.html" target="wiki-view"><code>TransactionIdCommitTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdAsyncCommitTree.html" target="wiki-view"><code>TransactionIdAsyncCommitTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdAbortTree.html" target="wiki-view"><code>TransactionIdAbortTree</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdPrecedes.html" target="wiki-view"><code>TransactionIdPrecedes</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdPrecedesOrEquals.html" target="wiki-view"><code>TransactionIdPrecedesOrEquals</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdFollows.html" target="wiki-view"><code>TransactionIdFollows</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdFollowsOrEquals.html" target="wiki-view"><code>TransactionIdFollowsOrEquals</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdLatest.html" target="wiki-view"><code>TransactionIdLatest</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__transam_c__TransactionIdGetCommitLSN.html" target="wiki-view"><code>TransactionIdGetCommitLSN</code></a></li>
+</ul></body></html>

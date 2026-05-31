@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeWindowAgg.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeWindowAgg.c</h1>
+<h2>概要</h2>
+<p><code>nodeWindowAgg.c</code> は、SQL のウィンドウ関数（<code>WindowFunc</code>）およびウィンドウ集約（<code>WindowAgg</code>）を実行するための実行ノードを実装します。入力タプルは <code>PARTITION BY</code> および <code>ORDER BY</code> キーでソートされていることを前提とし、パーティション単位でデータを <code>tuplestore</code> に蓄積してウィンドウフレーム内の演算を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、プランナが生成した <code>WindowAgg</code> ノードを実行します。他のノード（<code>nodeAgg.c</code> など）と異なり、ウィンドウ関数はフレーム内の任意の行へのランダムアクセスを必要とするため、<code>tuplestore</code> を用いた一時的なデータ保持と、<code>WindowObject</code> API を介した関数へのアクセス提供が中心的な役割です。</p>
+<h2>責務</h2>
+<ul>
+<li>**パーティション管理**: 入力ストリームからパーティションを検出し、<code>tuplestore</code> へのスプールとメモリコンテキストの切り替えを行う。</li>
+<li>**ウィンドウフレーム計算**: <code>RANGE</code> / <code>ROWS</code> / <code>GROUPS</code> モードに応じたフレーム境界（head/tail）の動的計算。</li>
+<li>**集約演算**: 通常の集約関数をウィンドウ関数として実行するための状態管理（<code>WindowStatePerAgg</code>）。</li>
+<li>**ウィンドウ関数 API**: <code>WindowObject</code> を通じて、関数がパーティション内の任意行にアクセスするためのインターフェースを提供。</li>
+<li>**最適化**: 連続する行でフレームが変化しない場合の計算スキップや、逆遷移関数（<code>invtransfn</code>）を用いた増分更新。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理構造体</h3>
+<ul>
+<li><code>WindowAggState</code>: ノード全体の実行状態を保持するルート構造体。</li>
+<li><code>WindowObjectData</code>: ウィンドウ関数がパーティション内を探索するための API オブジェクト。</li>
+<li><code>WindowStatePerFuncData</code>: 各ウィンドウ関数の実行状態（引数、関数ポインタ、結果型情報）。</li>
+<li><code>WindowStatePerAggData</code>: 集約関数としての実行状態（遷移関数、現在の集約値、メモリコンテキスト）。</li>
+</ul>
+<h3>実行制御関数</h3>
+<ul>
+<li><code>ExecWindowAgg</code>: ノードのメイン実行ループ。タプルのスプール、関数評価、射影を行う。</li>
+<li><code>ExecInitWindowAgg</code> / <code>ExecEndWindowAgg</code>: ノードのライフサイクル管理。</li>
+<li><code>begin_partition</code> / <code>release_partition</code>: パーティション境界でのリソース初期化・解放。</li>
+</ul>
+<h3>集約計算関数</h3>
+<ul>
+<li><code>eval_windowaggregates</code>: 集約関数をウィンドウ関数として評価する。</li>
+<li><code>advance_windowaggregate</code> / <code>advance_windowaggregate_base</code>: 遷移関数および逆遷移関数を用いた集約状態の更新。</li>
+<li><code>finalize_windowaggregate</code>: 最終関数（<code>finalfn</code>）を適用して結果を算出。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitWindowAgg</code> が <code>tuplestore</code> や式コンテキストを準備。 2. **スプール**: <code>spool_tuples</code> が入力プランからタプルを読み込み、<code>tuplestore</code> に格納。 3. **フレーム更新**: <code>update_frameheadpos</code> / <code>update_frametailpos</code> が現在の行に対するフレーム境界を計算。 4. **関数評価**:</p>
+<ul>
+<li>通常のウィンドウ関数: <code>eval_windowfunction</code> が <code>WindowObject</code> を介してデータを取得。</li>
+<li>集約関数: <code>eval_windowaggregates</code> が遷移関数を呼び出し、必要に応じて <code>advance_windowaggregate_base</code> で古い行を削除。</li>
+<p>5. **射影**: <code>ExecProject</code> で最終的な出力タプルを生成。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/</code>: <code>executor.h</code>, <code>nodeWindowAgg.h</code>（実行エンジン基盤）</li>
+<li><code>catalog/</code>: <code>pg_aggregate.h</code>, <code>pg_proc.h</code>（集約・関数定義）</li>
+<li><code>utils/</code>: <code>memutils.h</code>（メモリ管理）, <code>datum.h</code>（データ型操作）</li>
+<li><code>windowapi.h</code>: ウィンドウ関数 API の定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/nodeAgg.c</code>: 通常の集約ノード。集約関数の遷移ロジックが類似している。</li>
+<li><code>src/backend/executor/execTuples.c</code>: タプル操作の基盤。</li>
+<li><code>src/include/nodes/execnodes.h</code>: <code>WindowAggState</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>WindowAgg</code> は複数のメモリコンテキスト（<code>partcontext</code>, <code>aggcontext</code>）を使い分けます。特に <code>aggcontext</code> は集約の再計算時にリセットされるため、ポインタの生存期間に注意が必要です。</li>
+<li>**パフォーマンス**: <code>tuplestore</code> がディスクに溢れると性能が著しく低下します。<code>WinSetMarkPosition</code> を適切に呼び出すことで、不要な行を早期に破棄させることが重要です。</li>
+<li>**制約**: <code>invtransfn</code>（逆遷移関数）が提供されていない場合、フレームの移動時に集約を全行再計算するため、計算量が $O(N^2)$ になる可能性があります。</li>
+<li>**省略箇所**: 本ファイル内の <code>tuplestore</code> の詳細な内部実装や、<code>fmgr</code> による関数呼び出しの低レイヤーな詳細は省略しています。これらは <code>src/backend/utils/sort/tuplestore.c</code> および <code>src/backend/utils/fmgr/fmgr.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WindowObjectData.html" target="wiki-view"><code>WindowObjectData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WindowStatePerFuncData.html" target="wiki-view"><code>WindowStatePerFuncData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WindowStatePerAggData.html" target="wiki-view"><code>WindowStatePerAggData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__ExecWindowAgg.html" target="wiki-view"><code>ExecWindowAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__ExecInitWindowAgg.html" target="wiki-view"><code>ExecInitWindowAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__ExecEndWindowAgg.html" target="wiki-view"><code>ExecEndWindowAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__ExecReScanWindowAgg.html" target="wiki-view"><code>ExecReScanWindowAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__GetAggInitVal.html" target="wiki-view"><code>GetAggInitVal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WinGetPartitionLocalMemory.html" target="wiki-view"><code>WinGetPartitionLocalMemory</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WinGetCurrentPosition.html" target="wiki-view"><code>WinGetCurrentPosition</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WinGetPartitionRowCount.html" target="wiki-view"><code>WinGetPartitionRowCount</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeWindowAgg_c__WinSetMarkPosition.html" target="wiki-view"><code>WinSetMarkPosition</code></a></li>
+</ul></body></html>

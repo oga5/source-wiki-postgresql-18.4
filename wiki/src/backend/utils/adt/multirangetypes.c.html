@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/multirangetypes.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/multirangetypes.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のマルチレンジ型（<code>multirange</code>）の内部表現、I/O 処理、および SQL レベルの演算子・集約関数の実装を担うモジュールです。マルチレンジは複数のレンジ型を保持する可変長データ型であり、本ファイルはそれらのソート、マージ、シリアライズ、およびバイナリ走査を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>rangetypes.c</code> が単一の範囲型を扱うのに対し、本ファイルはそれらの集合体としてのマルチレンジを扱います。<code>src/include/utils/multirangetypes.h</code> で定義された <code>MultirangeType</code> 構造体を利用し、PostgreSQL の型システム（<code>typcache</code>）と連携して、動的な型情報に基づいた演算を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 変換**: 文字列（<code>multirange_in</code>/<code>out</code>）およびバイナリ（<code>multirange_recv</code>/<code>send</code>）形式の相互変換。</li>
+<li>**データ管理**: 複数のレンジのソートとマージ（<code>multirange_canonicalize</code>）、およびシリアライズされたデータ構造の構築・走査。</li>
+<li>**演算実装**: 集合演算（和、差、積）、包含判定、比較、および集約関数（<code>range_agg</code>, <code>multirange_agg</code>）の実装。</li>
+<li>**キャッシュ管理**: <code>MultirangeIOData</code> を用いた型情報の効率的な取得と保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>MultirangeType</code>: マルチレンジのメモリレイアウトを定義する構造体。</li>
+<li><code>MultirangeIOData</code>: I/O 関数で利用されるキャッシュ構造体。<code>typcache</code> と I/O プロシージャを保持。</li>
+<li><code>MultirangeParseState</code>: 文字列パース時の状態遷移マシン。</li>
+</ul>
+<h3>シリアライズ・デシリアライズ</h3>
+<ul>
+<li><code>make_multirange</code>: レンジの配列から正規化された <code>MultirangeType</code> を生成。</li>
+<li><code>multirange_deserialize</code>: <code>MultirangeType</code> を個別の <code>RangeType</code> 配列に分解。</li>
+<li><code>write_multirange_data</code>: 内部レイアウト（ヘッダー、アイテム、フラグ、境界値）への書き込み。</li>
+</ul>
+<h3>内部演算・走査</h3>
+<ul>
+<li><code>multirange_canonicalize</code>: 入力レンジのソートと重複・隣接レンジのマージ。</li>
+<li><code>multirange_get_bounds</code>: 指定インデックスのレンジ境界を抽出。</li>
+<li><code>multirange_bsearch_match</code>: 二分探索による包含判定の汎用ルーチン。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>multirange_in</code> が文字列をパースし、個別の <code>RangeType</code> を生成。<code>make_multirange</code> を呼び出し、<code>multirange_canonicalize</code> で正規化（ソート・マージ）した後に <code>write_multirange_data</code> でバイナリレイアウトを構築する。 2. **演算**: 演算関数（例: <code>multirange_union</code>）は <code>multirange_deserialize</code> でレンジ配列を取り出し、<code>rangetypes.c</code> の内部関数（<code>range_union_internal</code> 等）を適用して新しいレンジ配列を作成し、再度 <code>make_multirange</code> でシリアライズする。 3. **走査**: <code>multirange_get_bounds</code> は、<code>MultirangeGetItemsPtr</code> 等のマクロを使用して、可変長データ内のオフセットを計算し、境界値に直接アクセスする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/rangetypes.h</code>: レンジ型の基本定義と操作関数。</li>
+<li><code>utils/typcache.h</code>: 型情報の動的キャッシュ。</li>
+<li><code>utils/array.h</code>: 集約関数での配列構築用。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ I/O 用。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/rangetypes.c</code>: 単一レンジ型の演算ロジック。</li>
+<li><code>src/include/utils/multirangetypes.h</code>: <code>MultirangeType</code> 構造体定義。</li>
+<li><code>src/backend/utils/cache/typcache.c</code>: 型情報のキャッシュ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: マルチレンジは <code>MultirangeType</code> ヘッダー、レンジアイテム（オフセット/長さ）、フラグ、境界値の順に並ぶ可変長構造です。<code>MultirangeGetBoundariesPtr</code> マクロによるアライメント計算が重要です。</li>
+<li>**正規化**: <code>make_multirange</code> は常に <code>multirange_canonicalize</code> を呼び出し、入力レンジをソート・マージします。このため、マルチレンジの内部表現は常に「重複なし・隣接なし」の正規形であることが保証されます。</li>
+<li>**パフォーマンス**: 二分探索（<code>multirange_bsearch_match</code>）を多用しており、レンジ数が多い場合でも $O(\log N)$ での検索が可能です。</li>
+<li>**未実装/浅い部分**: 本ファイルは主に <code>multirange</code> 型の演算に特化しており、個々のレンジ型の詳細な演算ロジックは <code>rangetypes.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__MultirangeIOData.html" target="wiki-view"><code>MultirangeIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__MultirangeParseState.html" target="wiki-view"><code>MultirangeParseState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__RangeBound.html" target="wiki-view"><code>RangeBound</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_in.html" target="wiki-view"><code>multirange_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_out.html" target="wiki-view"><code>multirange_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_recv.html" target="wiki-view"><code>multirange_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_get_typcache.html" target="wiki-view"><code>multirange_get_typcache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_get_bounds_offset.html" target="wiki-view"><code>multirange_get_bounds_offset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_get_range.html" target="wiki-view"><code>multirange_get_range</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_get_bounds.html" target="wiki-view"><code>multirange_get_bounds</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_get_union_range.html" target="wiki-view"><code>multirange_get_union_range</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_c__multirange_unnest_fctx.html" target="wiki-view"><code>multirange_unnest_fctx</code></a></li>
+</ul></body></html>

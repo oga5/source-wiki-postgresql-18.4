@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/hemdist.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hemdist</h1>
+<h2>概念</h2>
+<p><code>hemdist</code> は、PostgreSQL の複数の拡張モジュール（<code>contrib</code>）およびコアのデータ型における GiST インデックス実装において、2つのシグネチャ（ビットベクトル）間のハミング距離（またはそれに準ずる差異）を計算するために定義されている関数群です。</p>
+<p>GiST インデックスのペナルティ計算（ノード挿入時のコスト評価）や、ページ分割（PickSplit）時のコスト評価の指標として使用されます。</p>
+<h2>なぜ重要か</h2>
+<p>GiST インデックスは、データをシグネチャ（ビットベクトル）に圧縮して管理します。新しいデータをインデックスに挿入する際、どのノードに挿入するのが最も適切か（ペナルティが最小か）、またページが溢れたときにどのように分割するのが最適かを決定する必要があります。<code>hemdist</code> は、2つのシグネチャ間の類似度（ハミング距離）を定量化することで、インデックスの検索効率と圧縮効率を最適化するための重要なヒューリスティック計算を提供します。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:contrib/hstore</code></li>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:contrib/pg_trgm</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>各モジュールで個別に定義されている <code>hemdist</code> 関数が主要なエンティティです。</p>
+<ul>
+<li>**<code>symbol:contrib/intarray/_intbig_gist.c#hemdist</code>**</li>
+<p><code>GISTTYPE</code> オブジェクト間のハミング距離を計算します。引数として <code>siglen</code>（ビットベクトルの長さ）を受け取ります。</p>
+<li>**<code>symbol:contrib/ltree/_ltree_gist.c#hemdist</code>**</li>
+<p><code>ltree_gist</code> 構造体間のハミング距離を計算する静的（<code>static</code>）関数です。引数として <code>siglen</code> を受け取ります。</p>
+<li>**<code>symbol:src/backend/utils/adt/tsquery_gist.c#hemdist</code>**</li>
+<p><code>TSQuerySign</code>（シグネチャ）間のハミング距離を計算する静的（<code>static</code>）関数です。引数に <code>siglen</code> は含まず、2つの <code>TSQuerySign</code> の XOR を取って <code>sizebitvec</code> でカウントします。</p>
+<li>**その他のエンティティ**</li>
+<p><code>contrib/hstore/hstore_gist.c</code>、<code>contrib/pg_trgm/trgm_gist.c</code>、<code>src/backend/utils/adt/tsgistidx.c</code> にも同名の <code>hemdist</code> シンボルが存在します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>GiST インデックスへの挿入やページ分割の処理において、以下のような流れで呼び出されますが、システム全体にわたる完全なエンドツーエンドの制御フローの詳細は現時点では完全には判明していません。</p>
+<h3>判明している部分的な流れ</h3>
+<p>1. **ペナルティ計算 / 分割評価**: GiST インデックスの操作（<code>g_intbig_penalty</code> や <code>g_intbig_picksplit</code> など）の過程で、2つのインデックスエントリーの類似度を評価するために <code>hemdist</code> が呼び出されます。 2. **特殊状態の判定**: <code>intarray</code> や <code>ltree</code> の実装では、シグネチャが「すべて真（<code>ISALLTRUE</code> / <code>LTG_ISALLTRUE</code>）」である特殊な状態を最初に判定します。</p>
+<ul>
+<li>両方が <code>ISALLTRUE</code> の場合は距離 <code>0</code> を返します。</li>
+<li>片方のみが <code>ISALLTRUE</code> の場合は、シグネチャの全ビット数からもう一方のセットされているビット数（<code>sizebitvec</code>）を引いた値を返します。</li>
+<p>3. **ハミング距離の計算**:</p>
+<li>通常状態の場合、<code>hemdistsign</code> を呼び出してビットベクトル間のハミング距離を計算します。</li>
+<li><code>tsquery_gist.c</code> の実装では、2つの <code>TSQuerySign</code> の排他的論理和（XOR）を計算し、その結果に対して <code>sizebitvec</code> を呼び出してセットされているビット数をカウントします。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**シグネチャ長の整合性**:</li>
+<p><code>intarray</code> や <code>ltree</code> の実装において、引数として渡される <code>siglen</code> は、対象となるビットベクトルの実際の長さと厳密に整合していなければなりません。不整合がある場合、ビット演算や <code>sizebitvec</code> の処理で予期せぬ動作を引き起こす可能性があります。</p>
+<li>**特殊状態（ALLTRUE）の優先処理**:</li>
+<p><code>intarray</code> や <code>ltree</code> では、全ビットが立っている特殊なノードに対する距離計算が、通常のハミング距離計算よりも優先して処理され、インデックスの圧縮効率を維持する不変のルールとなっています。</p>
+<li>**TSQuerySign の前提**:</li>
+<p><code>tsquery_gist.c</code> において、<code>TSQuerySign</code> はビットマップとして表現されている必要があり、<code>sizebitvec</code> がそのビット数を正確にカウントできることが前提となっています。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**:</li>
+<p><code>hemdist</code> は複数のモジュール（<code>intarray</code>, <code>ltree</code>, <code>tsquery_gist</code> など）で個別に定義されています。これらは名前は同じですが、引数のシグネチャ（<code>siglen</code> の有無など）や対象とするデータ構造（<code>GISTTYPE</code>, <code>ltree_gist</code>, <code>TSQuerySign</code>）が異なります。モジュールをまたいでコードを移植・参照する際には、これらを混同しないよう注意が必要です。</p>
+<li>**インデックス性能への影響**:</li>
+<p><code>hemdist</code> は GiST インデックスの構築や検索の性能に直結するヒューリスティックな計算です。この関数の挙動や計算ロジックを変更すると、インデックスの再構築コストや検索効率に重大な影響を与える可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/intarray/_intbig_gist.c</code> の <code>hemdist</code> および <code>g_intbig_penalty</code></li>
+<li><code>contrib/ltree/_ltree_gist.c</code> の <code>hemdist</code></li>
+<li><code>src/backend/utils/adt/tsquery_gist.c</code> の <code>hemdist</code></li>
+<li><code>contrib/hstore/hstore_gist.c</code></li>
+<li><code>contrib/pg_trgm/trgm_gist.c</code></li>
+<li><code>src/backend/utils/adt/tsgistidx.c</code></li>
+</ul></body></html>

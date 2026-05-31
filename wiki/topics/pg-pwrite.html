@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-pwrite.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_pwrite</h1>
+<h2>概念</h2>
+<p><code>pg_pwrite</code> は、Windows環境においてPOSIX標準の <code>pwrite(2)</code> システムコールをエミュレートするための互換レイヤー関数です。指定されたファイル記述子（<code>fd</code>）の特定のオフセット位置（<code>offset</code>）に対して、データを書き込む機能を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのコア機能（WAL書き込み、SLRU、ヒープ書き換えなど）や付属ツールは、特定オフセットへの書き込みを行うために <code>pwrite</code> セマンティクスに依存しています。しかし、Windows環境の標準Cライブラリには <code>pwrite</code> が存在しないため、プラットフォーム間の移植性を確保し、同一のI/O挙動を提供するためにこのエミュレーション関数が必要となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include</code></li>
+<li><code>module:src/port</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/port.h#pg_pwrite</code>: プラットフォーム共通のインターフェース宣言。</li>
+<li><code>symbol:src/port/win32pwrite.c#pg_pwrite</code>: Windows環境における <code>pg_pwrite</code> の具体的なエミュレーション実装。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: 呼び出し元（<code>xlog.c</code>、<code>slru.c</code>、<code>rewriteheap.c</code> など）が <code>pg_pwrite(fd, buf, size, offset)</code> を呼び出します。 2. **ハンドル取得**: <code>_get_osfhandle(fd)</code> を用いて、Cランタイムのファイル記述子からWindowsネイティブの <code>HANDLE</code> を取得します。無効なハンドルの場合は <code>errno</code> に <code>EBADF</code> を設定して <code>-1</code> を返します。 3. **オフセット設定**: <code>OVERLAPPED</code> 構造体を初期化し、その <code>Offset</code> および <code>OffsetHigh</code> メンバに指定された <code>offset</code> を設定します。 4. **書き込み実行**: Windows APIの <code>WriteFile</code> を呼び出し、同期的に書き込みを実行します。 5. **エラー処理**: <code>WriteFile</code> が失敗した場合は、<code>_dosmaperr</code> を呼び出してWindowsのエラーコードをPOSIX互換の <code>errno</code> に変換し、<code>-1</code> を返します。 6. **完了**: 成功した場合は、実際に書き込まれたバイト数を返します。</p>
+<p>※ Windows以外のプラットフォームにおけるネイティブな <code>pwrite</code> との完全なエンドツーエンドの統合や、呼び出し元ごとの詳細な制御フローの全容は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**書き込みサイズ制限**: 入力された <code>size</code> は、内部で <code>Min(size, 1024 * 1024 * 1024)</code> により最大1GB（1,073,741,824バイト）に制限されます。</li>
+<li>**同期動作の維持**: <code>OVERLAPPED</code> 構造体を使用していますが、非同期I/Oではなく、同期的な書き込みとして動作します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ファイルポインタへの副作用**: <code>OVERLAPPED</code> 構造体を使用してオフセットを指定して書き込みを行いますが、Windowsの仕様上、ファイルポインタが移動する副作用がある点に注意が必要です。</li>
+<li>**プラットフォーム限定**: <code>win32pwrite.c</code> による実装はWindows環境専用です。他のPOSIX準拠システムにおける挙動や、それらとの詳細な差異の全容は提供されたコンテキストからは不明です。</li>
+<li>**サイズ切り詰め**: 1GBを超える書き込みを一度に行おうとすると、内部で1GBに切り詰められます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/port.h</code>: <code>pg_pwrite</code> の宣言。</li>
+<li><code>src/port/win32pwrite.c</code>: Windowsにおける <code>pg_pwrite</code> の具体的な実装詳細。</li>
+</ul></body></html>

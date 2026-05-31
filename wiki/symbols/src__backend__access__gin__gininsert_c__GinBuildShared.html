@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__gininsert_c__GinBuildShared.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GinBuildShared</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/gin/gininsert.c:49</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスの並列構築において、リーダープロセスとワーカープロセス間で共有される状態を保持するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct GinBuildShared {
+    Oid         heaprelid;
+    Oid         indexrelid;
+    bool        isconcurrent;
+    int         scantuplesortstates;
+    ConditionVariable workersdonecv;
+    slock_t     mutex;
+    int         nparticipantsdone;
+    double      reltuples;
+    double      indtuples;
+} GinBuildShared;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 並列構築開始時に共有メモリ上に割り当てられ、各プロセスから参照されます。</li>
+<li>**出力**: 構築終了時に、リーダープロセスがワーカーから報告された統計情報（<code>reltuples</code>, <code>indtuples</code>）を読み取ります。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mutex</code> フィールドは、<code>nparticipantsdone</code>、<code>reltuples</code>、<code>indtuples</code> へのアクセスを保護します。</li>
+<li><code>heaprelid</code>、<code>indexrelid</code>、<code>isconcurrent</code>、<code>scantuplesortstates</code> は構築中に変更されません。</li>
+<li>並列参加者は、リーダーが結果をインデックスに書き込む前に、<code>workersdonecv</code> を通じて完了を通知する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: リーダープロセスが共有メモリ上に本構造体を割り当てます。 2. **並列処理**: 各ワーカーは自身の処理状況を <code>mutex</code> で保護されたフィールドに更新します。 3. **同期**: リーダーは <code>workersdonecv</code> を監視し、全ワーカーの完了を待機します。 4. **集約**: 全ワーカー完了後、リーダーは共有された統計情報を集計し、インデックス構築を完了させます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/gininsert.c</code> 内の並列構築関連関数（<code>shm_toc_allocate</code> を用いた割り当てや、並列構築の初期化処理）。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ConditionVariable</code>: ワーカーの完了監視に使用。</li>
+<li><code>slock_t</code>: 共有フィールドの排他制御に使用。</li>
+<li><code>ParallelTableScanDescData</code>: 本構造体の直後に配置される（構造体定義には含まれないが、メモリレイアウト上後続する）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリの割り当て失敗時に構築が中断される可能性があります。</li>
+<li><code>ParallelTableScanDescData</code> のアライメント要件のため、本構造体単体ではなく <code>BUFFERALIGN</code> を用いた計算でメモリ配置を行う必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は並列構築のリーダー/ワーカー間の通信基盤です。フィールドを追加する際は、<code>mutex</code> による保護が必要かどうかを慎重に検討してください。</li>
+<li><code>ParallelTableScanDescData</code> が直後に続くため、メモリレイアウトの変更には注意が必要です。</li>
+</ul></body></html>

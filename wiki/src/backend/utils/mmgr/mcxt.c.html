@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/mcxt.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/mcxt.c</h1>
+<h2>概要</h2>
+<p><code>mcxt.c</code> は、PostgreSQL のメモリ管理サブシステムにおける「ディスパッチャー」です。特定のメモリ割り当て戦略（<code>aset</code>, <code>slab</code> 等）に依存しない共通のインターフェースを提供し、実行時に適切なアロケータへ処理を委譲します。メモリコンテキストの階層構造管理、ライフサイクル（作成・リセット・削除）、および統計情報の集計を担う中枢ファイルです。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>MemoryContext</code> 構造体と <code>MemoryContextMethods</code> 関数ポインタテーブルを介して、メモリ管理の抽象化層を形成します。各アロケータ実装（<code>aset.c</code> 等）は、このインターフェースに従うことで、呼び出し側（<code>palloc</code> 等）のコードを変更することなく、用途に応じたメモリ戦略を切り替え可能にしています。</p>
+<h2>責務</h2>
+<ul>
+<li>**コンテキスト管理**: メモリコンテキストの階層（親子関係）の構築、維持、および再帰的な削除・リセット処理。</li>
+<li>**ディスパッチ**: <code>palloc</code> 等の汎用 API から、各コンテキスト型固有のメソッド（<code>alloc</code>, <code>free</code>, <code>realloc</code> 等）へのルーティング。</li>
+<li>**安全性と検証**: メモリ割り当て時のクリティカルセクションチェック、Valgrind 連携、および不正なポインタに対するエラーハンドリング。</li>
+<li>**統計と診断**: コンテキスト階層のトラバース、メモリ消費量の集計、およびデバッグ用統計情報の出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理・ディスパッチ</h3>
+<ul>
+<li><code>mcxt_methods[]</code>: 全アロケータのメソッドを保持する静的テーブル。<code>MCXT_METHOD</code> マクロにより、チャンクヘッダーから取得した ID を基にメソッドを解決します。</li>
+<li><code>MemoryContextCreate()</code>: 新規コンテキストの初期化と階層への登録を行う共通関数。</li>
+<li><code>MemoryContextTraverseNext()</code>: 再帰を避けてコンテキスト階層を走査するためのヘルパー。</li>
+</ul>
+<h3>グローバルコンテキスト</h3>
+<ul>
+<li><code>CurrentMemoryContext</code>: 現在の割り当て先となるデフォルトコンテキスト。</li>
+<li><code>TopMemoryContext</code>, <code>ErrorContext</code>: システム起動時に作成される基底コンテキスト。<code>ErrorContext</code> は OOM 時でも動作を保証するため、クリティカルセクション内での割り当てが許可されています。</li>
+</ul>
+<h3>割り当て API</h3>
+<ul>
+<li><code>palloc</code>, <code>palloc0</code>, <code>palloc_extended</code>: <code>CurrentMemoryContext</code> に対するメモリ確保。</li>
+<li><code>pfree</code>, <code>repalloc</code>: 既存チャンクの解放およびサイズ変更。</li>
+<li><code>MemoryContextAllocAligned</code>: 特定のアライメント要件を満たすための特殊な割り当て。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BogusFree</code></li>
+<li><code>MemoryContextAlloc</code></li>
+<li><code>MemoryContextAllocAligned</code></li>
+<li><code>MemoryContextAllocExtended</code></li>
+<li><code>MemoryContextAllocZero</code></li>
+<li><code>MemoryContextAllocationFailure</code></li>
+<li><code>MemoryContextCallResetCallbacks</code></li>
+<li><code>MemoryContextCreate</code></li>
+<li><code>MemoryContextDelete</code></li>
+<li><code>MemoryContextInit</code></li>
+<li><code>MemoryContextMemAllocated</code></li>
+<li><code>MemoryContextReset</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て**: <code>palloc(size)</code> は <code>CurrentMemoryContext</code> を参照し、その <code>methods-&gt;alloc</code> を呼び出します。 2. **ルーティング**: <code>MCXT_METHOD</code> マクロがチャンク直前のヘッダー（<code>uint64</code>）から <code>MethodID</code> を読み取り、<code>mcxt_methods</code> テーブルから適切な関数を特定します。 3. **階層走査**: <code>MemoryContextDelete</code> や <code>MemoryContextStats</code> は、再帰によるスタックオーバーフローを防ぐため、<code>MemoryContextTraverseNext</code> を用いたループ構造で階層を処理します。 4. **エラーパス**: <code>BogusFree</code> 等のダミー関数が、無効なポインタや不正なヘッダーを持つチャンクに対する <code>pfree</code> 呼び出しを検知し、<code>elog(ERROR)</code> で停止させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/memutils.h</code>, <code>utils/memutils_internal.h</code>: メモリ管理の公開・内部 API 定義。</li>
+<li><code>utils/memutils_memorychunk.h</code>: チャンクヘッダーの構造とメタデータ操作。</li>
+<li><code>utils/memdebug.h</code>: Valgrind 連携およびメモリ破壊検知用マクロ。</li>
+<li><code>common/int.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>aset.c</code>, <code>slab.c</code>, <code>generation.c</code>, <code>bump.c</code>: <code>mcxt_methods</code> に登録される具体的なアロケータ実装。</li>
+<li><code>src/backend/utils/mmgr/README</code>: メモリコンテキストの設計思想と各コンテキストの用途に関する詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: コンテキストは階層構造（ツリー）を形成します。親コンテキストが削除されると、その配下の全子コンテキストも自動的に削除されます。</li>
+<li>**レイアウト**: 割り当てられたメモリの直前には必ず <code>uint64</code> のヘッダーが存在し、そこに <code>MethodID</code> が埋め込まれています。このため、<code>pfree</code> はコンテキストを明示的に渡さなくても、ポインタから適切な解放関数を特定できます。</li>
+<li>**クリティカルセクション**: <code>AssertNotInCriticalSection</code> により、PostgreSQL のクリティカルセクション内でのメモリ割り当ては原則禁止されています。<code>ErrorContext</code> のような例外を除き、このルールを破ると <code>PANIC</code> を引き起こします。</li>
+<li>**省略された詳細**: 本ファイルはディスパッチャーであるため、各アロケータの内部アルゴリズム（フリーリストの管理方法やページ分割戦略など）については各実装ファイルを参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__BogusFree.html" target="wiki-view"><code>BogusFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextInit.html" target="wiki-view"><code>MemoryContextInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextReset.html" target="wiki-view"><code>MemoryContextReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextDelete.html" target="wiki-view"><code>MemoryContextDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextCallResetCallbacks.html" target="wiki-view"><code>MemoryContextCallResetCallbacks</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextMemAllocated.html" target="wiki-view"><code>MemoryContextMemAllocated</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextCreate.html" target="wiki-view"><code>MemoryContextCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextAllocationFailure.html" target="wiki-view"><code>MemoryContextAllocationFailure</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextAlloc.html" target="wiki-view"><code>MemoryContextAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextAllocZero.html" target="wiki-view"><code>MemoryContextAllocZero</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextAllocExtended.html" target="wiki-view"><code>MemoryContextAllocExtended</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextAllocAligned.html" target="wiki-view"><code>MemoryContextAllocAligned</code></a></li>
+</ul></body></html>

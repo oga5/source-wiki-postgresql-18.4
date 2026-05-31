@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/hash/hash_xlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/hash/hash_xlog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのハッシュインデックスにおけるWAL（Write-Ahead Log）リプレイ処理を実装するモジュールです。クラッシュリカバリやスタンバイサーバーでのデータ同期時に、ハッシュインデックスの変更を再適用（Redo）する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/hash</code> サブシステムの一部として、インデックスの物理的な変更を永続化するための「再生ロジック」を提供します。他のソースファイルがインデックスの操作（挿入、削除、分割など）を行うのに対し、本ファイルはそれらの操作が記録されたWALレコードを解釈し、バッファ上のページを正しい状態へ復元します。</p>
+<h2>責務</h2>
+<ul>
+<li>WALレコードの種類に応じたリプレイ関数のディスパッチ（<code>hash_redo</code>）。</li>
+<li>メタページ、ビットマップページ、バケットページ、オーバーフローページの初期化および更新の再現。</li>
+<li>インデックスの分割（Split）、圧縮（Squeeze）、削除（Delete）といった複雑な操作の原子的な再適用。</li>
+<li>スタンバイサーバーにおけるリカバリ競合の解決。</li>
+<li>ページ内容の検証用マスク処理（<code>hash_mask</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>hash_redo</code>: WALレコードの種別を判定し、適切なリプレイ関数を呼び出すメインエントリーポイント。</li>
+<li><code>hash_mask</code>: ページの内容を検証する際、WALリプレイで変更されない非決定的な領域（LSNやヒントビットなど）を隠蔽する関数。</li>
+<li><code>XLOG_HASH_*</code>: <code>hash_xlog.h</code> で定義された、各操作を識別するためのオペコード群。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>hash_xlog_add_ovfl_page</code></li>
+<li><code>hash_xlog_delete</code></li>
+<li><code>hash_xlog_init_bitmap_page</code></li>
+<li><code>hash_xlog_init_meta_page</code></li>
+<li><code>hash_xlog_insert</code></li>
+<li><code>hash_xlog_move_page_contents</code></li>
+<li><code>hash_xlog_split_allocate_page</code></li>
+<li><code>hash_xlog_split_cleanup</code></li>
+<li><code>hash_xlog_split_complete</code></li>
+<li><code>hash_xlog_split_page</code></li>
+<li><code>hash_xlog_squeeze_page</code></li>
+<li><code>hash_xlog_update_meta_page</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ディスパッチ**: <code>hash_redo</code> がWALレコードの情報を読み取り、<code>switch</code> 文で対応する関数（例: <code>hash_xlog_insert</code>）へ制御を渡します。 2. **バッファ取得**: 各リプレイ関数は <code>XLogReadBufferForRedo</code> を使用して必要なページをバッファプールに読み込みます。 3. **状態更新**: 読み込んだページに対して、WALレコードに含まれるデータ（タプルの追加、フラグの変更など）を適用します。 4. **永続化**: <code>MarkBufferDirty</code> を呼び出し、変更をバッファに反映させます。必要に応じて <code>FlushOneBuffer</code> でディスク同期を強制します。 5. **ロック解除**: 処理終了後、<code>UnlockReleaseBuffer</code> でバッファのロックを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>access/hash.h</code>: ハッシュインデックスの内部構造体定義。</li>
+<li><code>access/hash_xlog.h</code>: WALレコードの構造体とオペコード定義。</li>
+<li><code>access/xlogutils.h</code>: WALリプレイ用のバッファ管理ユーティリティ。</li>
+<li><code>storage/standby.h</code>: スタンバイサーバーでのリカバリ競合処理。</li>
+<li><code>access/bufmask.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/hash_xlog.h</code>: 本ファイルで扱うWALレコードのデータ構造定義。</li>
+<li><code>src/backend/access/hash/hashpage.c</code>: ページ初期化やメタデータ操作の共通ロジック。</li>
+<li><code>src/backend/access/hash/hashinsert.c</code>: インデックス挿入時のWAL生成ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの扱い**: 通常のインデックス操作と異なり、WALリプレイ中は他のプロセスによる同時アクセスがないため、一部のロック処理は簡略化されています。ただし、整合性を保つために必要な cleanup lock は維持されます。</li>
+<li>**冪等性**: リプレイ関数は、既に適用済みの変更に対して再度実行されても問題がない（冪等である）ように設計されています。</li>
+<li>**マスク処理**: <code>hash_mask</code> は <code>pg_waldump</code> やテスト時のページ検証で重要です。特定のビットがログに記録されない場合、ここでマスクしないと検証エラーが発生します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_init_meta_page.html" target="wiki-view"><code>hash_xlog_init_meta_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_init_bitmap_page.html" target="wiki-view"><code>hash_xlog_init_bitmap_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_insert.html" target="wiki-view"><code>hash_xlog_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_add_ovfl_page.html" target="wiki-view"><code>hash_xlog_add_ovfl_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_split_allocate_page.html" target="wiki-view"><code>hash_xlog_split_allocate_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_split_page.html" target="wiki-view"><code>hash_xlog_split_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_split_complete.html" target="wiki-view"><code>hash_xlog_split_complete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_move_page_contents.html" target="wiki-view"><code>hash_xlog_move_page_contents</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_squeeze_page.html" target="wiki-view"><code>hash_xlog_squeeze_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_delete.html" target="wiki-view"><code>hash_xlog_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_split_cleanup.html" target="wiki-view"><code>hash_xlog_split_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_update_meta_page.html" target="wiki-view"><code>hash_xlog_update_meta_page</code></a></li>
+</ul></body></html>

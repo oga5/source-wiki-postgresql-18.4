@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pyobject.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PyObject</h1>
+<h2>概念</h2>
+<p><code>PyObject</code> は、Python C API においてすべての Python オブジェクトを表現するための不透明な構造体（基底型）です。PostgreSQL の PL/Python 拡張およびその関連モジュール（<code>hstore_plpython</code> や <code>jsonb_plpython</code>）において、PostgreSQL 側のデータ表現（<code>Datum</code> など）と Python インタプリタ側のデータ構造（辞書、リスト、文字列、数値など）の間で相互変換を行う際の、共通のデータコンテナとして機能します。</p>
+<h2>なぜ重要か</h2>
+<p>PL/Python 拡張機能において、PostgreSQL のデータ型と Python のデータ型をシームレスに連携させるために不可欠なデータ表現であるためです。例えば、<code>hstore</code> 型を Python の <code>dict</code> 型に変換したり、<code>jsonb</code> 型の階層構造を Python のオブジェクトツリー（辞書やリストなど）へ再帰的にマッピングしたりする際に、すべての Python 側データを統一的に扱うための基底型として機能します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/hstore_plpython</code></li>
+<li><code>module:contrib/jsonb_plpython</code></li>
+<li><code>module:src/pl/plpython</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/hstore_plpython/hstore_plpython.c#PyObject</code></li>
+<li><code>symbol:contrib/jsonb_plpython/jsonb_plpython.c#PyObject</code></li>
+<li><code>symbol:src/pl/plpython/plpy_typeio.h#PyObject</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>PL/Python におけるデータ変換の全体的なエンドツーエンドの流れは、提供された情報からは完全には明らかになっていません。ただし、部分的な流れとして以下の処理が確認されています。</p>
+<p>1. **PostgreSQL から Python への変換**:</p>
+<ul>
+<li><code>PLy_input_convert</code> や <code>PLyDatumToOb</code> 構造体に含まれる変換関数、または <code>hstore_to_plpython</code> や <code>PLyObject_FromJsonbContainer</code> などの関数を介して、PostgreSQL のデータ（<code>Datum</code>、<code>hstore</code>、<code>JsonbContainer</code> など）から <code>PyObject</code>（辞書、リスト、文字列など）が生成されます。</li>
+<li>例えば、<code>hstore</code> の各要素は Python の文字列オブジェクトに変換され、<code>PyDict_SetItem</code> を用いて Python の辞書（<code>PyObject</code>）に格納されます。</li>
+<p>2. **Python から PostgreSQL への変換**:</p>
+<li><code>PLy_output_convert</code> や <code>PLyObToDatum</code> 構造体に含まれる変換関数、または <code>plpython_to_hstore</code> などの関数を介して、<code>PyObject</code> から PostgreSQL の <code>Datum</code> や対応するデータ型へ変換されます。</li>
+<li>例えば、<code>plpython_to_hstore</code> では <code>PyMapping_Items</code> を介して Python 辞書のキーと値のペアを抽出します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**参照カウント（Reference Counting）の管理**: Python C API のメモリ管理規則に従い、不要になった <code>PyObject</code> に対しては <code>Py_DECREF</code> または <code>Py_XDECREF</code> を呼び出して参照カウントを適切に減らす必要があります。</li>
+<li>**実行環境の前提**: Python インタプリタが初期化されており、<code>plpython</code> 拡張がロードされている環境下でのみ有効です。</li>
+<li>**ドメイン制約チェック時の例外**: <code>PLy_output_convert</code> に渡される際、<code>Py_None</code> はドメイン制約チェックのために変換関数へ渡されることが許可されています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリリークとセグメンテーション違反**: <code>Py_DECREF</code> の呼び忘れによるメモリリーク、または過剰な解放（ダブルフリーなど）によるセグメンテーション違反。特に PostgreSQL 側のメモリ管理（<code>palloc</code> 等）と Python 側のメモリ管理（<code>PyObject</code>）が混在する箇所では、エラー発生時（<code>PG_TRY/PG_FINALLY</code> や <code>PG_CATCH</code> ブロック内）のクリーンアップ（<code>Py_XDECREF</code> の呼び出しなど）を徹底する必要があります。</li>
+<li>**NULL ポインタの逆参照**: メモリ不足などにより Python オブジェクトの生成に失敗した場合、Python C API は <code>NULL</code> を返します。この戻り値を検証せずに操作するとクラッシュの原因となります。</li>
+<li>**型不一致による例外**: <code>PyMapping_Check</code> などの型確認を行わずに非マッピングオブジェクトに対してマッピング操作を行うと、Python 側の例外が発生します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/hstore_plpython/hstore_plpython.c</code></li>
+<li><code>contrib/jsonb_plpython/jsonb_plpython.c</code></li>
+<li><code>src/pl/plpython/plpy_typeio.h</code></li>
+</ul></body></html>

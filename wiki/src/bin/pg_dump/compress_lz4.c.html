@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/compress_lz4.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/compress_lz4.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、<code>pg_dump</code> および <code>pg_restore</code> における LZ4 圧縮データストリームの読み書きを実装するモジュールです。<code>liblz4</code> を利用し、アーカイブ形式の圧縮処理と、ファイルストリームベースの圧縮・解凍処理の両方をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_dump</code> 内の圧縮抽象化レイヤーの一部です。<code>compress_io.c</code> が提供するインターフェース（<code>CompressorState</code> および <code>CompressFileHandle</code>）に対して、LZ4 特有のバックエンド実装を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**圧縮・解凍の抽象化**: <code>LZ4F</code> API をラップし、<code>pg_dump</code> の各アーカイバが透過的に LZ4 圧縮を利用できるようにする。</li>
+<li>**ストリーム管理**: ファイルストリームのオープン、読み込み、書き込み、および終了処理（ヘッダーのフラッシュやコンテキストの解放）を管理する。</li>
+<li>**バッファリング**: 圧縮・解凍時のチャンク処理および、解凍後の未消費データを保持するオーバーフローバッファの管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LZ4State</code>: 圧縮・解凍のコンテキスト、バッファ、およびストリーム状態を保持する構造体。</li>
+<li><code>InitCompressorLZ4</code>: <code>CompressorState</code> を初期化し、アーカイブ書き込み用の関数ポインタを設定する。</li>
+<li><code>InitCompressFileHandleLZ4</code>: <code>CompressFileHandle</code> を初期化し、ファイルストリーム用の関数ポインタを設定する。</li>
+<li><code>LZ4Stream_read_internal</code>: ストリーム読み込みの核となる関数。オーバーフローバッファと <code>LZ4F_decompress</code> を組み合わせてデータを供給する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LZ4State_compression_init</code></li>
+<li><code>LZ4Stream_eof</code></li>
+<li><code>LZ4Stream_get_error</code></li>
+<li><code>LZ4Stream_getc</code></li>
+<li><code>LZ4Stream_init</code></li>
+<li><code>LZ4Stream_read</code></li>
+<li><code>LZ4Stream_read_overflow</code></li>
+<li><code>LZ4Stream_write</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>Init...</code> 関数が呼び出され、<code>LZ4State</code> が割り当てられます。圧縮レベル等の設定が <code>LZ4F_preferences_t</code> に格納されます。 2. **書き込み**: <code>WriteDataToArchiveLZ4</code> または <code>LZ4Stream_write</code> がデータをチャンク単位で受け取り、<code>LZ4F_compressUpdate</code> を経由して圧縮バッファへ書き込み、最終的に出力先へフラッシュします。 3. **読み込み**: <code>ReadDataFromArchiveLZ4</code> または <code>LZ4Stream_read_internal</code> が入力ストリームから圧縮データを読み込み、<code>LZ4F_decompress</code> で解凍します。解凍されたデータは、必要に応じてオーバーフローバッファに蓄積され、呼び出し元へ順次返されます。 4. **終了**: <code>EndCompressorLZ4</code> または <code>LZ4Stream_close</code> が呼ばれ、残りのデータをフラッシュし、コンテキストを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>compress_lz4.h</code>: 本モジュールのインターフェース定義。</li>
+<li><code>pg_backup_utils.h</code>: ユーティリティ関数。</li>
+<li><code>lz4frame.h</code>: LZ4 フレーム形式ライブラリ（<code>USE_LZ4</code> 定義時のみ）。</li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_dump/compress_io.c</code>: 圧縮抽象化の基盤。本モジュールが実装するインターフェースの定義元。</li>
+<li><code>src/bin/pg_dump/compress_gzip.c</code>, <code>compress_zstd.c</code>: 他の圧縮アルゴリズムの実装。比較や共通設計の確認に有用。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**条件付きコンパイル**: <code>USE_LZ4</code> が定義されていない環境では、初期化関数はエラーを投げるスタブとして動作します。</li>
+<li>**Lazy Initialization**: <code>LZ4Stream</code> 系関数は、最初の読み書き時にコンテキストを生成する遅延初期化を採用しています。</li>
+<li>**オーバーフローバッファ**: 解凍時に一度の <code>LZ4F_decompress</code> で得られたデータが要求サイズを超えた場合、残りは <code>overflowbuf</code> に保持され、次回の読み込み要求時に優先的に消費されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4State.html" target="wiki-view"><code>LZ4State</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4State_compression_init.html" target="wiki-view"><code>LZ4State_compression_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__InitCompressorLZ4.html" target="wiki-view"><code>InitCompressorLZ4</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_eof.html" target="wiki-view"><code>LZ4Stream_eof</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_get_error.html" target="wiki-view"><code>LZ4Stream_get_error</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_init.html" target="wiki-view"><code>LZ4Stream_init</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_read_overflow.html" target="wiki-view"><code>LZ4Stream_read_overflow</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_read_internal.html" target="wiki-view"><code>LZ4Stream_read_internal</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_write.html" target="wiki-view"><code>LZ4Stream_write</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_read.html" target="wiki-view"><code>LZ4Stream_read</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__LZ4Stream_getc.html" target="wiki-view"><code>LZ4Stream_getc</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__compress_lz4_c__InitCompressFileHandleLZ4.html" target="wiki-view"><code>InitCompressFileHandleLZ4</code></a></li>
+</ul></body></html>

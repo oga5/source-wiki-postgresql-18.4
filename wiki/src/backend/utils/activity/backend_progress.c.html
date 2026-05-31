@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/backend_progress.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/backend_progress.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける長時間実行コマンド（VACUUM, CREATE INDEX等）の進捗状況を追跡・公開するためのインフラストラクチャを提供します。各バックエンドプロセスが自身の進捗パラメータを共有メモリ上の <code>PgBackendStatus</code> に書き込むためのインターフェースを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> モジュールの一部として、バックエンドの状態管理（<code>backend_status.c</code>）と統計情報収集（<code>pgstat.c</code>）の橋渡しをします。本ファイルは「進捗」という特定のコンテキストに特化した書き込み操作を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**進捗状態のライフサイクル管理**: コマンドの開始（<code>start</code>）から終了（<code>end</code>）までの状態遷移を管理します。</li>
+<li>**パラメータの更新**: 進捗状況を示す最大20個の <code>int64</code> 型パラメータ（<code>st_progress_param</code>）の更新、加算、一括更新を提供します。</li>
+<li>**並列処理のサポート**: パラレルワーカーがリーダープロセスに対して進捗更新を通知する仕組みを提供します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgstat_progress_start_command</code>: コマンド開始時に呼び出し、進捗パラメータを初期化します。</li>
+<li><code>pgstat_progress_update_param</code>: 特定の進捗パラメータを更新します。</li>
+<li><code>pgstat_progress_parallel_incr_param</code>: パラレルワーカーがリーダー経由で進捗を更新するためのメッセージング処理を行います。</li>
+<li><code>pgstat_progress_update_multi_param</code>: 複数のパラメータをアトミックに更新します。</li>
+<li><code>pgstat_progress_end_command</code>: コマンド終了時に進捗状態をリセットします。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgstat_progress_incr_param</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み**: 各関数は <code>MyBEEntry</code>（現在のバックエンドの共有メモリ状態）を取得し、<code>PGSTAT_BEGIN_WRITE_ACTIVITY</code> マクロでロック（またはメモリバリア）を確保します。 2. **更新**: 共有メモリ上の <code>st_progress_param</code> 配列を直接操作します。 3. **並列処理**: <code>pgstat_progress_parallel_incr_param</code> は、自身がワーカーであれば <code>PqMsg_Progress</code> メッセージを送信し、リーダーであれば直接更新を行います。 4. **終了**: <code>PGSTAT_END_WRITE_ACTIVITY</code> マクロで書き込みを完了させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/backend_status.h</code>: 共有メモリ上の <code>PgBackendStatus</code> 構造体定義および <code>MyBEEntry</code> へのアクセス。</li>
+<li><code>libpq/pqformat.h</code>: パラレルワーカーからの進捗通知メッセージング用。</li>
+<li><code>access/parallel.h</code>: <code>IsParallelWorker()</code> チェック用。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/backend_progress.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/backend_progress.h</code>: 本ファイルのヘッダー。<code>ProgressCommandType</code> 列挙型が定義されています。</li>
+<li><code>src/include/commands/progress.h</code>: 各コマンド（VACUUM等）がどのインデックスに何を格納するかという「意味論」が定義されています。</li>
+<li><code>src/backend/utils/activity/backend_status.c</code>: <code>PgBackendStatus</code> の管理基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**意味論の分離**: 本ファイルは進捗パラメータの「格納場所」を提供するだけで、各インデックス（0〜19）が何を意味するかは関知しません。意味論は各コマンドの実装側に依存します。</li>
+<li>**アトミック性**: <code>pgstat_progress_update_multi_param</code> を使用すると、複数のパラメータを一度のロック期間で更新できるため、読み取り側（ビューなど）から見て不整合な状態が見えることを防げます。</li>
+<li>**パフォーマンス**: <code>pgstat_track_activities</code> が無効な場合、これらの関数は即座にリターンするため、オーバーヘッドは最小限に抑えられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_start_command.html" target="wiki-view"><code>pgstat_progress_start_command</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_param.html" target="wiki-view"><code>pgstat_progress_update_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_incr_param.html" target="wiki-view"><code>pgstat_progress_incr_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_parallel_incr_param.html" target="wiki-view"><code>pgstat_progress_parallel_incr_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_multi_param.html" target="wiki-view"><code>pgstat_progress_update_multi_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_end_command.html" target="wiki-view"><code>pgstat_progress_end_command</code></a></li>
+</ul></body></html>

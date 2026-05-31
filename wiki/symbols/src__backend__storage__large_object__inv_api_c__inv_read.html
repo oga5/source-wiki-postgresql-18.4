@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__large_object__inv_api_c__inv_read.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>inv_read</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/large_object/inv_api.c:449</code></li>
+</ul>
+<h2>目的</h2>
+<p>ラージオブジェクト（LO）の現在のオフセット位置から指定されたバイト数を読み込み、バッファに格納します。<code>pg_largeobject</code> カタログからデータを取得し、欠落しているページ（穴）をゼロで埋める処理を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int inv_read(LargeObjectDesc *obj_desc, char *buf, int nbytes)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>obj_desc</code>: オープンされたラージオブジェクトの状態を保持する記述子。</li>
+<li><code>buf</code>: 読み込んだデータを格納するバッファ。</li>
+<li><code>nbytes</code>: 読み込む最大バイト数。</li>
+<li>**出力**:</li>
+<li>実際に読み込まれたバイト数を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>obj_desc</code> が有効なポインタであること。</li>
+<li><code>buf</code> が非NULLであること。</li>
+<li><code>obj_desc-&gt;flags</code> に <code>IFS_RDLOCK</code> が設定されていること（権限チェック）。</li>
+<li><code>pg_largeobject</code> テーブルおよびインデックスが <code>open_lo_relation()</code> によってオープン可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 権限チェックを行い、読み取り権限がない場合はエラーを発生させます。 2. <code>pg_largeobject</code> テーブルに対して、対象LOのIDと現在のページ番号以降を対象とした順序付きスキャンを開始します。 3. スキャン結果をループ処理し、以下の順序でデータをバッファへコピーします。</p>
+<ul>
+<li>**穴の処理**: 取得したページ番号が現在のオフセットより先にある場合、その間の領域をゼロで埋めます。</li>
+<li>**データコピー**: ページ内のデータを <code>getdatafield</code> で取得し、TOAST展開後に現在のオフセットから <code>nbytes</code> に達するまでバッファへコピーします。</li>
+<p>4. 読み込み完了後、<code>obj_desc-&gt;offset</code> を進め、スキャンを終了します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/libpq/be-fsstubs.c</code> (複数の箇所で利用)</li>
+<li>**呼び出し先**:</li>
+<li><code>open_lo_relation()</code></li>
+<li><code>systable_beginscan_ordered()</code></li>
+<li><code>systable_getnext_ordered()</code></li>
+<li><code>getdatafield()</code></li>
+<li><code>systable_endscan_ordered()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LargeObjectDesc</code>: LOのID、オフセット、スナップショット等を保持。</li>
+<li><code>pg_largeobject</code>: データが格納されるシステムカタログ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**権限不足**: <code>IFS_RDLOCK</code> フラグがない場合、<code>ERRCODE_INSUFFICIENT_PRIVILEGE</code> でエラー終了します。</li>
+<li>**データ破損**: <code>pg_largeobject</code> 内にNULLフィールドが存在する場合、<code>elog(ERROR)</code> で停止します。</li>
+<li>**穴の存在**: ページが連続していない場合、欠落部分はゼロとして読み込まれます。</li>
+<li>**nbytes &lt;= 0**: 0を返し、読み込みを行いません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>pg_largeobject.data</code> はTOASTされている可能性があるため、<code>getdatafield</code> によるデトースト処理が必須です。</li>
+<li><code>obj_desc-&gt;offset</code> は読み込みの進行に合わせて更新されるため、呼び出し元は現在のオフセットを意識する必要はありません。</li>
+<li>ページングは <code>LOBLKSIZE</code> 単位で行われます。</li>
+</ul></body></html>

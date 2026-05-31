@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/postgres_fdw/connection.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/postgres_fdw/connection.c</h1>
+<h2>概要</h2>
+<p><code>connection.c</code> は、<code>postgres_fdw</code> におけるリモート PostgreSQL サーバーへの接続ライフサイクルとトランザクション同期を管理するモジュールです。リモート接続をキャッシュし、ローカルのトランザクション状態（メインおよびサブトランザクション）をリモート側へ透過的に反映させる責務を持ちます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postgres_fdw</code> サブシステムにおいて、リモート通信の「基盤」を提供します。<code>postgres_fdw.c</code>（プランナ・エグゼキュータ）がクエリ実行を要求する際、本モジュールが接続の確立・維持・破棄を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続キャッシュ管理**: <code>UserMapping</code> OID をキーとしたハッシュテーブルによる接続の再利用。</li>
+<li>**トランザクション同期**: ローカルのトランザクション深度（<code>xact_depth</code>）を追跡し、リモート側で <code>START TRANSACTION</code> や <code>SAVEPOINT</code> を発行して同期を維持。</li>
+<li>**セッション構成**: リモート接続確立時に <code>search_path</code> や <code>timezone</code> などのセッションパラメータを強制設定。</li>
+<li>**エラー・中断処理**: リモートクエリのキャンセルや、トランザクション異常終了時のクリーンアップ（<code>ABORT</code>/<code>ROLLBACK</code>）。</li>
+<li>**セキュリティ**: ユーザーマッピングに基づく認証チェックと、非スーパーユーザーによる権限昇格の防止。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><code>ConnectionHash</code>: 接続情報を保持するグローバルなハッシュテーブル。</li>
+<li><code>ConnCacheEntry</code>: 接続状態、トランザクション深度、準備済みステートメントの有無などを保持する構造体。</li>
+<li><code>GetConnection()</code>: 必要な接続を取得または確立するメインエントリポイント。</li>
+</ul>
+<h3>トランザクション・ライフサイクル</h3>
+<ul>
+<li><code>pgfdw_xact_callback()</code> / <code>pgfdw_subxact_callback()</code>: ローカルのトランザクションイベントをフックし、リモート側のコミット/ロールバックをトリガーするコールバック。</li>
+<li><code>begin_remote_xact()</code>: リモート側で必要なトランザクションレベル（<code>REPEATABLE READ</code> 等）を開始する。</li>
+</ul>
+<h3>接続・通信</h3>
+<ul>
+<li><code>connect_pg_server()</code>: <code>libpq</code> を使用してリモート接続を確立し、認証とセッション設定を行う。</li>
+<li><code>pgfdw_exec_query()</code> / <code>pgfdw_get_result()</code>: リモートクエリ実行と結果取得のラッパー。</li>
+<li><code>pgfdw_cancel_query()</code>: 実行中のリモートクエリをキャンセルする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ConnCacheEntry</code></li>
+<li><code>ConnCacheKey</code></li>
+<li><code>GetConnection</code></li>
+<li><code>GetCursorNumber</code></li>
+<li><code>GetPrepStmtNumber</code></li>
+<li><code>ReleaseConnection</code></li>
+<li><code>UseScramPassthrough</code></li>
+<li><code>UserMappingPasswordRequired</code></li>
+<li><code>pgfdwVersion</code></li>
+<li><code>pgfdw_get_cleanup_result</code></li>
+<li><code>pgfdw_get_result</code></li>
+<li><code>pgfdw_reset_xact_state</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続取得**: <code>GetConnection()</code> が呼ばれると、<code>ConnectionHash</code> を検索。存在しないか無効な場合、<code>make_new_connection()</code> を経由して <code>connect_pg_server()</code> を呼び出し、<code>libpq</code> で接続を確立。 2. **同期**: <code>begin_remote_xact()</code> がローカルの <code>GetCurrentTransactionNestLevel()</code> と <code>xact_depth</code> を比較し、不足分だけ <code>SAVEPOINT</code> を発行。 3. **終了処理**: トランザクション終了時、<code>pgfdw_xact_callback()</code> がハッシュテーブルをスキャンし、<code>COMMIT</code> または <code>ABORT</code> をリモートへ送信。 4. **無効化**: <code>pgfdw_inval_callback()</code> がシステムカタログの変更を検知し、関連する接続を <code>invalidated</code> フラグでマーク。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq</code>: リモート通信の基盤。</li>
+<li><code>utils/hsearch.h</code>: 接続キャッシュ用ハッシュテーブル。</li>
+<li><code>access/xact.h</code>: トランザクションイベントのフック用。</li>
+<li><code>catalog/pg_user_mapping.h</code>: ユーザーマッピング情報へのアクセス。</li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/base64.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/libpq-be-fe-helpers.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>poll.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fdw.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>postgres_fdw.c</code>: 本モジュールの関数を呼び出し、クエリ実行のライフサイクルを制御。</li>
+<li><code>deparse.c</code>: リモート実行用の SQL 文字列を生成。</li>
+<li><code>option.c</code>: 接続パラメータの検証。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ConnCacheEntry</code> はバックエンドの生存期間中保持されます。接続失敗時のエラーハンドリングには <code>PG_TRY/PG_CATCH</code> が多用されており、リモート接続のクリーンアップが確実に行われるよう設計されています。</li>
+<li>**トランザクションの制約**: リモート側は常に <code>REPEATABLE READ</code> 以上で動作します。これはスナップショットの一貫性を保つためですが、READ COMMITTED の完全なエミュレーションは行われません。</li>
+<li>**未実装・浅い部分**: 接続の並列実行最適化や、複雑な分散トランザクションの完全な 2PC（2フェーズコミット）はサポートされていません。</li>
+<li>**注意点**: <code>disconnect_cached_connections</code> は、同一セッション内の他ユーザーの接続も切断する可能性があるため、マルチユーザー環境での運用には注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__ConnCacheKey.html" target="wiki-view"><code>ConnCacheKey</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__ConnCacheEntry.html" target="wiki-view"><code>ConnCacheEntry</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__pgfdwVersion.html" target="wiki-view"><code>pgfdwVersion</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__GetConnection.html" target="wiki-view"><code>GetConnection</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__UserMappingPasswordRequired.html" target="wiki-view"><code>UserMappingPasswordRequired</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__UseScramPassthrough.html" target="wiki-view"><code>UseScramPassthrough</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__ReleaseConnection.html" target="wiki-view"><code>ReleaseConnection</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__GetCursorNumber.html" target="wiki-view"><code>GetCursorNumber</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__GetPrepStmtNumber.html" target="wiki-view"><code>GetPrepStmtNumber</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__pgfdw_get_result.html" target="wiki-view"><code>pgfdw_get_result</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__pgfdw_reset_xact_state.html" target="wiki-view"><code>pgfdw_reset_xact_state</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__connection_c__pgfdw_get_cleanup_result.html" target="wiki-view"><code>pgfdw_get_cleanup_result</code></a></li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/filebackupmethod.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>FileBackupMethod</h1>
+<h2>概念</h2>
+<p><code>FileBackupMethod</code> は、PostgreSQLの増分バックアップ処理において、対象となる各ファイルをどのようにバックアップするかを決定するための列挙型（<code>enum</code>）です。値として、ファイル全体をバックアップする <code>BACK_UP_FILE_FULLY</code> と、前回のバックアップ以降に変更されたブロックのみをバックアップする <code>BACK_UP_FILE_INCREMENTALLY</code> の2つが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>増分バックアップの効率性を最大化し、不要なデータ転送を削減するために重要です。すべてのファイルを一律にフルバックアップするのではなく、ファイルごとの状態（変更量、ファイル種別、サイズなど）に応じて最適なバックアップ手法（完全転送か増分転送か）を動的に判定・選択できるようにします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/backup</code></li>
+<li><code>module:src/include/backup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/backup/basebackup_incremental.h#FileBackupMethod</code>**: バックアップ手法（<code>BACK_UP_FILE_FULLY</code> または <code>BACK_UP_FILE_INCREMENTALLY</code>）を定義する列挙型。</li>
+<li>**<code>symbol:src/backend/backup/basebackup_incremental.c#GetFileBackupMethod</code>**: 特定のファイルに対して、どちらの <code>FileBackupMethod</code> を適用すべきかを判定する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. バックアップ処理中、<code>src/backend/backup/basebackup.c</code> から各ファイルに対して <code>GetFileBackupMethod</code> が呼び出されます。 2. <code>GetFileBackupMethod</code> は、対象ファイルの識別情報（パス、データベースOID、テーブルスペースOID、リレーションファイル番号、フォーク番号、セグメント番号、サイズなど）および増分バックアップのメタデータ（<code>IncrementalBackupInfo</code>）を入力として受け取ります。 3. 以下の条件に基づいて、フルバックアップ（<code>BACK_UP_FILE_FULLY</code>）を強制するか、増分バックアップ（<code>BACK_UP_FILE_INCREMENTALLY</code>）を行うかを判定します。</p>
+<ul>
+<li>**フルバックアップが選択される主な条件**:</li>
+<li>ファイルサイズが <code>BLCKSZ</code> の倍数でない、または <code>RELSEG_SIZE</code> を超える場合。</li>
+<li>フォーク番号が空き領域マップ（<code>FSM_FORKNUM</code>）である場合。</li>
+<li>前回のバックアップマニフェストに対象ファイルが存在しない場合。</li>
+<li>データベース全体が新規作成されたと判断される場合。</li>
+<li>変更されたブロック数がファイル全体の90%を超える場合（ヒューリスティックな閾値）。</li>
+<li>**増分バックアップが選択される条件**:</li>
+<li><code>BlockRefTable</code> を参照し、変更ブロックが存在し、かつ上記のフルバックアップ強制条件に該当しない場合（ただし、サイズが0の場合はフルバックアップ）。</li>
+<p>4. <code>GetFileBackupMethod</code> は判定結果として <code>FileBackupMethod</code> を返し、増分バックアップの場合は必要なブロック数（<code>num_blocks_required</code>）、相対ブロック番号（<code>relative_block_numbers</code>）、切り詰め後のブロック長（<code>truncation_block_length</code>）を出力します。 5. 呼び出し側（<code>basebackup.c</code>）はこの返り値に基づいて、実際のファイル転送ロジックを切り替えます。</p>
+</ul>
+<p>※なお、バックアップ全体の開始から終了に至る完全なエンドツーエンドの制御フローの全容は、提供されたコンテキストからは一部未詳です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>GetFileBackupMethod</code> を呼び出す前に、<code>PrepareForIncrementalBackup</code> が実行されていなければなりません（<code>ib-&gt;buf.data == NULL</code> でないことで検証されます）。</li>
+<li><code>GetFileBackupMethod</code> に渡される <code>spcoid</code>（テーブルスペースOID）および <code>relfilenumber</code>（リレーションファイル番号）は有効な値でなければなりません。</li>
+<li>変更ブロック数がファイル全体の90%を超える場合は、効率化のために必ず <code>BACK_UP_FILE_FULLY</code> にフォールバックします。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**90%の閾値（ヒューリスティック）**: 変更ブロックが全体の90%を超えると自動的にフルバックアップに切り替わります。この閾値は固定値（将来的に設定可能にすることが検討中）であるため、変更量が多い環境では増分バックアップの恩恵が受けられず、意図せずフルバックアップが実行されることがあります。</li>
+<li>**空き領域マップ（FSM）**: <code>FSM_FORKNUM</code> のファイルは常にフルバックアップされるため、増分バックアップの対象外となります。</li>
+<li>**メモリ消費**: 変更ブロックを追跡する <code>BlockRefTable</code> のメモリ消費量に注意が必要です。</li>
+<li>**オーバーフロー**: ブロック番号の計算時にオーバーフローが発生した場合、内部エラー（<code>ereport(ERROR, ...)</code>）が発生し、バックアップ処理が失敗します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/backup/basebackup_incremental.h</code> (列挙型 <code>FileBackupMethod</code> の定義)</li>
+<li><code>src/backend/backup/basebackup_incremental.c</code> (<code>GetFileBackupMethod</code> の判定ロジックの実装)</li>
+<li><code>src/backend/backup/basebackup.c</code> (<code>GetFileBackupMethod</code> を呼び出してファイル転送を制御する処理)</li>
+</ul></body></html>

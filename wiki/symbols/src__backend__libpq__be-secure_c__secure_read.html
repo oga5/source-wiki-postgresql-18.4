@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__libpq__be-secure_c__secure_read.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>secure_read</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/libpq/be-secure.c:178</code></li>
+</ul>
+<h2>目的</h2>
+<p>クライアントとの通信において、暗号化方式（SSL/TLS、GSSAPI、または平文）を透過的に抽象化し、安全かつ一貫したデータ読み取り操作を提供する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ssize_t secure_read(Port *port, void *ptr, size_t len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>port</code>: 通信状態および暗号化フラグを保持する <code>Port</code> 構造体へのポインタ。</li>
+<li><code>ptr</code>: 読み取ったデータを格納するバッファ。</li>
+<li><code>len</code>: 読み取るバイト数。</li>
+<li>**出力**:</li>
+<li>成功時は読み取ったバイト数（<code>ssize_t</code>）、失敗時は -1 を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>port</code> が有効な接続状態であること。</li>
+<li>ブロッキングモードの場合、ソケットの準備ができるまで待機する。</li>
+<li>割り込み（シグナルやクエリキャンセル）が発生した場合は、適切に処理を再試行する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ProcessClientReadInterrupt(false)</code> を呼び出し、保留中の割り込みを処理する。 2. <code>port</code> の設定に基づき、以下のいずれかの読み取り関数を呼び出す。</p>
+<ul>
+<li>SSL有効時: <code>be_tls_read</code></li>
+<li>GSSAPI有効時: <code>be_gssapi_read</code></li>
+<li>それ以外: <code>secure_raw_read</code></li>
+<p>3. 読み取りが <code>EWOULDBLOCK</code> または <code>EAGAIN</code> で失敗し、かつブロッキングモードの場合:</p>
+<li><code>WaitEventSet</code> を使用してソケットの準備完了を待機する。</li>
+<li>ポストマスターの終了を検知した場合は <code>FATAL</code> エラーで終了する。</li>
+<li>割り込み（<code>WL_LATCH_SET</code>）が発生した場合は <code>ProcessClientReadInterrupt(true)</code> を実行し、読み取りを再試行する。</li>
+<p>4. 最後に <code>ProcessClientReadInterrupt(false)</code> を呼び出し、読み取り完了後の割り込みを処理して結果を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/libpq/pqcomm.c</code> (複数箇所)</li>
+<li>**呼び出し先**:</li>
+<li><code>ProcessClientReadInterrupt</code></li>
+<li><code>be_tls_read</code> (条件付き)</li>
+<li><code>be_gssapi_read</code> (条件付き)</li>
+<li><code>secure_raw_read</code> (条件付き)</li>
+<li><code>ModifyWaitEvent</code>, <code>WaitEventSetWait</code>, <code>ResetLatch</code> (ブロッキング時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Port</code>: 通信状態、暗号化フラグ、ソケット情報を保持。</li>
+<li><code>WaitEventSet</code>: I/O待機イベント管理用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ポストマスターの終了**: <code>WL_POSTMASTER_DEATH</code> イベント発生時に <code>FATAL</code> エラーを発生させる。</li>
+<li>**I/Oエラー**: <code>EWOULDBLOCK</code>/<code>EAGAIN</code> 以外のエラーは呼び出し元へそのまま伝播する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>retry</code> ラベルを用いたループ構造を持ち、非同期的な割り込み処理を確実に実行する設計となっている。</li>
+<li><code>WaitEventSet</code> を使用した待機処理は、ポストマスターの死活監視とクエリキャンセル等の割り込みを統合するための重要なパターンである。</li>
+</ul></body></html>

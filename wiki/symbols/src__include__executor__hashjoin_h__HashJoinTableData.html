@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__executor__hashjoin_h__HashJoinTableData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>HashJoinTableData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/executor/hashjoin.h:298</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのハッシュ結合実行時における、メモリ内ハッシュテーブル、バッチ処理（ディスクへのスピル）、および並列ハッシュ結合の同期状態を統合管理するメイン構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct HashJoinTableData {
+    int nbuckets;
+    int log2_nbuckets;
+    int nbuckets_original;
+    int nbuckets_optimal;
+    int log2_nbuckets_optimal;
+    union { struct HashJoinTupleData **unshared; dsa_pointer_atomic *shared; } buckets;
+    bool skewEnabled;
+    HashSkewBucket **skewBucket;
+    int skewBucketLen;
+    int nSkewBuckets;
+    int *skewBucketNums;
+    int nbatch;
+    int curbatch;
+    int nbatch_original;
+    int nbatch_outstart;
+    bool growEnabled;
+    double totalTuples;
+    double partialTuples;
+    double skewTuples;
+    BufFile **innerBatchFile;
+    BufFile **outerBatchFile;
+    Size spaceUsed;
+    Size spaceAllowed;
+    Size spacePeak;
+    Size spaceUsedSkew;
+    Size spaceAllowedSkew;
+    MemoryContext hashCxt;
+    MemoryContext batchCxt;
+    MemoryContext spillCxt;
+    HashMemoryChunk chunks;
+    HashMemoryChunk current_chunk;
+    dsa_area *area;
+    ParallelHashJoinState *parallel_state;
+    ParallelHashJoinBatchAccessor *batches;
+    dsa_pointer current_chunk_shared;
+} HashJoinTableData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 内側（Inner）リレーションのタプル群。</li>
+<li>**出力**: ハッシュテーブル構築後のバケット状態、およびメモリ制限超過時に生成される一時ファイル（<code>innerBatchFile</code>, <code>outerBatchFile</code>）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>nbuckets</code> は2のべき乗である必要があります。</li>
+<li><code>skewBucketLen</code> は2のべき乗である必要があります。</li>
+<li><code>nbatch &gt; 1</code> の場合のみ、<code>innerBatchFile</code> および <code>outerBatchFile</code> 配列が割り当てられます。</li>
+<li>バッチ0のタプルは一時ファイルへ書き出されず、メモリ上で処理されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **構築**: 内側リレーションをスキャンし、ハッシュ値に基づきバケットへ格納。メモリ制限（<code>spaceAllowed</code>）を超過すると <code>nbatch</code> を増やし、バッチを一時ファイルへスピルします。 2. **スキュー最適化**: 頻出値（MCV）がある場合、<code>skewBucket</code> を用いて効率的に格納します。 3. **メモリ管理**: <code>hashCxt</code>（全体）、<code>batchCxt</code>（バッチ毎）、<code>spillCxt</code>（ファイル用）の3つのメモリコンテキストを使い分けます。 4. **並列処理**: <code>dsa_area</code> を介して共有メモリを割り当て、<code>parallel_state</code> を用いて複数プロセス間で構築・プローブを同期します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHash.c</code>（<code>palloc_object</code> によるインスタンス生成が確認されています）。</li>
+<li>**呼び出し先**: 提供されたソースコード内では、特定の関数呼び出し関係は明示されていません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HashJoinTupleData</code>: タプルのリンク用ヘッダー。</li>
+<li><code>HashSkewBucket</code>: スキュー最適化用ハッシュテーブル。</li>
+<li><code>ParallelHashJoinState</code>: 並列実行時の同期制御構造体。</li>
+<li><code>HashMemoryChunk</code>: タプルの密な割り当て用リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ不足時: <code>nbatch</code> を増加させ、一時ファイルへの書き出し（スピル）が発生します。</li>
+<li><code>growEnabled</code> が <code>false</code> の場合、<code>nbatch</code> の増加は停止します。</li>
+<li>ファイル操作: <code>BufFile</code> はタプルが書き込まれるまで <code>NULL</code> のままです。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>並列ハッシュ結合のデバッグには <code>ParallelHashJoinState</code> のフェーズ遷移の理解が不可欠です。</li>
+<li>メモリコンテキストの使い分け（<code>hashCxt</code>, <code>batchCxt</code>, <code>spillCxt</code>）がメモリリーク防止の鍵となります。</li>
+</ul></body></html>

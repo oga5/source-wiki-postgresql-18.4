@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execGrouping.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execGrouping.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの実行エンジンにおいて、タプルのグループ化、ハッシュ化、および集約処理を支援するためのユーティリティルーチン群を提供します。主にハッシュベースの集約や重複排除処理で使用されるインメモリハッシュテーブルの構築と操作を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、<code>nodeAgg.c</code>（ハッシュ集約）や <code>nodeUnique.c</code>（重複排除）などの実行ノードから呼び出される共通基盤を提供します。<code>lib/simplehash.h</code> を利用して、効率的なインメモリハッシュテーブルを生成・管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ハッシュテーブルの構築**: <code>BuildTupleHashTable</code> を通じて、指定されたキーに基づいたハッシュテーブルを初期化します。</li>
+<li>**タプルのハッシュ化と照合**: タプルをハッシュ値に変換する関数や、等価性を判定する比較関数の準備・実行を行います。</li>
+<li>**エントリの管理**: ハッシュテーブルに対するタプルの検索、挿入、およびメモリ管理（<code>tablecxt</code> と <code>tempcxt</code> の使い分け）を制御します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TupleHashTable</code>: グループ化のためのハッシュテーブルを保持する主要なデータ構造。</li>
+<li><code>BuildTupleHashTable</code>: ハッシュテーブルの初期化を行うコンストラクタ的な関数。</li>
+<li><code>LookupTupleHashEntry</code>: 指定されたタプルに対応するハッシュエントリを検索または作成するメイン関数。</li>
+<li><code>execTuplesHashPrepare</code>: ハッシュ集約に必要なハッシュ関数と等価比較関数を準備するヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FindTupleHashEntry</code></li>
+<li><code>LookupTupleHashEntryHash</code></li>
+<li><code>LookupTupleHashEntry_internal</code></li>
+<li><code>ResetTupleHashTable</code></li>
+<li><code>TupleHashTableHash</code></li>
+<li><code>TupleHashTableHash_internal</code></li>
+<li><code>TupleHashTableMatch</code></li>
+<li><code>execTuplesMatchPrepare</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **準備**: <code>execTuplesHashPrepare</code> で必要な関数（<code>FmgrInfo</code>）をルックアップします。 2. **構築**: <code>BuildTupleHashTable</code> でハッシュテーブルを生成し、<code>ExecBuildHash32FromAttrs</code> 等でハッシュ計算用の <code>ExprState</code> を構築します。 3. **検索/挿入**: <code>LookupTupleHashEntry</code> が呼ばれると、<code>tempcxt</code> に切り替えてハッシュ値を計算し、<code>simplehash.h</code> のマクロを通じてハッシュテーブルを操作します。 4. **メモリ管理**: <code>LookupTupleHashEntry_internal</code> 内で、新規エントリ作成時のみ <code>tablecxt</code> を使用してタプルをコピーし、それ以外は <code>tempcxt</code> をリセットすることでメモリリークを防ぎます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/simplehash.h</code>: ハッシュテーブルの実装に使用。</li>
+<li><code>executor/executor.h</code>: 実行エンジン共通の定義。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用ユーティリティ。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログからの関数検索用。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nodeAgg.c</code>: ハッシュ集約の実装。本ファイルのハッシュテーブルを直接利用します。</li>
+<li><code>execExpr.c</code>: <code>ExecBuildHash32FromAttrs</code> や <code>ExecBuildGroupingEqual</code> を提供し、式評価の基盤となります。</li>
+<li><code>src/include/nodes/execnodes.h</code>: <code>TupleHashTableData</code> 等の構造体定義が含まれます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリコンテキストの重要性**: 本モジュールは <code>metacxt</code>（永続）、<code>tablecxt</code>（テーブルエントリ用）、<code>tempcxt</code>（計算用）の3つのコンテキストを使い分けます。特に <code>tempcxt</code> は呼び出し側で適切にリセットする必要がある点に注意してください。</li>
+<li>**simplehashの利用**: <code>SH_DEFINE</code> マクロにより、<code>tuplehash</code> というプレフィックスでハッシュテーブルの実装が生成されます。ソースコードを読む際は、<code>tuplehash_</code> で始まる関数が <code>simplehash.h</code> によって生成されたものであることを意識してください。</li>
+<li>**並列処理**: <code>use_variable_hash_iv</code> フラグが有効な場合、並列ワーカーごとに異なるハッシュ初期値（IV）を使用することで、ハッシュテーブルの偏りを防ぐ工夫がなされています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__execTuplesMatchPrepare.html" target="wiki-view"><code>execTuplesMatchPrepare</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__execTuplesHashPrepare.html" target="wiki-view"><code>execTuplesHashPrepare</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__BuildTupleHashTable.html" target="wiki-view"><code>BuildTupleHashTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__ResetTupleHashTable.html" target="wiki-view"><code>ResetTupleHashTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__LookupTupleHashEntry.html" target="wiki-view"><code>LookupTupleHashEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__TupleHashTableHash.html" target="wiki-view"><code>TupleHashTableHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__LookupTupleHashEntryHash.html" target="wiki-view"><code>LookupTupleHashEntryHash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__FindTupleHashEntry.html" target="wiki-view"><code>FindTupleHashEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__TupleHashTableHash_internal.html" target="wiki-view"><code>TupleHashTableHash_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__LookupTupleHashEntry_internal.html" target="wiki-view"><code>LookupTupleHashEntry_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execGrouping_c__TupleHashTableMatch.html" target="wiki-view"><code>TupleHashTableMatch</code></a></li>
+</ul></body></html>

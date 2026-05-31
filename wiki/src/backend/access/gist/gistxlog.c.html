@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistxlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistxlog.c</h1>
+<h2>概要</h2>
+<p>GiSTインデックスのWAL（Write-Ahead Log）リプレイおよびログ生成ロジックを実装するファイルです。PostgreSQLのクラッシュリカバリおよびホットスタンバイ環境におけるインデックスの整合性維持を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> モジュールにおいて、インデックス操作の永続化と、スタンバイサーバーへの変更伝播を抽象化します。<code>gist_redo</code> 関数を介して、WALレコードの種類に応じた復旧処理をディスパッチします。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALリプレイ**: <code>gist_redo</code> を通じて、ページ更新、分割、削除、再利用などの操作を再実行し、インデックスページを正しい状態へ復元する。</li>
+<li>**スタンバイ競合解決**: <code>ResolveRecoveryConflictWithSnapshot</code> 等を呼び出し、インデックスの削除や再利用がスタンバイ側のクエリと競合しないよう制御する。</li>
+<li>**WAL生成**: インデックス操作（挿入、削除、分割など）の際に、必要な情報をWALレコードとして書き出すための関数群を提供。</li>
+<li>**ページマスク**: <code>gist_mask</code> を通じて、WALリプレイ後のページ検証時に無視すべき非決定的な領域（LSNやヒントビット等）を定義する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gist_redo</code>: WALレコードを解析し、適切な処理関数へ振り分けるメインエントリポイント。</li>
+<li><code>gist_mask</code>: <code>pg_waldump</code> 等の検証ツールがページ比較を行う際、無視すべき領域をマスクする関数。</li>
+<li><code>gistXLogUpdate</code> / <code>gistXLogSplit</code>: インデックスの更新や分割時に呼び出される、WAL書き込みの主要関数。</li>
+<li><code>gistRedoPageSplitRecord</code>: 複雑なページ分割操作をリプレイするロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>decodePageSplitRecord</code></li>
+<li><code>gistRedoClearFollowRight</code></li>
+<li><code>gistRedoDeleteRecord</code></li>
+<li><code>gistRedoPageDelete</code></li>
+<li><code>gistRedoPageUpdateRecord</code></li>
+<li><code>gistXLogDelete</code></li>
+<li><code>gistXLogPageDelete</code></li>
+<li><code>gist_xlog_cleanup</code></li>
+<li><code>gist_xlog_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **リプレイ時**: <code>gist_redo</code> が <code>XLogReaderState</code> からレコードを読み取り、<code>info</code> コードに基づいて <code>gistRedoPageUpdateRecord</code> や <code>gistRedoPageSplitRecord</code> 等を呼び出します。各関数は <code>XLogReadBufferForRedo</code> を使用して対象ページを読み込み、変更を適用して <code>MarkBufferDirty</code> を行います。 2. **生成時**: インデックス操作関数（<code>gistinsert</code> 等）が <code>gistXLogUpdate</code> などを呼び出します。これらは <code>XLogRegisterBuffer</code> を用いて変更対象ページを登録し、<code>XLogInsert</code> でWALストリームに書き込みます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST内部構造体およびマクロ。</li>
+<li><code>access/xloginsert.h</code> / <code>access/xlogutils.h</code>: WAL書き込みおよびリプレイ用ユーティリティ。</li>
+<li><code>storage/standby.h</code>: ホットスタンバイ時の競合解決用。</li>
+<li><code>access/bufmask.h</code></li>
+<li><code>access/gistxlog.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/gistxlog.h</code>: WALレコードの構造体定義とオペコード定数。</li>
+<li><code>src/backend/access/gist/gist.c</code>: インデックス操作のメインロジック。</li>
+<li><code>src/backend/access/gist/gistutil.c</code>: ページ操作の補助関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Follow-Rightフラグ**: GiSTのページ分割中、右隣のページを指し示すフラグです。リプレイ時にこのフラグの整合性を保つため、<code>gistRedoClearFollowRight</code> が重要な役割を果たします。</li>
+<li>**マスクの重要性**: <code>gist_mask</code> はテストや検証において非常に重要です。リプレイ後のページと元のページを比較する際、LSNやNSN（Node Sequence Number）などの動的な値が不一致の原因にならないよう、適切にマスクされているか確認してください。</li>
+<li>**競合解決**: スタンバイサーバーでのクエリ実行中にインデックスページが再利用されると問題が生じるため、<code>gistRedoPageReuse</code> 等での競合解決処理が不可欠です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistRedoClearFollowRight.html" target="wiki-view"><code>gistRedoClearFollowRight</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistRedoPageUpdateRecord.html" target="wiki-view"><code>gistRedoPageUpdateRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistRedoDeleteRecord.html" target="wiki-view"><code>gistRedoDeleteRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__decodePageSplitRecord.html" target="wiki-view"><code>decodePageSplitRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistRedoPageSplitRecord.html" target="wiki-view"><code>gistRedoPageSplitRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistRedoPageDelete.html" target="wiki-view"><code>gistRedoPageDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gist_redo.html" target="wiki-view"><code>gist_redo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gist_xlog_startup.html" target="wiki-view"><code>gist_xlog_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gist_xlog_cleanup.html" target="wiki-view"><code>gist_xlog_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gist_mask.html" target="wiki-view"><code>gist_mask</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistXLogPageDelete.html" target="wiki-view"><code>gistXLogPageDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistxlog_c__gistXLogDelete.html" target="wiki-view"><code>gistXLogDelete</code></a></li>
+</ul></body></html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/yyscan-t.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>yyscan_t</h1>
+<h2>概念</h2>
+<p><code>yyscan_t</code> は、Flex（字句解析器生成ツール）によって生成される再入可能（reentrant）なスキャナ（字句解析器）の内部状態を保持するための不透明なポインタ（opaque pointer）型です。</p>
+<p>PostgreSQLのソースコード内では、<code>typedef void *yyscan_t;</code> として定義されており、具体的な構造体定義はFlexが生成するコード内に隠蔽されています。これにより、グローバル変数に依存することなく、個々の解析コンテキストをカプセル化して管理することができます。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**再入可能性（Reentrancy）の確保**: スキャナの状態をグローバル変数ではなく <code>yyscan_t</code> インスタンスに保持することで、複数の解析処理を並行して実行したり、再帰的に呼び出したりすることが可能になります。</li>
+<li>**モジュール間の独立性**: <code>cube</code>、<code>seg</code>、<code>jsonpath</code>、レプリケーションなどの異なるモジュールが、それぞれ独立したパーサー/スキャナインスタンスを定義・運用でき、状態の混同を防ぎます。</li>
+<li>**カプセル化**: 呼び出し側はFlexの内部実装詳細を知る必要がなく、一貫したポインタ型を通じてスキャナのライフサイクルを管理できます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/cube</code></li>
+<li><code>module:contrib/seg</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/bin/pgbench</code></li>
+<li><code>module:src/include/bootstrap</code></li>
+<li><code>module:src/include/fe_utils</code></li>
+<li><code>module:src/include/replication</code></li>
+<li><code>module:src/pl/plpgsql/src</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/cube/cubedata.h#yyscan_t</code></li>
+<li><code>symbol:contrib/seg/segdata.h#yyscan_t</code></li>
+<li><code>symbol:src/backend/utils/adt/jsonpath_internal.h#yyscan_t</code></li>
+<li><code>symbol:src/bin/pgbench/pgbench.h#yyscan_t</code></li>
+<li><code>symbol:src/include/bootstrap/bootstrap.h#yyscan_t</code></li>
+<li><code>symbol:src/include/fe_utils/psqlscan_int.h#yyscan_t</code></li>
+<li><code>symbol:src/include/replication/syncrep.h#yyscan_t</code></li>
+<li><code>symbol:src/include/replication/walsender_private.h#yyscan_t</code></li>
+<li><code>symbol:src/pl/plpgsql/src/plpgsql.h#yyscan_t</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける一般的な解析処理の流れは以下の通りです。</p>
+<p>1. **初期化**: 各モジュール固有の初期化関数（例: <code>cube_scanner_init</code>、<code>seg_scanner_init</code>、<code>yylex_init</code> など）を呼び出し、<code>yyscan_t</code> インスタンスを生成・初期化します。 2. **解析の実行**: 初期化された <code>yyscan_t</code> ポインタを、字句解析関数（例: <code>cube_yylex</code>、<code>jsonpath_yylex</code>）や構文解析関数（例: <code>cube_yyparse</code>、<code>seg_yyparse</code>、<code>boot_yyparse</code>）に引数として渡します。スキャナはこのポインタを経由して現在の解析コンテキスト（バッファ位置、トークン情報など）を維持・更新します。 3. **終了と解放**: 解析処理の完了後、メモリリークを防ぐために、対応する終了関数（例: <code>cube_scanner_finish</code>、<code>seg_scanner_finish</code>、<code>scanner_finish</code> など）を呼び出して <code>yyscan_t</code> が保持するリソースを解放します。</p>
+<p>*注: <code>src/bin/pgbench/pgbench.h</code> および <code>src/pl/plpgsql/src/plpgsql.h</code> における具体的なエンドツーエンドのフローの詳細は、提供された情報からは直接確認できないため、これらについては詳細が未確定です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**直接操作の禁止**: <code>yyscan_t</code> は <code>void *</code> 型であり、内部構造は非公開です。呼び出し側は、<code>yyscan_t</code> が指す内部状態を直接操作してはならず、必ず提供されているモジュール固有のAPI関数を経由して操作する必要があります。</li>
+<li>**ライフサイクルの遵守**: スキャナを使用する前には必ず初期化関数によって適切に初期化され、使用後には必ず対応する終了関数によって解放されなければなりません。</li>
+<li>**コンテキストの分離**: 同一の <code>yyscan_t</code> インスタンスを複数のスレッドや異なる解析コンテキストで同時に共有して操作することはできません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**初期化漏れによる未定義動作**: 初期化されていない、または <code>NULL</code> の <code>yyscan_t</code> ポインタを解析関数に渡すと、セグメンテーションフォールトなどの未定義動作を引き起こします。</li>
+<li>**メモリリーク**: 解析処理の終了後に適切な終了関数（<code>_finish</code> や <code>_free</code> 系の関数）を呼び出さない場合、スキャナ内部で確保されたバッファや状態メモリがリークします。</li>
+<li>**型定義の混同**: 複数のモジュールで同名の <code>yyscan_t</code> が定義されていますが、これらは各モジュール固有のFlex生成コードに対応する独立した型です。これらを混在させたり、異なるモジュールの関数に渡したりすると、互換性の問題や予期せぬ動作を引き起こす原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/cube/cubedata.h</code></li>
+<li><code>contrib/seg/segdata.h</code></li>
+<li><code>src/backend/utils/adt/jsonpath_internal.h</code></li>
+<li><code>src/bin/pgbench/pgbench.h</code></li>
+<li><code>src/include/bootstrap/bootstrap.h</code></li>
+<li><code>src/include/fe_utils/psqlscan_int.h</code></li>
+<li><code>src/include/replication/syncrep.h</code></li>
+<li><code>src/include/replication/walsender_private.h</code></li>
+<li><code>src/pl/plpgsql/src/plpgsql.h</code></li>
+</ul></body></html>

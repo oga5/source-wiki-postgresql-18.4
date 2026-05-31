@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__waiteventset_c__CreateWaitEventSet.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CreateWaitEventSet</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/waiteventset.c:363</code></li>
+</ul>
+<h2>目的</h2>
+<p>複数のイベント（ソケット、ラッチ等）を同時に待機するための <code>WaitEventSet</code> 構造体を初期化し、OS 固有のイベント通知メカニズム（<code>epoll</code>, <code>kqueue</code>, <code>poll</code>, <code>WaitForMultipleObjects</code>）を準備する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>resowner</code>: リソース所有権を管理する <code>ResourceOwner</code>（NULL 可）。</li>
+<li><code>nevents</code>: 待機対象とするイベントの最大数。</li>
+<li>**出力**:</li>
+<li>初期化済みの <code>WaitEventSet</code> 構造体へのポインタ。失敗時は <code>elog(ERROR)</code> によりプロセスが終了する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>nevents</code> は正の整数であること。</li>
+<li><code>resowner</code> が指定された場合、<code>ResourceOwnerEnlarge</code> が呼び出され、リソース管理が有効化される。</li>
+<li>メモリ割り当てには <code>TopMemoryContext</code> が使用される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メモリ計算**: <code>WaitEventSet</code> 本体、イベント配列、および OS 固有の待機用構造体（<code>epoll_event</code>, <code>kevent</code>, <code>pollfd</code>, <code>HANDLE</code>）に必要なメモリサイズを <code>MAXALIGN</code> を考慮して算出する。 2. **メモリ確保**: <code>MemoryContextAllocZero</code> を用いて一括確保し、各メンバへのポインタを割り当てる。 3. **リソース登録**: <code>resowner</code> が指定されていれば <code>ResourceOwnerRememberWaitEventSet</code> を呼び出し、ライフサイクル管理を登録する。 4. **OS 固有の初期化**:</p>
+<ul>
+<li><code>epoll</code>: <code>epoll_create1</code> でファイル記述子を作成。</li>
+<li><code>kqueue</code>: <code>kqueue</code> でファイル記述子を作成し、<code>FD_CLOEXEC</code> を設定。</li>
+<li><code>Win32</code>: <code>pgwin32_signal_event</code> をハンドル配列の先頭に配置し、シグナル待機を保証する。</li>
+<p>5. **初期状態設定**: <code>latch</code> を NULL、<code>exit_on_postmaster_death</code> を false に初期化して返却する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/executor/nodeAppend.c</code></li>
+<li><code>src/backend/libpq/pqcomm.c</code></li>
+<li><code>src/backend/postmaster/postmaster.c</code></li>
+<li><code>src/backend/postmaster/syslogger.c</code></li>
+<li><code>src/backend/storage/ipc/latch.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ResourceOwnerEnlarge</code>, <code>ResourceOwnerRememberWaitEventSet</code></li>
+<li><code>MemoryContextAllocZero</code></li>
+<li><code>epoll_create1</code>, <code>kqueue</code>, <code>fcntl</code>（プラットフォーム依存）</li>
+<li><code>AcquireExternalFD</code>, <code>ReleaseExternalFD</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WaitEventSet</code>: 待機セットのメイン構造体。</li>
+<li><code>WaitEvent</code>: 監視対象イベントの情報を保持する構造体。</li>
+<li><code>ResourceOwner</code>: リソースの生存期間を管理するオブジェクト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>MemoryContextAllocZero</code> が失敗した場合、PostgreSQL のメモリ管理規約に従いエラーとなる。</li>
+<li>**FD 枯渇**: <code>epoll_create1</code> や <code>kqueue</code> が失敗した場合、<code>elog(ERROR)</code> によりエラー終了する。</li>
+<li>**リソース制限**: <code>AcquireExternalFD</code> が失敗した場合、システム全体の FD 制限に達していると判断されエラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はコンパイル時のフラグ（<code>WAIT_USE_EPOLL</code> 等）により実装が大きく分岐する。プラットフォーム固有の挙動を修正する際は、該当するプリプロセッサブロックを確認すること。</li>
+<li>Windows 版では <code>pgwin32_signal_event</code> が配列の先頭（インデックス 0）に配置されるため、この順序を変更しないこと。</li>
+</ul></body></html>

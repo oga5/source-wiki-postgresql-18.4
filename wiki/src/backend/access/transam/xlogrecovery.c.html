@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlogrecovery.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogrecovery.c</h1>
+<h2>概要</h2>
+<p><code>xlogrecovery.c</code> は、PostgreSQLのWALリカバリ（クラッシュリカバリ、アーカイブリカバリ、スタンバイモード）の制御ロジックを統括する中核ファイルです。システム起動時に制御ファイルやバックアップラベルを解析してリカバリの開始地点を決定し、WALレコードを順次読み込んでリプレイ（適用）するプロセスを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、WALの物理的な読み込みと適用状態の管理を担当します。<code>xlog.c</code> がWALの全体的なライフサイクルを管理するのに対し、本ファイルは「リカバリ中」という特殊な状態における動作に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**リカバリ初期化**: <code>InitWalRecovery()</code> を通じ、<code>pg_control</code> や <code>backup_label</code> を読み込み、リカバリモード（クラッシュ/アーカイブ/スタンバイ）の判定と開始位置の特定を行う。</li>
+<li>**WALリプレイ制御**: <code>PerformWalRecovery()</code> を通じ、WALレコードを読み込み、各リソースマネージャ（rmgr）の <code>redo</code> ルーチンを呼び出してデータページを復元する。</li>
+<li>**リカバリターゲット管理**: PITR（Point-in-Time Recovery）のためのターゲット（XID、時刻、LSN、名前）の検証と、到達時の停止処理。</li>
+<li>**スタンバイ管理**: スタンバイモードにおけるWALストリーミングの制御、昇格（プロモーション）の検知、および一貫性チェック。</li>
+<li>**共有メモリ管理**: リカバリ状態（<code>XLogRecoveryCtlData</code>）の共有メモリ上での初期化と管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>リカバリ制御・状態管理</h3>
+<ul>
+<li><code>InitWalRecovery()</code>: リカバリの準備を行うメイン関数。</li>
+<li><code>PerformWalRecovery()</code>: WALリプレイのメインループを実行する関数。</li>
+<li><code>FinishWalRecovery()</code>: リカバリ終了時のチェックと後処理を行う関数。</li>
+<li><code>XLogRecoveryCtl</code>: リカバリ状態を保持する共有メモリ構造体へのポインタ。</li>
+</ul>
+<h3>WAL読み込み・解析</h3>
+<ul>
+<li><code>ReadRecord()</code>: 次のWALレコードを読み込むための高レベルインターフェース。</li>
+<li><code>XLogPageRead()</code>: <code>XLogReader</code> がページを要求した際に呼び出されるコールバック。アーカイブやストリーミングからの取得を調停する。</li>
+<li><code>WaitForWALToBecomeAvailable()</code>: WALが利用可能になるまで待機またはソース（アーカイブ/ストリーミング）を切り替えるステートマシン。</li>
+</ul>
+<h3>リカバリターゲット設定（GUC関連）</h3>
+<ul>
+<li><code>recoveryTarget</code>, <code>recoveryTargetXid</code>, <code>recoveryTargetTime</code>, <code>recoveryTargetLSN</code>: リカバリの停止条件を定義する変数群。</li>
+<li><code>StandbyMode</code>: 現在スタンバイモードであるかを示すフラグ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ApplyWalRecord</code></li>
+<li><code>CheckTablespaceDirectory</code></li>
+<li><code>EnableStandbyMode</code></li>
+<li><code>FinishWalRecovery</code></li>
+<li><code>InitWalRecovery</code></li>
+<li><code>PerformWalRecovery</code></li>
+<li><code>ShutdownWalRecovery</code></li>
+<li><code>XLogPageReadPrivate</code></li>
+<li><code>XLogRecoveryCtlData</code></li>
+<li><code>XLogRecoveryShmemInit</code></li>
+<li><code>XLogRecoveryShmemSize</code></li>
+<li><code>XLogSource</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>StartupXLOG</code> から <code>InitWalRecovery</code> が呼ばれ、<code>pg_control</code> や <code>backup_label</code> を基に <code>RedoStartLSN</code> を決定。 2. **リプレイ**: <code>PerformWalRecovery</code> が <code>ReadRecord</code> をループで呼び出し、WALレコードを取得。 3. **適用**: <code>ApplyWalRecord</code> が各レコードの <code>xl_rmid</code> に対応する <code>rm_redo</code> 関数を呼び出し、バッファキャッシュ上のページを更新。 4. **同期**: <code>CheckRecoveryConsistency</code> が定期的に呼び出され、<code>minRecoveryPoint</code> に到達したかを確認。到達時に <code>PMSIGNAL_RECOVERY_CONSISTENT</code> を送信。 5. **終了**: <code>FinishWalRecovery</code> が呼び出され、リカバリ終了地点の情報を確定し、通常のWAL書き込みモードへ移行する準備を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlogreader.h</code>, <code>access/xlogprefetcher.h</code>: WALの解析と先読み。</li>
+<li><code>storage/fd.h</code>, <code>storage/ipc.h</code>: ファイルI/Oおよびプロセス間通信（ラッチ）。</li>
+<li><code>catalog/pg_control.h</code>: 制御ファイルの構造定義。</li>
+<li><code>replication/walreceiver.h</code>: スタンバイモードでのWALストリーミング連携。</li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogarchive.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/startup.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/datetime.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/pgstat_internal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>xlog.c</code>: WALの全体管理とチェックポイント処理。</li>
+<li><code>xloginsert.c</code>: WALレコードの生成（リカバリ時は読み込みのみ）。</li>
+<li><code>xlogutils.c</code>: リカバリ中に必要なページ読み込み等のユーティリティ。</li>
+<li><code>clog.c</code>, <code>slru.c</code>: トランザクション状態の永続化基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>XLogRecoveryCtl</code> は共有メモリ上に配置され、<code>info_lck</code> スピンロックによって保護されています。</li>
+<li>**エラーパス**: リカバリ中のエラーは <code>ereport(PANIC, ...)</code> で処理されることが多く、これはリカバリの失敗がデータベースの整合性を損なうためです。</li>
+<li>**設計上の注意**: <code>recovery_target_*</code> 関連のGUCフックは、設計上 <code>assign</code> フック内でエラーを投げるなど、GUCの標準的な動作から逸脱している箇所があり、注意が必要です。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大であるため、各リソースマネージャ（<code>rmgr</code>）ごとの具体的な <code>redo</code> ロジック（<code>xlog_redo</code> 等）の詳細は省略しています。これらは各サブモジュール（<code>access/transam/xact.c</code> など）に分散しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__XLogPageReadPrivate.html" target="wiki-view"><code>XLogPageReadPrivate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__XLogSource.html" target="wiki-view"><code>XLogSource</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__XLogRecoveryCtlData.html" target="wiki-view"><code>XLogRecoveryCtlData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__XLogRecoveryShmemSize.html" target="wiki-view"><code>XLogRecoveryShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__XLogRecoveryShmemInit.html" target="wiki-view"><code>XLogRecoveryShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__EnableStandbyMode.html" target="wiki-view"><code>EnableStandbyMode</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__InitWalRecovery.html" target="wiki-view"><code>InitWalRecovery</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__FinishWalRecovery.html" target="wiki-view"><code>FinishWalRecovery</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__ShutdownWalRecovery.html" target="wiki-view"><code>ShutdownWalRecovery</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__PerformWalRecovery.html" target="wiki-view"><code>PerformWalRecovery</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__ApplyWalRecord.html" target="wiki-view"><code>ApplyWalRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogrecovery_c__CheckTablespaceDirectory.html" target="wiki-view"><code>CheckTablespaceDirectory</code></a></li>
+</ul></body></html>

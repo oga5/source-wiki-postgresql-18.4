@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/partitionprunestate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PartitionPruneState</h1>
+<h2>概念</h2>
+<p><code>PartitionPruneState</code> は、PostgreSQLのクエリ実行フェーズにおいて、パラメータ値等に基づき不要なパーティション（サブプラン）を動的に除外（プルーニング）するための実行状態を保持する構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>プラン作成時と実行時でパーティション構成が変化した場合（並行処理によるデタッチなど）の乖離を動的に吸収し、実行時パラメータ（<code>execparamids</code>）の評価結果に基づいて不要なサブプランを安全かつ効率的に除外するために不可欠です。また、専用のメモリコンテキスト（<code>prune_context</code>）を管理することで、プルーニング処理中のメモリリークを防止する役割も担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/executor/execPartition.h#PartitionPruneState</code>: プルーニング実行時のメイン状態を保持する構造体。</li>
+<li><code>symbol:src/backend/executor/execPartition.c#CreatePartitionPruneState</code>: <code>PartitionPruneState</code> を初期化し、実行計画に含まれるプルーニング情報を実行環境へ適合させる関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 実行初期化処理において <code>CreatePartitionPruneState</code> が呼び出されます。</p>
+<ul>
+<li>プランナーが生成した <code>PartitionPruneInfo</code> を基に <code>PartitionPruneState</code> をメモリ確保します。</li>
+<li>式評価用の <code>ExprContext</code> や、専用の <code>prune_context</code> を作成します。</li>
+<li>現在のリレーションキャッシュと <code>PartitionPruneInfo</code> の情報を比較し、構成の不一致（デタッチ等）がある場合は、存在しないパーティションをプルーニング対象としてマークします。</li>
+<p>2. **プルーニングの実行**:</p>
+<li><code>ExecFindMatchingSubPlans</code> 等が <code>PartitionPruneState</code> を参照し、実行時に評価を行って不要なサブプランをビットマップとして特定・除外します。</li>
+<li>プルーニングは、初期化時（<code>do_initial_prune</code>）および実行時（<code>do_exec_prune</code>）の両方で呼び出される可能性があります。</li>
+</ul>
+<p>※実行初期化処理における <code>CreatePartitionPruneState</code> の直接的な呼び出し元関数の詳細など、完全なエンドツーエンドの呼び出しフローは提供された情報からは特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>pruneinfo-&gt;prune_infos</code> は空であってはなりません（<code>n_part_hierarchies &gt; 0</code>）。</li>
+<li><code>estate-&gt;es_partition_directory</code> が未設定の場合、<code>CreatePartitionPruneState</code> 内で <code>CreatePartitionDirectory</code> を用いて初期化されます。</li>
+<li>パーティションのリレーションキャッシュエントリは、実行期間中オープンかつロックされた状態であることが前提となります。</li>
+<li><code>partprunedata</code> は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しており、<code>num_partprunedata</code> で指定された要素数を持つ必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**並行DDLによる構成変化**: プラン作成時と実行時でパーティション構成が乖離する場合（デタッチ等）があり、<code>CreatePartitionPruneState</code> 内で <code>relid_map</code> を走査して動的に対応する必要があります。</li>
+<li>**メモリ管理のライフサイクル**: 実行計画の初期化時と実行時の両方で状態が更新されるため、<code>prune_context</code> のライフサイクル管理を誤るとメモリリークや不正アクセスにつながる懸念があります。</li>
+<li>**パラメータ変更時の不整合**: <code>execparamids</code> の変更に伴う状態の不整合や、階層構造が深い場合の再帰処理の複雑さに注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/executor/execPartition.c</code>: <code>CreatePartitionPruneState</code> の具体的な初期化ロジックや、プラン作成時との構成乖離を吸収する <code>subplan_map</code> / <code>subpart_map</code> の構築ロジックが実装されています。</li>
+<li><code>src/include/executor/execPartition.h</code>: <code>PartitionPruneState</code> 構造体の定義と、関連するメンバ変数の詳細が記載されています。</li>
+</ul></body></html>

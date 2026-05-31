@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walsender_c__WalSndErrorCleanup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalSndErrorCleanup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walsender.c:343</code></li>
+</ul>
+<h2>目的</h2>
+<p>WAL 送信プロセス（walsender）においてエラーが発生した際、共有リソースの解放、状態の初期化、および必要に応じたプロセスの終了処理を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void WalSndErrorCleanup(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし</li>
+<li>出力: なし（副作用として共有メモリ状態の更新およびリソース解放を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本関数は、walsender プロセスがエラー状態に陥った際に呼び出されることを想定している。</li>
+<li><code>xlogreader</code> が有効な場合、そのファイル記述子が適切に管理されている必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **リソース解放**: <code>LWLockReleaseAll</code> で保持している全軽量ロックを解放し、<code>ConditionVariableCancelSleep</code> で待機状態を解除する。 2. **統計・非同期処理のクリーンアップ**: <code>pgstat_report_wait_end</code> および <code>pgaio_error_cleanup</code> を実行。 3. **WAL 読み込み終了**: <code>xlogreader</code> が存在し、ファイルが開かれている場合は <code>wal_segment_close</code> で閉じる。 4. **スロット管理**: <code>MyReplicationSlot</code> が存在する場合は <code>ReplicationSlotRelease</code> で解放し、<code>ReplicationSlotCleanup(false)</code> を実行。 5. **状態リセット**: <code>replication_active</code> を <code>false</code> に設定。 6. **トランザクションリソースの解放**: トランザクションブロック外であれば <code>ReleaseAuxProcessResources(false)</code> を実行。 7. **終了判定**: <code>got_STOPPING</code> または <code>got_SIGUSR2</code> がセットされている場合は <code>proc_exit(0)</code> でプロセスを終了する。 8. **状態遷移**: 最後に <code>WalSndSetState(WALSNDSTATE_STARTUP)</code> を呼び出し、状態を初期状態へ戻す。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/tcop/postgres.c:4456</code></li>
+<li><code>src/backend/replication/walsender.c:344</code> (自己再帰的な呼び出しではなく、定義箇所への参照)</li>
+<li>**呼び出し先**:</li>
+<li><code>LWLockReleaseAll</code>, <code>ConditionVariableCancelSleep</code>, <code>pgstat_report_wait_end</code>, <code>pgaio_error_cleanup</code>, <code>wal_segment_close</code>, <code>ReplicationSlotRelease</code>, <code>ReplicationSlotCleanup</code>, <code>ReleaseAuxProcessResources</code>, <code>proc_exit</code>, <code>WalSndSetState</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MyReplicationSlot</code>: 現在のプロセスが使用しているレプリケーションスロット。</li>
+<li><code>xlogreader</code>: WAL 読み込みに使用されるリーダー構造体。</li>
+<li><code>got_STOPPING</code>, <code>got_SIGUSR2</code>: プロセスの終了要求を示すフラグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>xlogreader</code> が <code>NULL</code> の場合や、ファイル記述子が既に閉じられている場合は安全にスキップされる。</li>
+<li>トランザクションが進行中の場合、<code>ReleaseAuxProcessResources</code> はスキップされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>walsender</code> のエラーハンドリングの要であり、論理レプリケーションの <code>slotsync.c</code> など、他のコンポーネントでも同様のクリーンアップロジックの参考として言及されている。</li>
+<li>状態遷移の順序（特に <code>proc_exit</code> のタイミング）は、プロセス終了時の整合性に直結するため慎重に扱うこと。</li>
+</ul></body></html>

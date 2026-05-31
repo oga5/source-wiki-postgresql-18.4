@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__proc_c__InitAuxiliaryProcess.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InitAuxiliaryProcess</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/proc.c:614</code></li>
+</ul>
+<h2>目的</h2>
+<p>補助プロセス（Auxiliary Process）が共有メモリ上で自身の状態を管理するための <code>PGPROC</code> 構造体を確保し、初期化を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void InitAuxiliaryProcess(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし</li>
+<li>出力: なし（副作用として <code>MyProc</code> グローバル変数および共有メモリ上の <code>PGPROC</code> エントリを初期化する）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ProcGlobal</code> および <code>AuxiliaryProcs</code> が初期化済みであること。</li>
+<li>呼び出し時に <code>MyProc</code> が <code>NULL</code> であること（既に初期化済みでないこと）。</li>
+<li><code>ProcStructLock</code> を用いて <code>AuxiliaryProcs</code> の排他制御を行う。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ProcStructLock</code> を取得し、<code>AuxiliaryProcs</code> 配列から <code>pid == 0</code> である空きエントリを線形探索する。 2. 空きエントリが見つかった場合、その <code>pid</code> に現在のプロセスID (<code>MyProcPid</code>) を設定し、<code>MyProc</code> に割り当てる。 3. <code>MyProc</code> の各フィールド（<code>links</code>, <code>waitStatus</code>, <code>xid</code>, <code>lwWaiting</code> 等）を初期状態にリセットする。 4. <code>OwnLatch</code> および <code>SwitchToSharedLatch</code> を呼び出し、プロセスラッチを共有メモリ上のものへ切り替える。 5. <code>pgstat_set_wait_event_storage</code> を呼び出し、待機イベントの報告先を共有メモリに設定する。 6. <code>PGSemaphoreReset</code> でセマフォを初期化し、<code>on_shmem_exit</code> に終了処理関数 <code>AuxiliaryProcKill</code> を登録する。 7. <code>InitLWLockAccess</code> を呼び出し、軽量ロック利用のためのローカル状態を初期化する。 8. <code>EXEC_BACKEND</code> 環境下では、<code>AttachSharedMemoryStructs</code> を呼び出し共有メモリ構造体へのポインタを再アタッチする。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/postmaster/auxprocess.c:65</code></li>
+<li>呼び出し先: <code>SpinLockAcquire</code>, <code>set_spins_per_delay</code>, <code>SpinLockRelease</code>, <code>GetNumberFromPGProc</code>, <code>dlist_node_init</code>, <code>pg_atomic_write_u64</code>, <code>OwnLatch</code>, <code>SwitchToSharedLatch</code>, <code>pgstat_set_wait_event_storage</code>, <code>PGSemaphoreReset</code>, <code>on_shmem_exit</code>, <code>InitLWLockAccess</code>, <code>AttachSharedMemoryStructs</code>（<code>EXEC_BACKEND</code>時）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: プロセス状態を保持する共有メモリ上の構造体。</li>
+<li><code>AuxiliaryProcs</code>: 補助プロセス用 <code>PGPROC</code> の配列。</li>
+<li><code>ProcGlobal</code>: プロセス管理のグローバルヘッダー。</li>
+<li><code>ProcStructLock</code>: <code>AuxiliaryProcs</code> 配列を保護するスピンロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ProcGlobal</code> または <code>AuxiliaryProcs</code> が <code>NULL</code> の場合: <code>PANIC</code> で停止。</li>
+<li><code>MyProc</code> が既に設定されている場合: <code>ERROR</code> で停止。</li>
+<li>空き <code>AuxiliaryProcs</code> エントリが存在しない場合: <code>FATAL</code> で停止。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>AuxiliaryProcs</code> の探索は線形探索であるため、補助プロセスの数が増加した場合は注意が必要。</li>
+<li><code>EXEC_BACKEND</code> 定義時は、共有メモリの再アタッチが必須となるため、この関数の実行順序が重要。</li>
+<li><code>PGPROC</code> のフィールド初期化は、<code>InitProcGlobal</code> で行われない項目を網羅する必要がある。</li>
+</ul></body></html>

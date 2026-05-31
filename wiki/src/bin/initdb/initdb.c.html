@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/initdb/initdb.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/initdb/initdb.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLデータベースクラスタを物理的・論理的に初期化するスタンドアロンツール <code>initdb</code> のメインエントリポイントです。データディレクトリの作成、構成ファイルの生成、システムカタログのブートストラップ、およびデフォルトデータベース（<code>template1</code>, <code>postgres</code> 等）の構築を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/initdb</code> モジュールの中心であり、OS環境の検出からバックエンドプログラム（<code>postgres</code>）の起動までをオーケストレーションします。他のファイル（<code>findtimezone.c</code>）や共通ライブラリ（<code>common/</code>）と連携し、クラスタ構築の全工程を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**環境構築**: OSのロケール、エンコーディング、タイムゾーンの自動検出と検証。</li>
+<li>**物理レイアウト**: データディレクトリおよびWALディレクトリの作成と権限設定。</li>
+<li>**構成生成**: テンプレートファイル（<code>.sample</code>）を読み込み、ユーザー指定や環境に合わせて <code>postgresql.conf</code> 等を書き換える。</li>
+<li>**ブートストラップ**: <code>postgres --boot</code> モードを利用したシステムカタログの初期構築。</li>
+<li>**論理初期化**: スタンドアロンバックエンドを用いたSQLスクリプトの実行によるデータベースの論理構造構築。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>設定保持用変数</h3>
+<ul>
+<li><code>pg_data</code>, <code>encoding</code>, <code>locale</code>: ユーザー指定のクラスタ設定。</li>
+<li><code>auth_methods_host</code>, <code>auth_methods_local</code>: 認証方式の有効性検証用リスト。</li>
+<li><code>extra_guc_names</code>, <code>extra_guc_values</code>: <code>-c</code> オプションで指定されたGUC設定の連結リスト。</li>
+</ul>
+<h3>ライフサイクル・制御関数</h3>
+<ul>
+<li><code>initialize_data_directory()</code>: クラスタ構築のメインフローを制御する関数。</li>
+<li><code>bootstrap_template1()</code>: <code>postgres.bki</code> を使用してシステムカタログを構築する。</li>
+<li><code>setup_config()</code>: 構成ファイルを読み込み、置換処理を経て書き出す。</li>
+<li><code>cleanup_directories_atexit()</code>: 異常終了時に作成途中のディレクトリを削除するクリーンアップ処理。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>replace_token()</code>, <code>replace_guc_value()</code>: 設定ファイル内の文字列置換を行う。</li>
+<li><code>popen_check()</code>: バックエンドプロセスをパイプ経由で実行し、エラーを監視する。</li>
+<li><code>save_global_locale()</code>, <code>restore_global_locale()</code>: ロケール設定の退避・復元。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>_stringlist</code></li>
+<li><code>add_stringlist_item</code></li>
+<li><code>escape_quotes</code></li>
+<li><code>escape_quotes_bki</code></li>
+<li><code>guc_value_requires_quotes</code></li>
+<li><code>popen_check</code></li>
+<li><code>replace_guc_value</code></li>
+<li><code>replace_token</code></li>
+<li><code>restore_global_locale</code></li>
+<li><code>save_global_locale</code></li>
+<li><code>save_locale_t</code></li>
+<li><code>tsearch_config_match</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main()</code> で引数を解析し、環境変数を設定。<code>atexit()</code> でクリーンアップ関数を登録。 2. **環境検証**: <code>setup_locale_encoding()</code> 等でOS環境とPostgreSQLの整合性を確認。 3. **物理構築**: <code>initialize_data_directory()</code> がディレクトリ構造を作成。 4. **ブートストラップ**: <code>bootstrap_template1()</code> が <code>postgres --boot</code> を呼び出し、<code>postgres.bki</code> をパイプ経由で流し込む。 5. **論理初期化**: スタンドアロンバックエンド（<code>--single</code>）を起動し、<code>setup_auth()</code> や <code>setup_schema()</code> 等のヘルパー関数でSQLコマンドを順次実行。 6. **終了**: 成功フラグを立てて終了。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダ。</li>
+<li><code>common/</code>: ファイル操作、文字列処理、ロギング、認証トークン管理。</li>
+<li><code>catalog/</code>: システムカタログ定義（<code>pg_authid_d.h</code> 等）。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字エンコーディング処理。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>catalog/pg_authid_d.h</code></li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>catalog/pg_collation_d.h</code></li>
+<li><code>catalog/pg_database_d.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>common/restricted_token.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>common/username.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/mman.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unicode/ucol.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/initdb/findtimezone.c</code>: タイムゾーン検出ロジック。</li>
+<li><code>src/backend/bootstrap/bootparse.y</code>: <code>postgres.bki</code> の文法定義。</li>
+<li><code>src/backend/utils/misc/guc.c</code>: GUC設定の定義と検証。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本ファイルは意図的にメモリリークを許容しています（プログラム終了時にOSが回収するため）。</li>
+<li>**エラーパス**: <code>popen_check</code> や <code>writefile</code> 等のヘルパーは、失敗時に <code>pg_fatal</code> を呼び出し、<code>cleanup_directories_atexit</code> を経由して終了します。</li>
+<li>**レイアウト**: <code>subdirs</code> 配列に定義されたディレクトリ構造は、PostgreSQLのクラスタレイアウトの標準です。</li>
+<li>**制約**: <code>postgres</code> 実行時の引数に <code>-F</code>（fsync無効）を渡すことで初期化を高速化し、最後に <code>sync_pgdata</code> で一括同期を行っています。</li>
+<li>**未実装/浅い部分**: タイムゾーン検出ロジックは <code>findtimezone.c</code> に委譲されており、本ファイルは呼び出しのみを行います。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c___stringlist.html" target="wiki-view"><code>_stringlist</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__save_locale_t.html" target="wiki-view"><code>save_locale_t</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__save_global_locale.html" target="wiki-view"><code>save_global_locale</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__restore_global_locale.html" target="wiki-view"><code>restore_global_locale</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__escape_quotes.html" target="wiki-view"><code>escape_quotes</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__escape_quotes_bki.html" target="wiki-view"><code>escape_quotes_bki</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__add_stringlist_item.html" target="wiki-view"><code>add_stringlist_item</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__replace_token.html" target="wiki-view"><code>replace_token</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__replace_guc_value.html" target="wiki-view"><code>replace_guc_value</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__guc_value_requires_quotes.html" target="wiki-view"><code>guc_value_requires_quotes</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__popen_check.html" target="wiki-view"><code>popen_check</code></a></li>
+<li><a href="../../../symbols/src__bin__initdb__initdb_c__tsearch_config_match.html" target="wiki-view"><code>tsearch_config_match</code></a></li>
+</ul></body></html>

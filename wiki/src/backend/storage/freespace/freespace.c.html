@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/freespace/freespace.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/freespace/freespace.c</h1>
+<h2>概要</h2>
+<p><code>freespace.c</code> は、PostgreSQL のリレーション（テーブルやインデックス）における各ページの空き容量を追跡する「Free Space Map (FSM)」の主要な実装です。ヒープページ内の空き容量を効率的に検索し、挿入可能なページを高速に特定するための木構造を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/freespace</code> モジュールの中核であり、FSM の論理構造と物理的なディスク上の配置を橋渡しします。<code>fsmpage.c</code> が提供するページレベルの操作関数を利用し、木構造のナビゲーションと検索ロジックを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**空き容量のカテゴリ化**: ページごとの空き容量を 256 段階のカテゴリに分類し、1 バイトで管理する。</li>
+<li>**木構造のナビゲーション**: 論理的な <code>FSMAddress</code> を物理的なブロック番号に変換し、木構造を上下に移動する。</li>
+<li>**検索と更新**: 指定された空き容量を満たすページを木構造から検索し、必要に応じて更新する。</li>
+<li>**メンテナンス**: <code>FreeSpaceMapVacuum</code> を通じた木構造の整合性維持およびリレーション切り詰め時の FSM 領域の整理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GetPageWithFreeSpace</code>: 指定した空き容量を持つページを検索する公開 API。</li>
+<li><code>RecordPageWithFreeSpace</code>: 特定ページの空き容量を更新する。</li>
+<li><code>FSMAddress</code>: 木構造上のレベルとページ番号を保持する論理アドレス構造体。</li>
+<li><code>fsm_search</code>: 木構造を再帰的に探索し、条件を満たすページを見つける内部関数。</li>
+<li><code>fsm_logical_to_physical</code>: 論理アドレスを物理的なブロック番号へ変換する計算ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>FreeSpaceMapPrepareTruncateRel</code></li>
+<li><code>FreeSpaceMapVacuum</code></li>
+<li><code>GetRecordedFreeSpace</code></li>
+<li><code>RecordAndGetPageWithFreeSpace</code></li>
+<li><code>XLogRecordPageWithFreeSpace</code></li>
+<li><code>fsm_get_child</code></li>
+<li><code>fsm_get_heap_blk</code></li>
+<li><code>fsm_get_location</code></li>
+<li><code>fsm_get_parent</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **検索**: <code>GetPageWithFreeSpace</code> が呼ばれると、<code>fsm_search</code> がルートから開始されます。各ノードで <code>fsm_search_avail</code> を用いて条件を満たす子ノードを特定し、リーフ（ボトムレベル）まで降下します。 2.  **更新**: ページの空き容量が変化すると、<code>RecordPageWithFreeSpace</code> が呼ばれます。該当するリーフページを更新し、必要に応じて親ノードの値を再計算します。 3.  **整合性**: <code>FreeSpaceMapVacuum</code> は木構造を深さ優先探索し、下位レベルの情報を上位レベルに反映（伝播）させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/freespace.h</code>, <code>storage/fsm_internals.h</code>: FSM の定義と内部構造。</li>
+<li><code>storage/smgr.h</code>: ストレージマネージャによる物理ファイル操作。</li>
+<li><code>access/xloginsert.h</code>, <code>access/xlogutils.h</code>: WAL 記録およびリカバリ時の処理。</li>
+<li><code>utils/rel.h</code>: リレーション情報の取得。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fsmpage.c</code>: FSM ページ内のビット操作や検索を行う低レベル関数群。</li>
+<li><code>indexfsm.c</code>: インデックス専用の FSM 処理。</li>
+<li><code>src/include/storage/fsm_internals.h</code>: FSM の内部データ構造と定数定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**カテゴリ化の仕組み**: 空き容量は <code>BLCKSZ / 256</code> 単位で量子化されます。<code>MaxFSMRequestSize</code>（通常は <code>MaxHeapTupleSize</code>）が最大カテゴリとして特別扱いされている点に注意してください。</li>
+<li>**不整合の許容**: FSM は「ヒント」として機能します。上位ノードの情報が古い場合でも、検索時にリーフまで降りて再確認するため、システムは正しく動作します。</li>
+<li>**WAL ログ**: FSM の更新は通常 WAL ログを出力しません（パフォーマンスのため）。そのため、クラッシュリカバリ時には物理的なページ状態が優先されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__FSMAddress.html" target="wiki-view"><code>FSMAddress</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__GetPageWithFreeSpace.html" target="wiki-view"><code>GetPageWithFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__RecordAndGetPageWithFreeSpace.html" target="wiki-view"><code>RecordAndGetPageWithFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__RecordPageWithFreeSpace.html" target="wiki-view"><code>RecordPageWithFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__XLogRecordPageWithFreeSpace.html" target="wiki-view"><code>XLogRecordPageWithFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__GetRecordedFreeSpace.html" target="wiki-view"><code>GetRecordedFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__FreeSpaceMapPrepareTruncateRel.html" target="wiki-view"><code>FreeSpaceMapPrepareTruncateRel</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__FreeSpaceMapVacuum.html" target="wiki-view"><code>FreeSpaceMapVacuum</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__fsm_get_location.html" target="wiki-view"><code>fsm_get_location</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__fsm_get_heap_blk.html" target="wiki-view"><code>fsm_get_heap_blk</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__fsm_get_parent.html" target="wiki-view"><code>fsm_get_parent</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__freespace__freespace_c__fsm_get_child.html" target="wiki-view"><code>fsm_get_child</code></a></li>
+</ul></body></html>

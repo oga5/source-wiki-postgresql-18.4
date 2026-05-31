@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeIndexscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeIndexscan.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの実行エンジンにおいて、インデックスを用いたテーブルスキャン（<code>IndexScan</code>）を実行するためのノード実装です。インデックスからタプルを順次取得し、必要に応じてフィルタリングや順序の再評価を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、プランツリーの実行フェーズにおける「インデックススキャン」の責務を担います。<code>nodeIndexonlyscan.c</code> や <code>nodeBitmapIndexscan.c</code> とは、インデックスアクセスという共通の基盤を持ちつつ、ヒープタプルのフェッチと順序保証に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>インデックススキャンの初期化、実行、終了のライフサイクル管理。</li>
+<li>インデックスの <code>ORDER BY</code> 句に対応するための再ソート（<code>pairingheap</code> を使用）。</li>
+<li>ランタイムキー（実行時に値が決定する条件）の評価とインデックスへの適用。</li>
+<li>並列クエリ実行時のDSM（共有メモリ）管理と統計情報の集約。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecIndexScan</code>: スキャン実行のメインエントリーポイント。</li>
+<li><code>IndexNext</code>: 通常のインデックススキャンによるタプル取得。</li>
+<li><code>IndexNextWithReorder</code>: <code>ORDER BY</code> 句がある場合の再ソート処理。</li>
+<li><code>ExecInitIndexScan</code>: ノードの初期化とスキャンキーの構築。</li>
+<li><code>ReorderTuple</code>: 再ソート用キュー（<code>pairingheap</code>）に格納されるタプル構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>EvalOrderByExpressions</code></li>
+<li><code>ExecIndexEvalRuntimeKeys</code></li>
+<li><code>ExecIndexScanInitializeDSM</code></li>
+<li><code>ExecIndexScanInitializeWorker</code></li>
+<li><code>ExecIndexScanReInitializeDSM</code></li>
+<li><code>ExecReScanIndexScan</code></li>
+<li><code>IndexRecheck</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitIndexScan</code> が呼び出され、インデックスの <code>ScanKey</code> を構築します。ランタイムキーがある場合は <code>ExprContext</code> を準備します。 2. **実行**: <code>ExecIndexScan</code> が <code>IndexNext</code> または <code>IndexNextWithReorder</code> を呼び出します。 3. **データ取得**: <code>index_getnext_slot</code> を通じてインデックスからタプルを取得します。 4. **再評価**: インデックスが損失性（lossy）である場合や、<code>ORDER BY</code> の再チェックが必要な場合は、<code>ExecQualAndReset</code> や <code>EvalOrderByExpressions</code> で条件を再検証します。 5. **再ソート**: <code>ORDER BY</code> が必要な場合、タプルを <code>pairingheap</code> にプッシュし、順序が正しいものを順次ポップして返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>, <code>access/relscan.h</code>: インデックスアクセスメソッドのインターフェース。</li>
+<li><code>executor/nodeIndexscan.h</code>: 公開インターフェース定義。</li>
+<li><code>lib/pairingheap.h</code>: 再ソート用優先度付きキューの実装。</li>
+<li><code>nodes/nodeFuncs.h</code>: 式評価関連のユーティリティ。</li>
+<li><code>access/tableam.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execScan.c</code>: スキャンノードの共通基盤。</li>
+<li><code>src/backend/executor/nodeIndexonlyscan.c</code>: インデックスのみで完結するスキャン。</li>
+<li><code>src/backend/access/nbtree/nbtscan.c</code>: B-treeインデックスの具体的なスキャン実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再ソートの仕組み**: <code>IndexNextWithReorder</code> は、インデックスが返す順序が不完全な場合や、<code>ORDER BY</code> 句の再評価が必要な場合に、<code>pairingheap</code> を用いて正しい順序を保証します。</li>
+<li>**ランタイムキー**: <code>ExecIndexEvalRuntimeKeys</code> は、クエリ実行中に値が変化する条件（例: <code>WHERE col = $1</code>）を処理します。<code>ExecReScanIndexScan</code> で再計算されます。</li>
+<li>**並列処理**: <code>ExecIndexScanEstimate</code> などの関数群は、並列ワーカー間でのスキャン状態共有を管理します。並列実行時は <code>ParallelIndexScanDesc</code> を介して状態が同期されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ReorderTuple.html" target="wiki-view"><code>ReorderTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__IndexNext.html" target="wiki-view"><code>IndexNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__IndexNextWithReorder.html" target="wiki-view"><code>IndexNextWithReorder</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__EvalOrderByExpressions.html" target="wiki-view"><code>EvalOrderByExpressions</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__IndexRecheck.html" target="wiki-view"><code>IndexRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecIndexScan.html" target="wiki-view"><code>ExecIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecReScanIndexScan.html" target="wiki-view"><code>ExecReScanIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecIndexEvalRuntimeKeys.html" target="wiki-view"><code>ExecIndexEvalRuntimeKeys</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecInitIndexScan.html" target="wiki-view"><code>ExecInitIndexScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecIndexScanInitializeDSM.html" target="wiki-view"><code>ExecIndexScanInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecIndexScanReInitializeDSM.html" target="wiki-view"><code>ExecIndexScanReInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexscan_c__ExecIndexScanInitializeWorker.html" target="wiki-view"><code>ExecIndexScanInitializeWorker</code></a></li>
+</ul></body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__portalcmds_c__PersistHoldablePortal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PersistHoldablePortal</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/portalcmds.c:325</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクション終了後も保持される「ホールド可能カーソル（Holdable Portal）」に対し、クエリの実行結果を <code>Tuplestore</code> へ退避させ、永続化を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void PersistHoldablePortal(Portal portal)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>Portal portal</code>（永続化対象のポータル構造体）</li>
+<li>**出力**: なし（副作用としてポータル内の <code>holdStore</code> に結果が格納され、<code>queryDesc</code> が解放される）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>portal-&gt;createSubid</code> が有効であること。</li>
+<li><code>portal-&gt;holdContext</code> および <code>portal-&gt;holdStore</code> が初期化済みであること。</li>
+<li><code>portal-&gt;holdSnapshot</code> が <code>NULL</code> であること。</li>
+<li>呼び出し時に、ポータルを作成したトランザクション内にあること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メタデータ保護**: <code>tupDesc</code> をポータルの長期メモリコンテキストへコピーする。 2. **実行環境の準備**: <code>ActivePortal</code> 等のグローバル変数を一時保存し、ポータル固有のコンテキストへ切り替える。 3. **データ転送**:</p>
+<ul>
+<li><code>DestReceiver</code> を <code>DestTuplestore</code> に設定し、クエリ実行結果を <code>holdStore</code> に書き込む。</li>
+<li>スクロール可能なカーソルの場合は <code>ExecutorRewind</code> を実行する。</li>
+<p>4. **クリーンアップ**: <code>ExecutorFinish</code> および <code>ExecutorEnd</code> を呼び出し、クエリ実行エンジンを終了させる。 5. **位置調整**: <code>atEnd</code> フラグの状態に応じて、<code>tuplestore</code> の読み取り位置を再設定する。 6. **エラーハンドリング**: <code>PG_TRY/PG_CATCH</code> ブロックにより、実行中のエラー発生時に <code>MarkPortalFailed</code> を呼び出し、ポータルを無効化する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/utils/mmgr/portalmem.c</code>（トランザクション終了処理に関連する箇所）</li>
+<li>**呼び出し先**: <code>ExecutorRun</code>, <code>ExecutorFinish</code>, <code>ExecutorEnd</code>, <code>CreateTupleDescCopy</code>, <code>tuplestore_skiptuples</code>, <code>tuplestore_rescan</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Portal</code>: ポータルの状態を保持する主要構造体。</li>
+<li><code>QueryDesc</code>: クエリ実行プランと状態を保持。</li>
+<li><code>Tuplestore</code>: 結果セットを永続化するためのストレージ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー発生時**: <code>PG_CATCH</code> により <code>MarkPortalFailed</code> が実行され、ポータルは破棄対象となる。</li>
+<li>**スクロール不可カーソル**: <code>CURSOR_OPT_SCROLL</code> が指定されていない場合、<code>tuplestore</code> のリポジショニングは行われない。</li>
+<li>**二重シャットダウン防止**: <code>portal-&gt;queryDesc</code> を <code>NULL</code> に設定することで、クリーンアップ時の二重解放を回避している。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はトランザクション終了時の重要な処理であり、メモリ消費量やディスクI/Oに直接影響する。</li>
+<li><code>tuplestore</code> への書き込み時に <code>detoast</code> を行うため、スナップショットなしでもデータが安全に保持される設計となっている。</li>
+</ul></body></html>

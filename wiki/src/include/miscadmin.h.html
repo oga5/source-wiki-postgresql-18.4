@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/miscadmin.h.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/include/miscadmin.h</h1>
+<h2>概要</h2>
+<p><code>miscadmin.h</code> は、PostgreSQL バックエンドの管理、初期化、およびプロセス状態を制御するための中心的なヘッダーファイルです。歴史的に分散していたグローバル変数、ディレクトリパス管理、プロセスモード、およびリソース制限（<code>work_mem</code> 等）の定義を集約しています。</p>
+<h2>モジュール内での役割</h2>
+<p>システム全体の「管理用インターフェース」として機能します。バックエンドの実行環境、セキュリティコンテキスト、および割り込み処理の基盤を提供し、他のサブシステム（<code>tcop</code>, <code>utils</code>, <code>executor</code>）が共通の管理状態を参照するためのハブとなります。</p>
+<h2>責務</h2>
+<ul>
+<li>**割り込み・クリティカルセクション管理**: 非同期シグナル（SIGINT/SIGTERM）の安全な処理と、データ整合性を保護するための排他制御。</li>
+<li>**プロセス状態管理**: バックエンドの種類（<code>BackendType</code>）や実行モード（<code>ProcessingMode</code>）の定義と判定。</li>
+<li>**グローバル設定の公開**: GUC（Grand Unified Configuration）パラメータや、プロセス固有の実行時情報（PID, ユーザーID, データディレクトリ等）の提供。</li>
+<li>**初期化・ライフサイクル管理**: プロセス起動時の環境構築、ロックファイル管理、および共有メモリ要求のフック。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>割り込み制御</h3>
+<ul>
+<li><code>CHECK_FOR_INTERRUPTS()</code>: 割り込みが保留されている場合に <code>ProcessInterrupts()</code> を呼び出すマクロ。</li>
+<li><code>HOLD_INTERRUPTS()</code> / <code>RESUME_INTERRUPTS()</code>: 割り込み処理を一時的に禁止するカウンタ操作。</li>
+<li><code>START_CRIT_SECTION()</code> / <code>END_CRIT_SECTION()</code>: クリティカルセクション（XLOG関連等）の開始・終了。エラー発生時に <code>PANIC</code> へ昇格させるためのガード。</li>
+</ul>
+<h3>プロセス・状態管理</h3>
+<ul>
+<li><code>BackendType</code>: バックエンドの役割（<code>B_BACKEND</code>, <code>B_CHECKPOINTER</code>, <code>B_LOGGER</code> 等）を識別する列挙型。</li>
+<li><code>ProcessingMode</code>: システムの状態（<code>Bootstrap</code>, <code>Init</code>, <code>Normal</code>）を定義。</li>
+<li><code>MyBackendType</code>, <code>Mode</code>: 現在のプロセスの役割とモードを保持するグローバル変数。</li>
+</ul>
+<h3>セキュリティ・ユーザー管理</h3>
+<ul>
+<li><code>GetUserId()</code>, <code>SetUserIdAndSecContext()</code>: 現在の実行ユーザーIDおよびセキュリティコンテキストの取得・設定。</li>
+<li><code>superuser()</code>: 現在のユーザーがスーパーユーザー権限を持つか判定。</li>
+</ul>
+<h3>リソース・設定パラメータ</h3>
+<ul>
+<li><code>work_mem</code>, <code>maintenance_work_mem</code>: メモリ使用制限。</li>
+<li><code>DataDir</code>: データディレクトリパス。</li>
+<li><code>DateStyle</code>, <code>IntervalStyle</code>: 日付・時刻のフォーマット設定。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**割り込みフロー**: シグナルハンドラが <code>InterruptPending</code> 等のフラグを立てる。実行中のコードが <code>CHECK_FOR_INTERRUPTS()</code> を呼び出すと、<code>ProcessInterrupts()</code> が実行され、保留中のシグナルに応じた処理（クエリキャンセルやプロセス終了）が行われる。</li>
+<li>**初期化フロー**: <code>InitPostgres()</code> がバックエンドの初期化を統括し、<code>process_shared_preload_libraries()</code> 等を通じて共有ライブラリのロードやメモリ要求の処理を行う。</li>
+<li>**セキュリティフロー**: <code>SetUserIdAndSecContext()</code> を通じて、権限昇格（<code>SET ROLE</code> 等）の前後でコンテキストをスタック的に管理する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>&lt;signal.h&gt;</code>: シグナル処理の基盤。</li>
+<li><code>&quot;datatype/timestamp.h&quot;</code>: <code>TimestampTz</code> 型の定義。</li>
+<li><code>&quot;pgtime.h&quot;</code>: <code>pg_time_t</code> 型の定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tcop/postgres.c</code>: <code>ProcessInterrupts()</code> の実装。</li>
+<li><code>src/backend/utils/init/miscinit.c</code>: プロセス初期化やロックファイル管理の実装。</li>
+<li><code>src/backend/utils/misc/superuser.c</code>: 権限チェックの実装。</li>
+<li><code>src/backend/utils/init/globals.c</code>: 本ヘッダーで宣言されたグローバル変数の実体。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: 本ファイルで宣言される変数の多くは <code>PGDLLIMPORT</code> で修飾されており、バックエンドのグローバルメモリ空間に配置されます。</li>
+<li>**注意点**: <code>CHECK_FOR_INTERRUPTS()</code> は、データ構造が整合性を保っている安全な場所でのみ呼び出す必要があります。</li>
+<li>**省略された詳細**: 本ファイルは非常に広範な定義を含むため、個別のGUCパラメータの詳細な挙動や、各バックエンドプロセスの詳細なライフサイクルについては、各サブシステムのドキュメントを参照してください。</li>
+<li>**インライン化**: 割り込みチェック等の頻繁に呼ばれる処理はマクロとして定義されており、パフォーマンスへの影響を最小限に抑えています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__include__miscadmin_h__pg_stack_base_t.html" target="wiki-view"><code>pg_stack_base_t</code></a></li>
+<li><a href="../../symbols/src__include__miscadmin_h__BackendType.html" target="wiki-view"><code>BackendType</code></a></li>
+<li><a href="../../symbols/src__include__miscadmin_h__ProcessingMode.html" target="wiki-view"><code>ProcessingMode</code></a></li>
+<li><a href="../../symbols/src__include__miscadmin_h__shmem_request_hook_type.html" target="wiki-view"><code>shmem_request_hook_type</code></a></li>
+</ul></body></html>

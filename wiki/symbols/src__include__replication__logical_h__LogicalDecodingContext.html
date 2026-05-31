@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__logical_h__LogicalDecodingContext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LogicalDecodingContext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/logical.h:33</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングセッション全体の状態を保持・管理する中核的なデータ構造です。WALの読み込みから、出力プラグインを通じた変更データのストリーミング、レプリケーションスロットの進捗管理までを一元的に制御します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct LogicalDecodingContext {
+    MemoryContext context;
+    ReplicationSlot *slot;
+    XLogReaderState *reader;
+    struct ReorderBuffer *reorder;
+    struct SnapBuild *snapshot_builder;
+    bool fast_forward;
+    OutputPluginCallbacks callbacks;
+    OutputPluginOptions options;
+    List *output_plugin_options;
+    LogicalOutputPluginWriterPrepareWrite prepare_write;
+    LogicalOutputPluginWriterWrite write;
+    LogicalOutputPluginWriterUpdateProgress update_progress;
+    StringInfo out;
+    void *output_plugin_private;
+    void *output_writer_private;
+    bool streaming;
+    bool twophase;
+    bool twophase_opt_given;
+    bool accept_writes;
+    bool prepared_write;
+    XLogRecPtr write_location;
+    TransactionId write_xid;
+    bool end_xact;
+    bool processing_required;
+} LogicalDecodingContext;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState</code> を介したWALデータ、および出力プラグイン経由で提供される設定やコールバック。</li>
+<li>**出力**: <code>StringInfo out</code> バッファを介して変換された変更データが、<code>write</code> コールバックを通じて外部（<code>walsender</code> 等）へストリーミングされます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>fast_forward</code> モードが有効な場合、出力プラグインはロードされず、関連するプロパティ（<code>callbacks</code> 等）は使用されません。</li>
+<li><code>twophase</code> フラグはプラグインが二相コミット用コールバックを提供しているかを示し、<code>twophase_opt_given</code> はユーザーが明示的にオプションを指定したかを示します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>CreateDecodingContext</code> によりコンテキストが生成され、WALリーダーやプラグインが紐付けられます。 2. **デコーディング**: <code>ReorderBuffer</code> がトランザクション単位で変更を蓄積し、コミット時にプラグインのコールバックを呼び出します。 3. **書き出し**: <code>prepare_write</code> / <code>write</code> コールバックを通じて、プラグインが変換したデータをストリーミングします。 4. **進捗管理**: <code>update_progress</code> を通じてレプリケーションスロットの <code>xmin</code> や <code>restart_lsn</code> を更新します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/test_decoding/test_decoding.c</code> 内の各デコーディング関数（<code>pg_decode_startup</code>, <code>pg_decode_commit_txn</code> 等）が、この構造体を引数として受け取り操作します。</li>
+<li>**呼び出し先**: <code>prepare_write</code>, <code>write</code>, <code>update_progress</code> などの関数ポインタを通じて、外部の書き出し処理やプラグイン固有のロジックを呼び出します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationSlot</code>: 関連付けられたレプリケーションスロット。</li>
+<li><code>XLogReaderState</code>: WAL読み込み用リーダー。</li>
+<li><code>ReorderBuffer</code>: トランザクション変更のバッファリング用。</li>
+<li><code>SnapBuild</code>: スナップショット構築用。</li>
+<li><code>OutputPluginCallbacks</code>: プラグインが実装するコールバック関数群。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>fast_forward</code> モード時は、プラグイン関連のコールバックやオプションが無視されるため、これらに依存する処理は実行されません。</li>
+<li><code>accept_writes</code> や <code>prepared_write</code> の状態管理が不整合な場合、データの書き出し処理が正しく行われない可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は論理レプリケーションの「制御センター」です。変更を加える際は、<code>ReorderBuffer</code> や <code>SnapBuild</code> との整合性に注意してください。</li>
+<li><code>fast_forward</code> モードの挙動については、プラグインがロードされないという制約を前提として設計されています。</li>
+</ul></body></html>

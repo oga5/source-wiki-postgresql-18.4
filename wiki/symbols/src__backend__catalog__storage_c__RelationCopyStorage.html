@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__storage_c__RelationCopyStorage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelationCopyStorage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/storage.c:477</code></li>
+</ul>
+<h2>目的</h2>
+<p>あるリレーションの物理ストレージ（フォーク）の内容を、別のリレーションへ物理的にコピーする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void RelationCopyStorage(SMgrRelation src, SMgrRelation dst, ForkNumber forkNum, char relpersistence)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>src</code>: コピー元のストレージマネージャリレーション。</li>
+<li><code>dst</code>: コピー先のストレージマネージャリレーション。</li>
+<li><code>forkNum</code>: コピー対象のフォーク番号（<code>MAIN_FORKNUM</code> 等）。</li>
+<li><code>relpersistence</code>: リレーションの永続性（<code>RELPERSISTENCE_PERMANENT</code>, <code>RELPERSISTENCE_UNLOGGED</code> 等）。</li>
+<li>**出力**: なし（副作用として <code>dst</code> にデータが書き込まれる）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>dst</code> は既に作成済みであること。</li>
+<li>コピー処理中に割り込み（<code>CHECK_FOR_INTERRUPTS</code>）が発生した場合、処理は中断される。</li>
+<li>ページ読み込み時にチェックサムエラーが検出された場合、統計情報が更新され、エラーが発生する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **WAL 記録判定**: <code>XLogIsNeeded()</code> が真かつ、永続的なリレーションまたはアンログドの初期フォークである場合に WAL 記録を有効化する。 2. **初期化**: <code>smgr_bulk_start_smgr</code> を用いて一括書き込み状態を開始する。 3. **データ転送**:</p>
+<ul>
+<li>ソースの全ブロック数（<code>smgrnblocks</code>）を取得し、各ブロックを順次読み込む。</li>
+<li><code>PageIsVerified</code> を用いて読み込んだページの整合性を検証する。</li>
+<li>検証失敗時は <code>ERROR</code> を発生させる。</li>
+<li><code>smgr_bulk_write</code> を介して、ページをコピー先へ書き出す（WAL 記録が必要な場合はフルページイメージとして記録）。</li>
+<p>4. **終了処理**: <code>smgr_bulk_finish</code> を呼び出し、一括書き込みを完了させる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam_handler.c</code></li>
+<li><code>src/backend/commands/tablecmds.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>smgr_bulk_start_smgr</code>, <code>smgrnblocks</code>, <code>smgrread</code>, <code>smgr_bulk_get_buf</code>, <code>smgr_bulk_write</code>, <code>smgr_bulk_finish</code></li>
+<li><code>PageIsVerified</code>, <code>pgstat_prepare_report_checksum_failure</code>, <code>relpathbackend</code>, <code>ereport</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SMgrRelation</code>: ストレージマネージャレベルのリレーション表現。</li>
+<li><code>BulkWriteState</code>: 一括書き込み操作の状態を保持する構造体。</li>
+<li><code>ForkNumber</code>: 操作対象のフォークを識別する列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**データ破損**: 読み込んだページが <code>PageIsVerified</code> を通過しない場合、<code>ERRCODE_DATA_CORRUPTED</code> でエラー終了する。</li>
+<li>**割り込み**: 処理中にシグナルを受信すると中断される。</li>
+<li>**チェックサム失敗**: <code>ignore_checksum_failure</code> が設定されていない場合、チェックサムエラーは致命的なエラーとして扱われる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はページの内容を解釈せず、フルページイメージとしてコピーするため、WAL ログのサイズが大きくなる可能性がある。</li>
+<li><code>relpersistence</code> の判定ロジックは、アンログドテーブルの初期フォークが永続的なリレーションと同様の同期・WAL 記録を必要とする仕様に基づいている。</li>
+</ul></body></html>

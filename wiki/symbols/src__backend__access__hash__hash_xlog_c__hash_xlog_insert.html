@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_insert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hash_xlog_insert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/hash/hash_xlog.c:124</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスへのタプル挿入操作をWALリプレイ時に再適用（Redo）する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void hash_xlog_insert(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）</li>
+<li>**出力**: なし（副作用としてバッファの状態を更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リプレイ処理中であるため、他のプロセスによる同時アクセスは発生しない前提で動作する。</li>
+<li>挿入先のデータページとメタページの更新は、それぞれ独立したバッファ操作として行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>xl_hash_insert</code> 構造体を取得する。 2. **データページの更新**:</p>
+<ul>
+<li><code>XLogReadBufferForRedo</code> で対象ページを読み込む。</li>
+<li><code>BLK_NEEDS_REDO</code> の場合、<code>PageAddItem</code> を用いてタプルをページに追加する。</li>
+<li>ページにLSNを書き込み、バッファをダーティにする。</li>
+<p>3. **メタページの更新**:</p>
+<li>2番目のブロック（メタページ）を読み込む。</li>
+<li><code>BLK_NEEDS_REDO</code> の場合、<code>hashm_ntuples</code> をインクリメントする。</li>
+<li>ページにLSNを書き込み、バッファをダーティにする。</li>
+<p>4. 各バッファは処理終了後に <code>UnlockReleaseBuffer</code> で解放される。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>hash_redo</code>（<code>src/backend/access/hash/hash_xlog.c:1080</code> 付近のディスパッチャより呼び出される）</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogReadBufferForRedo</code>, <code>XLogRecGetBlockData</code>, <code>BufferGetPage</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>BufferIsValid</code>, <code>UnlockReleaseBuffer</code>, <code>HashPageGetMeta</code>, <code>elog</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_hash_insert</code>: WALレコード内に格納された挿入情報。</li>
+<li><code>HashMetaPage</code>: ハッシュインデックスのメタデータ構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合、<code>PANIC</code> レベルでログを出力し、リカバリを停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は冪等（idempotent）である必要がある。</li>
+<li>通常のインデックス挿入時とは異なり、メタページの更新時にデータページに対するロックを保持し続ける必要はない。</li>
+</ul></body></html>

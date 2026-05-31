@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execUtils.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execUtils.c</h1>
+<h2>概要</h2>
+<p><code>execUtils.c</code> は、PostgreSQL のクエリ実行エンジンにおける「雑多なユーティリティ」を集約したファイルです。実行状態（<code>EState</code>）のライフサイクル管理、式評価コンテキスト（<code>ExprContext</code>）の生成・破棄、およびプランノードの初期化に必要な補助関数を提供します。実行エンジン全体で共有される基盤的なサポート機能の集合体です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、実行制御（<code>execMain.c</code>）と各プランノード（<code>node*.c</code>）の橋渡しをします。特に、メモリ管理やリレーションのオープン、射影（Projection）の準備といった、多くのノードで共通する定型処理を抽象化することで、各ノードの実装を簡素化する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行状態管理**: <code>EState</code> の作成とクリーンアップ。</li>
+<li>**式評価コンテキスト管理**: <code>ExprContext</code> の生成、破棄、およびリセット（<code>ReScan</code>）。</li>
+<li>**リレーション管理**: レンジテーブル（Range Table）に基づくリレーションのオープンとキャッシュ。</li>
+<li>**ノード初期化サポート**: 射影情報の構築、スロットの初期化、ターゲットリレーションの判定。</li>
+<li>**メタデータ取得**: 実行時の属性抽出や、DML 操作における権限・列情報の取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行状態管理</h3>
+<ul>
+<li><code>CreateExecutorState</code>: クエリ実行のルートとなる <code>EState</code> を作成し、クエリ単位のメモリコンテキストを初期化。</li>
+<li><code>FreeExecutorState</code>: <code>EState</code> に紐づくメモリ、JIT コンテキスト、パーティションディレクトリを解放。</li>
+</ul>
+<h3>式評価コンテキスト</h3>
+<ul>
+<li><code>CreateExprContext</code> / <code>CreateWorkExprContext</code>: プランノード用の式評価コンテキストを作成。<code>work_mem</code> に応じたメモリ割り当てサイズを制御。</li>
+<li><code>FreeExprContext</code>: コンテキストの破棄と登録されたシャットダウンコールバックの実行。</li>
+<li><code>RegisterExprContextCallback</code>: 式評価終了時に実行すべきクリーンアップ関数を登録。</li>
+</ul>
+<h3>リレーション・スロット管理</h3>
+<ul>
+<li><code>ExecOpenScanRelation</code>: スキャン対象のリレーションをオープンし、スキャン可能性を検証。</li>
+<li><code>ExecGetRangeTableRelation</code>: レンジテーブルインデックスからリレーションを取得（キャッシュ済みであればそれを返す）。</li>
+<li><code>ExecAssignProjectionInfo</code>: プランノードのターゲットリストに基づき射影情報を構築。</li>
+</ul>
+<h3>属性抽出</h3>
+<ul>
+<li><code>GetAttributeByName</code> / <code>GetAttributeByNum</code>: タプルから属性値を抽出。型キャッシュを利用するため、頻繁な呼び出しには注意が必要。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateExecutorState</code></li>
+<li><code>CreateExprContext</code></li>
+<li><code>CreateExprContextInternal</code></li>
+<li><code>CreateStandaloneExprContext</code></li>
+<li><code>CreateWorkExprContext</code></li>
+<li><code>ExecCreateScanSlotFromOuterPlan</code></li>
+<li><code>ExecInitRangeTable</code></li>
+<li><code>ExecInitResultRelation</code></li>
+<li><code>FreeExecutorState</code></li>
+<li><code>FreeExprContext</code></li>
+<li><code>MakePerTupleExprContext</code></li>
+<li><code>ReScanExprContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**メモリ管理**: <code>EState</code> はクエリ単位のメモリコンテキストを所有し、<code>ExprContext</code> はその子コンテキストとして作成されます。<code>FreeExecutorState</code> は <code>MemoryContextDelete</code> を呼び出し、ツリー構造全体を一括解放します。</li>
+<li>**コールバックフロー**: <code>ShutdownExprContext</code> は、<code>ExprContext</code> が破棄またはリセットされる際に、登録されたコールバックリストを逆順に実行します。これは、セットを返す関数（SRF）などのリソース解放に不可欠です。</li>
+<li>**射影フロー**: <code>ExecConditionalAssignProjectionInfo</code> は、ターゲットリストが入力タプルと一致するかを <code>tlist_matches_tupdesc</code> で判定し、不要な射影ステップをスキップする最適化を行います。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/tableam.h</code>: テーブルアクセス層の抽象化。</li>
+<li><code>executor/executor.h</code>: 実行エンジン共通のデータ構造定義。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュと属性抽出。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>executor/nodeModifyTable.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: <code>EState</code> のライフサイクルを制御する上位モジュール。</li>
+<li><code>src/backend/executor/execTuples.c</code>: <code>TupleTableSlot</code> の操作と変換。</li>
+<li><code>src/backend/executor/execExprInterp.c</code>: 式評価の実行エンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>EState</code> 内の多くの構造体は、<code>es_query_cxt</code> に割り当てられています。個別の <code>pfree</code> を行う必要はなく、<code>FreeExecutorState</code> による一括解放が前提です。</li>
+<li>**パフォーマンス**: <code>GetAttributeByName</code> は型キャッシュのルックアップを行うため、ループ内での多用は避けるべきです。</li>
+<li>**未実装・浅い部分**: 本ファイルは「雑多なユーティリティ」であるため、特定の機能（例えば並列クエリの詳細な同期ロジックなど）は他の専用ファイル（<code>execParallel.c</code> 等）に委譲されています。</li>
+<li>**不変条件**: <code>ExecGetRangeTableRelation</code> は、スキャン対象のリレーションが「剪定（Pruning）されていないこと」を前提としています。剪定されたリレーションへのアクセスはエラーとなります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__CreateExecutorState.html" target="wiki-view"><code>CreateExecutorState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__FreeExecutorState.html" target="wiki-view"><code>FreeExecutorState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__CreateExprContextInternal.html" target="wiki-view"><code>CreateExprContextInternal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__CreateExprContext.html" target="wiki-view"><code>CreateExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__CreateWorkExprContext.html" target="wiki-view"><code>CreateWorkExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__CreateStandaloneExprContext.html" target="wiki-view"><code>CreateStandaloneExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__FreeExprContext.html" target="wiki-view"><code>FreeExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__ReScanExprContext.html" target="wiki-view"><code>ReScanExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__MakePerTupleExprContext.html" target="wiki-view"><code>MakePerTupleExprContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__ExecCreateScanSlotFromOuterPlan.html" target="wiki-view"><code>ExecCreateScanSlotFromOuterPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__ExecInitRangeTable.html" target="wiki-view"><code>ExecInitRangeTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execUtils_c__ExecInitResultRelation.html" target="wiki-view"><code>ExecInitResultRelation</code></a></li>
+</ul></body></html>

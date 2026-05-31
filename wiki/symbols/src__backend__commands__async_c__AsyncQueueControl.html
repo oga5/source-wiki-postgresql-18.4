@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__async_c__AsyncQueueControl.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AsyncQueueControl</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/commands/async.c:281</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの非同期通知機能（<code>NOTIFY</code>等）において、共有メモリ上で通知キューの状態とリスナーの管理を行うための制御構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct AsyncQueueControl
+{
+	QueuePosition head;
+	QueuePosition tail;
+	int64		stopPage;
+	ProcNumber	firstListener;
+	TimestampTz lastQueueFillWarn;
+	QueueBackendStatus backend[FLEXIBLE_ARRAY_MEMBER];
+} AsyncQueueControl;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ領域として確保され、バックエンドプロセスが <code>LISTEN</code> を実行した際や通知を送信する際に更新されます。</li>
+<li>**出力**: キューの読み取り位置（<code>tail</code>）や書き込み位置（<code>head</code>）、および各バックエンドのリスナー状態を保持します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tail</code> は、すべてのリスニング中のバックエンドが読み取ったキュー位置以下である必要があります。</li>
+<li><code>stopPage</code> は、最も古い再利用されていないページを指し、<code>tail.page</code> 以下である必要があります。</li>
+<li><code>NotifyQueueLock</code> によって排他制御が行われます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>通知送信時、<code>head</code> を進めて新しい通知をキューに追加します。</li>
+<li><code>LISTEN</code> 実行時、自身のPIDを <code>backend</code> 配列に登録します。</li>
+<li>通知の到着時、<code>firstListener</code> から始まるリストを辿り、該当するバックエンドへ <code>PROCSIG_NOTIFY_INTERRUPT</code> を送信します。</li>
+<li><code>asyncQueueAdvanceTail</code> により、各バックエンドの読み取り状況に応じて <code>tail</code> を進め、不要なSLRUページを解放します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>AsyncShmemInit</code>（初期化時）、および通知の送信・受信・管理を行う各関数（<code>Async_Notify</code> 等）。</li>
+<li>**呼び出し先**: 本構造体自体はデータ構造であり、直接関数を呼び出すことはありませんが、<code>NotifyQueueLock</code> を介して排他制御が行われます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>QueuePosition</code>: キュー内の位置を特定する構造体。</li>
+<li><code>QueueBackendStatus</code>: 各バックエンドのリスナー状態を保持する構造体。</li>
+<li><code>AsyncQueueEntry</code>: キューに格納される個々の通知メッセージ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>キューが満杯の場合、通知の送信がブロックされるか、警告が記録されます（<code>lastQueueFillWarn</code> で制御）。</li>
+<li>読み取りが遅いバックエンドが存在すると、<code>tail</code> が進まずディスク領域（SLRU）を過剰に消費する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>FLEXIBLE_ARRAY_MEMBER</code> を含んでいるため、共有メモリ確保時には <code>offsetof(AsyncQueueControl, backend)</code> を使用してサイズを計算する必要があります。</li>
+<li>ロック取得順序（<code>NotifyQueueTailLock</code> -&gt; <code>NotifyQueueLock</code>）の厳守がデッドロック回避に不可欠です。</li>
+</ul></body></html>

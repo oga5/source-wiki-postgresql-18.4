@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/schemacmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/schemacmds.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるスキーマ（名前空間）の作成、名前変更、および所有者変更を行うコマンドの実装を提供します。SQLの <code>CREATE SCHEMA</code>、<code>ALTER SCHEMA</code> 文のバックエンド処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、データベース内の論理的な名前空間を管理します。他のコマンド群（<code>tablecmds.c</code> など）がスキーマ内にオブジェクトを作成する際、その基盤となる名前空間の整合性を保証します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキーマ作成**: <code>CREATE SCHEMA</code> 文の解析結果に基づき、名前空間の作成、所有権の設定、およびスキーマ内でのサブコマンド（テーブル作成など）の逐次実行。</li>
+<li>**スキーマ操作**: スキーマ名の変更および所有者の変更。</li>
+<li>**セキュリティ管理**: スキーマ作成・変更時の権限チェック（<code>ACL_CREATE</code>）、所有者変更時のロール切り替え権限の検証。</li>
+<li>**システム保護**: <code>pg_</code> で始まる予約済みスキーマ名の保護。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CreateSchemaCommand</code>: <code>CREATE SCHEMA</code> 文のメインエントリポイント。サブコマンドの実行と検索パスの一時的な変更を管理します。</li>
+<li><code>RenameSchema</code>: スキーマ名を変更し、システムカタログを更新します。</li>
+<li><code>AlterSchemaOwner</code>: スキーマの所有者を変更し、依存関係を更新します。</li>
+<li><code>AlterSchemaOwner_internal</code>: 所有者変更の共通ロジック（ACLの再計算や依存関係の更新）をカプセル化した内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterSchemaOwner_oid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **CREATE SCHEMA**:</p>
+<ul>
+<li>権限チェック後、<code>NamespaceCreate</code> でカタログにエントリを追加。</li>
+<li><code>search_path</code> を一時的に変更し、作成中のスキーマを優先させる。</li>
+<li><code>transformCreateSchemaStmtElements</code> でサブコマンドを順序立て、<code>ProcessUtility</code> をループで呼び出して各コマンドを実行。</li>
+<li>最後に <code>search_path</code> を復元。</li>
+<p>2. **ALTER SCHEMA**:</p>
+<li><code>pg_namespace</code> システムカタログを <code>RowExclusiveLock</code> でロック。</li>
+<li>権限確認後、<code>CatalogTupleUpdate</code> を使用してカタログタプルを更新。</li>
+<li><code>InvokeObjectPostAlterHook</code> を呼び出し、イベントトリガーやキャッシュ無効化を通知。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_namespace.h</code>: スキーマ管理の基盤となるシステムカタログ定義。</li>
+<li><code>catalog/dependency.h</code>: 所有者変更時の依存関係更新。</li>
+<li><code>utils/acl.h</code>: 権限チェック（<code>object_aclcheck</code>）。</li>
+<li><code>parser/parse_utilcmd.h</code>: <code>CREATE SCHEMA</code> 内のサブコマンド変換。</li>
+<li><code>tcop/utility.h</code>: <code>ProcessUtility</code> によるサブコマンド実行。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/schemacmds.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/schemacmds.h</code>: 公開プロトタイプ定義。</li>
+<li><code>src/backend/catalog/namespace.c</code>: 名前空間の低レベルな作成・検索ロジック。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: スキーマ内で作成されるオブジェクト（テーブル等）の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>CreateSchemaCommand</code> 内のサブコマンド実行は、<code>ProcessUtility</code> を再帰的に呼び出すことで実現されています。これにより、スキーマ作成文の中でテーブル作成などの他のDDLを透過的に扱えます。</li>
+<li>所有者変更時、ACL（アクセス制御リスト）の再計算が必要になるため、<code>aclnewowner</code> を介して所有者変更に伴う権限の移行を行っています。</li>
+<li><code>if_not_exists</code> の処理は、権限チェックの直後に行われるため、存在しない場合のセキュリティリスク（権限のないユーザーが他人のスキーマ作成を試みる等）を考慮した設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__schemacmds_c__CreateSchemaCommand.html" target="wiki-view"><code>CreateSchemaCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__schemacmds_c__RenameSchema.html" target="wiki-view"><code>RenameSchema</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__schemacmds_c__AlterSchemaOwner_oid.html" target="wiki-view"><code>AlterSchemaOwner_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__schemacmds_c__AlterSchemaOwner.html" target="wiki-view"><code>AlterSchemaOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__schemacmds_c__AlterSchemaOwner_internal.html" target="wiki-view"><code>AlterSchemaOwner_internal</code></a></li>
+</ul></body></html>

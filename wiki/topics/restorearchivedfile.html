@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/restorearchivedfile.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RestoreArchivedFile</h1>
+<h2>概念</h2>
+<p><code>RestoreArchivedFile</code> は、PostgreSQLにおいて外部アーカイブストレージからWAL（Write-Ahead Log）ファイルをローカル環境に復元するための関数です。この関数は、サーバーのバックエンドプロセス（<code>src/backend/access/transam</code>）と、フロントエンドのユーティリティ（<code>src/fe_utils</code>）の2つの異なるコンテキストで同名の関数として実装されています。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのリカバリ、スタンバイサーバーの同期、または <code>pg_rewind</code> などのユーティリティ実行時において、アーカイブされたWALファイルを安全かつ確実にローカルに取得・復元することは、データの整合性を維持するために不可欠です。特に、不完全な転送を検知するためのファイルサイズ検証や、シグナルハンドラとの競合回避など、堅牢なファイル復元処理を提供する役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/transam</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/transam/xlogarchive.c#RestoreArchivedFile</code>**: バックエンド側で <code>restore_command</code> を実行し、WALファイルを <code>pg_wal</code> ディレクトリに復元する関数。</li>
+<li>**<code>symbol:src/fe_utils/archive.c#RestoreArchivedFile</code>**: フロントエンド/ユーティリティ側で指定された <code>restoreCommand</code> を実行し、復元されたファイルのファイルディスクリプタを返す関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>バックエンドとフロントエンドでそれぞれ独立した流れが存在しますが、これら2つのモジュールが全体としてどのように連携・統合されているか（例えば、どのタイミングでどちらが優先して呼び出されるかなど）の完全なエンドツーエンドのフローは、提供された情報からはまだ判明していません。</p>
+<p>各実装における個別の処理フローは以下の通りです。</p>
+<h3>バックエンド側 (<code>src/backend/access/transam/xlogarchive.c</code>)</h3>
+<p>1. **初期チェック**: アーカイブリカバリ要求（<code>ArchiveRecoveryRequested</code>）および <code>restore_command</code> の設定を確認します。 2. **既存ファイル排除**: 復元先（<code>XLOGDIR</code>）に同名ファイルが存在する場合は削除します。 3. **コマンド構築と実行**: <code>BuildRestoreCommand</code> でコマンドを生成し、シグナル競合を防ぐ <code>PreRestoreCommand()</code> を呼んだ後、<code>system()</code> で実行し、<code>PostRestoreCommand()</code> を呼び出します。 4. **検証**: ファイルサイズ（<code>expectedSize</code>）が指定されている場合、実際のサイズと一致するか検証します。</p>
+<h3>フロントエンド/ユーティリティ側 (<code>src/fe_utils/archive.c</code>)</h3>
+<p>1. **パス構築**: 復元先ベースパスとWALファイル名からフルパスを生成します。 2. **コマンド構築と実行**: <code>BuildRestoreCommand</code> でプレースホルダを置換し、<code>system()</code> で実行します。 3. **検証とオープン**: ファイルサイズ（<code>expectedSize</code>）を検証後、ファイルを読み取り専用で <code>open()</code> し、ファイルディスクリプタを返します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**サイズ検証の整合性**: <code>expectedSize</code> が 0 より大きい値として指定されている場合、復元されたファイルの実際のサイズ（<code>stat</code> で取得）と厳密に一致しなければなりません。不一致の場合、バックエンド（スタンバイモード以外）およびフロントエンドの双方で致命的エラー（<code>FATAL</code> / <code>pg_fatal</code>）となります。</li>
+<li>**リソース管理**: フロントエンドの実装において復元に成功した場合、呼び出し元は返されたファイルディスクリプタを適切に <code>close()</code> する責任を負います。</li>
+<li>**バックエンドの実行前提**: バックエンド側では、<code>ArchiveRecoveryRequested</code> が真であり、かつ <code>recoveryRestoreCommand</code> が設定されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**シグナル競合とプラットフォーム固有の挙動**: バックエンド側では <code>system()</code> を使用するため、シグナルハンドラとの競合を避けるための <code>PreRestoreCommand</code>/<code>PostRestoreCommand</code> の呼び出しが必須です。また、Windows環境ではファイルロックの競合により既存ファイルの削除（<code>unlink</code>）が失敗するリスクがあります。</li>
+<li>**シェルインジェクションのリスク**: 双方の実装で <code>system()</code> を介して外部コマンドを実行するため、<code>restore_command</code> に含まれるパラメータの安全性を呼び出し側で担保する必要があります。</li>
+<li>**不完全な転送**: アーカイブからの転送が途中で中断された場合、ファイルサイズ検証（<code>expectedSize</code>）をスキップ（0を指定）していると、破損したWALファイルをそのまま正常として扱ってしまう危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/access/transam/xlogarchive.c</code> (バックエンドにおけるWAL復元処理の具体的な実装)</li>
+<li><code>src/fe_utils/archive.c</code> (フロントエンドユーティリティにおけるWAL復元処理の具体的な実装)</li>
+<li><code>src/backend/access/transam/timeline.c</code> / <code>src/backend/access/transam/xlogrecovery.c</code> / <code>src/bin/pg_rewind/parsexlog.c</code> (これらの関数を呼び出す主要なコンテキスト)</li>
+</ul></body></html>

@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/float.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/float.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の組み込み浮動小数点型（<code>float4</code>, <code>float8</code>）に対する SQL レベルの演算、変換、および集約関数の実装を担うモジュールです。IEEE 754 浮動小数点数のプラットフォーム非依存な挙動を保証し、算術演算、三角関数、統計集約、および型変換機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> サブシステムの一部として、数値計算のコアロジックを提供します。<code>float.h</code> で定義されたインターフェースを実装し、SQL クエリ実行時の演算子（<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>）や関数（<code>sin</code>, <code>sqrt</code>, <code>avg</code> 等）のバックエンド処理を完結させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O 変換**: 文字列とバイナリ形式間の相互変換（<code>in</code>, <code>out</code>, <code>recv</code>, <code>send</code>）。</li>
+<li>**算術・数学演算**: 基本的な四則演算、超越関数（三角関数、指数、対数、ガンマ関数）。</li>
+<li>**比較とソート**: B-tree インデックス構築用の比較関数および <code>SortSupport</code> 実装。</li>
+<li>**統計集約**: <code>AVG</code>, <code>STDDEV</code>, <code>VARIANCE</code>, <code>REGR_*</code> 等の集約関数における、数値的に安定した累積計算（Youngs-Cramer アルゴリズム）。</li>
+<li>**エラーハンドリング**: 浮動小数点例外（オーバーフロー、アンダーフロー、ゼロ除算）の SQLSTATE 準拠した報告。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>設定・定数</h3>
+<ul>
+<li><code>extra_float_digits</code>: 出力精度を制御する GUC パラメータ。</li>
+<li><code>degree_c_*</code>: 三角関数の精度を保証するために使用される定数群。</li>
+</ul>
+<h3>入出力・変換</h3>
+<ul>
+<li><code>float4in</code>, <code>float8in</code>: 文字列から浮動小数点数への変換。<code>strtof</code>/<code>strtod</code> をラップし、プラットフォーム間の差異を吸収。</li>
+<li><code>float4out</code>, <code>float8out</code>: 浮動小数点数から文字列への変換。<code>shortest_decimal</code> 形式を優先。</li>
+<li><code>ftod</code>, <code>dtof</code>, <code>dtoi*</code>, <code>ftoi*</code>: 型キャスト関数。</li>
+</ul>
+<h3>算術・数学関数</h3>
+<ul>
+<li><code>float*pl</code>, <code>float*mi</code>, <code>float*mul</code>, <code>float*div</code>: 基本演算子。</li>
+<li><code>dpow</code>, <code>dexp</code>, <code>dlog1</code>, <code>dsin</code>, <code>dcos</code>, <code>dtan</code>: 超越関数群。</li>
+<li><code>dgamma</code>, <code>dlgamma</code>: ガンマ関数関連。</li>
+</ul>
+<h3>集約関数</h3>
+<ul>
+<li><code>float8_accum</code>, <code>float4_accum</code>: 集約の遷移関数。Youngs-Cramer アルゴリズムにより <code>N</code>, <code>Sx</code>, <code>Sxx</code> を更新。</li>
+<li><code>float8_combine</code>: 並列集約時に中間状態をマージする関数。</li>
+<li><code>float8_avg</code>, <code>float8_var_*</code>, <code>float8_stddev_*</code>: 集約の最終計算関数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>_in</code> 関数が文字列を解析し、<code>strtod</code>/<code>strtof</code> を使用して内部表現へ変換。エラー時は <code>ereturn</code> を介して SQL レベルのエラーを発生。 2. **演算**: <code>PG_FUNCTION_ARGS</code> を通じて <code>Datum</code> を受け取り、FPU を利用して計算。結果が無限大や NaN になる場合、<code>float_overflow_error</code> 等のヘルパーでエラーを報告。 3. **集約**: 遷移データとして <code>float8[3]</code>（<code>N</code>, <code>Sx</code>, <code>Sxx</code>）または <code>float8[6]</code>（回帰用）の配列を使用。<code>_accum</code> 関数が新しい値を加えるたびに、数値的に安定した更新式を適用。 4. **出力**: <code>_out</code> 関数が <code>extra_float_digits</code> に基づき、<code>shortest_decimal</code> または <code>pg_strfromd</code> を用いて文字列化。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>math.h</code>: 標準数学関数。</li>
+<li><code>common/int.h</code>: オーバーフローチェック付き算術。</li>
+<li><code>common/shortest_dec.h</code>: 高精度な浮動小数点出力用。</li>
+<li><code>utils/array.h</code>: 集約用配列操作。</li>
+<li><code>utils/float.h</code>: 公開インターフェース定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/float.h</code>: 本ファイルの関数プロトタイプとインラインヘルパー。</li>
+<li><code>src/backend/utils/adt/numeric.c</code>: 任意精度数値型（<code>numeric</code>）の実装。</li>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: <code>SortSupport</code> を利用したソート処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**数値的安定性**: 集約関数では、単純な <code>sum(x^2)</code> ではなく Youngs-Cramer アルゴリズムを採用しており、丸め誤差を最小化しています。</li>
+<li>**プラットフォーム非依存性**: <code>strtod</code> や <code>pow</code> の挙動は OS/コンパイラにより異なるため、<code>float*in_internal</code> や <code>dpow</code> 内で明示的な NaN/Inf チェックやエラーハンドリングを行っています。</li>
+<li>**三角関数の定数**: <code>init_degree_constants</code> は、コンパイラによる定数式の事前計算（およびそれによる精度の不一致）を防ぐための工夫です。</li>
+<li>**省略された詳細**: 本ファイルは非常に広範な関数群を含むため、個別の数学関数の実装詳細（POSIX 準拠のための細かい分岐など）は省略しています。これらは主に <code>math.h</code> のラッパーとして機能します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float_overflow_error.html" target="wiki-view"><code>float_overflow_error</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float_underflow_error.html" target="wiki-view"><code>float_underflow_error</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float_zero_divide_error.html" target="wiki-view"><code>float_zero_divide_error</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__is_infinite.html" target="wiki-view"><code>is_infinite</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float4in_internal.html" target="wiki-view"><code>float4in_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float8in_internal.html" target="wiki-view"><code>float8in_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float8out_internal.html" target="wiki-view"><code>float8out_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float4_cmp_internal.html" target="wiki-view"><code>float4_cmp_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__float8_cmp_internal.html" target="wiki-view"><code>float8_cmp_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__in_range_float8_float8.html" target="wiki-view"><code>in_range_float8_float8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__in_range_float4_float8.html" target="wiki-view"><code>in_range_float4_float8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__float_c__init_degree_constants.html" target="wiki-view"><code>init_degree_constants</code></a></li>
+</ul></body></html>

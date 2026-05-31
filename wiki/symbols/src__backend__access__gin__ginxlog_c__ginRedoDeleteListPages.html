@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginxlog_c__ginRedoDeleteListPages.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginRedoDeleteListPages</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginxlog.c:674</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのリストページ削除に関するWALレコードをリプレイし、メタページの更新および削除対象ページの初期化を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ginRedoDeleteListPages(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> から取得したメタページブロック番号が <code>GIN_METAPAGE_BLKNO</code> であること。</li>
+<li>削除対象のページは、メタページロックによって保護されるため、リプレイ中に他のリーダーが削除中のページにアクセスすることはない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **メタページの更新**:</p>
+<ul>
+<li><code>XLogInitBufferForRedo</code> でメタページを取得し、<code>GinInitMetabuffer</code> で初期化する。</li>
+<li>WALレコード内の <code>metadata</code> をメタページにコピーし、LSNを更新してダーティにする。</li>
+<p>2. **削除対象ページの初期化**:</p>
+<li>WALレコードに含まれる削除対象ページ数（<code>data-&gt;ndeleted</code>）分だけループする。</li>
+<li>各ページを <code>XLogInitBufferForRedo</code> で取得し、<code>GinInitBuffer</code> を用いて <code>GIN_DELETED</code> 状態として初期化する。</li>
+<li>各ページのLSNを更新し、ダーティにしてからバッファを解放する。</li>
+<p>3. **終了処理**:</p>
+<li>最後にメタページのバッファを解放する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginxlog.c</code> 内の <code>gin_redo</code> 関数から呼び出される（WALレコードの種別に基づくディスパッチ）。</li>
+<li>**呼び出し先**: <code>XLogInitBufferForRedo</code>, <code>BufferGetBlockNumber</code>, <code>BufferGetPage</code>, <code>GinInitMetabuffer</code>, <code>GinPageGetMeta</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>GinInitBuffer</code>, <code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ginxlogDeleteListPages</code>: WALレコードのデータ構造。</li>
+<li><code>GinMetaPageData</code>: GINインデックスのメタページ情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>削除対象ページが0の場合、ループは実行されずメタページの更新のみが行われる。</li>
+<li><code>XLogInitBufferForRedo</code> が失敗した場合はリプレイ処理が中断される（PostgreSQLの標準的なWALリプレイ動作に準拠）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、通常の運用時における <code>shiftList()</code> とは異なり、削除対象ページを一つずつロックして処理する。これはWALリプレイの特性上、安全であると判断されている。</li>
+<li>削除されたページは空の <code>GIN_DELETED</code> 状態として再初期化され、ページ内の右リンク（right-link）は保持されない。</li>
+</ul></body></html>

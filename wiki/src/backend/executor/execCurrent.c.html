@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execCurrent.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execCurrent.c</h1>
+<h2>概要</h2>
+<p>SQLの <code>WHERE CURRENT OF cursor_name</code> 句を処理するための実行エンジンサポートを提供します。カーソルが現在指し示している行の物理的な位置（TID: Tuple Identifier）を特定し、更新や削除操作の対象を決定します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、カーソルベースのデータ操作（Positioned Update/Delete）の基盤を担います。主に <code>nodeModifyTable.c</code> から呼び出され、カーソルと対象テーブルの紐付けを解決します。</p>
+<h2>責務</h2>
+<ul>
+<li>**カーソルの解決**: 名前付きカーソルから対応する <code>Portal</code> を取得し、それが有効な <code>SELECT</code> クエリであることを検証する。</li>
+<li>**TIDの特定**:</li>
+<li><code>FOR UPDATE/SHARE</code> 句がある場合: <code>ExecRowMark</code> を通じてカーソルが保持する TID を取得する。</li>
+<li><code>FOR UPDATE/SHARE</code> 句がない場合: プランツリーを探索し、対象テーブルをスキャンしているノードを特定して TID を抽出する。</li>
+<li>**エラーハンドリング**: カーソルが存在しない、または更新対象として不適切な状態（集約関数が含まれる等）である場合にエラーを報告する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>execCurrentOf</code>: 公開関数。指定されたテーブルの現在の TID を特定するメインエントリポイント。</li>
+<li><code>search_plan_tree</code>: プランツリーを再帰的に探索し、特定のテーブルをスキャンしている <code>ScanState</code> を見つける内部関数。</li>
+<li><code>fetch_cursor_param_value</code>: カーソル名がパラメータとして渡された場合に、その値を解決するヘルパー。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>execCurrentOf</code> がカーソル名を取得し、<code>Portal</code> を検索する。 2. **戦略の分岐**:</p>
+<ul>
+<li><code>es_rowmarks</code> が存在する場合: <code>ExecRowMark</code> 配列を走査し、対象テーブルの TID を直接抽出する。</li>
+<li>それ以外の場合: <code>search_plan_tree</code> を呼び出し、プランツリーから該当する <code>ScanState</code> を探索する。</li>
+<p>3. **検証**: 探索したノードが現在有効な行を指しているか（<code>atStart</code>/<code>atEnd</code> ではないか、<code>pending_rescan</code> がないか）を確認する。 4. **抽出**: <code>IndexOnlyScan</code> の場合は <code>xs_heaptid</code> を、それ以外は <code>slot_getsysattr</code> を使用して <code>SelfItemPointerAttributeNumber</code>（ctid）を取得し、呼び出し元へ返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>genam.h</code>, <code>relscan.h</code>, <code>sysattr.h</code> (TID抽出とスキャン状態の管理)</li>
+<li><code>executor/executor.h</code>: 実行エンジンの中核構造体（<code>PlanState</code>, <code>ScanState</code> 等）</li>
+<li><code>utils/</code>: <code>portal.h</code>, <code>lsyscache.h</code> (カーソル管理とカタログ参照)</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/portal.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nodeModifyTable.c</code>: <code>WHERE CURRENT OF</code> を含む <code>UPDATE</code>/<code>DELETE</code> 文の実行を制御する。</li>
+<li><code>execMain.c</code>: クエリ実行のライフサイクル管理。</li>
+<li><code>portal.h</code>: カーソルの状態管理（<code>Portal</code> 構造体）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**継承テーブルの扱い**: 継承関係にあるテーブルの場合、特定のテーブルに対するスキャンが「非アクティブ」である可能性があります。その場合、このファイルはエラーではなく <code>false</code> を返し、呼び出し元が次のテーブルを試行できるように設計されています。</li>
+<li>**プラン探索の限界**: <code>search_plan_tree</code> は、複雑なプラン（<code>MergeAppend</code> など）を透過的に探索することはできません。そのため、特定の条件下では <code>WHERE CURRENT OF</code> が利用できない制限があります。</li>
+<li>**デバッグ**: <code>USE_ASSERT_CHECKING</code> が有効な場合、取得した TID が対象テーブルの OID と一致するかどうかの厳密なチェックが行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execCurrent_c__execCurrentOf.html" target="wiki-view"><code>execCurrentOf</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execCurrent_c__fetch_cursor_param_value.html" target="wiki-view"><code>fetch_cursor_param_value</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execCurrent_c__search_plan_tree.html" target="wiki-view"><code>search_plan_tree</code></a></li>
+</ul></body></html>

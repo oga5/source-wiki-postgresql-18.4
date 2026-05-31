@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__backup__basebackup_c__push_to_sink.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>push_to_sink</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/backup/basebackup.c:1952</code></li>
+</ul>
+<h2>目的</h2>
+<p>バックアップデータを <code>bbsink</code> バッファに蓄積し、バッファが満杯になった際にアーカイブ処理（<code>bbsink_archive_contents</code>）とチェックサム更新をトリガーするバッファリング関数。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void push_to_sink(bbsink *sink, pg_checksum_context *checksum_ctx, size_t *bytes_done, void *data, size_t length)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>sink</code>: データ送信先となる <code>bbsink</code> 構造体。</li>
+<li><code>checksum_ctx</code>: データの整合性検証に使用するチェックサムコンテキスト。</li>
+<li><code>bytes_done</code>: 現在のバッファ内の書き込み済みバイト数（入出力両用）。</li>
+<li><code>data</code>: 送信対象のデータポインタ。</li>
+<li><code>length</code>: 送信するデータの長さ。</li>
+<li>出力: なし（副作用として <code>sink</code> のバッファ更新およびチェックサム更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sink-&gt;bbs_buffer</code> が割り当て済みであること。</li>
+<li><code>*bytes_done</code> は常に <code>sink-&gt;bbs_buffer_length</code> 未満であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 入力データが現在のバッファの空き容量に収まる場合、<code>memcpy</code> でバッファにコピーし、<code>bytes_done</code> を更新して終了する。 2. 入力データがバッファ容量を超える場合、以下のループを繰り返す：</p>
+<ul>
+<li>バッファの残り分を埋めて満杯にする。</li>
+<li><code>bbsink_archive_contents</code> を呼び出し、バッファの内容を送信先にフラッシュする。</li>
+<li><code>pg_checksum_update</code> を呼び出し、フラッシュしたバッファ内容でチェックサムを更新する。</li>
+<li><code>bytes_done</code> を 0 にリセットし、残りのデータを処理する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/backup/basebackup.c</code> 内の複数の箇所（主にファイル送信処理中）。</li>
+<li>呼び出し先: <code>bbsink_archive_contents</code>（<code>bbsink</code> インターフェース経由）、<code>pg_checksum_update</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>bbsink</code>: バックアップデータの出力先を抽象化した構造体。</li>
+<li><code>pg_checksum_context</code>: ページチェックサム計算用の状態保持構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>pg_checksum_update</code> が負の値を返した場合、<code>elog(ERROR)</code> によりバックアップ処理全体が中断される。</li>
+<li>入力 <code>length</code> が 0 の場合、ループは実行されず即座に終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、<code>bbsink</code> のバッファ管理とチェックサム計算を同期させるための重要なユーティリティです。</li>
+<li><code>memcpy</code> を使用しているため、データポインタの型変換（<code>char *</code>）に注意してください。</li>
+<li>バッファのフラッシュタイミングは <code>length &lt; sink-&gt;bbs_buffer_length - *bytes_done</code> という条件式により、バッファが完全に満たされた瞬間に発生するように制御されています。</li>
+</ul></body></html>

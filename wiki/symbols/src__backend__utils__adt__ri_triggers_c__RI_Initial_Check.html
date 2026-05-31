@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__adt__ri_triggers_c__RI_Initial_Check.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RI_Initial_Check</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/utils/adt/ri_triggers.c:1518</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>ALTER TABLE ADD FOREIGN KEY</code> 実行時などにおいて、既存のテーブルデータが外部キー制約を満たしているかを検証するための初期チェックを実行します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>trigger</code>: 実行対象のトリガー定義。</li>
+<li><code>fk_rel</code>: 外部キーを持つテーブル（参照側）。</li>
+<li><code>pk_rel</code>: 参照先のテーブル（被参照側）。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 制約違反がない場合は <code>true</code>、検証クエリの実行権限不足やRLS制約により検証をスキップ（または失敗）した場合は <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、検証対象の制約情報を <code>ri_FetchConstraintInfo</code> を通じて取得します。</li>
+<li>検証クエリを実行するために、対象テーブルに対する <code>ACL_SELECT</code> 権限が必要です。</li>
+<li>行レベルセキュリティ（RLS）が有効な場合、呼び出し元が <code>BYPASSRLS</code> 権限を持つか、テーブル所有者である必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **権限確認**: <code>ExecCheckPermissions</code> を使用し、両テーブルに対する <code>SELECT</code> 権限を検証します。 2. **RLSチェック**: <code>has_bypassrls_privilege</code> および <code>object_ownercheck</code> を用いて、RLSによるアクセス制限を評価します。 3. **クエリ構築**: 外部キー制約のキー列に基づき、<code>LEFT OUTER JOIN</code> を用いた検証用SQLを動的に生成します。</p>
+<ul>
+<li><code>MATCH SIMPLE</code> または <code>MATCH FULL</code> の設定に応じ、<code>WHERE</code> 句の条件（<code>IS NULL</code> / <code>IS NOT NULL</code>）を切り替えます。</li>
+<li>異なる照合順序（Collation）を持つ列の比較には <code>COLLATE</code> 句を付与します。</li>
+<p>4. **実行準備**: クエリ実行効率化のため、一時的に <code>work_mem</code> を調整する処理（ソースコード上では <code>guc.c</code> への設定変更指示）が含まれます。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/tablecmds.c:13733</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ri_FetchConstraintInfo</code></li>
+<li><code>makeNode</code> / <code>lappend</code> (リスト操作)</li>
+<li><code>ExecCheckPermissions</code></li>
+<li><code>has_bypassrls_privilege</code> / <code>object_ownercheck</code></li>
+<li><code>initStringInfo</code> / <code>appendStringInfo</code> (クエリ構築)</li>
+<li><code>ri_GenerateQual</code> / <code>ri_GenerateQualCollation</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RI_ConstraintInfo</code>: 外部キー制約のメタデータ（キー列番号、マッチングタイプ等）。</li>
+<li><code>RangeTblEntry</code> / <code>RTEPermissionInfo</code>: 検証クエリの権限チェックに使用されるノード。</li>
+<li><code>StringInfoData</code>: 動的クエリ文字列を保持するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>権限不足やRLS制約により検証が実行できない場合、<code>false</code> を返して呼び出し元に制御を戻します。</li>
+<li>パーティションテーブルの場合、<code>ONLY</code> キーワードの有無を制御してクエリを生成します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメンテナンス操作として扱われるため、実行時に <code>maintenance_work_mem</code> を利用する設計となっています。</li>
+<li><code>hash_mem_multiplier</code> を一時的に 1 に設定する処理が含まれており、GUC設定の副作用に注意してください。</li>
+<li>実行されるクエリは <code>SPI</code> を介して処理されます。</li>
+</ul></body></html>

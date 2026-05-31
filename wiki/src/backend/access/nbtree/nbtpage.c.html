@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtpage.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtpage.c</h1>
+<h2>概要</h2>
+<p>B-Tree インデックスのページ管理およびメタページ操作を担うモジュールです。インデックスのルートページの取得、メタデータの更新、および VACUUM 処理に伴うページ削除（ページアンリンク）のロジックを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムにおいて、物理的なページ構造の整合性を維持する低レベルなインターフェースを提供します。他のファイルがインデックスの検索や挿入を行う際、このモジュールが提供するバッファ管理やページ初期化関数を介してインデックスページにアクセスします。</p>
+<h2>責務</h2>
+<ul>
+<li>**メタページ管理**: インデックスのルート、レベル、バージョン情報の保持と更新。</li>
+<li>**ページライフサイクル**: バッファの確保、ロック、初期化、および再利用（FSM 連携）。</li>
+<li>**ページ削除**: VACUUM 処理における不要なリーフページの切り離しと、それに伴うツリー構造の再構成。</li>
+<li>**整合性チェック**: 読み込んだページが B-Tree として妥当かどうかの検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>_bt_getroot</code>: インデックスのルート（またはファストルート）バッファを取得します。</li>
+<li><code>_bt_getbuf</code> / <code>_bt_relbuf</code>: バッファの取得・解放とロック管理のラッパー。</li>
+<li><code>_bt_pagedel</code>: VACUUM 中に空のリーフページをツリーから削除するメイン関数。</li>
+<li><code>_bt_mark_page_halfdead</code>: ページ削除の第一段階（親のダウンリンク削除とハーフデッド状態への移行）。</li>
+<li><code>_bt_unlink_halfdead_page</code>: ページ削除の第二段階（兄弟リンクの付け替えと物理的な削除）。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ルート取得**: <code>_bt_getroot</code> はまず <code>rd_amcache</code> を確認し、キャッシュがあればそれを利用します。なければメタページを読み込み、必要に応じて初期化やアップグレードを行います。 2. **ページ削除**: <code>_bt_pagedel</code> は対象ページをハーフデッド状態にし、<code>_bt_lock_subtree_parent</code> を用いて親のダウンリンクを削除します。その後、<code>_bt_unlink_halfdead_page</code> が兄弟リンクを修正し、ページを削除済みとしてマークします。 3. **FSM 連携**: 削除されたページは即座に再利用せず、<code>_bt_pendingfsm_add</code> で一時的に保持し、VACUUM の終了間際に <code>_bt_pendingfsm_finalize</code> を通じて FSM（空き領域マップ）へ登録します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-Tree の基本構造体定義。</li>
+<li><code>access/nbtxlog.h</code>: WAL ログレコードの定義。</li>
+<li><code>storage/indexfsm.h</code>: 空き領域マップ（FSM）の操作。</li>
+<li><code>storage/bufmgr.h</code> (間接的): <code>ReadBuffer</code> 等によるバッファ管理。</li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/nbtree/nbtinsert.c</code>: ページ分割（Split）処理。ここでの分割が不完全な場合、ページ削除処理が制限を受けることがあります。</li>
+<li><code>src/backend/access/nbtree/nbtxlog.c</code>: ページ管理操作の WAL リプレイ処理。</li>
+<li><code>src/backend/access/nbtree/nbtree.c</code>: インデックスアクセスメソッドの全体的なエントリポイント。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロック順序**: デッドロックを避けるため、ページロックは常に「左から右へ」「下から上へ」の順序で行う必要があります。</li>
+<li>**ハーフデッド状態**: ページ削除はアトミックではないため、中断された VACUUM が残した「ハーフデッド」なページが存在する可能性があります。コードを読む際は、この中間状態の処理がどのようにリカバリされるかに注目してください。</li>
+<li>**Valgrind 対応**: <code>_bt_lockbuf</code> 等のラッパーは、メモリのアクセス権限を明示的に制御しており、デバッグ時に重要な役割を果たします。</li>
+</ul></body></html>

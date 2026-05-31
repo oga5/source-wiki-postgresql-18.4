@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__port__dirmod_c__pgunlink.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgunlink</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/port/dirmod.c:118</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows 環境において、ファイルまたはジャンクションポイント（シンボリックリンクの代替）の削除を、共有違反を考慮したリトライロジック付きで実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int pgunlink(const char *path);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>path</code> (削除対象のファイルまたはディレクトリパス)</li>
+<li>**出力**: 成功時は <code>0</code>、失敗時は <code>-1</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>Windows 環境下で動作することを前提とする。</li>
+<li><code>EACCES</code> エラーが発生した場合、対象がジャンクションポイントである可能性があるため、<code>lstat</code> を用いて判定を行う。</li>
+<li>削除保留状態（<code>STATUS_DELETE_PENDING</code>）にあるファイルに対しては、即座にエラーを返さず、ファイルが実際に削除されるまで待機する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>unlink(path)</code> を試行し、成功すれば終了する。 2. <code>EACCES</code> 以外のエラーであれば即座に <code>-1</code> を返す。 3. <code>EACCES</code> の場合、<code>lstat</code> で対象がジャンクションポイント（<code>S_ISLNK</code>）かどうかを判定する。 4. 削除保留状態であれば <code>is_lnk</code> を <code>false</code> に設定し、それ以外は <code>lstat</code> の結果に従う。 5. <code>is_lnk</code> が真なら <code>rmdir(path)</code>、偽なら <code>unlink(path)</code> を実行するループに入る。 6. 共有違反等で失敗した場合、<code>pg_usleep</code> を用いて 100 ミリ秒間隔で最大 10 秒間（100 回）リトライを行う。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/include/port.h</code> にて <code>unlink</code> マクロとして定義されており、ファイル削除を行う各モジュールから呼び出される。</li>
+<li>**呼び出し先**: <code>unlink</code>, <code>rmdir</code>, <code>lstat</code>, <code>lstat_error_was_status_delete_pending</code>, <code>pg_usleep</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>struct stat</code>: ファイル属性の取得に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>10 秒（100 回のリトライ）を超えても共有違反が解消されない場合は <code>-1</code> を返す。</li>
+<li><code>EACCES</code> 以外のエラーが発生した場合は、リトライを行わず即座に <code>-1</code> を返す。</li>
+<li>実行中にファイル種別が変更される可能性については考慮していない（設計上の許容範囲）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は Windows 特有の共有違反を回避するためのラッパーである。</li>
+<li><code>lstat_error_was_status_delete_pending</code> は、削除保留中のファイルを正しく扱うための重要なハックであるため、変更時は注意が必要。</li>
+<li>ジャンクションポイントの判定は <code>lstat</code> に依存している。</li>
+</ul></body></html>

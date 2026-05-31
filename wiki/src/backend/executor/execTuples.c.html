@@ -1,0 +1,96 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execTuples.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execTuples.c</h1>
+<h2>概要</h2>
+<p><code>execTuples.c</code> は、PostgreSQL のクエリ実行エンジンにおけるデータ伝播の基盤である <code>TupleTableSlot</code> (TTS) の管理と操作を担うモジュールです。物理的なタプル（ヒープ、最小タプル、ディスク上のタプル）と、実行エンジン内で効率的に扱われる「仮想タプル」を抽象化し、ゼロコピーに近いデータ受け渡しを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p>実行エンジン（<code>src/backend/executor</code>）において、プランノード間のデータ受け渡しを仲介します。各プランノードはタプルそのものではなく、このスロットを介してデータにアクセスすることで、メモリコピーの削減やバッファピンの適切な管理を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**スロットのライフサイクル管理**: スロットの作成、初期化、リセット、および破棄。</li>
+<li>**データ抽象化**: 物理タプル（<code>HeapTuple</code>, <code>MinimalTuple</code>）と仮想タプルの変換およびアクセス。</li>
+<li>**属性の遅延評価（Deforming）**: 必要になるまでタプルの属性を抽出しない「遅延デフォーミング」の実行。</li>
+<li>**メモリ管理**: スロットが所有するタプルのメモリ解放（<code>shouldFree</code> フラグによる制御）およびメモリコンテキストの管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>スロット操作インターフェース (<code>TupleTableSlotOps</code>)</h3>
+<p>スロットの型ごとに定義された関数ポインタ群。</p>
+<ul>
+<li><code>TTSOpsVirtual</code>: 仮想タプル用。メモリ上に展開された Datum を保持。</li>
+<li><code>TTSOpsHeapTuple</code>: 通常のヒープタプル用。</li>
+<li><code>TTSOpsMinimalTuple</code>: 最小タプル（ヘッダを簡略化したもの）用。</li>
+<li><code>TTSOpsBufferHeapTuple</code>: バッファ上のタプル用。バッファピンの管理を伴う。</li>
+</ul>
+<h3>スロット作成・管理</h3>
+<ul>
+<li><code>MakeTupleTableSlot</code>: スロットの生成と初期化。</li>
+<li><code>ExecResetTupleTable</code>: 実行終了時にスロット群のリソース（ピン、メモリ）を解放。</li>
+<li><code>ExecStore...</code>: 各種タプルをスロットに格納する関数群。</li>
+</ul>
+<h3>属性アクセス</h3>
+<ul>
+<li><code>slot_getsomeattrs</code>: スロット内のタプルから指定された数までの属性を抽出。</li>
+<li><code>slot_deform_heap_tuple</code>: ヒープタプルの属性抽出（高速化のためインライン化された内部関数を使用）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecAllocTableSlot</code></li>
+<li><code>ExecDropSingleTupleTableSlot</code></li>
+<li><code>ExecInitExtraTupleSlot</code></li>
+<li><code>ExecInitNullTupleSlot</code></li>
+<li><code>ExecInitResultSlot</code></li>
+<li><code>ExecInitResultTupleSlotTL</code></li>
+<li><code>ExecInitResultTypeTL</code></li>
+<li><code>ExecInitScanTupleSlot</code></li>
+<li><code>ExecResetTupleTable</code></li>
+<li><code>ExecSetSlotDescriptor</code></li>
+<li><code>MakeSingleTupleTableSlot</code></li>
+<li><code>MakeTupleTableSlot</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>MakeTupleTableSlot</code> でスロットを確保し、<code>TupleDesc</code> を関連付ける。 2. **格納**: <code>ExecStoreHeapTuple</code> 等により、物理タプルへのポインタをスロットに保持。この際、<code>TTS_FLAG_SHOULDFREE</code> を確認し、所有権を判断する。 3. **アクセス**: <code>slot_getsomeattrs</code> が呼ばれると、<code>slot_deform_heap_tuple</code> が起動。属性のオフセットをキャッシュしつつ、必要に応じて <code>tts_values</code> 配列に Datum を展開する。 4. **変換**: <code>materialize</code> メソッドにより、仮想タプルやバッファ上のタプルをメモリコンテキストにコピーし、独立した状態にする。 5. **終了**: <code>ExecResetTupleTable</code> が各スロットの <code>release</code> を呼び出し、バッファピンの解放やメモリの pfree を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>heaptoast.h</code>, <code>htup_details.h</code> 等によるタプル構造の操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファピンの管理。</li>
+<li><code>utils/</code>: <code>typcache.h</code>, <code>expandeddatum.h</code> 等による型情報とメモリ管理。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tupdesc_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/expandeddatum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/tuptable.h</code>: <code>TupleTableSlot</code> 構造体の定義。</li>
+<li><code>src/backend/executor/execProcnode.c</code>: スロットを用いたプランノード間のデータ受け渡し。</li>
+<li><code>src/backend/access/common/heaptuple.c</code>: 物理タプルの低レベル操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>TTS_FLAG_SHOULDFREE</code> フラグが重要です。これが立っている場合、スロットは保持しているタプルのメモリ解放責任を持ちます。</li>
+<li>**パフォーマンス**: <code>slot_deform_heap_tuple</code> は非常に頻繁に呼ばれるため、インライン化と属性オフセットのキャッシュ（<code>attcacheoff</code>）によって最適化されています。</li>
+<li>**省略された詳細**: 本ファイルはスロットの「管理」に特化しており、タプルそのものの物理的な格納形式（<code>HeapTupleHeaderData</code> の詳細など）は <code>access/</code> モジュールに委譲されています。</li>
+<li>**注意点**: <code>ExecStoreBufferHeapTuple</code> を使用する場合、スロットがクリアされるまでバッファピンが保持されるため、長期間スロットを保持するとバッファ不足を招く可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__MakeTupleTableSlot.html" target="wiki-view"><code>MakeTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecAllocTableSlot.html" target="wiki-view"><code>ExecAllocTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecResetTupleTable.html" target="wiki-view"><code>ExecResetTupleTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__MakeSingleTupleTableSlot.html" target="wiki-view"><code>MakeSingleTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecDropSingleTupleTableSlot.html" target="wiki-view"><code>ExecDropSingleTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecSetSlotDescriptor.html" target="wiki-view"><code>ExecSetSlotDescriptor</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultTypeTL.html" target="wiki-view"><code>ExecInitResultTypeTL</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultSlot.html" target="wiki-view"><code>ExecInitResultSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultTupleSlotTL.html" target="wiki-view"><code>ExecInitResultTupleSlotTL</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitScanTupleSlot.html" target="wiki-view"><code>ExecInitScanTupleSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitExtraTupleSlot.html" target="wiki-view"><code>ExecInitExtraTupleSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitNullTupleSlot.html" target="wiki-view"><code>ExecInitNullTupleSlot</code></a></li>
+</ul></body></html>

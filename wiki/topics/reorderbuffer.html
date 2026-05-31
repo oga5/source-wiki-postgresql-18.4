@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/reorderbuffer.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReorderBuffer</h1>
+<h2>概念</h2>
+<p><code>ReorderBuffer</code> は、PostgreSQL の論理デコーディング（Logical Decoding）において、WAL（Write-Ahead Log）から読み取られた断片的なトランザクションデータを一時的に保持・整列し、コミット順に再構築して出力プラグインへ渡すためのバッファ管理機能を提供するデータ構造です。</p>
+<h2>なぜ重要か</h2>
+<p>WAL レコードは必ずしもコミット順に書き込まれるわけではありません。<code>ReorderBuffer</code> は、サブトランザクションを含む断片的なレコードをトップレベルトランザクション単位に統合し、LSN（Log Sequence Number）順に整列することで、一貫性のある論理デコーディング出力を可能にします。また、メモリ使用量が <code>logical_decoding_work_mem</code> を超過した場合にはトランザクションデータをディスクへシリアライズ（スプール）する仕組みを提供し、システムメモリの枯渇を防ぐ極めて重要な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/replication/logical</code></li>
+<li><code>module:src/include/replication</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/replication/reorderbuffer.h#ReorderBuffer</code>** (構造体)</li>
+<p>論理デコーディングのメイン状態を管理する構造体。WAL から読み取られた変更レコード（<code>ReorderBufferChange</code>）や個別トランザクション状態（<code>ReorderBufferTXN</code>）を保持します。</p>
+<li>**<code>symbol:src/backend/replication/logical/reorderbuffer.c#ReorderBufferFree</code>** (関数)</li>
+<p><code>ReorderBuffer</code> 構造体が保持するメモリコンテキストを破棄し、ディスク上に残存するシリアライズされたトランザクションデータをクリーンアップするリソース解放関数です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **データの蓄積と整列**: WAL からデコードされた変更レコードが <code>ReorderBuffer</code> に蓄積されます。内部では <code>pairingheap</code> を使用し、LSN に基づいてトランザクションが整列されます。 2. **メモリ管理（スプール）**: 蓄積されたデータのメモリ使用量が制限を超過した場合、巨大なトランザクションデータはディスクへ退避（シリアライズ）されます。 3. **統合と出力**: コミット時に、サブトランザクションを含む断片的なレコードがトップレベルトランザクション単位に統合され、出力プラグインのコールバック関数（<code>begin_cb_wrapper</code>, <code>commit_cb_wrapper</code>, <code>change_cb_wrapper</code> 等）を介して出力されます。 4. **リソースのクリーンアップ**: デコーディングコンテキストの終了時などに <code>ReorderBufferFree</code> が呼び出されます。この関数は、バッファに関連付けられたメモリコンテキスト（<code>rb-&gt;context</code>）を <code>MemoryContextDelete</code> によって解放し、さらに <code>ReorderBufferCleanupSerializedTXNs</code> を呼び出してディスク上に残存するシリアライズされたトランザクションファイルを削除します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効なポインタの要求**: <code>ReorderBufferFree</code> を呼び出す際、引数 <code>rb</code> は有効な <code>ReorderBuffer</code> 構造体を指している必要があります（<code>NULL</code> の場合はクラッシュする可能性があります）。</li>
+<li>**一方向のリソース破棄**: <code>ReorderBufferFree</code> を呼び出すと、関連するメモリコンテキストが完全に削除されるため、以降その <code>ReorderBuffer</code> インスタンスを参照することはできません。</li>
+<li>**スロット依存性**: ディスク上のシリアライズされたトランザクションファイルのクリーンアップは、現在のレプリケーションスロット名（<code>MyReplicationSlot</code> の状態）に依存しています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ不足とディスク I/O のスパイク**:</li>
+<p>メモリ制限を超えた場合、自動的にディスクへのシリアライズが発生します。これによりディスク I/O が発生し、論理デコーディング全体のパフォーマンスが低下する可能性があります。チューニング時には <code>spillTxns</code> などの統計情報を確認する必要があります。</p>
+<li>**解放後の参照（Use-After-Free）**:</li>
+<p><code>ReorderBufferFree</code> を呼び出した後に <code>ReorderBuffer</code> 構造体やその配下のメモリ領域にアクセスすると、未定義動作やクラッシュを引き起こします。</p>
+<li>**スロット未設定時のクリーンアップ失敗**:</li>
+<p>レプリケーションスロット名が正しく取得できない環境で <code>ReorderBufferFree</code> が実行されると、ディスク上の残存ファイルの削除（<code>ReorderBufferCleanupSerializedTXNs</code>）に失敗する可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/replication/reorderbuffer.h</code>**:</li>
+<p><code>ReorderBuffer</code> 構造体の詳細なメンバ定義や、関連する <code>ReorderBufferTXN</code>、<code>ReorderBufferChange</code> などのデータ構造の定義を確認できます。</p>
+<li>**<code>src/backend/replication/logical/reorderbuffer.c</code>**:</li>
+<p><code>ReorderBufferFree</code> の具体的な実装や、ディスクへのシリアライズ・クリーンアップ処理の実装ロジックを確認できます。</p>
+</ul></body></html>

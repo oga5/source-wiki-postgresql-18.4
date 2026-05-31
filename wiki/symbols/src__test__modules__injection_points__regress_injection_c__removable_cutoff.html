@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__test__modules__injection_points__regress_injection_c__removable_cutoff.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>removable_cutoff</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/test/modules/injection_points/regress_injection.c:41</code></li>
+</ul>
+<h2>目的</h2>
+<p>テスト環境において、指定されたリレーションに基づき、削除不可能な最も古いトランザクションID（XID）を安定して取得する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Datum removable_cutoff(PG_FUNCTION_ARGS)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>PG_FUNCTION_ARGS</code>: オプションでリレーションのOIDを引数として受け取る。</li>
+<li>**出力**: </li>
+<li><code>Datum</code>: 取得したXIDと現在のエポックを組み合わせた <code>FullTransactionId</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>引数としてリレーションOIDが提供された場合、そのリレーションに対して <code>AccessShareLock</code> を取得する。</li>
+<li>非共有リレーションかつ <code>autovacuum_start_daemon</code> が有効な場合、バックグラウンドプロセスにより値が後退する可能性があるため警告を発する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 引数があればリレーションを開き、ロックを取得する。 2. <code>ReadNextFullTransactionId</code> で現在のトランザクションIDを取得する。 3. <code>do-while</code> ループ内で以下を実行する:</p>
+<ul>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、割り込みをチェックする。</li>
+<li><code>GetOldestNonRemovableTransactionId</code> を呼び出し、削除不可能な最も古いXIDを取得する。</li>
+<li>再度 <code>ReadNextFullTransactionId</code> を呼び出し、取得前後でトランザクションIDが進行していないか確認する。</li>
+<p>4. トランザクションIDの進行がなくなるまでループを繰り返す（エポックの不整合を防ぐための防衛的実装）。 5. リレーションを開いた場合は閉じる。 6. <code>FullTransactionIdFromAllowableAt</code> を用いて結果を構築し、返却する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQLインターフェースから呼び出されることを想定（<code>PG_FUNCTION_INFO_V1</code> による登録あり）。</li>
+<li>**呼び出し先**: </li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>GetOldestNonRemovableTransactionId</code></li>
+<li><code>ReadNextFullTransactionId</code></li>
+<li><code>FullTransactionIdEquals</code>, <code>FullTransactionIdFromAllowableAt</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: リレーション情報を保持。</li>
+<li><code>FullTransactionId</code>: 64bitトランザクションID。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>非共有リレーションに対してオートバキュームが有効な場合、値が後退する可能性がある。</li>
+<li>実行中にトランザクションIDが進行した場合、ループによるリトライで整合性を確保する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>syscache-update-pruned.spec</code> 等の回帰テストでの利用を主目的としている。</li>
+<li><code>do-while</code> ループは、関数実行中に <code>oldestXid</code> が進行し、誤ったエポックに割り当てられることを防ぐために必須である。</li>
+</ul></body></html>

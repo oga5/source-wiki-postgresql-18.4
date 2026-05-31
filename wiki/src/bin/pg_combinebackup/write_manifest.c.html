@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_combinebackup/write_manifest.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_combinebackup/write_manifest.c</h1>
+<h2>概要</h2>
+<p><code>write_manifest.c</code> は、バックアップの整合性を保証するための <code>backup_manifest</code> ファイルを生成・書き出すためのモジュールです。PostgreSQL のバックアッププロセスにおいて、バックアップに含まれる全ファイルの情報と WAL レンジを JSON 形式で記録します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_combinebackup</code> ツールの一部として、複数のバックアップソースを統合した際に、新しいバックアップセットのメタデータを作成します。<code>load_manifest.c</code> が既存のバックアップから情報を読み取るのに対し、本モジュールは新しいマニフェストを構築・出力する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**マニフェストの構築**: JSON 形式のバックアップマニフェストをメモリ上のバッファで組み立てる。</li>
+<li>**ファイル情報の追加**: 各ファイルのパス、サイズ、更新日時、チェックサムを JSON エントリとして追加する。</li>
+<li>**WAL レンジの記録**: バックアップに関連する WAL のタイムラインと LSN 範囲を記録する。</li>
+<li>**整合性保護**: マニフェスト自体の SHA-256 チェックサムを計算し、ファイルの末尾に付与する。</li>
+<li>**ディスクへのフラッシュ**: メモリバッファが一定サイズを超えた際、または終了時にディスクへ書き出す。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>manifest_writer</code>: マニフェスト生成の状態を保持する構造体。ファイル記述子、バッファ、チェックサムコンテキストを含む。</li>
+<li><code>create_manifest_writer()</code>: ライターを初期化し、JSON のヘッダー部分を生成する。</li>
+<li><code>add_file_to_manifest()</code>: 個別のファイル情報を JSON エントリとしてバッファに追加する。</li>
+<li><code>finalize_manifest()</code>: WAL レンジの書き込み、マニフェスト全体のチェックサム計算、およびファイルのクローズを行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>add_file_to_manifest</code></li>
+<li><code>create_manifest_writer</code></li>
+<li><code>escape_json</code></li>
+<li><code>finalize_manifest</code></li>
+<li><code>flush_manifest</code></li>
+<li><code>hex_encode</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>create_manifest_writer</code> でバッファを確保し、JSON の開始タグを書き込む。 2. **データ追加**: <code>add_file_to_manifest</code> が呼ばれるたびに、ファイル情報を JSON 文字列として <code>StringInfo</code> バッファに追記する。 3. **バッファ管理**: バッファが 128KB を超えると <code>flush_manifest</code> が呼ばれ、ディスクへの書き出しと同時に、その内容でマニフェスト全体のチェックサム（<code>manifest_ctx</code>）を更新する。 4. **終了処理**: <code>finalize_manifest</code> で WAL レンジを追記し、最終的なチェックサムを計算して書き込み、ファイルを閉じる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>common/checksum_helper.h</code>: SHA-256 等のチェックサム計算用。</li>
+<li><code>lib/stringinfo.h</code>: 可変長文字列バッファ操作。</li>
+<li><code>load_manifest.h</code>: 関連するデータ構造の参照。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>write_manifest.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>load_manifest.c</code>: 既存のバックアップからマニフェストを読み込む際の対となる実装。</li>
+<li><code>src/backend/backup/backup_manifest.c</code>: バックアップマニフェストの仕様を定義するバックエンド側の実装（本モジュールはこれに準拠する）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本モジュールは、バックエンドの <code>AddFileToBackupManifest</code> と類似していますが、フロントエンドツールとして動作するために <code>StringInfo</code> を用いたバッファリングと手動の JSON エスケープ処理を行っています。</li>
+<li>非 UTF-8 のファイルパスが含まれる場合、<code>Encoded-Path</code> として 16 進数エンコードされる点に注意してください。</li>
+<li><code>flush_manifest</code> は、チェックサム計算の整合性を保つため、書き出したデータのみを逐次的に <code>manifest_ctx</code> に反映させる設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__manifest_writer.html" target="wiki-view"><code>manifest_writer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__create_manifest_writer.html" target="wiki-view"><code>create_manifest_writer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__add_file_to_manifest.html" target="wiki-view"><code>add_file_to_manifest</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__finalize_manifest.html" target="wiki-view"><code>finalize_manifest</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__escape_json.html" target="wiki-view"><code>escape_json</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__flush_manifest.html" target="wiki-view"><code>flush_manifest</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_combinebackup__write_manifest_c__hex_encode.html" target="wiki-view"><code>hex_encode</code></a></li>
+</ul></body></html>

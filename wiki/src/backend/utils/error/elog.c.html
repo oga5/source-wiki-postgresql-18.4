@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/error/elog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/error/elog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のエラー報告およびログ出力のメインパイプラインを担う中核ファイルです。<code>ereport()</code> および <code>elog()</code> マクロを介したエラー情報の収集、構造化、および出力先（サーバーログ、クライアント、syslog、Windows イベントログ等）へのルーティングをオーケストレートします。</p>
+<h2>モジュール内での役割</h2>
+<p>エラー処理サブシステムにおける「オーケストレーター」です。<code>elog.h</code> で定義されたインターフェースを実装し、<code>csvlog.c</code> や <code>jsonlog.c</code> などの出力プラグイン、および <code>assert.c</code> と連携して、システム全体の堅牢性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**エラーライフサイクル管理**: <code>errstart()</code> から <code>errfinish()</code> までのエラー報告サイクルの制御。</li>
+<li>**再入可能性の確保**: 再帰的なエラー発生（メモリ枯渇時など）を検出し、<code>ErrorContext</code> のリセットやスタック管理を通じて無限ループを防止。</li>
+<li>**ログの構造化とルーティング**: ログプレフィックスの生成、SQLSTATE の変換、および設定に応じた適切な出力先へのデータ転送。</li>
+<li>**例外処理の橋渡し**: <code>ERROR</code> 以上の深刻度における <code>siglongjmp</code> を用いたトランザクションアボート処理のトリガー。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>エラー状態管理</h3>
+<ul>
+<li><code>errordata_stack</code>: 再入可能なエラー報告をサポートする <code>ErrorData</code> の静的スタック（深度 5）。</li>
+<li><code>errordata_stack_depth</code>: 現在のスタック深度。</li>
+<li><code>recursion_depth</code>: エラー処理中の再帰を追跡し、無限ループを検知。</li>
+</ul>
+<h3>エラー報告 API</h3>
+<ul>
+<li><code>errstart()</code>: エラー報告サイクルの開始。深刻度の昇格や出力要否の判定を行う。</li>
+<li><code>errfinish()</code>: 報告サイクルの終了。出力の実行とスタックのポップを行う。</li>
+<li><code>errmsg()</code>, <code>errdetail()</code>, <code>errhint()</code>: <code>ErrorData</code> に情報を追加するミューテータ。</li>
+</ul>
+<h3>出力・ルーティング</h3>
+<ul>
+<li><code>EmitErrorReport()</code>: 構築された <code>ErrorData</code> を各出力先へディスパッチする中心関数。</li>
+<li><code>send_message_to_server_log()</code>: サーバーログへの書き込み処理。</li>
+<li><code>send_message_to_frontend()</code>: クライアントへのエラーメッセージ送信（FE/BE プロトコル）。</li>
+</ul>
+<h3>グローバル変数・フック</h3>
+<ul>
+<li><code>error_context_stack</code>: エラー発生時に呼び出されるコンテキストコールバックのリスト。</li>
+<li><code>emit_log_hook</code>: ログ出力前にメッセージをインターセプトするフック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CopyErrorData</code></li>
+<li><code>DebugFileOpen</code></li>
+<li><code>EmitErrorReport</code></li>
+<li><code>FlushErrorState</code></li>
+<li><code>FreeErrorData</code></li>
+<li><code>FreeErrorDataContents</code></li>
+<li><code>GetACPEncoding</code></li>
+<li><code>GetErrorContextStack</code></li>
+<li><code>ReThrowError</code></li>
+<li><code>ThrowErrorData</code></li>
+<li><code>is_log_level_output</code></li>
+<li><code>should_output_to_server</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>ereport()</code> マクロが <code>errstart()</code> を呼び出し、<code>ErrorData</code> をスタックに確保。 2. **構築**: <code>errmsg()</code> 等の関数が <code>ErrorData</code> の各フィールドを埋める。この際、<code>EVALUATE_MESSAGE</code> マクロが <code>StringInfo</code> を用いてフォーマット済み文字列を生成。 3. **終了**: <code>errfinish()</code> が呼び出され、<code>EmitErrorReport()</code> を通じて出力処理へ移行。 4. **出力**: <code>EmitErrorReport()</code> は <code>Log_destination</code> に基づき、<code>csvlog.c</code> / <code>jsonlog.c</code> / <code>syslog</code> / <code>stderr</code> へデータをルーティング。 5. **例外**: <code>ERROR</code> の場合、<code>pg_re_throw()</code> を経由して <code>siglongjmp</code> を実行し、呼び出し元へ制御を戻す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型定義。</li>
+<li><code>utils/memutils.h</code>: <code>ErrorContext</code> 管理。</li>
+<li><code>postmaster/syslogger.h</code>: ログパイプラインの制御。</li>
+<li><code>libpq/pqformat.h</code>: クライアントへのメッセージ送信プロトコル。</li>
+<li><code>access/xact.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>execinfo.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postmaster/bgworker.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>syslog.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/elog.h</code>: エラーレベル定義と <code>ereport</code> マクロの定義。</li>
+<li><code>src/backend/utils/error/csvlog.c</code>: CSV 形式のログ出力実装。</li>
+<li><code>src/backend/utils/error/jsonlog.c</code>: JSON 形式のログ出力実装。</li>
+<li><code>src/backend/utils/error/assert.c</code>: アサーション失敗時の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: エラー報告中に生成される文字列は、原則として <code>ErrorContext</code> に割り当てられます。<code>CopyErrorData()</code> を使用して別のコンテキストへコピーする場合、呼び出し側で <code>FreeErrorData()</code> を呼び出す必要があります。</li>
+<li>**再帰の回避**: <code>in_error_recursion_trouble()</code> は、エラー処理中にエラーが発生した際の無限ループを防ぐ重要なガードです。この状態では、翻訳（gettext）をスキップするなどの安全策が講じられます。</li>
+<li>**制約**: <code>errordata_stack</code> は深度 5 に固定されています。これを超える再帰は <code>PANIC</code> を引き起こし、プロセスを終了させます。</li>
+<li>**浅い領域**: <code>write_syslog</code> や <code>write_eventlog</code> などのプラットフォーム固有の出力実装は、OS のログ機能に依存しており、エラー処理の「末端」として機能します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__is_log_level_output.html" target="wiki-view"><code>is_log_level_output</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__should_output_to_server.html" target="wiki-view"><code>should_output_to_server</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__EmitErrorReport.html" target="wiki-view"><code>EmitErrorReport</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__CopyErrorData.html" target="wiki-view"><code>CopyErrorData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__FreeErrorData.html" target="wiki-view"><code>FreeErrorData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__FreeErrorDataContents.html" target="wiki-view"><code>FreeErrorDataContents</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__FlushErrorState.html" target="wiki-view"><code>FlushErrorState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__ThrowErrorData.html" target="wiki-view"><code>ThrowErrorData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__ReThrowError.html" target="wiki-view"><code>ReThrowError</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__GetErrorContextStack.html" target="wiki-view"><code>GetErrorContextStack</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__DebugFileOpen.html" target="wiki-view"><code>DebugFileOpen</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__error__elog_c__GetACPEncoding.html" target="wiki-view"><code>GetACPEncoding</code></a></li>
+</ul></body></html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/port/win32_shmem.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/port/win32_shmem.c</h1>
+<h2>概要</h2>
+<p>Windows 環境における PostgreSQL の共有メモリ管理を実装するソースファイルです。Windows API（<code>CreateFileMapping</code>, <code>MapViewOfFileEx</code> 等）を利用して、プロセス間で共有されるメモリセグメントの作成、アタッチ、およびデタッチを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/port</code> モジュールの一部として、プラットフォーム固有の共有メモリ実装を提供します。PostgreSQL の共有メモリサブシステム（<code>storage/ipc.h</code> 等）から呼び出され、Windows 特有のメモリ管理の複雑さを隠蔽します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリの作成と管理**: <code>CreateFileMapping</code> を用いたセグメントの確保と、<code>MapViewOfFileEx</code> によるアドレス空間へのマッピング。</li>
+<li>**アドレス空間の保護**: 子プロセス起動時に共有メモリ領域が他の用途で占有されないよう、<code>VirtualAllocEx</code> を用いて事前に領域を予約する。</li>
+<li>**Huge Pages のサポート**: <code>SeLockMemoryPrivilege</code> を取得し、ラージページを利用したメモリ確保を試行する。</li>
+<li>**ライフサイクル管理**: プロセス終了時の共有メモリデタッチと、セグメントのクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PGSharedMemoryCreate</code>: 共有メモリセグメントを新規作成し、初期化するメイン関数。</li>
+<li><code>PGSharedMemoryReAttach</code>: 子プロセスが親から継承したハンドルを用いて共有メモリに再接続する。</li>
+<li><code>pgwin32_ReserveSharedMemoryRegion</code>: 親プロセス（Postmaster）が子プロセスのために特定のアドレス範囲を予約する。</li>
+<li><code>UsedShmemSegAddr / UsedShmemSegID</code>: 現在使用中の共有メモリのベースアドレスとハンドルを保持するグローバル変数。</li>
+<li><code>ShmemProtectiveRegion</code>: アドレス空間の断片化を防ぐための保護用メモリ領域。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>EnableLockPagesPrivilege</code></li>
+<li><code>GetHugePageSize</code></li>
+<li><code>GetSharedMemName</code></li>
+<li><code>PGSharedMemoryDetach</code></li>
+<li><code>PGSharedMemoryIsInUse</code></li>
+<li><code>PGSharedMemoryNoReAttach</code></li>
+<li><code>check_huge_page_size</code></li>
+<li><code>pgwin32_SharedMemoryDelete</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PGSharedMemoryCreate</code> が呼ばれると、<code>GetSharedMemName</code> でデータディレクトリに基づいた一意な名前を生成し、<code>CreateFileMapping</code> でセグメントを作成します。 2. **予約**: 子プロセス生成時、<code>pgwin32_ReserveSharedMemoryRegion</code> が親プロセスから呼び出され、子プロセスのアドレス空間の特定位置を予約して競合を回避します。 3. **再接続**: 子プロセスは <code>PGSharedMemoryReAttach</code> を呼び出し、予約された領域に <code>MapViewOfFileEx</code> を用いて共有メモリをマッピングします。 4. **終了**: <code>on_shmem_exit</code> に登録された <code>pgwin32_SharedMemoryDelete</code> が、プロセス終了時にハンドルをクローズし、デタッチを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>storage/pg_shmem.h</code>: 共有メモリヘッダー構造体（<code>PGShmemHeader</code>）の定義。</li>
+<li><code>storage/dsm.h</code>: 動的共有メモリ管理との連携。</li>
+<li><code>miscadmin.h</code>: <code>DataDir</code> や <code>IsUnderPostmaster</code> などのグローバル変数。</li>
+<li><code>storage/ipc.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/shmem.c</code>: 共有メモリの汎用的な管理ロジック。</li>
+<li><code>src/backend/port/sysv_shmem.c</code>: POSIX 環境における同等の実装。</li>
+<li><code>src/backend/storage/ipc/dsm.c</code>: 共有メモリ上に構築される動的共有メモリサブシステム。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アドレス空間の保護**: Windows では DLL のロード順序等によりアドレス空間が動的に変化するため、<code>PROTECTIVE_REGION_SIZE</code> を用いた予約処理が重要です。これは、共有メモリが意図したアドレスにマッピングされることを保証するためのハックです。</li>
+<li>**Global 名前空間**: 共有メモリ名には <code>Global\</code> プレフィックスが検討されましたが、権限の問題から現在はデフォルトの名前空間が使用されています。</li>
+<li>**Huge Pages**: <code>huge_pages</code> 設定が有効な場合、<code>SEC_LARGE_PAGES</code> フラグが使用されます。この機能を利用するには、OS 側で「メモリ内のページをロック」権限がユーザーに付与されている必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__GetSharedMemName.html" target="wiki-view"><code>GetSharedMemName</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__PGSharedMemoryIsInUse.html" target="wiki-view"><code>PGSharedMemoryIsInUse</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__EnableLockPagesPrivilege.html" target="wiki-view"><code>EnableLockPagesPrivilege</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__PGSharedMemoryCreate.html" target="wiki-view"><code>PGSharedMemoryCreate</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__PGSharedMemoryReAttach.html" target="wiki-view"><code>PGSharedMemoryReAttach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__PGSharedMemoryNoReAttach.html" target="wiki-view"><code>PGSharedMemoryNoReAttach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__PGSharedMemoryDetach.html" target="wiki-view"><code>PGSharedMemoryDetach</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__pgwin32_SharedMemoryDelete.html" target="wiki-view"><code>pgwin32_SharedMemoryDelete</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__pgwin32_ReserveSharedMemoryRegion.html" target="wiki-view"><code>pgwin32_ReserveSharedMemoryRegion</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__GetHugePageSize.html" target="wiki-view"><code>GetHugePageSize</code></a></li>
+<li><a href="../../../symbols/src__backend__port__win32_shmem_c__check_huge_page_size.html" target="wiki-view"><code>check_huge_page_size</code></a></li>
+</ul></body></html>

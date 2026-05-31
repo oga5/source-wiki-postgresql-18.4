@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/freepagebtree.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>FreePageBtree</h1>
+<h2>概念</h2>
+<p><code>FreePageBtree</code> は、PostgreSQLのメモリ管理サブシステムにおいて、ページ単位の空き領域をページ番号順に効率的に管理・検索するための B-tree ノード構造体です。</p>
+<p>本構造体は、ヘッダ情報（<code>FreePageBtreeHeader</code>）と、内部ノード（<code>FreePageBtreeInternalKey</code>）またはリーフノード（<code>FreePageBtreeLeafKey</code>）のいずれかとして振る舞う共用体（<code>u</code>）で構成されています。また、共有メモリ等での利用を想定し、相対ポインタ（<code>relptr</code>）を介してセグメントベースからのオフセットとして扱われます。</p>
+<h2>なぜ重要か</h2>
+<p>メモリの断片化を抑制し、連続する空き領域の統合（Coalesce）を効率的に行うための基盤となるためです。B-tree 構造を維持することで、隣接する空き領域の高速なマージや、空き領域の迅速な検索・挿入・削除が可能になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/mmgr</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/mmgr/freepage.c#FreePageBtree</code>**: 構造体の詳細なメンバ定義（共用体による内部/リーフノードの切り替え）および操作関数群の実装。</li>
+<li>**<code>symbol:src/include/utils/freepage.h#FreePageBtree</code>**: 構造体の typedef 宣言および外部向けのインターフェース定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>詳細なライフサイクルや初期化を含む完全なエンドツーエンドのフローは提供された情報からは未検証ですが、以下の部分的な操作の流れが判明しています。</p>
+<p>1. **トリガー**: <code>FreePageManagerGet</code>（確保時）や <code>FreePageManagerPut</code>（解放時）などの上位管理関数から間接的に呼び出されます。 2. **探索・位置特定**: <code>FreePageBtreeFindLeftSibling</code> や <code>FreePageBtreeFindRightSibling</code> を用いて、対象ノードの隣接ノードを特定します。 3. **構造の更新**:</p>
+<ul>
+<li>挿入時は <code>FreePageBtreeInsertInternal</code> や <code>FreePageBtreeInsertLeaf</code> を通じて、B-tree 構造を維持しながら新しいページ情報を挿入します。</li>
+<li>削除時は <code>FreePageBtreeRemove</code> により、不要になったノードを B-tree から除去します。</li>
+<p>4. **ノードの再利用**: ノードが空になった場合、<code>FreePageBtreeRecycle</code> を通じて再利用リストへ移動され、必要に応じて <code>FreePageBtreeGetRecycled</code> から再取得されます。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**再帰的メモリ確保の制約**: 管理対象のメモリ領域自体をメタデータ（B-treeノード）として再帰的に利用するため、領域が完全に枯渇した状態では本構造体自体の確保も不可能になります。</li>
+<li>**サイズ適合性**: 構造体のサイズは、管理対象のページサイズ（4kB）に適合するように設計されています。</li>
+<li>**相対アドレスの維持**: メモリ上の位置特定には常に相対ポインタ（<code>relptr</code>）が使用され、セグメントベースからのオフセットとして一貫して扱われる必要があります。</li>
+<li>**整合性検証**: <code>FPM_EXTRA_ASSERTS</code> が有効な場合、<code>sum_free_pages</code> を用いた整合性チェックにより、B-tree 全体の不整合が検出されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ枯渇時のメタデータ確保失敗**: メモリが完全に枯渇すると、メタデータ用のノード自体が確保できなくなる境界条件が存在します。</li>
+<li>**相対ポインタのデバッグ**: アドレスが直接ポインタではなく相対ポインタ（<code>relptr</code>）であるため、デバッグ時には <code>fpm_segment_base</code> を介したアドレス計算が正しく行われているか注意する必要があります。</li>
+<li>**再帰操作のリスク**: B-tree の再帰的な操作において、スタックオーバーフローや構造の不整合が発生する可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/utils/mmgr/freepage.c</code>**: <code>FreePageBtree</code> の具体的な構造体定義、および挿入・削除・検索アルゴリズムの実装。</li>
+<li>**<code>src/include/utils/freepage.h</code>**: <code>FreePageManager</code> や <code>FreePageSpanLeader</code> など、関連する周辺データ構造の定義。</li>
+</ul></body></html>

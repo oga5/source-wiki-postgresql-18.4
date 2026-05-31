@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__sync__sync_c__SyncPostCheckpoint.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SyncPostCheckpoint</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/sync/sync.c:201</code></li>
+</ul>
+<h2>目的</h2>
+<p>チェックポイント完了後に、削除待ちとなっているファイル（<code>pendingUnlinks</code>）を物理的に削除し、リストを整理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SyncPostCheckpoint(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし（グローバル変数 <code>pendingUnlinks</code> および <code>checkpoint_cycle_ctr</code> を参照）</li>
+<li>出力: なし（副作用としてファイルシステム上のファイル削除およびメモリ解放を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pendingUnlinks</code> リストには、削除対象の <code>PendingUnlinkEntry</code> が格納されていること。</li>
+<li>新しい要求はリストの末尾に追加されるため、<code>cycle_ctr</code> が現在の <code>checkpoint_cycle_ctr</code> と一致するエントリは、今回のチェックポイント以降に追加されたものとみなされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pendingUnlinks</code> リストを先頭から走査する。 2. <code>canceled</code> フラグが立っているエントリはスキップする。 3. <code>cycle_ctr</code> が現在の <code>checkpoint_cycle_ctr</code> に達した場合、それ以降のエントリは今回のチェックポイント後に登録されたものと判断し、走査を終了する。 4. <code>syncsw</code> テーブルから該当ハンドラの <code>sync_unlinkfiletag</code> を呼び出し、ファイルを削除する。 5. 削除失敗時、<code>ENOENT</code>（ファイルが存在しない）以外のエラーであれば警告を出力する。 6. 処理中、一定数（<code>UNLINKS_PER_ABSORB</code>）の削除ごとに <code>AbsorbSyncRequests()</code> を呼び出し、fsync 要求の取り込みを継続する。 7. 処理済みのエントリをリストから削除し、メモリを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/access/transam/xlog.c</code></li>
+<li>呼び出し先:</li>
+<li><code>syncsw[...].sync_unlinkfiletag</code> (ハンドラ関数)</li>
+<li><code>AbsorbSyncRequests()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pendingUnlinks</code>: 削除待ちファイルリスト。</li>
+<li><code>PendingUnlinkEntry</code>: 削除対象ファイルの情報（タグ、サイクルカウンタ、キャンセル状態）を保持する構造体。</li>
+<li><code>syncsw</code>: 各種ストレージハンドラの関数テーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**競合**: ファイルが既に削除されている場合（<code>ENOENT</code>）、エラーを無視して続行する。</li>
+<li>**サイクルカウンタのラップアラウンド**: 連続するチェックポイントの失敗によりカウンタが一周した場合、削除が1チェックポイント分遅延する可能性があるが、許容範囲内として処理される。</li>
+<li>**メモリ不足**: リスト操作時に <code>pfree</code> を行うが、リストの断片化やメモリ確保の失敗については本関数内での明示的なハンドリングは記述されていない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はチェックポイント処理の最終段階で呼び出される。</li>
+<li><code>AbsorbSyncRequests()</code> を呼び出すことで、削除処理中に fsync 要求の処理が長時間停止することを防いでいる。</li>
+<li>リストの走査終了条件（<code>cycle_ctr == checkpoint_cycle_ctr</code>）は、チェックポイントの境界を正しく管理するための重要な不変条件である。</li>
+</ul></body></html>

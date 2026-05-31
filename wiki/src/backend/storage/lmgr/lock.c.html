@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/lock.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/lock.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の重量級ロック（Heavyweight Lock）管理の中核を担うファイルです。共有メモリ上のハッシュテーブルを用いて、データベースオブジェクト（テーブル、ページ、タプル等）に対するロックの獲得・解放・競合判定を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>lmgr</code> サブシステムにおいて、ロックの物理的な状態管理と競合解決を担当します。高レベルなインターフェース（<code>lmgr.c</code>）と、低レベルなプロセス管理（<code>proc.c</code>）や軽量ロック（<code>lwlock.c</code>）の間に位置し、ロックのハッシュテーブル操作やファストパス（Fast Path）ロジックをカプセル化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロックテーブル管理**: 共有メモリ上の <code>LOCK</code>（オブジェクト単位）および <code>PROCLOCK</code>（プロセス×オブジェクト単位）ハッシュテーブルの初期化と操作。</li>
+<li>**ファストパス（Fast Path）最適化**: 競合が少ないロックを各バックエンドのローカルメモリで高速に処理し、必要に応じて共有メモリへ転送する仕組みの管理。</li>
+<li>**競合判定**: ロックモード間の競合テーブルに基づく、獲得可否の判定。</li>
+<li>**待機キュー制御**: ロック獲得待ちプロセスの管理と、ロック解放時の起床処理。</li>
+<li>**2PC（二相コミット）対応**: 準備済みトランザクションのロック状態の永続化と復旧。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ロック管理・状態</h3>
+<ul>
+<li><code>LockMethodLockHash</code>, <code>LockMethodProcLockHash</code>: 共有メモリ上のロック管理用ハッシュテーブル。</li>
+<li><code>LockMethodLocalHash</code>: 各バックエンドのローカルメモリにあるロック管理用ハッシュテーブル。</li>
+<li><code>LockConflicts</code>: ロックモード間の競合を定義するビットマスク配列。</li>
+</ul>
+<h3>ロック操作（公開API）</h3>
+<ul>
+<li><code>LockAcquire</code>, <code>LockAcquireExtended</code>: ロック獲得のメインエントリポイント。</li>
+<li><code>LockRelease</code>: ロック解放のメインエントリポイント。</li>
+<li><code>LockReleaseAll</code>: 特定のトランザクションに関連する全ロックの解放。</li>
+</ul>
+<h3>ファストパス関連</h3>
+<ul>
+<li><code>FastPathGrantRelationLock</code>, <code>FastPathUnGrantRelationLock</code>: ファストパスによるロックの獲得・解放。</li>
+<li><code>FastPathTransferRelationLocks</code>: ファストパスからメインロックテーブルへのロック移行。</li>
+<li><code>FastPathStrongRelationLocks</code>: ファストパスを無効化する「強力なロック」のカウント管理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtPrepare_Locks</code></li>
+<li><code>FastPathStrongRelationLockData</code></li>
+<li><code>GetLocksMethodTable</code></li>
+<li><code>InitLockManagerAccess</code></li>
+<li><code>LOCK_DEBUG_ENABLED</code></li>
+<li><code>LOCK_PRINT</code></li>
+<li><code>LockManagerShmemInit</code></li>
+<li><code>PROCLOCK_PRINT</code></li>
+<li><code>PerLockTagEntry</code></li>
+<li><code>PostPrepare_Locks</code></li>
+<li><code>ResetAwaitedLock</code></li>
+<li><code>TwoPhaseLockRecord</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **獲得フロー**:</p>
+<ul>
+<li><code>LockAcquire</code> が呼ばれると、まず <code>LockMethodLocalHash</code> を確認。</li>
+<li>競合がなければ、<code>EligibleForRelationFastPath</code> を判定し、可能ならファストパスで処理。</li>
+<li>競合がある場合、<code>SetupLockInTable</code> で共有メモリ上の <code>LOCK</code>/<code>PROCLOCK</code> を確保し、<code>LockCheckConflicts</code> で競合判定。</li>
+<li>競合時は <code>JoinWaitQueue</code> を経由して <code>WaitOnLock</code>（<code>proc.c</code> の <code>ProcSleep</code>）で待機。</li>
+<p>2. **解放フロー**:</p>
+<li><code>LockRelease</code> が呼ばれると、ローカルの <code>nLocks</code> を減算。</li>
+<li>0 になれば、共有メモリ上の <code>UnGrantLock</code> を呼び出し、<code>CleanUpLock</code> で待機中の他プロセスを起床（<code>ProcLockWakeup</code>）。</li>
+<p>3. **データ構造のライフサイクル**:</p>
+<li><code>LOCK</code> はオブジェクトに対する最初の要求時に作成され、最後の要求が解放されると削除される（ガベージコレクション）。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: プロセス管理（<code>PGPROC</code>）。</li>
+<li><code>storage/lwlock.h</code>: 軽量ロックによるハッシュテーブルの保護。</li>
+<li><code>access/twophase.h</code>: 2PC 状態の管理。</li>
+<li><code>utils/resowner.h</code>: リソース所有者によるロックの追跡。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase_rmgr.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/lmgr/proc.c</code>: プロセスの待機・起床ロジック。</li>
+<li><code>src/backend/storage/lmgr/deadlock.c</code>: デッドロック検出。</li>
+<li><code>src/include/storage/lock.h</code>: ロック管理のデータ構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>LOCK</code> および <code>PROCLOCK</code> は共有メモリ上に存在し、<code>LWLock</code> で保護されます。<code>LOCALLOCK</code> はバックエンドのローカルメモリに存在します。</li>
+<li>**ファストパスの注意点**: ファストパスは「競合が少ない」場合に最適化されます。<code>ShareUpdateExclusiveLock</code> などの自己競合するロックはファストパスの対象外です。</li>
+<li>**デッドロック**: 本ファイルはデッドロック検出のロジック自体は持ちませんが、<code>JoinWaitQueue</code> を通じてデッドロック検出器と連携します。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であるため、デバッグ用関数（<code>LOCK_PRINT</code> 等）や、詳細な WAL 記録ロジックの細部は省略しています。これらはロックの整合性維持という本質的な責務の周辺機能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__TwoPhaseLockRecord.html" target="wiki-view"><code>TwoPhaseLockRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__FastPathStrongRelationLockData.html" target="wiki-view"><code>FastPathStrongRelationLockData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LOCK_DEBUG_ENABLED.html" target="wiki-view"><code>LOCK_DEBUG_ENABLED</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LOCK_PRINT.html" target="wiki-view"><code>LOCK_PRINT</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PROCLOCK_PRINT.html" target="wiki-view"><code>PROCLOCK_PRINT</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LockManagerShmemInit.html" target="wiki-view"><code>LockManagerShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__InitLockManagerAccess.html" target="wiki-view"><code>InitLockManagerAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__GetLocksMethodTable.html" target="wiki-view"><code>GetLocksMethodTable</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__ResetAwaitedLock.html" target="wiki-view"><code>ResetAwaitedLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PerLockTagEntry.html" target="wiki-view"><code>PerLockTagEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__AtPrepare_Locks.html" target="wiki-view"><code>AtPrepare_Locks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PostPrepare_Locks.html" target="wiki-view"><code>PostPrepare_Locks</code></a></li>
+</ul></body></html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/pg_recvlogical.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/pg_recvlogical.c</h1>
+<h2>概要</h2>
+<p><code>pg_recvlogical</code> は、PostgreSQL の論理デコーディングストリームを制御し、受信したデータをローカルファイルまたは標準出力に書き出すためのクライアントツールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_basebackup</code> モジュールの一部として、物理的なバックアップ（<code>pg_basebackup</code>）や WAL の受信（<code>pg_receivewal</code>）とは異なり、論理レプリケーションスロットを介したデータストリーミングに特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**スロット管理**: 論理レプリケーションスロットの作成、削除、およびストリーミング開始の制御。</li>
+<li>**データストリーミング**: サーバーからの論理デコーディングデータを <code>COPY</code> プロトコル経由で受信し、ファイルへ書き出す。</li>
+<li>**フィードバック制御**: 受信位置（LSN）をサーバーに定期的に通知し、スロットの進捗を維持する。</li>
+<li>**ライフサイクル管理**: 接続の維持、再接続ロジック、およびシグナルによる安全な終了処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>StreamLogicalLog()</code>: ストリーミングのメインループ。<code>COPY</code> プロトコルによるデータ受信とファイル書き込みを行う。</li>
+<li><code>sendFeedback()</code>: サーバーへ現在の受信・フラッシュ位置を通知する。</li>
+<li><code>output_written_lsn</code> / <code>output_fsync_lsn</code>: 現在の書き込みおよびフラッシュ済み LSN を保持するグローバル変数。</li>
+<li><code>time_to_abort</code>: シグナル受信時にループを終了させるフラグ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>OutputFsync</code></li>
+<li><code>StreamLogicalLog</code></li>
+<li><code>StreamStopReason</code></li>
+<li><code>disconnect_atexit</code></li>
+<li><code>flushAndSendFeedback</code></li>
+<li><code>main</code></li>
+<li><code>prepareToTerminate</code></li>
+<li><code>sendFeedback</code></li>
+<li><code>sigexit_handler</code></li>
+<li><code>sighup_handler</code></li>
+<li><code>usage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: コマンドライン引数を解析し、<code>GetConnection()</code> でサーバーと接続。 2. **コマンド実行**: <code>START_REPLICATION ... LOGICAL</code> コマンドを送信し、<code>COPY_BOTH</code> モードへ移行。 3. **メインループ**:</p>
+<ul>
+<li><code>select()</code> を使用してソケットを監視し、データ受信またはタイムアウト（フィードバック送信や <code>fsync</code> のタイミング）を待機。</li>
+<li>受信した <code>XLogData</code> メッセージを解析し、ファイルへ書き込む。</li>
+<li><code>fsync_interval</code> に基づき、定期的に <code>fsync()</code> を実行してディスクへ永続化。</li>
+<p>4. **終了処理**: シグナル受信や <code>endpos</code> 到達時に <code>prepareToTerminate()</code> を呼び出し、サーバーへ終了を通知して接続を閉じる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: サーバーとの通信（<code>COPY</code> プロトコル）。</li>
+<li><code>streamutil.h</code>: 接続管理や共通のストリーミングユーティリティ。</li>
+<li><code>common/file_perm.h</code>: ファイル作成時のパーミッション制御。</li>
+<li><code>sys/select.h</code>, <code>unistd.h</code>: 非同期 I/O 監視およびファイル操作。</li>
+<li><code>common/logging.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>pqexpbuffer.h</code></li>
+<li><code>sys/stat.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/streamutil.c</code>: <code>GetConnection()</code> や <code>RunIdentifySystem()</code> など、共通の接続処理が実装されている。</li>
+<li><code>src/bin/pg_basebackup/receivelog.c</code>: WAL 受信に関する共通ロジックが含まれる。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>COPY</code> プロトコルを直接操作しているため、<code>libpq</code> の <code>COPY</code> 関連 API（<code>PQgetCopyData</code> 等）の挙動を理解することが重要です。</li>
+<li><code>fsync</code> のタイミングは <code>fsync_interval</code> オプションで制御されており、データ損失を防ぐための重要な設計ポイントです。</li>
+<li>Windows 環境ではシグナルハンドリングが制限されるため、<code>#ifndef WIN32</code> で囲まれたハンドラの実装に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__StreamStopReason.html" target="wiki-view"><code>StreamStopReason</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__usage.html" target="wiki-view"><code>usage</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__sendFeedback.html" target="wiki-view"><code>sendFeedback</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__disconnect_atexit.html" target="wiki-view"><code>disconnect_atexit</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__OutputFsync.html" target="wiki-view"><code>OutputFsync</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__StreamLogicalLog.html" target="wiki-view"><code>StreamLogicalLog</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__sigexit_handler.html" target="wiki-view"><code>sigexit_handler</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__sighup_handler.html" target="wiki-view"><code>sighup_handler</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__main.html" target="wiki-view"><code>main</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__flushAndSendFeedback.html" target="wiki-view"><code>flushAndSendFeedback</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_recvlogical_c__prepareToTerminate.html" target="wiki-view"><code>prepareToTerminate</code></a></li>
+</ul></body></html>

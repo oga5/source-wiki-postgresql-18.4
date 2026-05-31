@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/port/path.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/port/path.c</h1>
+<h2>概要</h2>
+<p><code>src/port/path.c</code> は、PostgreSQL におけるクロスプラットフォームなパス操作ルーチンを提供します。Windows と Unix 系 OS 間で異なるパス区切り文字、ドライブレターの扱い、およびパスの正規化ルールを抽象化し、一貫したファイルシステム操作を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/port</code> モジュールの一部として、バックエンドおよびフロントエンド（psql 等）の両方から利用されます。特にインストールディレクトリの相対パス計算や、セキュリティ上の観点から安全なパスの検証を行うための基盤を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**パスの正規化**: <code>canonicalize_path</code> を通じて、冗長な区切り文字、<code>.</code>、<code>..</code> を解決し、一貫した形式に変換します。</li>
+<li>**プラットフォーム抽象化**: Windows のドライブレターや <code>\</code> を Unix 形式の <code>/</code> に統一し、必要に応じてネイティブ形式へ戻す処理を行います。</li>
+<li>**相対パス計算**: インストール場所（<code>bin</code>）を基準とした、データやライブラリディレクトリへの相対パスを算出します。</li>
+<li>**セキュリティ検証**: 抽出処理時などに、パスがカレントディレクトリを脱出していないかを検証します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>canonicalize_path</code>: パスを標準化するメイン関数。</li>
+<li><code>make_relative_path</code>: インストールディレクトリの再配置をサポートするための相対パス算出。</li>
+<li><code>path_is_safe_for_extraction</code>: パスが <code>..</code> を含まず、安全であることを確認する関数。</li>
+<li><code>get_progname</code>: 実行ファイル名からディレクトリパスを除去し、<code>.exe</code> サフィックスを処理する関数。</li>
+<li><code>IS_DIR_SEP</code>: OS 依存のパス区切り文字を判定するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>canonicalize_state</code></li>
+<li><code>cleanup_path</code></li>
+<li><code>debackslash_path</code></li>
+<li><code>first_dir_separator</code></li>
+<li><code>first_path_var_separator</code></li>
+<li><code>has_drive_prefix</code></li>
+<li><code>join_path_components</code></li>
+<li><code>last_dir_separator</code></li>
+<li><code>make_native_path</code></li>
+<li><code>pg_sjis_mblen</code></li>
+<li><code>skip_drive</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **正規化**: <code>canonicalize_path</code> が呼び出されると、まず Windows 特有の <code>\</code> を <code>/</code> に置換し、末尾の不要な文字を削除します。その後、状態マシン（<code>canonicalize_state</code>）を用いてパスの各コンポーネントを走査し、<code>..</code> を解決します。 2. **相対パス計算**: <code>make_relative_path</code> は、コンパイル時のパスと実行時のパスを比較し、共通のプレフィックスを特定します。その後、<code>join_path_components</code> を用いて、実行環境の場所を基準とした新しいパスを構築します。 3. **安全確認**: <code>path_is_safe_for_extraction</code> は、入力を正規化した上で <code>path_contains_parent_reference</code> を呼び出し、ディレクトリトラバーサル攻撃を防ぐためのチェックを行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code> / <code>postgres_fe.h</code>: 環境に応じた共通定義。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字のエンコーディング処理用。</li>
+<li><code>sys/stat.h</code>, <code>unistd.h</code>, <code>pwd.h</code>: OS 標準のファイルシステム・ユーザー情報操作。</li>
+<li><code>shlobj.h</code> (Windows): Windows 特有のパス操作用。</li>
+<li><code>ctype.h</code></li>
+<li><code>pg_config_paths.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/port.h</code>: 本ファイルで定義されている関数のプロトタイプ宣言が含まれています。</li>
+<li><code>src/common/wchar.c</code>: 文字列のエンコーディング関連のより詳細な処理が必要な場合に参照されます。</li>
+<li><code>src/port/dirmod.c</code>: ディレクトリ操作に関連する補完的な機能が含まれています。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Windows 互換性**: Windows 上では <code>\</code> と <code>/</code> が混在しやすいため、本ファイルを通した正規化が必須です。</li>
+<li>**メモリ管理**: <code>make_absolute_path</code> など一部の関数は <code>malloc</code> を使用するため、呼び出し側での <code>free</code> が必要です。</li>
+<li>**SJIS の扱い**: Windows 環境における Shift-JIS の <code>\</code>（0x5C）問題に対処するため、<code>debackslash_path</code> 内で特殊な文字長計算を行っています。他のエンコーディングを追加する際は注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__port__path_c__skip_drive.html" target="wiki-view"><code>skip_drive</code></a></li>
+<li><a href="../../symbols/src__port__path_c__has_drive_prefix.html" target="wiki-view"><code>has_drive_prefix</code></a></li>
+<li><a href="../../symbols/src__port__path_c__first_dir_separator.html" target="wiki-view"><code>first_dir_separator</code></a></li>
+<li><a href="../../symbols/src__port__path_c__first_path_var_separator.html" target="wiki-view"><code>first_path_var_separator</code></a></li>
+<li><a href="../../symbols/src__port__path_c__last_dir_separator.html" target="wiki-view"><code>last_dir_separator</code></a></li>
+<li><a href="../../symbols/src__port__path_c__debackslash_path.html" target="wiki-view"><code>debackslash_path</code></a></li>
+<li><a href="../../symbols/src__port__path_c__pg_sjis_mblen.html" target="wiki-view"><code>pg_sjis_mblen</code></a></li>
+<li><a href="../../symbols/src__port__path_c__make_native_path.html" target="wiki-view"><code>make_native_path</code></a></li>
+<li><a href="../../symbols/src__port__path_c__cleanup_path.html" target="wiki-view"><code>cleanup_path</code></a></li>
+<li><a href="../../symbols/src__port__path_c__join_path_components.html" target="wiki-view"><code>join_path_components</code></a></li>
+<li><a href="../../symbols/src__port__path_c__canonicalize_state.html" target="wiki-view"><code>canonicalize_state</code></a></li>
+<li><a href="../../symbols/src__port__path_c__canonicalize_path.html" target="wiki-view"><code>canonicalize_path</code></a></li>
+</ul></body></html>

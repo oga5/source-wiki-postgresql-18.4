@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/printtup.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/printtup.c</h1>
+<h2>概要</h2>
+<p><code>printtup.c</code> は、クエリ結果のタプルをクライアント（フロントエンド）またはデバッグ出力先へ転送するための <code>DestReceiver</code> 実装を提供します。PostgreSQL のフロントエンド/バックエンド・プロトコルに基づき、タプルのシリアライズと送信を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> 内において、実行エンジンが生成したタプルを外部へ出力する際の「出口」として機能します。<code>DestReceiver</code> インターフェースを実装しており、Executor がタプルを処理する際の最終的な宛先として登録されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロトコル変換**: タプルデータをフロントエンドが解釈可能な <code>DataRow</code> メッセージ形式に変換する。</li>
+<li>**メタデータ送信**: クエリ実行開始時に <code>RowDescription</code> メッセージを送信し、カラム定義をクライアントに通知する。</li>
+<li>**メモリ管理**: 行ごとの変換処理で発生する一時的なメモリを <code>tmpcontext</code> で管理し、効率的に解放する。</li>
+<li>**デバッグ支援**: 対話型バックエンド向けに、タプル内容を標準出力へ整形表示する <code>debugtup</code> を提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DR_printtup</code>: <code>DestReceiver</code> を継承した、printtup 用のプライベート状態構造体。</li>
+<li><code>printtup_create_DR()</code>: <code>DestReceiver</code> オブジェクトを生成・初期化するコンストラクタ。</li>
+<li><code>printtup()</code>: <code>DestReceiver</code> の <code>receiveSlot</code> に登録されるメインのタプル送信関数。</li>
+<li><code>SendRowDescriptionMessage()</code>: クライアントへカラム定義情報を送信するユーティリティ。</li>
+<li><code>PrinttupAttrInfo</code>: 各カラムの出力関数（テキスト/バイナリ）や型情報をキャッシュする構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SendRowDescriptionMessage</code></li>
+<li><code>SetRemoteDestReceiverParams</code></li>
+<li><code>debugStartup</code></li>
+<li><code>debugtup</code></li>
+<li><code>printatt</code></li>
+<li><code>printtup</code></li>
+<li><code>printtup_create_DR</code></li>
+<li><code>printtup_prepare_info</code></li>
+<li><code>printtup_shutdown</code></li>
+<li><code>printtup_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>printtup_create_DR</code> でレシーバーを作成。<code>rStartup</code> で <code>RowDescription</code> を送信。 2. **準備**: 最初のタプル到着時に <code>printtup_prepare_info</code> が呼ばれ、各カラムの出力関数（<code>typoutput</code> または <code>typsend</code>）をキャッシュする。 3. **送信**: <code>printtup</code> が呼ばれるたびに：</p>
+<ul>
+<li><code>tmpcontext</code> をリセットして前回のメモリを解放。</li>
+<li><code>slot_getallattrs</code> でタプルをデコード。</li>
+<li>各属性をキャッシュされた関数で変換し、<code>StringInfo</code> バッファへ書き込む。</li>
+<li><code>pq_endmessage_reuse</code> で <code>DataRow</code> メッセージを送信。</li>
+<p>4. **終了**: <code>rShutdown</code> でバッファとメモリコンテキストを破棄。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>libpq/pqformat.h</code>: フロントエンド/バックエンド・プロトコルのメッセージ構築用。</li>
+<li><code>utils/lsyscache.h</code>: 型情報の検索用。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理用。</li>
+<li><code>access/printtup.h</code></li>
+<li><code>libpq/protocol.h</code></li>
+<li><code>tcop/pquery.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/printtup.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/executor/execReScan.c</code>: 実行エンジンにおける <code>DestReceiver</code> の利用箇所。</li>
+<li><code>src/backend/libpq/pqformat.c</code>: メッセージ送信の低レイヤー実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: <code>printtup</code> は行ごとに <code>MemoryContextReset</code> を行うことで、個別の <code>pfree</code> を避けて高速化を図っています。</li>
+<li>**キャッシュ**: <code>PrinttupAttrInfo</code> は、タプル記述子が変更されない限り再利用されます。</li>
+<li>**デバッグ**: <code>debugtup</code> は <code>printtup</code> とは独立しており、主に <code>psql</code> 等を介さない直接的なバックエンド操作時のデバッグに使用されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__PrinttupAttrInfo.html" target="wiki-view"><code>PrinttupAttrInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__DR_printtup.html" target="wiki-view"><code>DR_printtup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printtup_create_DR.html" target="wiki-view"><code>printtup_create_DR</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__SetRemoteDestReceiverParams.html" target="wiki-view"><code>SetRemoteDestReceiverParams</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printtup_startup.html" target="wiki-view"><code>printtup_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__SendRowDescriptionMessage.html" target="wiki-view"><code>SendRowDescriptionMessage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printtup_prepare_info.html" target="wiki-view"><code>printtup_prepare_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printtup.html" target="wiki-view"><code>printtup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printtup_shutdown.html" target="wiki-view"><code>printtup_shutdown</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__printatt.html" target="wiki-view"><code>printatt</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__debugStartup.html" target="wiki-view"><code>debugStartup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__printtup_c__debugtup.html" target="wiki-view"><code>debugtup</code></a></li>
+</ul></body></html>

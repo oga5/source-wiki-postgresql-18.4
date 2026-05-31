@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/node.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>NODE</h1>
+<h2>概念</h2>
+<p><code>NODE</code> は、PostgreSQLの複数のモジュールにおいて、クエリの構文解析や最適化、クエリツリーの操作を行うために定義されている内部的な構造体（<code>struct</code>）です。</p>
+<p>名前は同一ですが、モジュールごとに異なる定義と役割を持っています。</p>
+<ul>
+<li>**<code>contrib/intarray</code> および <code>contrib/ltree</code>**: クエリ文字列の構文解析中にトークンを一時的に保持し、演算子の優先順位に基づいたポーランド記法（後置記法）への変換を行うための単方向連結リストの要素として使用されます。</li>
+<li>**<code>src/backend/utils/adt</code> (<code>tsquery_cleanup.c</code>)**: 全文検索クエリ（<code>tsquery</code>）をツリー構造として表現し、不要なノード（<code>NOT</code> 演算子やストップワード）の除去や最適化を再帰的に行うために使用されます。</li>
+</ul>
+<h2>なぜ重要か</h2>
+<p>クエリの解析や最適化といった処理において、フラットな入力データ（文字列や配列）を一時的に操作しやすい構造（連結リストや二分木）に変換して処理するために不可欠なデータ構造だからです。</p>
+<p>特に、<code>contrib/intarray</code> や <code>contrib/ltree</code> では、ユーザー入力をポーランド記法（<code>ITEM</code> 配列）に変換する際の中間表現として機能します。また、<code>tsquery_cleanup.c</code> では、ストップワードの除去やフレーズ演算子の距離再計算といった複雑なクエリ最適化ロジックを再帰的に適用するための基盤となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/intarray/_int_bool.c#NODE</code>**</li>
+<li>メンバ: <code>int32 type</code>, <code>int32 val</code>, <code>struct NODE *next</code></li>
+<li>役割: クエリ解析時の一時的なスタック（連結リスト）要素。</li>
+<li>**<code>symbol:contrib/ltree/ltxtquery_io.c#NODE</code>**</li>
+<li>メンバ: <code>int32 type</code>, <code>int32 val</code>, <code>int16 distance</code>, <code>int16 length</code>, <code>uint16 flag</code>, <code>struct NODE *next</code></li>
+<li>役割: <code>ltxtquery</code> 解析時の一時的な連結リスト要素。</li>
+<li>**<code>symbol:src/backend/utils/adt/tsquery_cleanup.c#NODE</code>**</li>
+<li>メンバ: <code>struct NODE *left</code>, <code>struct NODE *right</code>, <code>QueryItem *valnode</code></li>
+<li>役割: <code>tsquery</code> の最適化・クリーンアップ用の二分木ノード。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>モジュールごとに処理の流れが異なります。</p>
+<h3>1. <code>contrib/intarray</code> および <code>contrib/ltree</code> の場合</h3>
+<p>1. クエリ文字列の解析プロセス（<code>ltxtq_in</code> や <code>makepol</code> など）において、トークンが順次読み込まれます。 2. <code>palloc</code> を介して <code>NODE</code> 構造体が動的に割り当てられ、トークン情報（タイプや値など）が格納されます。 3. <code>NODE</code> は <code>next</code> ポインタを介して単方向連結リスト（スタック）を形成します。 4. 構築されたリストは、演算子の優先順位に従って走査され、最終的なバイナリ形式である <code>ITEM</code> 配列（ポーランド記法）へと変換されます。 5. 変換後、これらの一時的な <code>NODE</code> リストは破棄されます。</p>
+<h3>2. <code>src/backend/utils/adt</code> (<code>tsquery_cleanup.c</code>) の場合</h3>
+<p>1. <code>maketree()</code> 関数により、フラットな <code>QueryItem</code> 配列から <code>NODE</code> を用いた二分木ツリー構造が構築されます。 2. 構築されたツリーに対して、<code>clean_NOT_intree</code> や <code>clean_stopword_intree</code> などの関数が再帰的に適用され、不要なノードの除去やフレーズ演算子の距離再計算が行われます。 3. 処理完了後、<code>plaintree()</code> 関数によって、最適化されたツリー構造から再びフラットな <code>QueryItem</code> 配列へと書き戻されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**連結リストの終端**: <code>contrib/intarray</code> および <code>contrib/ltree</code> の <code>NODE</code> において、リストの終端を示す <code>next</code> ポインタは必ず <code>NULL</code> でなければなりません。</li>
+<li>**ツリーの構造**: <code>tsquery_cleanup.c</code> の <code>NODE</code> において、各ノードは <code>QueryItem</code>（<code>valnode</code>）を保持するか、あるいは演算子として左右の子ノード（<code>left</code>, <code>right</code>）を保持します。</li>
+<li>**メモリ管理**: これらすべての <code>NODE</code> 構造体は、永続的なクエリ保存には使用されず、解析やクリーンアップ処理中の一時的なメモリ（<code>palloc</code> による割り当て）としてのみ存在します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の重複と混同**: <code>NODE</code> という名前の構造体は、<code>contrib/intarray</code>、<code>contrib/ltree</code>、および <code>tsquery_cleanup.c</code> でそれぞれ独立して定義されています。これらは互いに直接の関連性を持たない別個の定義であるため、開発や修正の際に混同しないよう注意が必要です。特に <code>contrib/intarray</code> と <code>contrib/ltree</code> は定義が類似しているため、一方を変更する際は他方への影響も考慮する必要があります。</li>
+<li>**スタックオーバーフロー**: <code>tsquery_cleanup.c</code> などの再帰的なツリー走査や、クエリ解析時の再帰処理において、クエリの階層が極端に深い場合にスタックオーバーフローを引き起こす危険性があります。これを防ぐために <code>check_stack_depth()</code> によるスタック保護を適切に適用する必要があります。</li>
+<li>**複雑なポインタ操作と距離伝播**: <code>tsquery_cleanup.c</code> におけるストップワード除去時のフレーズ演算子の距離（<code>ladd</code>, <code>radd</code>）の伝播ロジックは、<code>NODE</code> のポインタ操作に強く依存しており非常に複雑です。不適切な操作を行うと、クエリの整合性が失われる可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/intarray/_int_bool.c</code></li>
+<li><code>contrib/ltree/ltxtquery_io.c</code></li>
+<li><code>src/backend/utils/adt/tsquery_cleanup.c</code></li>
+</ul></body></html>

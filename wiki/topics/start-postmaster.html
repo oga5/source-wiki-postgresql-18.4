@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/start-postmaster.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>start_postmaster</h1>
+<h2>概念</h2>
+<p><code>start_postmaster</code> は、PostgreSQL のユーティリティ（特に <code>pg_upgrade</code> や <code>pg_ctl</code>）において、Postmaster（PostgreSQL データベースサーバー）プロセスを起動し、必要に応じてその後の接続確認などを行うための関数、または処理の単位です。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのアップグレード（<code>pg_upgrade</code>）や制御（<code>pg_ctl</code>）のプロセスにおいて、サーバーインスタンスを安全かつ適切な設定で起動・検証することは、管理操作を自動化し、データの整合性を保つために不可欠です。特に <code>pg_upgrade</code> においては、新旧のクラスターを一時的に起動してメタデータの検証や移行を行うために、この処理が重要な役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/bin/pg_ctl</code></li>
+<li><code>module:src/bin/pg_upgrade</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_upgrade/server.c#start_postmaster</code>**</li>
+<p><code>pg_upgrade</code> 内で定義されている関数。指定されたクラスターの Postmaster を <code>pg_ctl</code> を介して起動し、接続確認を行います。</p>
+<li>**<code>symbol:src/bin/pg_ctl/pg_ctl.c#start_postmaster</code>**</li>
+<p><code>pg_ctl</code> 内に存在する同名の関数。※この関数の詳細な振る舞いや仕様は、提供されたコンテキストからは不明です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p><code>pg_upgrade</code> における <code>start_postmaster</code> の処理フローは以下の通りです。</p>
+<p>1. **初期化とフック登録** 初回呼び出し時に、終了時処理として <code>stop_postmaster_atexit</code> を <code>atexit</code> フックに登録します。 2. **コマンド構築** 対象クラスター（<code>ClusterInfo</code>）のバージョンや種類、環境（Windows/非Windows）に応じて、<code>pg_ctl start</code> の起動コマンド文字列を構築します。</p>
+<ul>
+<li>非Windows環境では、TCP/IP 接続を無効化し、Unix ソケット権限を <code>0700</code> に制限する設定を追加します。</li>
+<li>新クラスター（<code>new_cluster</code>）の起動時には、パフォーマンス向上のため <code>synchronous_commit=off</code>、<code>fsync=off</code>、<code>full_page_writes=off</code> を強制的に付与します。</li>
+<p>3. **プロセスの起動** <code>exec_prog</code> を使用して <code>pg_ctl start</code> を実行します。 4. **状態の記録** 起動成功時、グローバル構造体 <code>os_info.running_cluster</code> に対象クラスターを記録します。 5. **接続確認** <code>get_db_conn</code> を呼び出し、<code>template1</code> データベースへの接続を試行してサーバーが実際に稼働しているか確認します。 6. **エラーハンドリング** 起動または接続確認に失敗した場合、<code>report_and_exit_on_error</code> フラグが <code>true</code> であれば <code>pg_fatal</code> でプロセスを終了し、<code>false</code> であれば <code>false</code> を返して呼び出し元に制御を戻します。</p>
+</ul>
+<p>※ <code>src/bin/pg_ctl/pg_ctl.c</code> 側の <code>start_postmaster</code> におけるエンドツーエンドの流れは、提供されたコンテキストからは不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**一時的な最適化設定の適用 (<code>pg_upgrade</code>)**</li>
+<p>新クラスターを起動する際、<code>fsync=off</code> などのパラメータが強制的に付与されます。これは、クラッシュ時にはクラスターを再作成すればよいという前提（不変条件）に基づいています。</p>
+<li>**後処理の保証 (<code>pg_upgrade</code>)**</li>
+<p>初回呼び出し時に <code>atexit</code> フック（<code>stop_postmaster_atexit</code>）を登録することで、プログラム終了時に起動した Postmaster が確実に停止されるようにします。</p>
+<li>※ <code>pg_ctl</code> 側における不変条件は現時点では不明です。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**接続確認と pg_ctl の終了コードの乖離**</li>
+<p><code>pg_upgrade</code> において、<code>pg_ctl -w</code> が失敗を返した場合でも、その後の <code>template1</code> への直接接続確認が成功すれば、処理が継続される場合があります。この挙動を誤解すると、起動成否の判定ロジックで混乱が生じる可能性があります。</p>
+<li>**クラッシュ時のデータ消失リスク**</li>
+<p>新クラスター起動時に <code>fsync=off</code> 等が強制されるため、この起動中にシステムがクラッシュした場合、データが破損しクラスターの再作成が必要になります。</p>
+<li>※ <code>pg_ctl</code> 側の実装における落とし穴は、提供されたコンテキストからは不明です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/server.c</code> (<code>start_postmaster</code> の実装および <code>stop_postmaster_atexit</code> などの関連処理)</li>
+<li><code>src/bin/pg_ctl/pg_ctl.c</code> (<code>pg_ctl</code> 側における同名関数の実装と役割の確認)</li>
+</ul></body></html>

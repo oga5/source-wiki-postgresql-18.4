@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/libpqwalreceiver/libpqwalreceiver.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/libpqwalreceiver/libpqwalreceiver.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのWALレシーバー機能において、<code>libpq</code> を介した通信を抽象化する動的ロードモジュールです。サーバー本体のバイナリが直接 <code>libpq</code> にリンクされることを防ぐため、動的ライブラリとして実装されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>replication/walreceiver.h</code> で定義されたインターフェース（<code>WalReceiverFunctions</code>）を実装するバックエンド側の実装層です。物理レプリケーションおよび論理レプリケーションの両方で、プライマリサーバーとの通信を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: <code>libpq</code> を使用したプライマリサーバーへの接続確立、検証、切断。</li>
+<li>**ストリーミング制御**: <code>START_REPLICATION</code> コマンドの発行およびストリーミングの開始・終了処理。</li>
+<li>**データ転送**: WALデータの受信（<code>libpq</code> の COPY モード利用）および制御メッセージの送受信。</li>
+<li>**レプリケーションスロット管理**: スロットの作成、変更、および関連するメタデータの取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>WalReceiverConn</code>: 接続状態（<code>PGconn</code>）やバッファを保持する内部構造体。</li>
+<li><code>PQWalReceiverFunctions</code>: <code>WalReceiverFunctionsType</code> 型の静的構造体。モジュール初期化時にグローバルな関数ポインタテーブルへ登録されます。</li>
+<li><code>_PG_init</code>: モジュールロード時に実行される初期化関数。<code>WalReceiverFunctions</code> を本モジュールの実装で上書きします。</li>
+<li><code>libpqrcv_connect</code>: 接続パラメータを構築し、プライマリへの接続を確立する主要なエントリーポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>libpqrcv_check_conninfo</code></li>
+<li><code>libpqrcv_create_slot</code></li>
+<li><code>libpqrcv_get_backend_pid</code></li>
+<li><code>libpqrcv_get_conninfo</code></li>
+<li><code>libpqrcv_get_dbname_from_conninfo</code></li>
+<li><code>libpqrcv_get_option_from_conninfo</code></li>
+<li><code>libpqrcv_get_senderinfo</code></li>
+<li><code>libpqrcv_identify_system</code></li>
+<li><code>libpqrcv_server_version</code></li>
+<li><code>libpqrcv_startstreaming</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> が呼ばれ、<code>WalReceiverFunctions</code> が本モジュールの関数群を指すように設定されます。 2. **接続**: <code>libpqrcv_connect</code> が呼び出され、<code>libpqsrv_connect_params</code> を介してプライマリと接続します。 3. **ストリーミング**: <code>libpqrcv_startstreaming</code> で <code>START_REPLICATION</code> を送信し、COPY モードへ移行します。 4. **データ受信**: <code>libpqrcv_receive</code> が <code>PQgetCopyData</code> を呼び出し、WALレコードをバッファへ読み込みます。 5. **終了**: <code>libpqrcv_endstreaming</code> で COPY モードを終了し、サーバーからの最終応答を確認します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code> / <code>libpq/libpq-be-fe-helpers.h</code>: <code>libpq</code> 通信機能。</li>
+<li><code>replication/walreceiver.h</code>: インターフェース定義。</li>
+<li><code>utils/tuplestore.h</code>: クエリ結果の格納用。</li>
+<li><code>storage/latch.h</code>: 待機イベントの管理。</li>
+<li><code>common/connect.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>pqexpbuffer.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/walreceiver.c</code>: 本モジュールを呼び出すメインのWALレシーバープロセス。</li>
+<li><code>src/backend/replication/libpqwalreceiver/</code>: 本モジュールが格納されているディレクトリ。</li>
+<li><code>src/interfaces/libpq/</code>: <code>libpq</code> の本体実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは動的モジュールであるため、<code>postgres.h</code> 以外の標準的なバックエンドヘッダーのインクルードには注意が必要です。</li>
+<li><code>libpq</code> の COPY モードを多用するため、<code>PQgetCopyData</code> や <code>PQputCopyData</code> の挙動を理解しておくことが重要です。</li>
+<li><code>libpqrcv_exec</code> は、レプリケーション接続上でSQLクエリを実行するための汎用的なインターフェースを提供しており、論理レプリケーションのメタデータ取得などで利用されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__WalReceiverConn.html" target="wiki-view"><code>WalReceiverConn</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_connect.html" target="wiki-view"><code>libpqrcv_connect</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_check_conninfo.html" target="wiki-view"><code>libpqrcv_check_conninfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_get_conninfo.html" target="wiki-view"><code>libpqrcv_get_conninfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_get_senderinfo.html" target="wiki-view"><code>libpqrcv_get_senderinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_identify_system.html" target="wiki-view"><code>libpqrcv_identify_system</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_server_version.html" target="wiki-view"><code>libpqrcv_server_version</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_get_dbname_from_conninfo.html" target="wiki-view"><code>libpqrcv_get_dbname_from_conninfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_get_option_from_conninfo.html" target="wiki-view"><code>libpqrcv_get_option_from_conninfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_startstreaming.html" target="wiki-view"><code>libpqrcv_startstreaming</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_create_slot.html" target="wiki-view"><code>libpqrcv_create_slot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__libpqwalreceiver__libpqwalreceiver_c__libpqrcv_get_backend_pid.html" target="wiki-view"><code>libpqrcv_get_backend_pid</code></a></li>
+</ul></body></html>

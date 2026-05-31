@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dropreplicationslot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DropReplicationSlot</h1>
+<h2>概念</h2>
+<p><code>DropReplicationSlot</code> は、PostgreSQLにおいて不要になったレプリケーションスロットを削除（破棄）するための処理です。この処理には、クライアント（フロントエンド）側から削除コマンドを送信する実装と、サーバー（バックエンド）側でそのコマンドを受け取って実際にスロットを削除する実装の2つの側面が存在します。</p>
+<h2>なぜ重要か</h2>
+<p>レプリケーションスロットは、WAL（Write-Ahead Log）の保持や論理デコードの状態を管理するためにサーバー上でリソースを消費し続けます。不要になったスロットを適切に削除することは、ディスク容量の枯渇を防ぎ、サーバーリソースを解放するために不可欠です。<code>pg_receivewal</code> や <code>pg_recvlogical</code> などのフロントエンドツールが処理をクリーンアップする際などに、この削除処理が実行されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li>**<code>module:src/backend/replication</code>**: バックエンド側におけるレプリケーションスロットの削除処理およびコマンドの受信を担当します。</li>
+<li>**<code>module:src/bin/pg_basebackup</code>**: フロントエンドツール（<code>pg_receivewal</code> や <code>pg_recvlogical</code> など）からサーバーに対してスロット削除を要求する処理を担当します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_basebackup/streamutil.c#DropReplicationSlot</code>**: フロントエンド側の関数。<code>libpq</code> を介してサーバーへ <code>DROP_REPLICATION_SLOT</code> コマンドを送信します。</li>
+<li>**<code>symbol:src/backend/replication/walsender.c#DropReplicationSlot</code>**: バックエンド側の関数。サーバー内部でスロット削除要求を処理します（詳細な内部仕様は現時点で未提供）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **削除のトリガー**: フロントエンドツール（<code>pg_receivewal</code> や <code>pg_recvlogical</code> など）が、不要になったスロットを削除するために <code>streamutil.c</code> の <code>DropReplicationSlot</code> を呼び出します。 2. **コマンドの構築と送信**: フロントエンド側は <code>DROP_REPLICATION_SLOT &quot;slot_name&quot;</code> コマンド文字列を構築し、<code>PQexec</code> を使用してサーバーへ送信します。 3. **サーバー側の処理**: サーバー（バックエンド）側でコマンドが受信され、<code>walsender.c</code> などのバックエンド側処理によって実際のスロット削除が実行されます。 4. **結果の検証**: フロントエンド側は、サーバーからの応答が <code>PGRES_COMMAND_OK</code> であり、かつ返されたデータが 0 行 0 フィールドであることを確認して、成功（<code>true</code>）または失敗（<code>false</code>）を呼び出し元に返します。</p>
+<p>*注: バックエンド側（<code>walsender.c</code> 内）の具体的な処理フローや、フロントエンドとバックエンドがどのように完全に同期して動作するかという詳細なエンドツーエンドのフロー全体は、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**フロントエンド側の不変条件**:</li>
+<li>入力される <code>slot_name</code> は NULL であってはなりません（<code>Assert</code> により検証されます）。</li>
+<li>接続 <code>conn</code> はレプリケーションプロトコルが利用可能な有効な状態（<code>PGconn</code>）でなければなりません。</li>
+<li>正常に削除された場合、サーバーからの応答は <code>PGRES_COMMAND_OK</code> であり、かつ返されるデータ（タプルやフィールド）は 0 件でなければなりません。</li>
+</ul>
+<p>*注: バックエンド側における不変条件（例: アクティブに接続されているスロットは削除できない等）は、提供された情報からは不明です。*</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: フロントエンド用の <code>DropReplicationSlot</code>（<code>streamutil.c</code>）と、バックエンド用の <code>DropReplicationSlot</code>（<code>walsender.c</code>）は名前が同一ですが、動作するプロセスやコンテキストが全く異なるため、混同しないよう注意が必要です。</li>
+<li>**NULLポインタの渡し**: フロントエンド関数に <code>slot_name</code> として NULL を渡すと、アサーション違反によりプロセスが異常終了します。</li>
+<li>**エラーハンドリング**: サーバーから予期せぬデータ（タプルやフィールド）が返された場合や、<code>PGRES_COMMAND_OK</code> 以外のステータスが返された場合は失敗（<code>false</code>）となるため、呼び出し元で適切に成否を判定する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/bin/pg_basebackup/streamutil.c</code>**: フロントエンド側における <code>libpq</code> を用いたコマンド送信とエラーハンドリングの具体的な実装を確認できます。</li>
+<li>**<code>src/backend/replication/walsender.c</code>**: バックエンド側におけるコマンドの受信と、実際のスロット削除処理の実装を確認できます。</li>
+</ul></body></html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/shmem.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/shmem.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの共有メモリ領域の管理および初期化を行うモジュールです。Postmasterが作成した共有メモリセグメントを各バックエンドプロセスが利用可能にするための基盤を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> における共有メモリ管理の最下層に位置します。他のIPC機能（DSMや共有ハッシュテーブルなど）が共有メモリを要求する際の窓口として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**共有メモリの初期化**: Postmaster起動時に共有メモリのベースアドレスとセグメントヘッダーをセットアップします。</li>
+<li>**動的割り当て**: <code>ShmemAlloc</code> を通じて、共有メモリ領域をキャッシュライン境界で切り出し、各モジュールに提供します。</li>
+<li>**名前付き構造体の管理**: <code>ShmemIndex</code> ハッシュテーブルを維持し、各モジュールが名前を指定して共有メモリ上の構造体（ハッシュテーブルや固定サイズ構造体）を検索・作成できるようにします。</li>
+<li>**NUMA対応**: 共有メモリのNUMAノード配置状況を可視化するSQL関数を提供します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ShmemIndex</code>: 共有メモリ上の全データ構造を管理するハッシュテーブル。</li>
+<li><code>ShmemAlloc()</code>: 共有メモリを割り当てる主要関数。キャッシュライン境界へのアライメントを保証します。</li>
+<li><code>ShmemInitStruct()</code>: 指定した名前の構造体を共有メモリから取得、または新規作成します。</li>
+<li><code>InitShmemAccess()</code>: プロセス起動時に共有メモリへのアクセス権を確立します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InitShmemAccess</code></li>
+<li><code>InitShmemAllocation</code></li>
+<li><code>InitShmemIndex</code></li>
+<li><code>ShmemAlloc</code></li>
+<li><code>ShmemAllocNoError</code></li>
+<li><code>ShmemAllocRaw</code></li>
+<li><code>ShmemAllocUnlocked</code></li>
+<li><code>ShmemInitHash</code></li>
+<li><code>ShmemInitStruct</code></li>
+<li><code>pg_get_shmem_allocations</code></li>
+<li><code>pg_get_shmem_allocations_numa</code></li>
+<li><code>pg_get_shmem_pagesize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: Postmasterが <code>InitShmemAllocation</code> を呼び出し、共有メモリの空き領域管理を開始します。 2.  **構造体作成**: 各モジュールが <code>ShmemInitStruct</code> を呼び出します。</p>
+<ul>
+<li><code>ShmemIndex</code> を検索し、存在すればそのアドレスを返します。</li>
+<li>存在しなければ <code>ShmemAlloc</code> で領域を確保し、<code>ShmemIndex</code> に登録します。</li>
+<p>3.  **アクセス**: 各バックエンドは、Postmasterから継承したアドレス（または <code>shmem.h</code> 経由のポインタ）を使用して、共有メモリ上のデータ構造に直接アクセスします。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>: 共有メモリ管理のインターフェース定義。</li>
+<li><code>storage/lwlock.h</code>: <code>ShmemIndexLock</code> 等の排他制御。</li>
+<li><code>storage/spin.h</code>: <code>ShmemLock</code> による低レベルなメモリ割り当ての保護。</li>
+<li><code>port/pg_numa.h</code>: NUMA関連のハードウェア情報取得。</li>
+<li><code>fmgr.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/pg_shmem.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/shmem.h</code>: 本ファイルの公開API定義。</li>
+<li><code>src/backend/storage/ipc/dsm.c</code>: 動的共有メモリ（DSM）の管理。本ファイルが提供する基盤の上に構築されています。</li>
+<li><code>src/backend/storage/ipc/ipci.c</code>: 共有メモリの初期化シーケンスを統括する場所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アライメント**: <code>ShmemAlloc</code> はキャッシュライン境界（<code>CACHELINEALIGN</code>）を意識します。これは現代のCPUアーキテクチャにおけるパフォーマンス低下（偽の共有など）を防ぐためです。</li>
+<li>**永続性**: 共有メモリは一度割り当てられると解放できません。このため、動的なメモリ解放が必要な場合は、共有メモリ上に構築されたハッシュテーブル等の内部的なフリーリストを利用する必要があります。</li>
+<li>**EXEC_BACKEND**: Windows等の <code>fork()</code> を使用しない環境では、各プロセスが個別に共有メモリへアタッチする必要があり、<code>ShmemIndex</code> がその解決に不可欠な役割を果たします。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__InitShmemAccess.html" target="wiki-view"><code>InitShmemAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__InitShmemAllocation.html" target="wiki-view"><code>InitShmemAllocation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemAlloc.html" target="wiki-view"><code>ShmemAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemAllocNoError.html" target="wiki-view"><code>ShmemAllocNoError</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemAllocRaw.html" target="wiki-view"><code>ShmemAllocRaw</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemAllocUnlocked.html" target="wiki-view"><code>ShmemAllocUnlocked</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__InitShmemIndex.html" target="wiki-view"><code>InitShmemIndex</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemInitHash.html" target="wiki-view"><code>ShmemInitHash</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__ShmemInitStruct.html" target="wiki-view"><code>ShmemInitStruct</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__pg_get_shmem_allocations.html" target="wiki-view"><code>pg_get_shmem_allocations</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__pg_get_shmem_allocations_numa.html" target="wiki-view"><code>pg_get_shmem_allocations_numa</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shmem_c__pg_get_shmem_pagesize.html" target="wiki-view"><code>pg_get_shmem_pagesize</code></a></li>
+</ul></body></html>

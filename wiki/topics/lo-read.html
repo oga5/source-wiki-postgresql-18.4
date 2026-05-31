@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/lo-read.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>lo_read</h1>
+<h2>概念</h2>
+<p><code>lo_read</code> は、PostgreSQLにおいてラージオブジェクト（Large Object）からデータを読み出すためのAPIです。この名前を持つ関数は、クライアント側（<code>libpq</code> ライブラリ）とサーバー側（バックエンド）の双方に存在し、それぞれ異なる役割を担いながら連携して動作します。</p>
+<h2>なぜ重要か</h2>
+<p>ラージオブジェクトは通常のテーブル行の制限を超える大容量データを扱うために使用されます。<code>lo_read</code> は、クライアントアプリケーションがデータベースに格納されたラージオブジェクトから、指定したバッファサイズごとにデータを効率的に読み出すための主要なインターフェースを提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/libpq</code></li>
+<li><code>module:src/interfaces/libpq</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/libpq/be-fsstubs.c#lo_read</code>**</li>
+<p>サーバー側で実行される関数。記述子の検証や読み込み権限のチェックを行い、低レベルAPIである <code>inv_read</code> を呼び出して物理的な読み込みを行います。</p>
+<li>**<code>symbol:src/interfaces/libpq/fe-lobj.c#lo_read</code>**</li>
+<p>クライアント側で実行される関数。サーバー側の関数OIDを解決し、<code>PQnfn</code> を介してサーバー側の読み込み処理をリモートで呼び出します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **クライアント側の呼び出し**: クライアントアプリケーション（<code>pg_dump</code> や <code>lo_import</code> などのストリーミング処理）が <code>src/interfaces/libpq/fe-lobj.c</code> の <code>lo_read</code> を呼び出します。 2. **初期化と検証**: クライアント側で <code>lo_initialize</code> が実行され、サーバー側の関数OIDが解決されます。また、読み込み長さ <code>len</code> が <code>INT_MAX</code> を超えていないか検証されます。 3. **サーバーへの要求送信**: 引数（<code>fd</code>、<code>len</code>）が <code>PQArgBlock</code> に設定され、<code>PQnfn</code> を介してサーバー側の関数が呼び出されます。 4. **サーバー側の処理**: サーバー側の <code>src/backend/libpq/be-fsstubs.c</code> の <code>lo_read</code> が呼び出されます。 5. **記述子と権限の検証**: サーバー側で <code>fd</code> が有効な範囲内（<code>0</code> 以上 <code>cookies_size</code> 未満）であり、<code>cookies[fd]</code> が <code>NULL</code> でないこと、および読み込み権限（<code>IFS_RDLOCK</code>）が設定されていることを検証します。 6. **物理的読み込み**: 検証を通過すると、低レベルAPIである <code>inv_read</code> が呼び出され、実際のデータが読み込まれます。 7. **結果の返却**: 読み込まれたデータとバイト数がクライアントに返され、クライアント側のバッファに格納されます。</p>
+<p>*注意: クライアントからサーバーへの通信プロトコルの詳細なパケット構造や、<code>inv_read</code> 内部の具体的な物理ストレージへのアクセス不変条件などの完全なエンドツーエンドのフローは、提供された情報からは完全には特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**クライアント側**:</li>
+<li><code>lo_initialize(conn)</code> が事前に成功している必要があります。</li>
+<li>読み込み要求サイズ <code>len</code> は <code>INT_MAX</code> を超えてはなりません。</li>
+<li>ラージオブジェクトの操作は、現在のトランザクション内で実行される必要があります。</li>
+<li>**サーバー側**:</li>
+<li>記述子 <code>fd</code> は有効な範囲（<code>0</code> 以上 <code>cookies_size</code> 未満）であり、<code>cookies[fd]</code> が <code>NULL</code> であってはなりません。</li>
+<li>対象のラージオブジェクトは、読み込み権限（<code>IFS_RDLOCK</code> フラグ）を保持してオープンされている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: クライアント側の <code>lo_read</code> とサーバー側の <code>lo_read</code> はシグネチャや役割が異なります。開発やデバッグの際には、どちらのコンテキストを扱っているかを明確に区別する必要があります。</li>
+<li>**データサイズ制限**: クライアント側の <code>lo_read</code> の引数 <code>len</code> は <code>size_t</code> 型ですが、内部的に <code>int32</code> にキャストされてサーバーに送信されるため、<code>INT_MAX</code> を超える一度の読み込みはエラー（<code>-1</code>）になります。非常に大きなデータを一度に転送することはできません。</li>
+<li>**トランザクションの管理**: ラージオブジェクトの操作はトランザクション内で行う必要があります。失敗時にはトランザクション全体がアボート状態になる可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/libpq/be-fsstubs.c</code>**</li>
+<p>サーバー側 <code>lo_read</code> の実装と記述子管理。</p>
+<li>**<code>src/interfaces/libpq/fe-lobj.c</code>**</li>
+<p>クライアント側 <code>lo_read</code> の実装とサーバー関数呼び出し。</p>
+<li>**<code>src/backend/storage/large_object/inv_api.c</code>**</li>
+<p>物理的な読み込みを行う <code>inv_read</code> の定義箇所。</p>
+</ul></body></html>

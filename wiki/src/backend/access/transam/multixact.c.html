@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/multixact.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/multixact.c</h1>
+<h2>概要</h2>
+<p><code>multixact.c</code> は、PostgreSQLにおける「マルチトランザクション（MultiXact）」の管理を担うモジュールです。共有行ロック（Shared Row Locks）の実装において、複数のトランザクションID（XID）を一つのID（MultiXactId）に集約してタプルヘッダに格納するための基盤を提供します。可変長のメンバーリストを効率的に管理するため、2つのSLRU（Simple LRU）領域（OffsetsとMembers）を組み合わせて使用します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールの一部として、トランザクション管理とメタデータ永続化の境界に位置します。<code>clog.c</code> や <code>subtrans.c</code> と同様のSLRU基盤を利用しつつ、可変長データ構造を扱うためのオフセット管理層を持つ点が特徴です。</p>
+<h2>責務</h2>
+<ul>
+<li>**MultiXactIdの生成と管理**: 複数のXIDとロック状態（<code>MultiXactStatus</code>）を一つのIDにマッピング。</li>
+<li>**SLRU永続化**: <code>MultiXactOffsetCtl</code>（IDからオフセットへの変換）と <code>MultiXactMemberCtl</code>（オフセットからメンバーリストへの変換）の管理。</li>
+<li>**WAL生成**: MultiXactの作成およびSLRUページの初期化に関するWALレコードの生成とリカバリ時の再適用。</li>
+<li>**Anti-Wraparound管理**: MultiXactIdおよびメンバーオフセットの枯渇を防ぐための警告・停止閾値の監視と、VACUUMによる切り詰め（Truncation）の制御。</li>
+<li>**キャッシュ管理**: トランザクションローカルなキャッシュによるSLRUアクセス頻度の低減。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>MultiXactState</code>: 共有メモリ上のグローバル状態（次ID、オフセット、Anti-Wraparound閾値）。</li>
+<li><code>MultiXactOffsetCtl</code> / <code>MultiXactMemberCtl</code>: SLRUキャッシュ制御構造体。</li>
+<li><code>MXactCache</code>: トランザクションごとのローカルキャッシュ（<code>mXactCacheEnt</code>）。</li>
+</ul>
+<h3>ID生成・操作</h3>
+<ul>
+<li><code>MultiXactIdCreate</code>: 2つのXIDから新しいMultiXactIdを作成。</li>
+<li><code>MultiXactIdExpand</code>: 既存のMultiXactIdに新しいXIDを追加（実際には新しいIDを生成）。</li>
+<li><code>GetMultiXactIdMembers</code>: 指定されたIDのメンバーリストを取得。</li>
+</ul>
+<h3>SLRU管理・切り詰め</h3>
+<ul>
+<li><code>RecordNewMultiXact</code>: 新しいMultiXact情報をSLRUに書き込む。</li>
+<li><code>TruncateMultiXact</code>: 不要になった古いSLRUセグメントを削除し、<code>pg_control</code> 等の境界値を更新。</li>
+<li><code>SetMultiXactIdLimit</code>: Anti-Wraparoundのための警告・停止閾値を計算・設定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_MultiXact</code></li>
+<li><code>AtPrepare_MultiXact</code></li>
+<li><code>MultiXactIdCreate</code></li>
+<li><code>MultiXactIdCreateFromMembers</code></li>
+<li><code>MultiXactIdToOffsetPage</code></li>
+<li><code>MultiXactMemberFreezeThreshold</code></li>
+<li><code>MultiXactShmemInit</code></li>
+<li><code>MultiXactStateData</code></li>
+<li><code>PostPrepare_MultiXact</code></li>
+<li><code>mXactCacheEnt</code></li>
+<li><code>mxact</code></li>
+<li><code>mxtruncinfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成フロー**: <code>MultiXactIdCreateFromMembers</code> が <code>GetNewMultiXactId</code> でIDとオフセットを予約し、<code>RecordNewMultiXact</code> でSLRUのOffsetsページとMembersページにデータを書き込みます。この際、WALレコード（<code>XLOG_MULTIXACT_CREATE_ID</code>）が生成されます。 2. **読み取りフロー**: <code>GetMultiXactIdMembers</code> がまずローカルキャッシュを検索し、ヒットしなければSLRUからOffsetsページを読み取り、次にMembersページを読み取ってメンバーリストを再構築します。 3. **切り詰めフロー**: <code>TruncateMultiXact</code> がVACUUMから呼び出され、<code>pg_class</code> 等から得られた最小値を基に、<code>PerformMembersTruncation</code> と <code>PerformOffsetsTruncation</code> を実行して古いセグメントを物理削除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/slru.h</code>: SLRU基盤。</li>
+<li><code>access/xlog.h</code>, <code>xloginsert.h</code>: WAL生成。</li>
+<li><code>storage/lwlock.h</code>: <code>MultiXactGenLock</code> 等による共有メモリ保護。</li>
+<li><code>access/multixact.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/twophase_rmgr.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/slru.c</code>: SLRUの共通実装。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: <code>xmax</code> フィールドでのMultiXactIdの利用とロック状態の解釈。</li>
+<li><code>src/backend/commands/vacuum.c</code>: <code>relminmxid</code> の更新と <code>TruncateMultiXact</code> の呼び出し。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>MXactContext</code> はトランザクション終了時に破棄されるため、キャッシュエントリの個別の解放は不要です。</li>
+<li>**ロック**: <code>MultiXactGenLock</code> はグローバルなカウンター保護に使用されます。SLRUのバンクごとのロックは、同時アクセスを許可するために細分化されています。</li>
+<li>**注意点**: <code>MultiXactId</code> は32ビットでラップアラウンドするため、<code>MultiXactIdPrecedes</code> 等の比較関数を必ず使用してください。</li>
+<li>**省略された詳細**: 本ページでは、SLRUのページレイアウト計算（<code>MXOffsetToMemberOffset</code> 等）の詳細なビット演算ロジックについては、ソースコード内のコメントが十分に詳細であるため省略しました。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactIdToOffsetPage.html" target="wiki-view"><code>MultiXactIdToOffsetPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactStateData.html" target="wiki-view"><code>MultiXactStateData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__mXactCacheEnt.html" target="wiki-view"><code>mXactCacheEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactIdCreate.html" target="wiki-view"><code>MultiXactIdCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactIdCreateFromMembers.html" target="wiki-view"><code>MultiXactIdCreateFromMembers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__AtEOXact_MultiXact.html" target="wiki-view"><code>AtEOXact_MultiXact</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__AtPrepare_MultiXact.html" target="wiki-view"><code>AtPrepare_MultiXact</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__PostPrepare_MultiXact.html" target="wiki-view"><code>PostPrepare_MultiXact</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactShmemInit.html" target="wiki-view"><code>MultiXactShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__MultiXactMemberFreezeThreshold.html" target="wiki-view"><code>MultiXactMemberFreezeThreshold</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__mxtruncinfo.html" target="wiki-view"><code>mxtruncinfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__multixact_c__mxact.html" target="wiki-view"><code>mxact</code></a></li>
+</ul></body></html>

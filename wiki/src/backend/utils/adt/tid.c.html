@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tid.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tid.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの組み込み型 <code>TID</code> (Tuple Identifier) に関するデータ型定義と、それに関連する演算子・関数を実装するファイルです。<code>TID</code> は物理的なタプル位置（ブロック番号とオフセット番号）を指し示す識別子であり、システム属性 <code>ctid</code> として利用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、特定のデータ型に対する入出力、比較、ハッシュ計算、およびタプルの最新バージョンを追跡するためのユーティリティを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換**: <code>TID</code> 型の文字列形式（<code>(block,offset)</code>）と内部表現の相互変換（<code>tidin</code>, <code>tidout</code>）。</li>
+<li>**バイナリ転送**: クライアント・サーバー間でのバイナリ形式の送受信（<code>tidrecv</code>, <code>tidsend</code>）。</li>
+<li>**比較演算**: <code>TID</code> 同士の大小比較および等価判定（<code>tideq</code>, <code>tidlt</code> 等）。</li>
+<li>**ハッシュ計算**: ハッシュインデックスやハッシュ結合で使用するためのハッシュ値生成。</li>
+<li>**最新タプル追跡**: 指定された <code>TID</code> が指すタプルの最新バージョンを取得する機能（<code>currtid</code> 関連）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li>**<code>tidin</code> / <code>tidout</code>**: <code>TID</code> 型の入出力関数。文字列形式のパースと整形を担当。</li>
+<li>**<code>ItemPointer</code>**: <code>TID</code> の内部表現。<code>BlockIdData</code>（ブロック番号）と <code>OffsetNumber</code>（オフセット番号）で構成。</li>
+<li>**<code>ItemPointerCompare</code>**: 比較演算の基盤となる関数。</li>
+<li>**<code>currtid_internal</code>**: 指定されたリレーションにおいて、特定の <code>TID</code> が指すタプルの最新版を検索する内部ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>currtid_byrelname</code></li>
+<li><code>currtid_for_view</code></li>
+<li><code>tideq</code></li>
+<li><code>tidgt</code></li>
+<li><code>tidle</code></li>
+<li><code>tidlt</code></li>
+<li><code>tidne</code></li>
+<li><code>tidrecv</code></li>
+<li><code>tidsend</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**入出力**: <code>tidin</code> は文字列をパースし、<code>palloc</code> でメモリを確保して <code>ItemPointerSet</code> で値を格納します。<code>tidout</code> は <code>snprintf</code> を使用して <code>(block,offset)</code> 形式の文字列を生成します。</li>
+<li>**比較**: すべての比較演算子は <code>ItemPointerCompare</code> を呼び出し、ブロック番号とオフセット番号の順序で比較を行います。</li>
+<li>**最新タプル追跡**: <code>currtid_byrelname</code> がリレーションを開き、<code>currtid_internal</code> を呼び出します。ビューの場合は <code>currtid_for_view</code> が再帰的にベースリレーションを特定し、<code>table_tuple_get_latest_tid</code> を用いて最新の <code>TID</code> を取得します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッドへのアクセス。</li>
+<li><code>utils/fmgrprotos.h</code>: PostgreSQLの関数マネージャ用プロトタイプ。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ転送用プロトコル関数。</li>
+<li><code>utils/rel.h</code>: リレーション記述子へのアクセス。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/itemptr.h</code>: <code>ItemPointerData</code> 構造体および <code>ItemPointerSet</code> 等のインライン関数定義。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: <code>table_tuple_get_latest_tid</code> の実装元（テーブルアクセスメソッド）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>TID</code> は物理的な位置を指すため、<code>VACUUM FULL</code> や <code>CLUSTER</code> 等でタプルが移動すると無効になります。</li>
+<li><code>currtid_for_view</code> はビューの定義を解析してベーステーブルの <code>ctid</code> を追跡しますが、複雑なビューやルールには対応できない場合があり、エラーを投げる設計になっています。</li>
+<li>ハッシュ関数 <code>hashtid</code> は構造体のパディングを避けるため、<code>sizeof(ItemPointerData)</code> を使用せず、構成要素のサイズを直接指定しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidin.html" target="wiki-view"><code>tidin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidout.html" target="wiki-view"><code>tidout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidrecv.html" target="wiki-view"><code>tidrecv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidsend.html" target="wiki-view"><code>tidsend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tideq.html" target="wiki-view"><code>tideq</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidne.html" target="wiki-view"><code>tidne</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidlt.html" target="wiki-view"><code>tidlt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidle.html" target="wiki-view"><code>tidle</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__tidgt.html" target="wiki-view"><code>tidgt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__currtid_internal.html" target="wiki-view"><code>currtid_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__currtid_for_view.html" target="wiki-view"><code>currtid_for_view</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tid_c__currtid_byrelname.html" target="wiki-view"><code>currtid_byrelname</code></a></li>
+</ul></body></html>

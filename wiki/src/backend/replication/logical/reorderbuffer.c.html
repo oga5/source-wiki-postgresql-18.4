@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/reorderbuffer.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/reorderbuffer.c</h1>
+<h2>概要</h2>
+<p><code>reorderbuffer.c</code> は、論理デコーディングにおいてWALから抽出されたトランザクションの断片を、コミット順序に従って再構築（Reassemble）する中核モジュールです。メモリ制限を超えた大規模トランザクションのディスクへのスプール、TOASTレコードの再構築、およびストリーミングレプリケーションのためのトランザクション分割処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>論理デコーディングサブシステムにおいて、WALリーダー（<code>decode.c</code>）から渡される変更レコードを受け取り、トランザクション単位の整合性を保証した上で出力プラグインへ渡すための「バッファリング層」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**トランザクション再構築**: WALから順次読み込まれるレコードを、XIDに基づきトランザクション（<code>ReorderBufferTXN</code>）単位で集約。</li>
+<li>**メモリ管理**: <code>logical_decoding_work_mem</code> に基づき、メモリ使用量を監視。超過時に最大サイズのトランザクションをディスクへシリアライズ（Spill）。</li>
+<li>**TOAST再構築**: WAL上の断片化されたTOASTチャンクを結合し、元のタプルを復元。</li>
+<li>**ストリーミング**: 大規模トランザクションをコミット前に分割して送信する機能の制御。</li>
+<li>**カタログ可視性サポート**: <code>SnapBuild</code> と連携し、カタログ変更を追跡するための <code>TupleCid</code> マッピングを管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>トランザクション管理</h3>
+<ul>
+<li><code>ReorderBufferTXN</code>: トランザクションの状態、変更リスト、サブトランザクション関係を保持する中心構造体。</li>
+<li><code>ReorderBufferTXNByXid()</code>: XIDからトランザクション状態を検索・作成するアクセサ。</li>
+<li><code>ReorderBufferCommit()</code> / <code>ReorderBufferAbort()</code>: トランザクションのライフサイクル終了処理。</li>
+</ul>
+<h3>変更データ管理</h3>
+<ul>
+<li><code>ReorderBufferChange</code>: INSERT/UPDATE/DELETE等の変更内容を保持。</li>
+<li><code>ReorderBufferQueueChange()</code>: 変更をトランザクションのキューに追加し、メモリ制限をチェック。</li>
+<li><code>ReorderBufferFreeChange()</code>: 変更レコードのメモリ解放と統計更新。</li>
+</ul>
+<h3>ディスクシリアライズ</h3>
+<ul>
+<li><code>ReorderBufferSerializeTXN()</code>: メモリ制限超過時にトランザクションをディスクへ書き出す。</li>
+<li><code>ReorderBufferRestoreChanges()</code>: ディスク上の変更をメモリへ再ロードする。</li>
+</ul>
+<h3>イテレータ</h3>
+<ul>
+<li><code>ReorderBufferIterTXNInit()</code> / <code>Next()</code>: トランザクションとサブトランザクションの変更をLSN順にマージして取得するk-wayマージ処理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ReorderBufferAllocChange</code></li>
+<li><code>ReorderBufferAllocTXN</code></li>
+<li><code>ReorderBufferDiskChange</code></li>
+<li><code>ReorderBufferFree</code></li>
+<li><code>ReorderBufferFreeTXN</code></li>
+<li><code>ReorderBufferIterTXNEntry</code></li>
+<li><code>ReorderBufferIterTXNState</code></li>
+<li><code>ReorderBufferTXNByIdEnt</code></li>
+<li><code>ReorderBufferToastEnt</code></li>
+<li><code>ReorderBufferTupleCidEnt</code></li>
+<li><code>ReorderBufferTupleCidKey</code></li>
+<li><code>TXNEntryFile</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **収集**: <code>ReorderBufferQueueChange</code> がWALレコードを <code>ReorderBufferTXN</code> に追加。 2. **メモリ監視**: <code>ReorderBufferCheckMemoryLimit</code> が <code>pairingheap</code> を使用して最大サイズのトランザクションを特定し、必要に応じて <code>ReorderBufferSerializeTXN</code> を呼び出す。 3. **再構築**: コミット時に <code>ReorderBufferProcessTXN</code> が呼び出され、<code>ReorderBufferIterTXNInit</code> で初期化されたk-wayマージイテレータが、メモリ上の変更とディスク上の変更をLSN順に統合して出力プラグインへ供給する。 4. **クリーンアップ**: <code>ReorderBufferCleanupTXN</code> がトランザクション終了時にメモリとディスク上のリソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/binaryheap.h</code>: トランザクションのLSN順マージに使用。</li>
+<li><code>lib/pairingheap.h</code>: メモリ制限時の最大トランザクション特定に使用。</li>
+<li><code>storage/fd.h</code>: ディスクスプール用ファイル操作。</li>
+<li><code>utils/memutils.h</code>: <code>SlabContext</code> および <code>GenerationContext</code> による効率的なメモリ管理。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/rewriteheap.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/reorderbuffer.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/sinval.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/relfilenumbermap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/replication/reorderbuffer.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>snapbuild.c</code>: カタログスナップショットの構築と可視性制御。</li>
+<li><code>decode.c</code>: WALレコードの解析と本モジュールへの投入。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>SlabContext</code>（固定長）と <code>GenerationContext</code>（可変長）を使い分け、断片化を抑制しています。</li>
+<li>**ディスクスプール**: トランザクションの変更は <code>pg_logical/mappings</code> 等にファイルとして書き出されます。クラッシュリカバリ時は <code>StartupReorderBuffer</code> が古いスプールファイルを削除します。</li>
+<li>**制約**: <code>ReorderBufferIterTXNNext</code> は、ディスクからのロード時に <code>ReorderBufferChange</code> を再利用するため、イテレータのライフサイクル管理には注意が必要です。</li>
+<li>**未実装/浅い部分**: 現在の eviction アルゴリズムは単純なサイズベースであり、トランザクションの経過時間（LSN）は考慮されていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferTXNByIdEnt.html" target="wiki-view"><code>ReorderBufferTXNByIdEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferTupleCidKey.html" target="wiki-view"><code>ReorderBufferTupleCidKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferTupleCidEnt.html" target="wiki-view"><code>ReorderBufferTupleCidEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__TXNEntryFile.html" target="wiki-view"><code>TXNEntryFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferIterTXNEntry.html" target="wiki-view"><code>ReorderBufferIterTXNEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferIterTXNState.html" target="wiki-view"><code>ReorderBufferIterTXNState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferToastEnt.html" target="wiki-view"><code>ReorderBufferToastEnt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferDiskChange.html" target="wiki-view"><code>ReorderBufferDiskChange</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferFree.html" target="wiki-view"><code>ReorderBufferFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferAllocTXN.html" target="wiki-view"><code>ReorderBufferAllocTXN</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferFreeTXN.html" target="wiki-view"><code>ReorderBufferFreeTXN</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__reorderbuffer_c__ReorderBufferAllocChange.html" target="wiki-view"><code>ReorderBufferAllocChange</code></a></li>
+</ul></body></html>

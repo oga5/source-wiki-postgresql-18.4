@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/encodespecialtimestamp.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>EncodeSpecialTimestamp</h1>
+<h2>概念</h2>
+<p><code>EncodeSpecialTimestamp</code> は、PostgreSQL において特殊なタイムスタンプ値（無限大を表す <code>infinity</code> や <code>-infinity</code>）を、対応する文字列表現（<code>EARLY</code> や <code>LATE</code>）に変換するための関数です。</p>
+<p>この関数は、PostgreSQL のコアバックエンド側（<code>src/backend/utils/adt/timestamp.c</code>）と、クライアント側の埋め込み SQL プリプロセッサ用ライブラリである ECPG（<code>src/interfaces/ecpg/pgtypeslib/timestamp.c</code>）の2箇所に、それぞれ同名の関数として定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>タイムスタンプ型において、無限大（正の無限大・負の無限大）は通常の数値表現とは異なる特殊な内部表現（<code>TIMESTAMP_IS_NOBEGIN</code> や <code>TIMESTAMP_IS_NOEND</code>）を持ちます。これらをユーザーや他の処理系が理解できる一貫した文字列形式（<code>EARLY</code> / <code>LATE</code>）へ安全にデコードするために、バックエンドとクライアントライブラリ（ECPG）の双方でこの共通の変換処理が必要となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/interfaces/ecpg/pgtypeslib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/adt/timestamp.c#EncodeSpecialTimestamp</code>**</li>
+<li>バックエンド側で定義される関数。特殊値以外が渡された場合は <code>elog(ERROR)</code> を発生させます。</li>
+<li>**<code>symbol:src/interfaces/ecpg/pgtypeslib/timestamp.c#EncodeSpecialTimestamp</code>**</li>
+<li>ECPG ライブラリ側で定義される <code>static</code> 関数。特殊値以外が渡された場合は <code>abort()</code> を呼び出します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>タイムスタンプ値を文字列に変換する処理（例えば、JSON へのシリアライズや ECPG でのホスト変数への代入など）の過程で、対象のタイムスタンプが特殊値（無限大）であるかどうかが判定されます。</p>
+<p>1. 呼び出し元（バックエンドの <code>json.c</code> や <code>timestamp.c</code>、または ECPG の <code>timestamp.c</code> 内の関数）が、値が特殊値であることを検知します。 2. <code>EncodeSpecialTimestamp</code> が呼び出されます。 3. <code>TIMESTAMP_IS_NOBEGIN</code>（負の無限大）の場合は <code>EARLY</code>、<code>TIMESTAMP_IS_NOEND</code>（正の無限大）の場合は <code>LATE</code> という文字列定数を、呼び出し元から渡されたバッファ <code>str</code> に <code>strcpy</code> でコピーします。</p>
+<p>※ なお、システム全体における完全なエンドツーエンドの呼び出しフローや、すべての呼び出し元における詳細な遷移は完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**入力値の制限**: 引数 <code>dt</code> は、必ず <code>TIMESTAMP_IS_NOBEGIN</code> または <code>TIMESTAMP_IS_NOEND</code> のいずれかを満たす特殊値でなければなりません。</li>
+<li>**バッファサイズの確保**: 引数 <code>str</code> が指すバッファは、コピーされる文字列（<code>EARLY</code> または <code>LATE</code>）を格納するのに十分なサイズが呼び出し元で確保されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**通常値の入力による異常終了**:</li>
+<li>バックエンドの実装では、特殊値以外の通常のタイムスタンプ値が渡されると <code>elog(ERROR)</code> が発生し、トランザクションが中断されます。</li>
+<li>ECPG の実装では、通常のタイムスタンプ値が渡されると <code>abort()</code> が呼び出され、プロセス全体が即座に異常終了します。</li>
+<li>**バッファオーバーフローの危険性**:</li>
+<li><code>EncodeSpecialTimestamp</code> 内部ではバッファサイズの検証を行わずに <code>strcpy</code> を使用するため、呼び出し元で十分な領域を確保していない場合、バッファオーバーフローを引き起こす危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/utils/adt/timestamp.c</code>**</li>
+<li>バックエンド側における <code>EncodeSpecialTimestamp</code> の実装と、<code>elog</code> によるエラーハンドリングの詳細。</li>
+<li>**<code>src/interfaces/ecpg/pgtypeslib/timestamp.c</code>**</li>
+<li>ECPG 側における <code>static</code> 関数としての実装と、<code>abort()</code> による異常終了処理の詳細。</li>
+</ul></body></html>

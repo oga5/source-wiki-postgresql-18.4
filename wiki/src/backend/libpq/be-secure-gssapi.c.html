@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/be-secure-gssapi.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/be-secure-gssapi.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLバックエンドにおけるGSSAPI（主にKerberos）を用いた通信の暗号化および認証をサポートするモジュールです。GSSAPIによるセキュアなトランスポート層を実装し、クライアント・サーバー間のデータストリームを透過的に暗号化・復号します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/libpq</code> サブシステムの一部として、<code>be-secure.c</code> 等から呼び出される暗号化レイヤーを提供します。GSSAPI認証が成功した後に、通常の通信路を暗号化されたトンネルへと切り替える役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**暗号化通信の確立**: <code>secure_open_gssapi</code> を通じてGSSAPIコンテキストのネゴシエーションを実行する。</li>
+<li>**データストリームのラップ/アンラップ**: <code>be_gssapi_write</code> および <code>be_gssapi_read</code> を提供し、アプリケーション層に対して暗号化を意識させない読み書きインターフェースを提供する。</li>
+<li>**パケット管理**: GSSAPIの仕様に基づき、固定サイズのパケット（ヘッダー＋ペイロード）単位での送受信とバッファ管理を行う。</li>
+<li>**状態保持**: 接続ごとのGSSAPIコンテキストおよび送受信バッファの状態を管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>be_gssapi_write</code> / <code>be_gssapi_read</code>: 暗号化された通信路に対する読み書きを行う主要関数。</li>
+<li><code>secure_open_gssapi</code>: GSSAPI認証および暗号化セッションの初期化を行う関数。</li>
+<li><code>PQ_GSS_MAX_PACKET_SIZE</code>: 暗号化通信時の最大パケットサイズ（プロトコル仕様の一部）。</li>
+<li><code>PqGSSSendBuffer</code> / <code>PqGSSRecvBuffer</code>: 送受信用の静的バッファ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>be_gssapi_get_auth</code></li>
+<li><code>be_gssapi_get_delegation</code></li>
+<li><code>be_gssapi_get_enc</code></li>
+<li><code>be_gssapi_get_princ</code></li>
+<li><code>read_or_wait</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>secure_open_gssapi</code> が呼び出され、クライアントとハンドシェイクを行い、GSSAPIコンテキストを確立する。 2. **書き込み**: <code>be_gssapi_write</code> はデータを <code>gss_wrap</code> で暗号化し、4バイトの長さヘッダーを付与して送信する。 3. **読み込み**: <code>be_gssapi_read</code> はまず4バイトのヘッダーを読み取り、続く暗号化データを <code>gss_unwrap</code> で復号して内部バッファに格納し、呼び出し元へ順次返す。 4. **再試行**: 非ブロッキングI/Oを考慮し、データが不足している場合は <code>EWOULDBLOCK</code> を返し、呼び出し元に再試行を促す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQL環境定義。</li>
+<li><code>libpq/be-gssapi-common.h</code>: GSSAPI共通定義および構造体。</li>
+<li><code>utils/memutils.h</code>: メモリ管理（<code>MemoryContextAllocZero</code> 等）。</li>
+<li><code>port/pg_bswap.h</code>: ネットワークバイトオーダー変換。</li>
+<li><code>libpq/auth.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/libpq/be-gssapi-common.c</code>: GSSAPI関連の共通ユーティリティやエラーハンドリング。</li>
+<li><code>src/backend/libpq/be-secure.c</code>: セキュア通信の抽象化レイヤー。</li>
+<li><code>src/backend/libpq/auth.c</code>: GSSAPI認証の開始点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは単一のGSSAPI接続を前提としており、静的変数で状態を保持しています。</li>
+<li><code>elog(FATAL)</code> を使用すると、エラーメッセージをクライアントに送ろうとして無限再帰に陥る可能性があるため、エラー発生時は <code>elog(COMMERROR)</code> を使用して接続をクローズする設計になっています。</li>
+<li>パケットサイズはプロトコルの一部であるため、将来的な変更にはクライアントとの互換性に十分注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_write.html" target="wiki-view"><code>be_gssapi_write</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_read.html" target="wiki-view"><code>be_gssapi_read</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__read_or_wait.html" target="wiki-view"><code>read_or_wait</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__secure_open_gssapi.html" target="wiki-view"><code>secure_open_gssapi</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_get_auth.html" target="wiki-view"><code>be_gssapi_get_auth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_get_enc.html" target="wiki-view"><code>be_gssapi_get_enc</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_get_princ.html" target="wiki-view"><code>be_gssapi_get_princ</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__be-secure-gssapi_c__be_gssapi_get_delegation.html" target="wiki-view"><code>be_gssapi_get_delegation</code></a></li>
+</ul></body></html>

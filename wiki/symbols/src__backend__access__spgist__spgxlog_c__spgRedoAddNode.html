@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgxlog_c__spgRedoAddNode.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgRedoAddNode</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgxlog.c:283</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiSTインデックスにおけるノード追加操作のWALリプレイを実行し、インデックスページの状態を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgRedoAddNode(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファページを更新し、LSNを更新する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> から取得したタプルデータはアライメントされていないため、アクセス前に <code>memcpy</code> で <code>SpGistInnerTupleData</code> へコピーする必要がある。</li>
+<li>ページ更新時は、親ノードの更新よりも子ページ（新しいノード）の挿入を優先し、リンクの整合性を維持しなければならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>spgxlogAddNode</code> 構造体とタプルデータを抽出する。 2. <code>fillFakeState</code> を用いてリプレイ用の <code>SpGistState</code> を構築する。 3. ブロック参照が1つのみの場合（<code>XLogRecHasBlockRef(record, 1)</code> が偽）:</p>
+<ul>
+<li>対象ページ上でタプルを置換し、LSNを更新してダーティにする。</li>
+<p>4. ブロック参照が複数ある場合:</p>
+<li>新しいノードを挿入し、必要に応じて親ノードのリンクを更新する。</li>
+<li>古いタプルを削除し、プレースホルダーまたはリダイレクトタプルで置換する。</li>
+<li>親ノードが更新対象に含まれる場合（<code>parentBlk</code> が0, 1, 2のいずれか）、<code>spgUpdateNodeLink</code> を呼び出してダウンリンクを更新する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/spgist/spgxlog.c</code> 内の <code>spg_redo</code> 関数（WALレコードタイプに基づくディスパッチ経由）。</li>
+<li>**呼び出し先**: <code>fillFakeState</code>, <code>XLogRecGetData</code>, <code>XLogReadBufferForRedo</code>, <code>XLogInitBufferForRedo</code>, <code>SpGistInitBuffer</code>, <code>addOrReplaceTuple</code>, <code>spgUpdateNodeLink</code>, <code>spgFormDeadTuple</code>, <code>PageIndexTupleDelete</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgxlogAddNode</code>: WALレコードのデータ構造。</li>
+<li><code>SpGistInnerTupleData</code>: インデックス内部タプルのヘッダー。</li>
+<li><code>SpGistState</code>: リプレイ時に使用する一時的な状態管理構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が期待するオフセットを返さない場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、ページ更新はスキップされる。</li>
+<li><code>parentBlk</code> の値に応じて、親ノードの更新場所（ページ0, 1, 2）が動的に決定される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>リプレイ処理は、スタンバイサーバーでの読み取り時にリンク切れが発生しないよう、厳密な順序でページを更新する必要がある。</li>
+<li><code>state.isBuild</code> の状態によって、削除されたタプルの扱い（プレースホルダーかリダイレクトか）が分岐するため注意すること。</li>
+</ul></body></html>

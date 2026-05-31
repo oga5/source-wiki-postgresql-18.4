@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tsearch/ts_selfuncs.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tsearch/ts_selfuncs.c</h1>
+<h2>概要</h2>
+<p><code>ts_selfuncs.c</code> は、PostgreSQL の全文検索機能（<code>tsvector</code> および <code>tsquery</code>）におけるクエリの選択率（Selectivity）を推定するための関数群を提供します。クエリプランナが <code>@@</code> 演算子を含むクエリの実行コストを評価する際、このファイル内のロジックが使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tsearch</code> モジュールにおいて、統計情報に基づいたコスト見積もりを担うコンポーネントです。<code>ts_typanalyze.c</code> が収集した統計情報（<code>MCELEM</code>）を読み取り、プランナが効率的な実行計画を選択できるように支援します。</p>
+<h2>責務</h2>
+<ul>
+<li><code>tsvector @@ tsquery</code> 演算子の選択率推定（<code>tsmatchsel</code>）。</li>
+<li><code>pg_statistic</code> から <code>MCELEM</code>（Most Common Elements）情報を抽出し、特定の語彙（Lexeme）の出現頻度を計算する。</li>
+<li><code>tsquery</code> の木構造を再帰的に走査し、AND/OR/NOT/PHRASE 演算子に応じた確率計算を行う。</li>
+<li>統計情報が不足している場合のデフォルト値（<code>DEFAULT_TS_MATCH_SEL</code>）の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>tsmatchsel</code>: プランナから呼び出されるメインの選択率推定関数。</li>
+<li><code>tsquery_opr_selec</code>: <code>tsquery</code> の各ノードを再帰的に評価する中核関数。</li>
+<li><code>TextFreq</code>: <code>pg_statistic</code> から読み取った語彙と頻度を保持する内部構造体。</li>
+<li><code>DEFAULT_TS_MATCH_SEL</code>: 統計情報がない場合に適用されるデフォルトの選択率（0.005）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LexemeKey</code></li>
+<li><code>compare_lexeme_textfreq</code></li>
+<li><code>mcelem_tsquery_selec</code></li>
+<li><code>tsmatchjoinsel</code></li>
+<li><code>tsquerysel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tsmatchsel</code> が <code>VariableStatData</code> を取得し、対象が <code>tsvector</code> 型であることを確認。 2. **統計抽出**: <code>tsquerysel</code> が <code>pg_statistic</code> から <code>STATISTIC_KIND_MCELEM</code> を取得。 3. **頻度計算**: <code>mcelem_tsquery_selec</code> が統計情報を <code>TextFreq</code> 配列に変換し、<code>tsquery_opr_selec</code> へ渡す。 4. **再帰評価**: <code>tsquery_opr_selec</code> が <code>tsquery</code> の各ノードを走査。</p>
+<ul>
+<li><code>QI_VAL</code>（語彙）の場合: <code>bsearch</code> で頻度を検索。プレフィックス検索（<code>word:*</code>）の場合は統計情報を基に近似計算を行う。</li>
+<li>演算子の場合: 確率論的な計算（OR なら <code>s1 + s2 - s1*s2</code> など）を適用。</li>
+<p>5. **結果返却**: 最終的な選択率をプランナへ戻す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic.h</code>: 統計情報の構造定義。</li>
+<li><code>tsearch/ts_type.h</code>: <code>tsvector</code> および <code>tsquery</code> の型定義。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定のための共通ユーティリティ。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tsearch/ts_typanalyze.c</code>: このファイルが使用する統計情報（<code>MCELEM</code>）を収集・生成するコード。</li>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 一般的な演算子の選択率推定ロジック。</li>
+<li><code>src/include/tsearch/ts_type.h</code>: 全文検索関連のデータ構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**統計情報の性質**: <code>tsvector</code> の統計情報は、通常の列の「最頻値（MCV）」ではなく「最頻要素（MCELEM）」として格納されます。これは、<code>tsvector</code> が複数の語彙を含む配列であるためです。</li>
+<li>**再帰の深さ**: <code>tsquery_opr_selec</code> は再帰関数であるため、非常に複雑な <code>tsquery</code> が入力された場合に備えて <code>check_stack_depth()</code> が呼び出されています。</li>
+<li>**プレフィックス検索の近似**: <code>word:*</code> のようなプレフィックス検索は、統計情報から一致する要素を抽出し、残りの要素に対して確率的な外挿を行うため、完全一致よりも推定精度が低下する傾向があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__TextFreq.html" target="wiki-view"><code>TextFreq</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__LexemeKey.html" target="wiki-view"><code>LexemeKey</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__tsmatchsel.html" target="wiki-view"><code>tsmatchsel</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__tsmatchjoinsel.html" target="wiki-view"><code>tsmatchjoinsel</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__tsquerysel.html" target="wiki-view"><code>tsquerysel</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__mcelem_tsquery_selec.html" target="wiki-view"><code>mcelem_tsquery_selec</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__tsquery_opr_selec.html" target="wiki-view"><code>tsquery_opr_selec</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_selfuncs_c__compare_lexeme_textfreq.html" target="wiki-view"><code>compare_lexeme_textfreq</code></a></li>
+</ul></body></html>

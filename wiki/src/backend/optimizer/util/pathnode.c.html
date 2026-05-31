@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/pathnode.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/pathnode.c</h1>
+<h2>概要</h2>
+<p><code>pathnode.c</code> は、PostgreSQLのクエリプランナにおいて、実行計画の候補となる「アクセスパス（<code>Path</code>ノード）」を生成、管理、選別するための中心的なモジュールです。プランナがリレーションに対してスキャンや結合の戦略を検討する際、コスト見積もりに基づいて最適なパスを保持し、劣ったパスを破棄する「パスのトーナメント」を制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、<code>RelOptInfo</code>（リレーション情報）に紐付くパスリストの操作を担います。<code>relnode.c</code> がリレーションの構造を定義するのに対し、本ファイルはそれらのリレーションをどのように処理するかという「実行戦略」の構築と最適化を専門とします。</p>
+<h2>責務</h2>
+<ul>
+<li>**パスの生成**: 各種スキャン（Seq, Index, Bitmap, Tid等）および結合（NestLoop, Merge, Hash等）のパスノードを生成するファクトリ関数群の提供。</li>
+<li>**パスの選別（add_path / add_partial_path）**: コスト、ソート順（pathkeys）、パラメータ化の度合い、並列実行の可否に基づき、劣ったパスを排除し、効率的なパスのみを保持する。</li>
+<li>**コスト比較**: パスのコストを比較し、どちらが優れているか（あるいは同等か）を判定するロジックの提供。</li>
+<li>**再パラメータ化**: 継承やパーティションテーブルの最適化において、親リレーションのパスを子リレーションのコンテキストに変換する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>パスの選別と管理</h3>
+<ul>
+<li><code>add_path()</code>: 通常のパスをリレーションの <code>pathlist</code> に追加し、劣ったパスを破棄する。</li>
+<li><code>add_partial_path()</code>: 並列実行可能なパスを <code>partial_pathlist</code> に追加する。</li>
+<li><code>set_cheapest()</code>: リレーションのパスリストから、コスト最小のパス（startup/total）を特定し、<code>RelOptInfo</code> のフィールドに保存する。</li>
+<li><code>add_path_precheck()</code> / <code>add_partial_path_precheck()</code>: パス構造体を構築する前に、そのパスが採用される見込みがあるかを判定し、無駄な計算を避ける。</li>
+</ul>
+<h3>パス生成ファクトリ</h3>
+<ul>
+<li><code>create_seqscan_path</code>, <code>create_index_path</code>, <code>create_bitmap_heap_path</code>: 各種スキャンパスの生成。</li>
+<li><code>create_nestloop_path</code>, <code>create_mergejoin_path</code>, <code>create_hashjoin_path</code>: 各種結合パスの生成。</li>
+<li><code>create_append_path</code>, <code>create_merge_append_path</code>: 継承・パーティションテーブル用のパス生成。</li>
+</ul>
+<h3>コスト比較</h3>
+<ul>
+<li><code>compare_path_costs()</code>: 2つのパスのコストを比較。</li>
+<li><code>compare_path_costs_fuzzily()</code>: <code>STD_FUZZ_FACTOR</code> を用いて、微小なコスト差を無視した比較を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PathCostComparison</code></li>
+<li><code>add_partial_path</code></li>
+<li><code>add_partial_path_precheck</code></li>
+<li><code>add_path</code></li>
+<li><code>add_path_precheck</code></li>
+<li><code>compare_fractional_path_costs</code></li>
+<li><code>compare_path_costs</code></li>
+<li><code>compare_path_costs_fuzzily</code></li>
+<li><code>create_index_path</code></li>
+<li><code>create_samplescan_path</code></li>
+<li><code>create_seqscan_path</code></li>
+<li><code>set_cheapest</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **パス生成**: プランナが各スキャンや結合の可能性を検討する際、<code>create_*_path</code> 関数を呼び出し、<code>Path</code> 構造体を初期化します。 2. **パスの登録**: 生成されたパスは <code>add_path()</code> に渡されます。 3. **トーナメント**: <code>add_path()</code> 内で既存のパスリストを走査し、コスト、pathkeys、<code>required_outer</code>（パラメータ化の依存関係）を比較します。 4. **メモリ管理**: 劣っていると判断されたパスは、<code>IndexPath</code> などの共有される可能性のあるノードを除き、<code>pfree()</code> で即座に解放され、メモリ消費を抑えます。 5. **最終化**: 全てのパス生成が完了した後、<code>set_cheapest()</code> が呼び出され、プラン作成フェーズで利用される「最も安いパス」が確定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>: 公開インターフェース。</li>
+<li><code>optimizer/cost.h</code>: コスト計算関数の呼び出し。</li>
+<li><code>nodes/makefuncs.h</code>: ノード生成用ユーティリティ。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/extensible.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>relnode.c</code>: <code>RelOptInfo</code> の構築と管理。</li>
+<li><code>pathkeys.c</code>: <code>pathkeys</code> の比較や操作。</li>
+<li><code>costsize.c</code>: 各パスのコスト見積もりロジックの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>add_path</code> は劣ったパスを <code>pfree</code> しますが、<code>IndexPath</code> は <code>BitmapHeapPath</code> などから参照される可能性があるため、解放されません。この不変条件は重要です。</li>
+<li>**ファジー比較**: コスト比較には <code>STD_FUZZ_FACTOR</code> (1.01) が使用されます。これは、わずかなコスト差でプランが頻繁に変わるのを防ぎ、プランナの安定性を高めるための設計です。</li>
+<li>**省略された詳細**: 本ファイルはパス生成の「インターフェース」と「管理」に特化しており、個別のコスト計算ロジック（<code>cost_seqscan</code> 等）は <code>costsize.c</code> に委譲されています。</li>
+<li>**並列実行**: <code>add_partial_path</code> は並列実行専用のパスを扱います。パラメータ化されたパスは並列実行では考慮されないという設計上の制約があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__PathCostComparison.html" target="wiki-view"><code>PathCostComparison</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__compare_path_costs.html" target="wiki-view"><code>compare_path_costs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__compare_fractional_path_costs.html" target="wiki-view"><code>compare_fractional_path_costs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__compare_path_costs_fuzzily.html" target="wiki-view"><code>compare_path_costs_fuzzily</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__set_cheapest.html" target="wiki-view"><code>set_cheapest</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__add_path.html" target="wiki-view"><code>add_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__add_path_precheck.html" target="wiki-view"><code>add_path_precheck</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__add_partial_path.html" target="wiki-view"><code>add_partial_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__add_partial_path_precheck.html" target="wiki-view"><code>add_partial_path_precheck</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__create_seqscan_path.html" target="wiki-view"><code>create_seqscan_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__create_samplescan_path.html" target="wiki-view"><code>create_samplescan_path</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__pathnode_c__create_index_path.html" target="wiki-view"><code>create_index_path</code></a></li>
+</ul></body></html>

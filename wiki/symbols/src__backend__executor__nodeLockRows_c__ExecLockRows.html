@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeLockRows_c__ExecLockRows.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecLockRows</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeLockRows.c:37</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQLの <code>SELECT ... FOR UPDATE</code> や <code>FOR SHARE</code> 構文で要求される行レベルのロックを適用し、同時実行制御（EPQ: EvalPlanQual）による再評価を行う実行ノードのメインループ処理。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecLockRows(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code>（<code>LockRowsState</code> 構造体としてキャストされる実行ノードの状態）。</li>
+<li>**出力**: ロックが成功したタプルを格納する <code>TupleTableSlot</code>、または全タプル処理完了時に <code>NULL</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>LockRowsState</code> 型であること。</li>
+<li>下位ノード（<code>outerPlan</code>）からタプルが供給されること。</li>
+<li><code>lr_arowMarks</code> にロック対象の行マーク情報が保持されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **タプル取得**: <code>ExecProcNode</code> を呼び出し、下位ノードからタプルを取得する。取得できない場合は <code>EvalPlanQualEnd</code> を呼び出し終了する。 2. **行マークの走査**: <code>lr_arowMarks</code> リストを反復し、各リレーションに対してロックを試行する。 3. **子リレーション判定**: <code>erm-&gt;rti != erm-&gt;prti</code> の場合、<code>tableoid</code> を確認し、現在のタプルが対象リレーションのものか判定する。不一致ならスキップする。 4. **外部テーブル処理**: <code>RELKIND_FOREIGN_TABLE</code> の場合、FDWの <code>RefetchForeignRow</code> を呼び出す。更新が発生した場合は <code>epq_needed</code> を真にする。 5. **ロック試行**: <code>table_tuple_lock</code> を呼び出し、<code>erm-&gt;markType</code> に応じたロックモード（Exclusive, Share等）を適用する。</p>
+<ul>
+<li><code>TM_WouldBlock</code>: <code>SKIP LOCKED</code> 指定時にロック不可の場合、次のタプルへ遷移。</li>
+<li><code>TM_SelfModified</code>: 自トランザクションによる更新済みの場合、そのタプルを無視して次のタプルへ遷移。</li>
+<li><code>TM_Ok</code>: ロック成功。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 実行エンジン（<code>ExecProcNode</code> 経由で <code>lrstate-&gt;ps.ExecProcNode</code> に登録）。</li>
+<li>**呼び出し先**: <code>ExecProcNode</code>（下位ノード）、<code>EvalPlanQualEnd</code>、<code>table_tuple_lock</code>、<code>GetFdwRoutineForRelation</code>、<code>fdwroutine-&gt;RefetchForeignRow</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LockRowsState</code>: ノードの実行時状態を保持。</li>
+<li><code>ExecAuxRowMark</code>: ロック対象のメタデータ。</li>
+<li><code>TupleTableSlot</code>: 処理対象のタプルを保持。</li>
+<li><code>EvalPlanQualState</code>: EPQの状態管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ctid</code> や <code>tableoid</code> が <code>NULL</code> の場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>外部テーブルで <code>RefetchForeignRow</code> が定義されていない場合、<code>ereport(ERROR)</code> で失敗する。</li>
+<li>サポートされていない <code>markType</code> が指定された場合、<code>elog(ERROR)</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は下位ノードからタプルが返された直後にロックを試みるため、プランツリー上の配置順序が重要である。</li>
+<li><code>TM_SelfModified</code> の処理において、現在の実装では「削除されたもの」として扱うことで「ハロウィン問題」を回避している。</li>
+<li>EPQの再評価ロジックは <code>EvalPlanQual</code> 機構に依存しているため、競合時の挙動変更には注意が必要。</li>
+</ul></body></html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execProcnode.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execProcnode.c</h1>
+<h2>概要</h2>
+<p>クエリ実行エンジンにおける「実行ノード」のライフサイクル管理を行うディスパッチャです。プランツリーの初期化、タプルの取得、終了処理、およびリソースの解放を、各ノードタイプに応じた関数へ振り分けます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの中核であり、プランナーが生成したプランツリーを、実行可能な <code>PlanState</code> ツリーへと変換・制御するブリッジの役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**初期化**: <code>ExecInitNode</code> により、プランツリーを再帰的に走査し、各ノードの実行状態（<code>PlanState</code>）を構築する。</li>
+<li>**実行制御**: <code>ExecProcNode</code>（および <code>MultiExecProcNode</code>）を通じて、各ノードのタプル取得処理を呼び出す。</li>
+<li>**終了処理**: <code>ExecEndNode</code> により、実行完了後のリソース解放を再帰的に行う。</li>
+<li>**最適化**: <code>ExecSetTupleBound</code> を通じて、ソートやスキャンノードに対し、必要なタプル数の上限を伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitNode</code>: プランツリーから実行状態ツリーを構築するエントリポイント。</li>
+<li><code>ExecProcNode</code>: ノードからタプルを取得するメインのディスパッチャ。</li>
+<li><code>MultiExecProcNode</code>: タプルを返さない特殊なノード（ハッシュテーブル構築など）を実行する。</li>
+<li><code>ExecEndNode</code>: 実行状態ツリーを再帰的にクリーンアップする。</li>
+<li><code>ExecSetTupleBound</code>: 上位ノードから下位ノードへタプル取得制限を通知する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecProcNodeFirst</code></li>
+<li><code>ExecProcNodeInstr</code></li>
+<li><code>ExecSetExecProcNode</code></li>
+<li><code>ExecShutdownNode</code></li>
+<li><code>ExecShutdownNode_walker</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecutorStart</code> から呼ばれ、<code>ExecInitNode</code> が各ノードの <code>ExecInit&lt;Node&gt;</code> 関数を呼び出し、<code>PlanState</code> ツリーを構築します。 2. **実行**: <code>ExecutorRun</code> から <code>ExecProcNode</code> が繰り返し呼ばれます。初回実行時は <code>ExecProcNodeFirst</code> がスタックチェックとインストルメンテーションのセットアップを行い、以降は直接または計測用ラッパー経由で各ノードの処理関数を呼び出します。 3. **終了**: <code>ExecutorEnd</code> から <code>ExecEndNode</code> が呼ばれ、各ノードの <code>ExecEnd&lt;Node&gt;</code> 関数を再帰的に呼び出してリソースを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>executor/executor.h</code>: 実行エンジンの共通定義。</li>
+<li><code>executor/node*.h</code>: 各種プランノードの定義（<code>nodeAgg.h</code>, <code>nodeSeqscan.h</code> 等）。</li>
+<li><code>nodes/nodeFuncs.h</code>: ツリー走査用ユーティリティ。</li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>executor/nodeAppend.h</code></li>
+<li><code>executor/nodeBitmapAnd.h</code></li>
+<li><code>executor/nodeBitmapHeapscan.h</code></li>
+<li><code>executor/nodeBitmapIndexscan.h</code></li>
+<li><code>executor/nodeBitmapOr.h</code></li>
+<li><code>executor/nodeCtescan.h</code></li>
+<li><code>executor/nodeCustom.h</code></li>
+<li><code>executor/nodeForeignscan.h</code></li>
+<li><code>executor/nodeFunctionscan.h</code></li>
+<li><code>executor/nodeGather.h</code></li>
+<li><code>executor/nodeGatherMerge.h</code></li>
+<li><code>executor/nodeGroup.h</code></li>
+<li><code>executor/nodeHash.h</code></li>
+<li><code>executor/nodeHashjoin.h</code></li>
+<li><code>executor/nodeIncrementalSort.h</code></li>
+<li><code>executor/nodeIndexonlyscan.h</code></li>
+<li><code>executor/nodeIndexscan.h</code></li>
+<li><code>executor/nodeLimit.h</code></li>
+<li><code>executor/nodeLockRows.h</code></li>
+<li><code>executor/nodeMaterial.h</code></li>
+<li><code>executor/nodeMemoize.h</code></li>
+<li><code>executor/nodeMergeAppend.h</code></li>
+<li><code>executor/nodeMergejoin.h</code></li>
+<li><code>executor/nodeModifyTable.h</code></li>
+<li><code>executor/nodeNamedtuplestorescan.h</code></li>
+<li><code>executor/nodeNestloop.h</code></li>
+<li><code>executor/nodeProjectSet.h</code></li>
+<li><code>executor/nodeRecursiveunion.h</code></li>
+<li><code>executor/nodeResult.h</code></li>
+<li><code>executor/nodeSamplescan.h</code></li>
+<li><code>executor/nodeSeqscan.h</code></li>
+<li><code>executor/nodeSetOp.h</code></li>
+<li><code>executor/nodeSort.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>executor/nodeSubqueryscan.h</code></li>
+<li><code>executor/nodeTableFuncscan.h</code></li>
+<li><code>executor/nodeTidrangescan.h</code></li>
+<li><code>executor/nodeTidscan.h</code></li>
+<li><code>executor/nodeUnique.h</code></li>
+<li><code>executor/nodeValuesscan.h</code></li>
+<li><code>executor/nodeWindowAgg.h</code></li>
+<li><code>executor/nodeWorktablescan.h</code></li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: 実行エンジンのトップレベル制御。</li>
+<li><code>src/backend/executor/execUtils.c</code>: ノード操作の補助関数群。</li>
+<li><code>src/backend/executor/instrument.c</code>: 実行統計情報の計測。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、PostgreSQLの全プランノードタイプを網羅する巨大な <code>switch</code> 文の集合体です。新しいノードタイプを追加する際は、本ファイルの各関数にケースを追加する必要があります。</li>
+<li><code>ExecProcNode</code> は非常に頻繁に呼び出されるため、初回実行時のオーバーヘッドを最小化する工夫（<code>ExecProcNodeFirst</code> によるラッパーの動的切り替え）が施されています。</li>
+<li><code>ExecSetTupleBound</code> は再帰的に動作し、特定のノード（Sort等）に対してのみ制限を伝播させるため、プランツリーの構造を理解する上で重要なヒントになります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecInitNode.html" target="wiki-view"><code>ExecInitNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecSetExecProcNode.html" target="wiki-view"><code>ExecSetExecProcNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecProcNodeFirst.html" target="wiki-view"><code>ExecProcNodeFirst</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecProcNodeInstr.html" target="wiki-view"><code>ExecProcNodeInstr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__MultiExecProcNode.html" target="wiki-view"><code>MultiExecProcNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecEndNode.html" target="wiki-view"><code>ExecEndNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecShutdownNode.html" target="wiki-view"><code>ExecShutdownNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecShutdownNode_walker.html" target="wiki-view"><code>ExecShutdownNode_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execProcnode_c__ExecSetTupleBound.html" target="wiki-view"><code>ExecSetTupleBound</code></a></li>
+</ul></body></html>

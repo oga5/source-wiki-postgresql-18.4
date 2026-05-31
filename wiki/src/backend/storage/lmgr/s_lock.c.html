@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/lmgr/s_lock.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/lmgr/s_lock.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の低レベルなスピンロック（<code>slock_t</code>）の待機ロジックを実装するファイルです。ハードウェア依存の原子操作（TAS: Test-and-Set）を補完し、競合発生時の再試行戦略、指数バックオフによる待機、およびデッドロック（スタック）検出を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/storage/s_lock.h</code> で定義されるハードウェア抽象化レイヤーの「ソフトウェア側」の実装です。<code>spin.h</code> を通じて呼び出されるスピンロックの待機アルゴリズムを制御し、システム全体の同期パフォーマンスを最適化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**適応型スピン待機**: CPU アーキテクチャ（単一 vs マルチプロセッサ）に応じて、スピン回数（<code>spins_per_delay</code>）を動的に調整します。</li>
+<li>**指数バックオフ**: 競合が継続する場合、<code>pg_usleep</code> を用いて待機時間をランダムに増加させ、CPU 負荷と競合相手の実行機会を確保します。</li>
+<li>**スタック検出**: 一定回数（<code>NUM_DELAYS</code>）試行してもロックが取得できない場合、致命的なエラー（PANIC）として報告します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>s_lock()</code>: ロック取得のメインエントリーポイント。TAS が成功するまで <code>perform_spin_delay</code> を呼び出します。</li>
+<li><code>perform_spin_delay()</code>: スピン回数カウントと、必要に応じた <code>pg_usleep</code> による待機を実行します。</li>
+<li><code>finish_spin_delay()</code>: ロック取得後に <code>spins_per_delay</code> を更新し、次回の待機戦略を最適化します。</li>
+<li><code>spins_per_delay</code>: プロセスローカルなスピン回数の閾値。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>finish_spin_delay</code></li>
+<li><code>main</code></li>
+<li><code>s_lock</code></li>
+<li><code>s_lock_stuck</code></li>
+<li><code>s_unlock</code></li>
+<li><code>set_spins_per_delay</code></li>
+<li><code>test_lock_struct</code></li>
+<li><code>update_spins_per_delay</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>s_lock</code> が呼ばれると <code>SpinDelayStatus</code> が初期化されます。 2.  **スピンループ**: <code>TAS_SPIN</code> が失敗（ロック中）する限り、<code>perform_spin_delay</code> を実行します。 3.  **待機判断**: <code>spins_per_delay</code> 回数スピンしても取得できない場合、<code>pg_usleep</code> で待機し、待機時間を指数的に増加させます。 4.  **終了処理**: ロック取得後、<code>finish_spin_delay</code> が呼び出され、今回の試行結果に基づいて <code>spins_per_delay</code> を増減させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/s_lock.h</code>: <code>slock_t</code> 型および <code>TAS_SPIN</code> マクロの定義。</li>
+<li><code>utils/wait_event.h</code>: 待機中の統計情報（<code>pgstat</code>）の記録。</li>
+<li><code>common/pg_prng.h</code>: バックオフ時のランダムな遅延計算に使用。</li>
+<li><code>postgres.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/spin.h</code>: スピンロックの公開 API。<code>s_lock.c</code> の関数を直接呼ぶのではなく、ここを経由することが推奨されます。</li>
+<li><code>src/backend/storage/lmgr/lwlock.c</code>: より高機能な軽量ロック（LWLock）の実装。スピンロックよりも複雑な待機ロジックを持ちます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**移植性**: 本ファイルはプラットフォーム非依存のロジックですが、<code>TAS_SPIN</code> などの低レベル操作は <code>s_lock.h</code> で定義されるアーキテクチャ依存のコードに依存します。</li>
+<li>**デバッグ**: <code>S_LOCK_TEST</code> マクロを定義してコンパイルすることで、スピンロックの動作を検証するスタンドアローンプログラムとして実行可能です。</li>
+<li>**パフォーマンス**: <code>spins_per_delay</code> はバックエンド間で共有される値のベースとなります。この値が適切でないと、マルチプロセッサ環境で不必要なカーネル呼び出しが発生し、性能が著しく低下します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__s_lock_stuck.html" target="wiki-view"><code>s_lock_stuck</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__s_lock.html" target="wiki-view"><code>s_lock</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__s_unlock.html" target="wiki-view"><code>s_unlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__perform_spin_delay.html" target="wiki-view"><code>perform_spin_delay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__finish_spin_delay.html" target="wiki-view"><code>finish_spin_delay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__set_spins_per_delay.html" target="wiki-view"><code>set_spins_per_delay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__update_spins_per_delay.html" target="wiki-view"><code>update_spins_per_delay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__test_lock_struct.html" target="wiki-view"><code>test_lock_struct</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__s_lock_c__main.html" target="wiki-view"><code>main</code></a></li>
+</ul></body></html>

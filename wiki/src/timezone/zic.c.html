@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/timezone/zic.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/timezone/zic.c</h1>
+<h2>概要</h2>
+<p><code>zic.c</code> は、IANA Time Zone Database のテキスト形式の定義ファイルを、PostgreSQL が実行時に読み込む TZif バイナリ形式へとコンパイルするスタンドアロンのツールです。ビルド時またはデータ更新時にのみ使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/timezone</code> サブシステムにおけるデータ生成の起点です。コンパイルされたバイナリは <code>localtime.c</code> によって読み込まれ、サーバーの時刻変換処理の基礎データとなります。</p>
+<h2>責務</h2>
+<ul>
+<li>**構文解析**: タイムゾーン定義（Rule, Zone, Link, Leap）のテキスト解析。</li>
+<li>**データ生成**: 遷移ルールに基づいたバイナリ（TZif）の構築と出力。</li>
+<li>**ファイル管理**: タイムゾーンディレクトリ構造の作成、シンボリックリンクまたはハードリンクによるエイリアスの生成。</li>
+<li>**検証**: タイムゾーン定義の整合性チェックと、POSIX 互換性のための警告出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>struct rule</code>: タイムゾーンの遷移ルール（開始年、月、日、時刻、オフセット等）を保持。</li>
+<li><code>struct zone</code>: タイムゾーンの定義（名称、標準オフセット、適用ルール等）を保持。</li>
+<li><code>struct link</code>: タイムゾーン名間のエイリアス関係を保持。</li>
+</ul>
+<h3>主要な処理関数</h3>
+<ul>
+<li><code>infile()</code>: 入力ファイルを読み込み、行タイプに応じて <code>inrule</code>, <code>inzone</code>, <code>inlink</code>, <code>inleap</code> を呼び出すメインループ。</li>
+<li><code>outzone()</code>: 収集したルールとゾーン情報を基に、TZif バイナリを生成・書き出し。</li>
+<li><code>associate()</code>: ゾーン定義とルール定義を紐付け、計算可能な状態にする。</li>
+<li><code>rpytime()</code>: 指定されたルールと年を基に、遷移が発生する時刻（秒数）を計算。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>gethms()</code>: 時刻文字列（HH:MM:SS）を秒数に変換。</li>
+<li><code>addtype()</code>: タイムゾーンのタイプ（オフセット、DSTフラグ等）を管理し、重複排除を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>attype</code></li>
+<li><code>change_directory</code></li>
+<li><code>close_file</code></li>
+<li><code>lineno_t</code></li>
+<li><code>link</code></li>
+<li><code>lookup</code></li>
+<li><code>memory_exhausted</code></li>
+<li><code>rule</code></li>
+<li><code>size_product</code></li>
+<li><code>timerange</code></li>
+<li><code>zic_t</code></li>
+<li><code>zone</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main()</code> が引数を解析し、出力ディレクトリを準備。 2. **入力解析**: <code>infile()</code> がファイルを順次読み込み、<code>rules</code>（ルール配列）と <code>zones</code>（ゾーン配列）を構築。 3. **関連付け**: <code>associate()</code> がゾーン名とルール名を照合し、各ゾーンに適用されるルールセットを割り当てる。 4. **バイナリ生成**: <code>outzone()</code> が各ゾーンについて、<code>min_year</code> から <code>max_year</code> までの遷移時刻を計算し、<code>addtt()</code> で遷移リストを構築。 5. **出力**: <code>writezone()</code> が遷移リストを TZif フォーマットにシリアライズし、ファイルシステムへ書き出す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通定義。</li>
+<li><code>private.h</code>: 移植性確保のための定数・マクロ。</li>
+<li><code>tzfile.h</code>: IANA TZif バイナリフォーマットの構造定義。</li>
+<li><code>fcntl.h</code></li>
+<li><code>pg_getopt.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>localtime.c</code>: 本ツールが生成したバイナリを読み込み、時刻変換を行うランタイムエンジン。</li>
+<li><code>tzfile.h</code>: バイナリレイアウトの仕様書。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>growalloc()</code> を用いて配列を動的に拡張します。メモリ不足時は <code>memory_exhausted()</code> で即座に終了します。</li>
+<li>**移植性**: <code>zic_t</code> は <code>int64</code> として定義されており、64bit タイムスタンプを前提としています。</li>
+<li>**制約**: <code>TZ_MAX_TYPES</code> や <code>TZ_MAX_CHARS</code> などの定数により、1つのゾーン定義に含まれる遷移タイプ数には上限があります。</li>
+<li>**注意点**: 本ファイルは PostgreSQL のソースツリーに含まれていますが、ロジックの多くは IANA のオリジナルの <code>zic</code> 実装をベースとしており、PostgreSQL 固有の修正（<code>pg_int64</code> の使用や <code>sscanf</code> の移植性対応など）が随所に施されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__timezone__zic_c__zic_t.html" target="wiki-view"><code>zic_t</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__lineno_t.html" target="wiki-view"><code>lineno_t</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__rule.html" target="wiki-view"><code>rule</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__zone.html" target="wiki-view"><code>zone</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__link.html" target="wiki-view"><code>link</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__lookup.html" target="wiki-view"><code>lookup</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__attype.html" target="wiki-view"><code>attype</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__memory_exhausted.html" target="wiki-view"><code>memory_exhausted</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__size_product.html" target="wiki-view"><code>size_product</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__close_file.html" target="wiki-view"><code>close_file</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__change_directory.html" target="wiki-view"><code>change_directory</code></a></li>
+<li><a href="../../symbols/src__timezone__zic_c__timerange.html" target="wiki-view"><code>timerange</code></a></li>
+</ul></body></html>

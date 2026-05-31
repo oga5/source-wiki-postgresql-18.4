@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/syncrep.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/replication/syncrep.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの同期レプリケーションにおける、プライマリ側での待機および解放ロジックを実装するモジュールです。トランザクションコミットが指定されたスタンバイサーバーへ確実にレプリケートされるまで、ユーザーバックエンドを待機させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication</code> サブシステムの一部として、WAL送信プロセス（<code>walsender.c</code>）とユーザーバックエンド間の同期インターフェースを提供します。スタンバイ側は自身の耐久性要件を意識せず、プライマリ側がこのモジュールを通じて待機・解放を完全に制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**待機キューの管理**: 同期コミットを待機するバックエンドをLSN順に並べたキューの維持。</li>
+<li>**同期状態の判定**: <code>synchronous_standby_names</code> に基づき、どのスタンバイが同期対象かを判定（Priority/Quorum方式）。</li>
+<li>**待機解除の実行**: スタンバイからのWAL到達通知（Write/Flush/Apply）を受け取り、条件を満たしたバックエンドをウェイクアップ。</li>
+<li>**GUC設定の適用**: <code>synchronous_standby_names</code> のパース結果を反映し、同期レプリケーションの動作モードを切り替える。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SyncRepWaitForLSN()</code>: ユーザーバックエンドがコミット時に呼び出し、同期完了まで待機するメイン関数。</li>
+<li><code>SyncRepReleaseWaiters()</code>: WAL送信プロセスが呼び出し、スタンバイの進捗に応じて待機中のバックエンドを解放する関数。</li>
+<li><code>SyncRepConfig</code>: 現在の同期レプリケーション設定を保持する構造体。</li>
+<li><code>SyncRepLock</code>: 待機キューおよび同期状態を保護する排他制御用LWLock。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SyncRepCancelWait</code></li>
+<li><code>SyncRepCleanupAtProcExit</code></li>
+<li><code>SyncRepGetCandidateStandbys</code></li>
+<li><code>SyncRepGetNthLatestSyncRecPtr</code></li>
+<li><code>SyncRepGetOldestSyncRecPtr</code></li>
+<li><code>SyncRepGetStandbyPriority</code></li>
+<li><code>SyncRepGetSyncRecPtr</code></li>
+<li><code>SyncRepInitConfig</code></li>
+<li><code>SyncRepQueueInsert</code></li>
+<li><code>SyncRepReleaseWaiters</code></li>
+<li><code>SyncRepUpdateSyncStandbysDefined</code></li>
+<li><code>SyncRepWaitForLSN</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **待機開始**: <code>SyncRepWaitForLSN</code> がバックエンドを <code>SyncRepQueue</code> に追加し、<code>MyLatch</code> で待機状態に入る。 2. **進捗報告**: スタンバイからWAL受信報告を受けた <code>walsender</code> が <code>SyncRepReleaseWaiters</code> を実行。 3. **判定**: <code>SyncRepGetSyncRecPtr</code> が現在の同期スタンバイ群の進捗（Write/Flush/Apply）を計算。 4. **解放**: 条件を満たしたバックエンドをキューから削除し、<code>SetLatch</code> でバックエンドを再開させる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/syncrep.h</code>: 公開インターフェース定義。</li>
+<li><code>replication/walsender.h</code>, <code>walsender_private.h</code>: WAL送信プロセスとの共有メモリ構造体へのアクセス。</li>
+<li><code>storage/proc.h</code>: バックエンドのプロセス状態（<code>PGPROC</code>）とラッチ制御。</li>
+<li><code>access/xact.h</code>: トランザクション状態の管理。</li>
+<li><code>common/int.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/syncrep_gram.y</code> / <code>syncrep_scanner.l</code>: <code>synchronous_standby_names</code> の構文解析器。</li>
+<li><code>src/backend/replication/walsender.c</code>: 本モジュールの関数を呼び出し、レプリケーションの進捗を通知する主要プロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キューの順序**: 待機キューは常にLSN順にソートされており、<code>SyncRepQueueInsert</code> で挿入時に維持されます。</li>
+<li>**競合回避**: <code>SyncRepUpdateSyncStandbysDefined</code> は、設定変更時にバックエンドが永久に待機し続けることを防ぐための重要なインターロックです。</li>
+<li>**読み方**: まず <code>SyncRepWaitForLSN</code> でバックエンド側のフローを追い、次に <code>SyncRepReleaseWaiters</code> でWALSender側の解放ロジックを確認すると全体像が把握しやすいです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.html" target="wiki-view"><code>SyncRepWaitForLSN</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepQueueInsert.html" target="wiki-view"><code>SyncRepQueueInsert</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepCancelWait.html" target="wiki-view"><code>SyncRepCancelWait</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepCleanupAtProcExit.html" target="wiki-view"><code>SyncRepCleanupAtProcExit</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepInitConfig.html" target="wiki-view"><code>SyncRepInitConfig</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepReleaseWaiters.html" target="wiki-view"><code>SyncRepReleaseWaiters</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetSyncRecPtr.html" target="wiki-view"><code>SyncRepGetSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetOldestSyncRecPtr.html" target="wiki-view"><code>SyncRepGetOldestSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetNthLatestSyncRecPtr.html" target="wiki-view"><code>SyncRepGetNthLatestSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetCandidateStandbys.html" target="wiki-view"><code>SyncRepGetCandidateStandbys</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetStandbyPriority.html" target="wiki-view"><code>SyncRepGetStandbyPriority</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepWakeQueue.html" target="wiki-view"><code>SyncRepWakeQueue</code></a></li>
+</ul></body></html>

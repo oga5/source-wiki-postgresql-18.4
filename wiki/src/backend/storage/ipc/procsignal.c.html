@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/procsignal.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/procsignal.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのプロセス間シグナル通信（IPC）を管理するモジュールです。主に <code>SIGUSR1</code> シグナルを多重化し、特定のイベント（通知、並列クエリ、リカバリ競合、グローバルバリア等）をプロセス間で伝達する仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>storage/ipc</code> サブシステムの一部として、バックエンドプロセスや補助プロセスが互いに非同期イベントを通知するための共有メモリベースのインフラを提供します。<code>procsignal.h</code> で定義されたシグナル理由に基づき、各プロセスが自身の状態を共有メモリ上のスロットで管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シグナル多重化**: <code>SIGUSR1</code> を受信したプロセスが、共有メモリ上のフラグを確認して適切な処理へ分岐させる。</li>
+<li>**プロセス登録/解除**: プロセスの起動時にスロットを割り当て、終了時に解放する。</li>
+<li>**グローバルバリア管理**: 全プロセスが特定の状態に到達したことを保証するための同期メカニズム（バリア）の提供。</li>
+<li>**キャンセル要求**: クライアントからのクエリキャンセル要求を、PIDとキャンセルキーを用いて検証し、対象プロセスへ <code>SIGINT</code> を送信する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ProcSignalSlot</code>: 各プロセスのシグナル状態を保持する構造体。PID、シグナルフラグ、バリア生成番号、条件変数を含む。</li>
+<li><code>ProcSignalHeader</code>: 全プロセスのスロットを管理する共有メモリ上のヘッダー。</li>
+<li><code>SendProcSignal</code>: 指定したPIDまたは <code>ProcNumber</code> にシグナルを送信する主要関数。</li>
+<li><code>procsignal_sigusr1_handler</code>: <code>SIGUSR1</code> 受信時のエントリーポイント。各フラグをチェックし、対応するハンドラを呼び出す。</li>
+<li><code>EmitProcSignalBarrier</code>: 全プロセスに対してバリアイベントを発生させる。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CleanupProcSignalState</code></li>
+<li><code>HandleProcSignalBarrierInterrupt</code></li>
+<li><code>ProcSignalInit</code></li>
+<li><code>ProcSignalShmemInit</code></li>
+<li><code>ProcSignalShmemSize</code></li>
+<li><code>ProcessProcSignalBarrier</code></li>
+<li><code>ResetProcSignalBarrierBits</code></li>
+<li><code>WaitForProcSignalBarrier</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **送信側**: <code>SendProcSignal</code> が対象スロットのフラグを立て、<code>kill(pid, SIGUSR1)</code> を発行する。 2. **受信側**: <code>procsignal_sigusr1_handler</code> が起動し、<code>CheckProcSignal</code> でフラグを読み取り、対応する割り込み処理（<code>Handle...Interrupt</code>）を実行する。 3. **バリア処理**: <code>EmitProcSignalBarrier</code> で全スロットにビットを立て、<code>WaitForProcSignalBarrier</code> が各プロセスの <code>pss_barrierGeneration</code> が更新されるまで条件変数で待機する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>: 共有メモリ管理。</li>
+<li><code>storage/latch.h</code>: プロセスのウェイト状態管理。</li>
+<li><code>storage/condition_variable.h</code>: バリア待機用。</li>
+<li><code>pg_atomic_...</code>: 共有メモリ上のフラグや生成番号の原子操作。</li>
+<li><code>signal.h</code>, <code>unistd.h</code>: 標準的なシグナルおよびプロセス制御。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/sinval.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/procsignal.h</code>: シグナル理由（<code>ProcSignalReason</code>）の定義。</li>
+<li><code>src/backend/storage/ipc/barrier.c</code>: バリア処理の補助ロジック。</li>
+<li><code>src/backend/tcop/postgres.c</code>: <code>CHECK_FOR_INTERRUPTS()</code> を通じた割り込み処理の実行箇所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**スピンロックの利用**: <code>ProcSignalSlot</code> 内のフラグ操作は <code>pss_mutex</code> で保護されていますが、PIDの確認など一部はアトミック操作のみで行うことでパフォーマンスを最適化しています。</li>
+<li>**SIGUSR1の多重化**: このファイルは「シグナルが届いた」という事実のみを伝え、具体的な理由は共有メモリ経由で判断する設計です。そのため、シグナルが連続して届いた場合、古い通知が上書きされる可能性がある点に注意してください。</li>
+<li>**バリアの重さ**: <code>EmitProcSignalBarrier</code> は全プロセスを中断させるため、頻繁な呼び出しは避けるべきです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcSignalSlot.html" target="wiki-view"><code>ProcSignalSlot</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcSignalHeader.html" target="wiki-view"><code>ProcSignalHeader</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcSignalShmemSize.html" target="wiki-view"><code>ProcSignalShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcSignalShmemInit.html" target="wiki-view"><code>ProcSignalShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcSignalInit.html" target="wiki-view"><code>ProcSignalInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__CleanupProcSignalState.html" target="wiki-view"><code>CleanupProcSignalState</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__SendProcSignal.html" target="wiki-view"><code>SendProcSignal</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__EmitProcSignalBarrier.html" target="wiki-view"><code>EmitProcSignalBarrier</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__WaitForProcSignalBarrier.html" target="wiki-view"><code>WaitForProcSignalBarrier</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__HandleProcSignalBarrierInterrupt.html" target="wiki-view"><code>HandleProcSignalBarrierInterrupt</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ProcessProcSignalBarrier.html" target="wiki-view"><code>ProcessProcSignalBarrier</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__procsignal_c__ResetProcSignalBarrierBits.html" target="wiki-view"><code>ResetProcSignalBarrierBits</code></a></li>
+</ul></body></html>

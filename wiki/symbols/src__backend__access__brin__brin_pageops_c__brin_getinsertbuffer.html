@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_pageops_c__brin_getinsertbuffer.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>brin_getinsertbuffer</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_pageops.c:689</code></li>
+</ul>
+<h2>目的</h2>
+<p>BRINインデックスへのタプル挿入に適した物理ページ（バッファ）を検索または確保します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static Buffer brin_getinsertbuffer(Relation irel, Buffer oldbuf, Size itemsz, bool *extended);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>irel</code>: 対象のインデックスリレーション。</li>
+<li><code>oldbuf</code>: 現在処理中のバッファ（存在しない場合は <code>InvalidBuffer</code>）。</li>
+<li><code>itemsz</code>: 挿入しようとしているタプルのサイズ。</li>
+<li><code>extended</code>: ページが新規拡張されたかを示すフラグへのポインタ。</li>
+<li>**出力**:</li>
+<li>挿入可能な状態の <code>Buffer</code>。失敗時や再試行が必要な場合は <code>InvalidBuffer</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>itemsz</code> は <code>BrinMaxItemSize</code> 以下であること。</li>
+<li>戻り値のバッファは排他ロック（<code>BUFFER_LOCK_EXCLUSIVE</code>）が取得された状態で返される。</li>
+<li>ページがRevmapページに転用された場合は、ロックを解放し <code>InvalidBuffer</code> を返す。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ターゲット選定**: <code>RelationGetTargetBlock</code> でキャッシュされたブロックを優先し、なければ <code>GetPageWithFreeSpace</code> でFSMから候補を探す。 2. **バッファ確保**: 候補がない場合はリレーションを拡張（<code>P_NEW</code>）し、ある場合は <code>ReadBuffer</code> で読み込む。 3. **ロックと検証**:</p>
+<ul>
+<li>ページがRevmapページでないことを確認する。</li>
+<li>ページ内の空き領域が <code>itemsz</code> を満たすか確認する。</li>
+<p>4. **再試行**: 空き領域が不足している場合、<code>RecordAndGetPageWithFreeSpace</code> を呼び出してFSMを更新し、別のページでループを繰り返す。 5. **終了**: 適切なページが見つかった場合、ターゲットブロックを更新し、ロックを保持したままバッファを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>brin_doinsert</code>（<code>src/backend/access/brin/brin_pageops.c</code> 内の複数箇所）。</li>
+<li>**呼び出し先**: <code>RelationGetTargetBlock</code>, <code>GetPageWithFreeSpace</code>, <code>ReadBuffer</code>, <code>LockBuffer</code>, <code>brin_initialize_empty_new_buffer</code>, <code>br_page_get_freespace</code>, <code>RecordAndGetPageWithFreeSpace</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: インデックスリレーション。</li>
+<li><code>Buffer</code>: バッファ管理構造体。</li>
+<li><code>FSM</code> (Free Space Map): 空き領域管理マップ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**サイズ超過**: 挿入しようとするアイテムが <code>BrinMaxItemSize</code> を超える場合、エラー（<code>ERRCODE_PROGRAM_LIMIT_EXCEEDED</code>）を発生させる。</li>
+<li>**Revmap競合**: ページが並行処理によりRevmapページへ変更された場合、処理を中断し <code>InvalidBuffer</code> を返す。</li>
+<li>**FSM不整合**: FSMが古い情報を返した場合、ループ内で再試行を行う。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>ページ拡張時に <code>RELATION_IS_LOCAL</code> でない場合は <code>LockRelationForExtension</code> を使用して排他制御を行う必要がある。</li>
+<li>ページ操作はクリティカルセクション内での実行を前提としており、エラー発生時の整合性に注意すること。</li>
+</ul></body></html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/internalgrant.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InternalGrant</h1>
+<h2>概念</h2>
+<p><code>InternalGrant</code> は、SQLの <code>GRANT</code> および <code>REVOKE</code> コマンドの解析結果を保持し、パーサーから実行エンジン（システムカタログ更新処理）へ情報を伝達するための中間データ構造（<code>struct</code>）です。権限付与コマンドの実行状態を保持し、DDLの追跡、監査ログ、レプリケーションなどの目的でコマンド構造を管理するために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p><code>InternalGrant</code> は、通常のパースツリー（<code>GrantStmt</code>）から名前解決（OID変換）を経て得られた情報を保持し、システムカタログ（<code>pg_class</code>等）のACLエントリを更新する実行エンジンへパラメータを伝播する役割を担います。また、<code>CollectedCommand</code> 構造体の共用体メンバ（<code>grant.istmt</code>）として保持されることで、階層的なコマンド管理やDDL追跡を可能にします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/tcop</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/aclchk_internal.h#InternalGrant</code>**</li>
+<p>構造体の実体定義です。以下のフィールドを持ち、<code>GRANT/REVOKE</code> 処理の橋渡し役として機能します。</p>
+<li><code>bool is_grant</code></li>
+<li><code>ObjectType objtype</code></li>
+<li><code>List *objects</code></li>
+<li><code>bool all_privs</code></li>
+<li><code>AclMode privileges</code></li>
+<li><code>List *col_privs</code></li>
+<li><code>List *grantees</code></li>
+<li><code>bool grant_option</code></li>
+<li><code>DropBehavior behavior</code></li>
+</ul>
+<ul>
+<li>**<code>symbol:src/include/tcop/deparse_utility.h#InternalGrant</code>**</li>
+<p><code>CollectedCommand</code> 構造体の共用体メンバ <code>grant.istmt</code> として <code>InternalGrant</code> ポインタを参照するための宣言です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **変換**: パーサーが生成した構文木（<code>GrantStmt</code>）から、名前解決（OID変換）を経て <code>InternalGrant</code> 形式へ変換されます（<code>src/backend/catalog/aclchk.c</code> 内の <code>ExecGrantStmt_oids</code> 等が関与）。 2. **正規化**: <code>all_privs</code> が <code>true</code> の場合、<code>privileges</code> フィールドがオブジェクト型に基づき適切なビットマスクに正規化されます。 3. **実行と伝播**: 構築された <code>InternalGrant</code> は、<code>ExecGrant_Relation</code>、<code>ExecGrant_Language_check</code>、<code>ExecGrant_Largeobject</code>、<code>ExecGrant_Parameter</code> などの権限実行関数に引数として渡され、システムカタログの権限情報が更新されます。 4. **追跡**: 階層的なコマンド管理が必要な場合、<code>CollectedCommand</code> の一部として保持されます。</p>
+<p>*注意: DDL追跡や監査ログ、レプリケーションにおける具体的なエンドツーエンドの統合フローの全容は、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**オブジェクト型と列権限の整合性**: <code>col_privs</code>（列レベルの権限）は、<code>objtype</code> が <code>OBJECT_TABLE</code> である場合にのみ有効です。</li>
+<li>**権限の正規化**: <code>all_privs</code> が <code>true</code> の場合、<code>privileges</code> フィールドはオブジェクト型に応じた適切なビットマスクに正規化される必要があります。</li>
+<li>**コマンド種別の整合性**: <code>CollectedCommand</code> 内で使用される場合、<code>type</code> フィールドが適切なコマンド種別であることを前提とします。</li>
+<li>**ポインタの有効性**: 権限チェックや実行処理の過程で、有効な <code>InternalGrant</code> ポインタが保持されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**NULLポインタ**: <code>InternalGrant</code> ポインタが <code>NULL</code> の状態で実行関数に渡された場合、セグメンテーション違反が発生する可能性があります。</li>
+<li>**変換エラー**: 変換元の <code>GrantStmt</code> が不正な場合、<code>InternalGrant</code> への変換処理でエラーが発生します。</li>
+<li>**副作用**: <code>all_privs</code> フラグの操作時に <code>privileges</code> フィールドが書き換えられる副作用があるため、構造体の取り扱いには注意が必要です。</li>
+<li>**モジュール間の結合**: 本構造体は <code>utils/aclchk_internal.h</code> と <code>deparse_utility.h</code> で共有されているため、定義を変更する際は <code>src/backend/catalog/aclchk.c</code> 内の関連する実行関数への影響を考慮する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/aclchk_internal.h</code> (構造体の詳細な定義)</li>
+<li><code>src/include/tcop/deparse_utility.h</code> (<code>CollectedCommand</code> 内での参照)</li>
+<li><code>src/backend/catalog/aclchk.c</code> (変換および実行ロジックの主要な実装箇所)</li>
+</ul></body></html>

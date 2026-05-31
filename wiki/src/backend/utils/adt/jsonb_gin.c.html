@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/jsonb_gin.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/jsonb_gin.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL の <code>jsonb</code> 型に対する GIN（Generalized Inverted Index）インデックスのサポート機能を実装しています。<code>jsonb_ops</code>（キーと値のペアを個別にインデックス化）と <code>jsonb_path_ops</code>（パス全体をハッシュ化してインデックス化）という2つの演算子クラスを提供し、JSONB の包含演算子 (<code>@&gt;</code>) や JSONPath 演算子 (<code>@?</code>, <code>@@</code>) の高速な検索を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、<code>jsonb</code> 型のインデックスアクセスメソッドを定義します。GIN インデックスの構築（<code>extract</code>）および検索時の整合性チェック（<code>consistent</code>）を担い、プランナがインデックスを利用したクエリ実行計画を生成するための基盤を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス構築**: JSONB ドキュメントを走査し、GIN インデックスに格納するキー（<code>Datum</code>）を抽出する。</li>
+<li>**クエリ変換**: SQL クエリ（JSONPath 等）を解析し、GIN インデックスで検索可能な論理ツリー（<code>JsonPathGinNode</code>）へ変換する。</li>
+<li>**整合性判定**: インデックスから得られた候補がクエリ条件を満たすか判定する（<code>consistent</code> / <code>triconsistent</code>）。</li>
+<li>**データ正規化**: インデックスキーとして保存する際の型変換とハッシュ化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インデックス構築・変換用構造体</h3>
+<ul>
+<li><code>GinEntries</code>: 抽出されたインデックスキーを保持する動的配列バッファ。</li>
+<li><code>JsonPathGinNode</code>: JSONPath クエリを GIN 検索用に分解した論理ツリーのノード。</li>
+<li><code>JsonPathGinPathItem</code>: <code>jsonb_ops</code> におけるパスアイテムの連結リスト。</li>
+<li><code>PathHashStack</code>: <code>jsonb_path_ops</code> におけるネストされたパスのハッシュ計算用スタック。</li>
+</ul>
+<h3>演算子クラスサポート関数</h3>
+<ul>
+<li><code>gin_extract_jsonb</code> / <code>gin_extract_jsonb_path</code>: インデックス作成時に JSONB からキーを抽出。</li>
+<li><code>gin_extract_jsonb_query</code> / <code>gin_extract_jsonb_query_path</code>: クエリ実行時に検索条件からキーを抽出。</li>
+<li><code>gin_consistent_jsonb</code> / <code>gin_consistent_jsonb_path</code>: インデックスの検索結果が条件を満たすか判定。</li>
+<li><code>gin_triconsistent_jsonb</code> / <code>gin_triconsistent_jsonb_path</code>: 3値論理（TRUE/FALSE/MAYBE）による判定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GinEntries</code></li>
+<li><code>JsonPathGinContext</code></li>
+<li><code>JsonPathGinNode</code></li>
+<li><code>JsonPathGinNodeType</code></li>
+<li><code>JsonPathGinPath</code></li>
+<li><code>JsonPathGinPathItem</code></li>
+<li><code>JsonPathItem</code></li>
+<li><code>List</code></li>
+<li><code>PathHashStack</code></li>
+<li><code>add_gin_entry</code></li>
+<li><code>gin_compare_jsonb</code></li>
+<li><code>init_gin_entries</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **抽出フロー**: <code>gin_extract_jsonb</code> が <code>JsonbIterator</code> を用いてドキュメントを走査し、<code>make_scalar_key</code> を介して <code>Datum</code> を生成、<code>add_gin_entry</code> でバッファに蓄積します。 2. **クエリ解析フロー**: <code>extract_jsp_query</code> が JSONPath を解析し、<code>JsonPathGinContext</code> を用いて <code>JsonPathGinNode</code> ツリーを構築します。 3. **実行フロー**: <code>execute_jsp_gin_node</code> が再帰的にツリーを走査し、インデックスの検索結果（<code>check</code> 配列）と照合して最終的な整合性を判定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin.h</code>: GIN インデックスのインターフェース。</li>
+<li><code>utils/jsonb.h</code>, <code>utils/jsonpath.h</code>: JSONB および JSONPath の内部表現と操作関数。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用ユーティリティ。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/jsonb.c</code>: JSONB 型の基本実装。</li>
+<li><code>src/backend/utils/adt/jsonpath_exec.c</code>: JSONPath の実行エンジン。</li>
+<li><code>src/backend/access/gin/</code>: GIN インデックスのコア実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>GinEntries</code> は <code>palloc</code> を使用して動的に拡張されます。<code>JsonPathGinNode</code> ツリーはクエリ実行中のみ有効なメモリコンテキストに割り当てられます。</li>
+<li>**再チェックの必要性**: GIN インデックスは本質的に「損失あり（lossy）」です。特に <code>jsonb_path_ops</code> はハッシュ衝突や構造情報の欠落があるため、<code>consistent</code> 関数は常に <code>recheck = true</code> を設定し、ヒープ上の実データで再検証する必要があります。</li>
+<li>**制約**: <code>jsonb_ops</code> はキーの長さが <code>JGIN_MAXLENGTH</code> を超える場合、ハッシュ化して保存します。</li>
+<li>**省略された詳細**: 本ファイルでは JSONPath の複雑なフィルタ条件の一部（<code>NOT EXISTS</code> 等）はサポートされておらず、これらはインデックスを使用せずフルスキャンにフォールバックされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__PathHashStack.html" target="wiki-view"><code>PathHashStack</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__GinEntries.html" target="wiki-view"><code>GinEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathGinNodeType.html" target="wiki-view"><code>JsonPathGinNodeType</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathGinNode.html" target="wiki-view"><code>JsonPathGinNode</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathGinPathItem.html" target="wiki-view"><code>JsonPathGinPathItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathGinPath.html" target="wiki-view"><code>JsonPathGinPath</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathGinContext.html" target="wiki-view"><code>JsonPathGinContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__JsonPathItem.html" target="wiki-view"><code>JsonPathItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__List.html" target="wiki-view"><code>List</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__init_gin_entries.html" target="wiki-view"><code>init_gin_entries</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__add_gin_entry.html" target="wiki-view"><code>add_gin_entry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__jsonb_gin_c__gin_compare_jsonb.html" target="wiki-view"><code>gin_compare_jsonb</code></a></li>
+</ul></body></html>

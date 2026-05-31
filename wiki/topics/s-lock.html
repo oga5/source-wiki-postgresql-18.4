@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/s-lock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>S_LOCK</h1>
+<h2>概念</h2>
+<p><code>S_LOCK</code> は、PostgreSQLにおけるスピンロック（<code>slock_t</code>）の取得および競合時の待機・再試行を制御するための仕組みです。プラットフォーム非依存のソフトウェア待機ロジックを提供する <code>s_lock</code> 関数や、ハードウェア依存の低レベルなTest-and-Set（TAS）操作を抽象化するマクロ（<code>S_LOCK</code>、<code>S_LOCK_FREE</code> など）から構成されます。</p>
+<h2>なぜ重要か</h2>
+<p>マルチプロセッサ環境において、共有メモリ上のデータ構造への同時アクセスを保護するためには、極めて高速かつ軽量な相互排除（スピンロック）が必要です。<code>S_LOCK</code> は、ハードウェア固有の原子操作と、競合発生時の適切なバックオフ（スピン待機）ロジックを組み合わせることで、プラットフォーム間の移植性と高いパフォーマンスを両立させる役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/lmgr</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/storage/s_lock.h#S_LOCK</code>: スピンロックを取得するためのマクロ。</li>
+<li><code>symbol:src/include/storage/s_lock.h#S_LOCK_FREE</code>: スピンロックを解放するためのマクロ。</li>
+<li><code>symbol:src/backend/storage/lmgr/s_lock.c#s_lock</code>: スピンロックの取得が即座に成功しない場合に、バックオフ（待機）と再試行を制御するプラットフォーム非依存の関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **ロック取得の試行**: 呼び出し元は <code>S_LOCK</code> マクロ（または <code>TAS_SPIN</code> 経由）を使用して、対象のスピンロック（<code>slock_t</code>）の取得を試みます。 2. **競合時の待機（<code>s_lock</code> 関数の実行）**: 即座にロックが取得できない場合、<code>s_lock</code> 関数が呼び出されます。</p>
+<ul>
+<li><code>init_spin_delay</code> により、スピン待機用の状態構造体 <code>SpinDelayStatus</code> が初期化されます。</li>
+<li><code>TAS_SPIN(lock)</code> が真（ロック中）である限り、<code>perform_spin_delay</code> を繰り返し呼び出して適切なバックオフ（待機）を行います。</li>
+<p>3. **ロック取得と統計更新**: <code>TAS_SPIN</code> が偽（ロック取得成功）になるとループを抜け、<code>finish_spin_delay</code> を呼び出して次回のスピン閾値を更新します。 4. **完了**: 最終的な総待機回数を戻り値として返し、呼び出し元に制御を戻します。</p>
+</ul>
+<p>※なお、<code>S_LOCK_FREE</code> によるロック解放の具体的な内部フローや、個々のアーキテクチャにおける <code>TAS</code> の詳細なアセンブリ実装など、エンドツーエンドの全容は提供されたコンテキストからは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**volatile修飾**: 対象となるスピンロック（<code>slock_t</code>）は、コンパイラの最適化によるレジスタへのキャッシュを防ぎ、常にメモリ上の最新値を参照するために <code>volatile</code> で修飾されている必要があります。</li>
+<li>**TASマクロの存在**: 対象アーキテクチャにおいて、ハードウェアによる原子操作を提供する <code>TAS_SPIN</code> マクロが正しく定義されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**デッドロックとPANIC**: <code>s_lock</code> 内のループにおいて、<code>perform_spin_delay</code> による待機が一定回数（<code>NUM_DELAYS</code>）を超えてもロックが取得できない場合、システムはデッドロックとみなして致命的なエラー（PANIC）を発生させる可能性があります。スピンロックを保持したまま重い処理を行ったり、スリープするような処理を呼び出したりすることは厳禁です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/storage/s_lock.h</code>: <code>S_LOCK</code> や <code>S_LOCK_FREE</code> マクロの定義、および各アーキテクチャ向けのTAS実装。</li>
+<li><code>src/backend/storage/lmgr/s_lock.c</code>: <code>s_lock</code> 関数の実装、およびスピン遅延（<code>SpinDelayStatus</code>）の制御ロジック。</li>
+</ul></body></html>

@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/init/miscinit.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/init/miscinit.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバックエンドプロセスおよびPostmasterの起動・初期化における低レイヤーの環境構築を担うファイルです。データディレクトリの検証、プロセス間通信（IPC）の初期準備、ユーザーIDの管理、およびロックファイルの管理といった、システム稼働の基盤となる処理を集約しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/init</code> モジュールにおいて、OSレベルの環境設定を行う最下層のレイヤーです。<code>postinit.c</code> がデータベース接続後の論理的な初期化を行うのに対し、本ファイルはプロセスが実行可能になるまでの「物理的・環境的」な準備を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス環境の初期化**: シグナルマスクの設定、ラッチの初期化、およびPostmaster子プロセスとしての環境構築。</li>
+<li>**データディレクトリ管理**: ディレクトリの存在確認、所有者・権限チェック、および <code>postmaster.pid</code> ロックファイルの生成・保守。</li>
+<li>**ユーザーIDコンテキスト管理**: セッションユーザー、認証ユーザー、現在の実行ユーザーIDの追跡と、セキュリティ制限コンテキストの制御。</li>
+<li>**ライブラリのプリロード**: 起動時に必要な共有ライブラリのロード処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス環境・状態管理</h3>
+<ul>
+<li><code>InitPostmasterChild()</code>: Postmasterの子プロセスとして必要なシグナル設定やラッチ初期化を行う。</li>
+<li><code>InitStandaloneProcess()</code>: スタンドアロンモード（シングルユーザー）用の環境初期化。</li>
+<li><code>MyBackendType</code>: 現在のプロセスの種類（バックエンド、チェックポインター等）を保持。</li>
+</ul>
+<h3>データディレクトリ・ロック管理</h3>
+<ul>
+<li><code>checkDataDir()</code>: データディレクトリの整合性、所有者、権限を検証し、適切なパーミッションマスクを設定。</li>
+<li><code>CreateDataDirLockFile()</code>: <code>postmaster.pid</code> を作成し、二重起動を防止。</li>
+<li><code>AddToDataDirLockFile()</code>: 実行中にロックファイルへ情報を追記する。</li>
+</ul>
+<h3>ユーザーID管理</h3>
+<ul>
+<li><code>GetUserId()</code> / <code>SetUserIdAndSecContext()</code>: 現在の実行ユーザーIDおよびセキュリティコンテキスト（<code>SECURITY_LOCAL_USERID_CHANGE</code> 等）の取得・設定。</li>
+<li><code>InitializeSessionUserId()</code>: 認証後のセッションユーザーIDを初期化。</li>
+<li><code>SetSessionAuthorization()</code> / <code>SetCurrentRoleId()</code>: <code>SET SESSION AUTHORIZATION</code> および <code>SET ROLE</code> の実行フック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateDataDirLockFile</code></li>
+<li><code>CreateLockFile</code></li>
+<li><code>CreateSocketLockFile</code></li>
+<li><code>InitPostmasterChild</code></li>
+<li><code>InitProcessLocalLatch</code></li>
+<li><code>InitStandaloneProcess</code></li>
+<li><code>InitializeSessionUserId</code></li>
+<li><code>InitializeSessionUserIdStandalone</code></li>
+<li><code>InitializeSystemUser</code></li>
+<li><code>SerializedClientConnectionInfo</code></li>
+<li><code>SwitchBackToLocalLatch</code></li>
+<li><code>SwitchToSharedLatch</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起動時**: プロセス起動時に <code>InitPostmasterChild</code> または <code>InitStandaloneProcess</code> が呼ばれ、<code>InitProcessLocalLatch</code> でラッチが初期化されます。 2. **ディレクトリ検証**: <code>checkDataDir</code> が呼ばれ、<code>stat</code> を用いてディレクトリの所有者とパーミッションを検証。問題なければ <code>umask</code> を調整します。 3. **ロックファイル生成**: <code>CreateLockFile</code> が <code>O_EXCL</code> を用いてアトミックにロックファイルを作成。既存ファイルがある場合は <code>kill(pid, 0)</code> でプロセス生存確認を行い、スタックしたロックを自動的にクリーンアップします。 4. **ユーザーコンテキスト**: <code>InitializeSessionUserId</code> がシステムカタログ（<code>pg_authid</code>）を参照し、認証済みユーザーの権限を検証してグローバル変数（<code>CurrentUserId</code> 等）を更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/</code>: ラッチ、共有メモリ、IPC、ファイルディスクリプタ管理。</li>
+<li><code>catalog/</code>: <code>pg_authid</code> 等のシステムカタログ定義。</li>
+<li><code>utils/</code>: GUC、メモリコンテキスト、syscache、エラー報告。</li>
+<li><code>postmaster/</code>: シグナルハンドラ、割り込み管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>arpa/inet.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>grp.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>pwd.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/pg_shmem.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/param.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pidfile.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+<li><code>utime.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/init/postinit.c</code>: 本ファイルの初期化後に呼び出される、論理的なデータベース初期化。</li>
+<li><code>src/backend/utils/init/usercontext.c</code>: ユーザーコンテキストの切り替えロジック。</li>
+<li><code>src/backend/storage/ipc/latch.c</code>: ラッチの実装詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>DatabasePath</code> や <code>SystemUser</code> などは <code>TopMemoryContext</code> に割り当てられ、プロセス終了まで生存します。</li>
+<li>**ロックファイルの原子性**: ロックファイルの更新（<code>AddToDataDirLockFile</code>）は、ファイル全体を読み込み、メモリ上で編集し、<code>pg_pwrite</code> で上書きすることで原子性を担保しています。</li>
+<li>**Windows対応**: <code>WIN32</code> マクロによる条件分岐が多く、シグナルやファイルパーミッションの扱いがUnix系と異なります。</li>
+<li>**省略された詳細**: 本ファイルは非常に広範な初期化処理を含むため、各関数の詳細なエラーハンドリングや、特定のOS固有のシグナル処理の詳細は省略しています。これらは <code>src/backend/postmaster/</code> 以下の各プロセス実装と密接に関連しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitPostmasterChild.html" target="wiki-view"><code>InitPostmasterChild</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitStandaloneProcess.html" target="wiki-view"><code>InitStandaloneProcess</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__SwitchToSharedLatch.html" target="wiki-view"><code>SwitchToSharedLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitProcessLocalLatch.html" target="wiki-view"><code>InitProcessLocalLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__SwitchBackToLocalLatch.html" target="wiki-view"><code>SwitchBackToLocalLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitializeSessionUserId.html" target="wiki-view"><code>InitializeSessionUserId</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitializeSessionUserIdStandalone.html" target="wiki-view"><code>InitializeSessionUserIdStandalone</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__InitializeSystemUser.html" target="wiki-view"><code>InitializeSystemUser</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__SerializedClientConnectionInfo.html" target="wiki-view"><code>SerializedClientConnectionInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__CreateLockFile.html" target="wiki-view"><code>CreateLockFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__CreateDataDirLockFile.html" target="wiki-view"><code>CreateDataDirLockFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__miscinit_c__CreateSocketLockFile.html" target="wiki-view"><code>CreateSocketLockFile</code></a></li>
+</ul></body></html>

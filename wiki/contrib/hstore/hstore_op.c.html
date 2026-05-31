@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/hstore/hstore_op.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/hstore/hstore_op.c</h1>
+<h2>概要</h2>
+<p><code>hstore_op.c</code> は、PostgreSQL の <code>hstore</code> 型に対する主要な演算子および関数を実装する中心的なソースファイルです。キーの検索、値の取得、要素の削除、結合、および集合を返す関数（SRF）など、<code>hstore</code> を操作するための実用的なロジックが網羅されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/hstore</code> モジュールにおける「演算ロジック層」です。<code>hstore_io.c</code> がデータの入出力（シリアライズ/デシリアライズ）を担うのに対し、本ファイルはメモリ上の <code>HStore</code> 構造体に対する論理的な操作を定義します。</p>
+<h2>責務</h2>
+<ul>
+<li>**キー検索の最適化**: <code>hstoreFindKey</code> によるバイナリサーチの提供。</li>
+<li>**データ操作**: <code>hstore</code> の結合 (<code>concat</code>)、削除 (<code>delete</code>)、スライス抽出。</li>
+<li>**型変換**: <code>hstore</code> と <code>text[]</code> 配列間の相互変換。</li>
+<li>**比較・ハッシュ**: B-tree 演算子（<code>=</code>, <code>&lt;</code>, <code>&gt;</code> 等）およびハッシュインデックス用関数の実装。</li>
+<li>**集合生成**: <code>each</code>, <code>skeys</code>, <code>svals</code> による SRF（Set Returning Functions）の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>hstoreFindKey</code>: <code>hstore</code> 内のキーをバイナリサーチで検索する基盤関数。<code>lowbound</code> を用いた検索範囲のキャッシュをサポート。</li>
+<li><code>hstoreArrayToPairs</code>: <code>text[]</code> を <code>Pairs</code> 構造体の配列に変換し、重複排除を行うユーティリティ。</li>
+<li><code>hstore_concat</code>: 2つの <code>hstore</code> をマージする。キーが重複する場合は後者の値が優先される。</li>
+<li><code>hstore_cmp</code>: B-tree 比較関数。厳密な順序よりも、等価性判定を主目的とする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>hstore_akeys</code></li>
+<li><code>hstore_defined</code></li>
+<li><code>hstore_delete</code></li>
+<li><code>hstore_delete_array</code></li>
+<li><code>hstore_delete_hstore</code></li>
+<li><code>hstore_exists</code></li>
+<li><code>hstore_exists_all</code></li>
+<li><code>hstore_exists_any</code></li>
+<li><code>hstore_fetchval</code></li>
+<li><code>hstore_slice_to_array</code></li>
+<li><code>hstore_slice_to_hstore</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索フロー**: 多くの関数（<code>fetchval</code>, <code>exists</code> 等）は <code>hstoreFindKey</code> を呼び出します。<code>lowbound</code> を渡すことで、ソート済み入力に対する連続的な検索を高速化します。 2. **変換フロー**: <code>hstoreArrayToPairs</code> を経由して配列を内部表現に変換し、それを基に <code>hstorePairs</code> で新しい <code>HStore</code> を構築するパターンが一般的です。 3. **マージフロー**: <code>hstore_concat</code> や <code>hstore_delete_hstore</code> は、2つのソート済み <code>HStore</code> をマージソートのように走査し、新しいメモリ領域に結果を書き出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>hstore.h</code>: 基本型と <code>HStore</code> 構造体定義。</li>
+<li><code>catalog/pg_type.h</code>: <code>TEXTOID</code> 等の型定義。</li>
+<li><code>common/hashfn.h</code>: <code>hash_any</code> 等のハッシュ関数。</li>
+<li><code>funcapi.h</code>: SRF 実装のための <code>FuncCallContext</code> 等。</li>
+<li><code>utils/builtins.h</code>, <code>utils/memutils.h</code>: メモリ管理および文字列操作ユーティリティ。</li>
+<li><code>access/htup_details.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>hstore.h</code>: <code>HStore</code> 構造体および <code>HEntry</code> マクロの定義。</li>
+<li><code>hstore_io.c</code>: <code>hstore_in</code> / <code>hstore_out</code> などの入出力処理。</li>
+<li><code>hstore_gin.c</code> / <code>hstore_gist.c</code>: インデックスサポート関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>hstore</code> の操作は多くの場合、新しい <code>HStore</code> を <code>palloc</code> で確保し、そこにデータをコピーして構築します。<code>PG_FREE_IF_COPY</code> の使用箇所に注意してください。</li>
+<li>**ソート順**: <code>hstore</code> は内部的にキーの長さと内容でソートされています。この特性を利用したアルゴリズム（マージやバイナリサーチ）が多用されているため、コードを読む際は「ソート済みであること」が前提条件であることを意識してください。</li>
+<li>**マクロ活用**: <code>ARRPTR</code>, <code>STRPTR</code>, <code>HS_COUNT</code> などの <code>hstore.h</code> で定義されたマクロが頻出します。これらは <code>HStore</code> の内部レイアウト（ヘッダー、エントリ配列、文字列領域）を抽象化するものです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_fetchval.html" target="wiki-view"><code>hstore_fetchval</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_exists.html" target="wiki-view"><code>hstore_exists</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_exists_any.html" target="wiki-view"><code>hstore_exists_any</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_exists_all.html" target="wiki-view"><code>hstore_exists_all</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_defined.html" target="wiki-view"><code>hstore_defined</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_delete.html" target="wiki-view"><code>hstore_delete</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_delete_array.html" target="wiki-view"><code>hstore_delete_array</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_delete_hstore.html" target="wiki-view"><code>hstore_delete_hstore</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_concat.html" target="wiki-view"><code>hstore_concat</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_slice_to_array.html" target="wiki-view"><code>hstore_slice_to_array</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_slice_to_hstore.html" target="wiki-view"><code>hstore_slice_to_hstore</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_op_c__hstore_akeys.html" target="wiki-view"><code>hstore_akeys</code></a></li>
+</ul></body></html>

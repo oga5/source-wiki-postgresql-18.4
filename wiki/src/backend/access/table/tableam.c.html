@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/table/tableam.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/table/tableam.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのテーブルアクセスメソッド（Table AM）の共通インターフェースを実装するルーチン群を提供します。個別のAM（heapなど）に依存しない汎用的な処理や、並列スキャン時のブロック割り当てロジックなど、インライン化に適さない複雑な関数が定義されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/table</code> モジュールの中核を成すファイルです。<code>tableam.h</code> で定義された抽象インターフェースを呼び出すためのラッパー層として機能し、実行エンジンやプランナが特定のストレージ実装を意識せずにテーブル操作を行えるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**スロット管理**: テーブルの属性定義に基づいた <code>TupleTableSlot</code> の作成とコールバックの解決。</li>
+<li>**スキャン制御**: カタログスキャンや並列スキャンの初期化・実行管理。</li>
+<li>**簡易操作**: <code>insert</code>, <code>delete</code>, <code>update</code> を簡略化するラッパー関数の提供。</li>
+<li>**並列スキャンロジック**: ブロック単位の並列スキャンにおけるチャンク割り当てと負荷分散の制御。</li>
+<li>**統計情報支援**: テーブルサイズやタプル密度の見積もり計算の補助。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>table_slot_callbacks</code>: リレーションの種類に応じた適切なスロット操作関数を返します。</li>
+<li><code>table_beginscan_parallel</code>: 並列スキャンを開始し、シリアライズされたスナップショットを復元します。</li>
+<li><code>table_block_parallelscan_nextpage</code>: 並列スキャンにおいて、次に処理すべきブロック番号をアトミックに取得します。</li>
+<li><code>simple_table_tuple_insert/delete/update</code>: 複雑な引数を省略し、現在のトランザクションID等を用いて操作を実行する簡易関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>simple_table_tuple_delete</code></li>
+<li><code>simple_table_tuple_insert</code></li>
+<li><code>simple_table_tuple_update</code></li>
+<li><code>table_beginscan_catalog</code></li>
+<li><code>table_block_parallelscan_estimate</code></li>
+<li><code>table_index_fetch_tuple_check</code></li>
+<li><code>table_parallelscan_estimate</code></li>
+<li><code>table_parallelscan_initialize</code></li>
+<li><code>table_slot_create</code></li>
+<li><code>table_tuple_get_latest_tid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャン開始**: <code>table_beginscan_parallel</code> 等が呼ばれると、リレーションの <code>rd_tableam</code> を経由して各AM固有の <code>scan_begin</code> が呼び出されます。 2. **並列処理**: 並列ワーカーは <code>table_block_parallelscan_nextpage</code> を呼び出し、共有メモリ上の <code>phs_nallocated</code> をアトミックにインクリメントして、処理すべきブロック範囲（チャンク）を確保します。 3. **データ操作**: <code>simple_table_tuple_*</code> 関数は、内部で <code>table_tuple_*</code> を呼び出し、結果コード（<code>TM_Result</code>）を評価して、エラーが発生した場合は即座に <code>elog(ERROR)</code> を発行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: AMのインターフェース定義。</li>
+<li><code>access/syncscan.h</code>: 同期スキャン制御。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/smgr.h</code>: バッファおよびストレージマネージャ。</li>
+<li><code>optimizer/optimizer.h</code>: プランナ向けの見積もり計算用。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作ユーティリティ。</li>
+<li><code>access/xact.h</code></li>
+<li><code>math.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/shmem.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/tableam.h</code>: 本ファイルで実装されている関数の宣言と、AMのAPI定義（<code>TableAmRoutine</code> 構造体）。</li>
+<li><code>src/backend/access/table/table.c</code>: テーブルアクセスの高レベルなエントリポイント。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: <code>heap</code> アクセスメソッドの具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の関数は、多くが <code>relation-&gt;rd_tableam</code> を介したディスパッチを行います。特定のAMの挙動を追う際は、このポインタが指す構造体（<code>TableAmRoutine</code>）の実装を確認してください。</li>
+<li>並列スキャンのチャンク割り当てロジック（<code>table_block_parallelscan_nextpage</code>）は、I/O効率を最大化するために連続したブロックを割り当てるよう設計されています。このアルゴリズムは、テーブルサイズが非常に大きい場合に特に重要となります。</li>
+<li><code>simple_</code> で始まる関数は、エラーハンドリングを簡略化しているため、トランザクションの整合性が保証されている環境でのみ使用してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_slot_callbacks.html" target="wiki-view"><code>table_slot_callbacks</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_slot_create.html" target="wiki-view"><code>table_slot_create</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_beginscan_catalog.html" target="wiki-view"><code>table_beginscan_catalog</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_parallelscan_estimate.html" target="wiki-view"><code>table_parallelscan_estimate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_parallelscan_initialize.html" target="wiki-view"><code>table_parallelscan_initialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_beginscan_parallel.html" target="wiki-view"><code>table_beginscan_parallel</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_index_fetch_tuple_check.html" target="wiki-view"><code>table_index_fetch_tuple_check</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_tuple_get_latest_tid.html" target="wiki-view"><code>table_tuple_get_latest_tid</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__simple_table_tuple_insert.html" target="wiki-view"><code>simple_table_tuple_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__simple_table_tuple_delete.html" target="wiki-view"><code>simple_table_tuple_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__simple_table_tuple_update.html" target="wiki-view"><code>simple_table_tuple_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__table__tableam_c__table_block_parallelscan_estimate.html" target="wiki-view"><code>table_block_parallelscan_estimate</code></a></li>
+</ul></body></html>

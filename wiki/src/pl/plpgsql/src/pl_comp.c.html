@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpgsql/src/pl_comp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/pl/plpgsql/src/pl_comp.c</h1>
+<h2>概要</h2>
+<p>PL/pgSQL 言語のコンパイラ部分を実装するファイルです。PostgreSQL の関数定義（<code>CREATE FUNCTION</code>）や匿名コードブロック（<code>DO</code>）のソーステキストを解析し、実行可能な <code>PLpgSQL_function</code> 構造体（実行ツリー）を構築します。</p>
+<h2>モジュール内での役割</h2>
+<p>PL/pgSQL サブシステムにおいて、ソースコードを解析して実行可能な中間表現に変換するフロントエンドの役割を担います。<code>pl_handler.c</code> から呼び出され、解析結果を <code>pl_exec.c</code> が実行時に利用します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数コンパイル**: SQL テキストを解析し、変数、パラメータ、ステートメントのツリーを生成する。</li>
+<li>**名前空間管理**: 変数やパラメータのスコープを管理し、名前解決を行う。</li>
+<li>**データ型構築**: PL/pgSQL で使用するデータ型情報を PostgreSQL のシステムカタログから構築する。</li>
+<li>**パーサーフック**: SQL 式内の変数参照を解決するためのパーサーコールバックを提供し、動的パラメータを処理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>plpgsql_compile</code>: 関数コンパイルの主要なエントリーポイント。</li>
+<li><code>plpgsql_compile_inline</code>: <code>DO</code> ブロック用のコンパイル関数。</li>
+<li><code>plpgsql_compile_callback</code>: 実際のコンパイル処理を行う内部関数。</li>
+<li><code>plpgsql_Datums</code>: コンパイル中に生成されたすべての変数・レコードを保持する配列。</li>
+<li><code>plpgsql_parser_setup</code>: SQL 式の解析時に変数参照を解決するためのフック設定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExceptionLabelMap</code></li>
+<li><code>add_dummy_return</code></li>
+<li><code>add_parameter_name</code></li>
+<li><code>compile_error_callback_arg</code></li>
+<li><code>plpgsql_compile_error_callback</code></li>
+<li><code>plpgsql_param_ref</code></li>
+<li><code>plpgsql_post_column_ref</code></li>
+<li><code>plpgsql_pre_column_ref</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>plpgsql_compile</code> が <code>cached_function_compile</code> を経由して <code>plpgsql_compile_callback</code> を呼び出します。 2. **コンテキスト作成**: 関数専用のメモリコンテキストを作成し、解析中のメモリ割り当てを管理します。 3. **解析**: <code>plpgsql_yyparse</code> を呼び出し、スキャナからトークンを読み取ってステートメントツリーを構築します。 4. **名前解決**: <code>plpgsql_pre_column_ref</code> 等のフックを通じて、SQL 式内の識別子が PL/pgSQL 変数かテーブル列かを判定し、<code>Param</code> ノードに変換します。 5. **完了**: 構築された <code>PLpgSQL_function</code> を <code>CacheMemoryContext</code> に移動し、永続化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>plpgsql.h</code>: PL/pgSQL の主要なデータ構造と型定義。</li>
+<li><code>parser/parse_node.h</code>: PostgreSQL のパーサー状態管理。</li>
+<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: システムカタログ情報。</li>
+<li><code>utils/syscache.h</code>: 型やプロシージャのキャッシュ検索。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>plerrcodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pl_scanner.c</code>: ソーステキストをトークン化するスキャナ。</li>
+<li><code>pl_funcs.c</code>: ステートメントや式のデータ構造操作。</li>
+<li><code>pl_exec.c</code>: コンパイルされたツリーを実行するランタイム。</li>
+<li><code>pl_handler.c</code>: PL/pgSQL 言語ハンドラのメインエントリー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: コンパイル中のメモリは <code>plpgsql_compile_tmp_cxt</code> で管理され、成功時にのみ <code>CacheMemoryContext</code> へ昇格されます。このため、コンパイル失敗時のメモリリークが抑制されています。</li>
+<li>**再入不可**: このファイル内のコードは再入可能ではありません。コンパイル中に別の PL/pgSQL 関数が呼び出されることは想定されていません。</li>
+<li>**名前解決**: <code>resolve_column_ref</code> は、SQL 式内の識別子が変数か列かを解決する重要な箇所です。複雑な名前解決ルール（<code>A.B.C</code> など）がここで実装されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__ExceptionLabelMap.html" target="wiki-view"><code>ExceptionLabelMap</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile.html" target="wiki-view"><code>plpgsql_compile</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__compile_error_callback_arg.html" target="wiki-view"><code>compile_error_callback_arg</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_callback.html" target="wiki-view"><code>plpgsql_compile_callback</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_inline.html" target="wiki-view"><code>plpgsql_compile_inline</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_error_callback.html" target="wiki-view"><code>plpgsql_compile_error_callback</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__add_parameter_name.html" target="wiki-view"><code>add_parameter_name</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__add_dummy_return.html" target="wiki-view"><code>add_dummy_return</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_parser_setup.html" target="wiki-view"><code>plpgsql_parser_setup</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_pre_column_ref.html" target="wiki-view"><code>plpgsql_pre_column_ref</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_post_column_ref.html" target="wiki-view"><code>plpgsql_post_column_ref</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_param_ref.html" target="wiki-view"><code>plpgsql_param_ref</code></a></li>
+</ul></body></html>

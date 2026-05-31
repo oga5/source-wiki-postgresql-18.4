@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/dblink/dblink.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/dblink/dblink.c</h1>
+<h2>概要</h2>
+<p><code>dblink.c</code> は、PostgreSQLから外部のPostgreSQLデータベースへ接続し、クエリ実行、結果取得、カーソル操作を行うためのコア実装です。<code>libpq</code> をラップし、リモートの結果セットをローカルの <code>Tuplestore</code> に変換してSQLインターフェースへ提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/dblink</code> 拡張機能の単一のメイン実装ファイルです。SQL関数として公開されるインターフェースと、<code>libpq</code> を直接操作する低レベルな通信ロジックの両方を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: 名前付き接続（ハッシュテーブル管理）とデフォルトの未命名接続のライフサイクル管理。</li>
+<li>**クエリ実行**: 同期/非同期クエリの送信と、<code>libpq</code> のシングルローモードを活用したメモリ効率の良い結果取得。</li>
+<li>**データ変換**: リモートの <code>PGresult</code> をローカルの <code>Tuplestore</code> へ変換し、型変換（<code>AttInMetadata</code>）を適用。</li>
+<li>**セキュリティ**: 非特権ユーザーに対する接続文字列の検証、パスワード/GSSAPI/SCRAM認証の強制。</li>
+<li>**SQL生成**: ローカルテーブルの主キーに基づいた <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code> 文の自動生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>接続管理</h3>
+<ul>
+<li><code>remoteConn</code>: リモート接続（<code>PGconn</code>）とカーソル状態を保持する構造体。</li>
+<li><code>remoteConnHash</code>: 名前付き接続を管理するハッシュテーブル。</li>
+<li><code>dblink_connect</code>/<code>dblink_disconnect</code>: 接続の確立と破棄。</li>
+</ul>
+<h3>クエリ実行・結果取得</h3>
+<ul>
+<li><code>dblink_record</code>: リモートクエリを実行し、結果をセットとして返すメイン関数。</li>
+<li><code>materializeQueryResult</code>: <code>libpq</code> のシングルローモードを使用して結果を一行ずつ処理するコア関数。</li>
+<li><code>storeRow</code>: <code>PGresult</code> から一行を抽出し、<code>Tuplestore</code> に格納する変換ロジック。</li>
+</ul>
+<h3>セキュリティ・検証</h3>
+<ul>
+<li><code>dblink_security_check</code>: 接続時の認証方式がポリシーに適合しているか検証。</li>
+<li><code>dblink_connstr_check</code>: 接続文字列にパスワードが含まれているか等のチェック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>createConnHash</code></li>
+<li><code>dblink_get_conn</code></li>
+<li><code>dblink_get_connections</code></li>
+<li><code>dblink_get_named_conn</code></li>
+<li><code>dblink_get_notify</code></li>
+<li><code>dblink_get_pkey</code></li>
+<li><code>dblink_get_result</code></li>
+<li><code>dblink_init</code></li>
+<li><code>getConnectionByName</code></li>
+<li><code>remoteConn</code></li>
+<li><code>remoteConnHashEnt</code></li>
+<li><code>storeInfo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>dblink_init</code> でグローバルな接続状態を初期化。 2. **接続**: <code>dblink_get_conn</code> が接続文字列を解析し、<code>libpqsrv_connect</code> で <code>libpq</code> 接続を確立。 3. **実行**: <code>dblink_record</code> が <code>materializeQueryResult</code> を呼び出し、<code>PQsendQuery</code> でクエリを送信。 4. **マテリアライズ**: <code>storeQueryResult</code> がループ内で <code>libpqsrv_get_result</code> を呼び出し、<code>PGRES_SINGLE_TUPLE</code> を受信するたびに <code>storeRow</code> で <code>Tuplestore</code> に変換・格納。 5. **クリーンアップ**: <code>PG_TRY/PG_FINALLY</code> ブロックにより、エラー発生時でも <code>PQclear</code> や接続切断が確実に行われるよう設計。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: リモートデータベースとの通信用。</li>
+<li><code>executor/spi.h</code>: ローカルテーブルのメタデータ取得やSQL生成用。</li>
+<li><code>utils/tuplestore.h</code>: 結果セットのメモリ効率的な保持用。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_index</code>等）へのアクセス用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/base64.h</code></li>
+<li><code>foreign/foreign.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>libpq/libpq-be-fe-helpers.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/varlena.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/dblink/dblink.sql</code>: 本ファイルの関数をSQLにマッピングする定義ファイル。</li>
+<li><code>src/interfaces/libpq/</code>: <code>libpq</code> の基盤実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PGresult</code> は <code>libpq</code> が確保するため、<code>PG_FINALLY</code> ブロックで必ず <code>PQclear</code> を呼び出す必要があります。<code>storeRow</code> 内では、データ変換時のメモリリークを防ぐため <code>tmpcontext</code> を使用してリセットしています。</li>
+<li>**GUCの扱い**: リモートとローカルで <code>DateStyle</code> 等のGUCが異なるとデータ変換に失敗するため、<code>applyRemoteGucs</code> で一時的にリモートの設定を適用し、終了後に <code>restoreLocalGucs</code> で復元します。</li>
+<li>**制約**: 非特権ユーザーが <code>.pgpass</code> 等の外部設定に依存して接続することを防ぐため、<code>dblink_connstr_check</code> で明示的なパスワード指定を強制しています。</li>
+<li>**未実装/浅い部分**: OAuth認証オプションは、対話的な認証フローがバックエンドで完結しないため意図的に無効化されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__dblink__dblink_c__remoteConn.html" target="wiki-view"><code>remoteConn</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__storeInfo.html" target="wiki-view"><code>storeInfo</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__remoteConnHashEnt.html" target="wiki-view"><code>remoteConnHashEnt</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_conn.html" target="wiki-view"><code>dblink_get_conn</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_named_conn.html" target="wiki-view"><code>dblink_get_named_conn</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_init.html" target="wiki-view"><code>dblink_init</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_result.html" target="wiki-view"><code>dblink_get_result</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_connections.html" target="wiki-view"><code>dblink_get_connections</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_pkey.html" target="wiki-view"><code>dblink_get_pkey</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__dblink_get_notify.html" target="wiki-view"><code>dblink_get_notify</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__getConnectionByName.html" target="wiki-view"><code>getConnectionByName</code></a></li>
+<li><a href="../../symbols/contrib__dblink__dblink_c__createConnHash.html" target="wiki-view"><code>createConnHash</code></a></li>
+</ul></body></html>

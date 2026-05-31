@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/pg_upgrade.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/pg_upgrade.c</h1>
+<h2>概要</h2>
+<p><code>pg_upgrade.c</code> は、PostgreSQL のメジャーバージョンアップグレードを実行するためのメインエントリーポイントです。旧クラスタから新クラスタへのデータ移行プロセス全体をオーケストレーションし、メタデータの整合性維持やバイナリレベルの互換性確保を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> モジュールの中核であり、各サブ機能（チェック、ダンプ、ファイル操作、サーバー制御）を呼び出す司令塔です。他のファイル（<code>check.c</code>, <code>server.c</code>, <code>file.c</code> など）で定義されたユーティリティを統合し、アップグレードのワークフローを定義します。</p>
+<h2>責務</h2>
+<ul>
+<li>**アップグレードフローの制御**: 旧クラスタの検証から、新クラスタの準備、データ移行、最終的なクリーンアップまでの全工程を管理。</li>
+<li>**クラスタ整合性の強制**: OID、<code>relfilenode</code>、<code>tablespace</code> などのシステム値が新旧クラスタで一致するように制御。</li>
+<li>**低レベルデータ移行**: <code>pg_resetwal</code> を用いた WAL/XID の再設定や、物理ファイルのコピー/リンク操作。</li>
+<li>**環境のセットアップ**: ログ出力ディレクトリの作成や、新旧クラスタの実行環境（ポート、パス）の検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>main()</code>: アップグレード処理の全体フローを記述するメイン関数。</li>
+<li><code>old_cluster</code>, <code>new_cluster</code>: アップグレード対象となるクラスタの情報を保持するグローバル構造体。</li>
+<li><code>prepare_new_cluster()</code>: 新クラスタの統計情報更新や凍結処理を行う。</li>
+<li><code>copy_xact_xlog_xid()</code>: トランザクションログや XID 関連のメタデータを旧クラスタから新クラスタへ引き継ぐ。</li>
+<li><code>create_new_objects()</code>: <code>pg_restore</code> を使用してデータベーススキーマを再構築する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>copy_subdir_files</code></li>
+<li><code>copy_xact_xlog_xid</code></li>
+<li><code>create_logical_replication_slots</code></li>
+<li><code>create_new_objects</code></li>
+<li><code>main</code></li>
+<li><code>make_outputdirs</code></li>
+<li><code>prepare_new_cluster</code></li>
+<li><code>prepare_new_globals</code></li>
+<li><code>remove_new_subdir</code></li>
+<li><code>set_frozenxids</code></li>
+<li><code>set_locale_and_encoding</code></li>
+<li><code>set_new_cluster_char_signedness</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: コマンドライン引数の解析、ログディレクトリの作成、環境変数の検証。 2. **検証**: <code>check_cluster_compatibility()</code> 等で新旧クラスタの互換性を確認。 3. **準備**: 新クラスタのロケール設定、<code>pg_resetwal</code> による XID/WAL の初期化。 4. **移行**: <code>pg_restore</code> によるスキーマ復元、必要に応じた物理ファイルのコピーまたはリンク。 5. **最終化**: 論理レプリケーションスロットの移行、不要な一時ファイルの削除、完了通知。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>pg_upgrade.h</code>: モジュール共通の定数、構造体定義。</li>
+<li><code>fe_utils/string_utils.h</code>: 文字列操作ユーティリティ。</li>
+<li><code>common/file_perm.h</code>, <code>common/logging.h</code>: ファイル権限およびログ出力用共通関数。</li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>common/restricted_token.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>server.c</code>: <code>start_postmaster</code> / <code>stop_postmaster</code> 等のサーバー制御ロジック。</li>
+<li><code>check.c</code>: アップグレード前の互換性チェックロジック。</li>
+<li><code>file.c</code>: ファイルコピーやリンク操作の低レベル実装。</li>
+<li><code>relfilenumber.c</code>: OID やファイルノードの管理に関連するロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「バイナリアップグレード」のロジックが中心です。<code>pg_restore</code> を呼び出す際は、<code>--clean</code> や <code>--create</code> オプションが適切に設定されているかを確認してください。</li>
+<li><code>WIN32</code> 固有の処理（ログファイルの排他制御など）が随所に含まれているため、Windows 環境での動作を追う際は <code>#ifdef WIN32</code> ブロックに注意が必要です。</li>
+<li><code>RESTORE_TRANSACTION_SIZE</code> は、スキーマ復元時のトランザクション単位を制御する重要な定数です。並列実行時にはこの値が調整されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__main.html" target="wiki-view"><code>main</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__make_outputdirs.html" target="wiki-view"><code>make_outputdirs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__set_new_cluster_char_signedness.html" target="wiki-view"><code>set_new_cluster_char_signedness</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__set_locale_and_encoding.html" target="wiki-view"><code>set_locale_and_encoding</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__prepare_new_cluster.html" target="wiki-view"><code>prepare_new_cluster</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__prepare_new_globals.html" target="wiki-view"><code>prepare_new_globals</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__create_new_objects.html" target="wiki-view"><code>create_new_objects</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__remove_new_subdir.html" target="wiki-view"><code>remove_new_subdir</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__copy_subdir_files.html" target="wiki-view"><code>copy_subdir_files</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__copy_xact_xlog_xid.html" target="wiki-view"><code>copy_xact_xlog_xid</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__set_frozenxids.html" target="wiki-view"><code>set_frozenxids</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__pg_upgrade_c__create_logical_replication_slots.html" target="wiki-view"><code>create_logical_replication_slots</code></a></li>
+</ul></body></html>

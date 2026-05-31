@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/large_object/inv_api.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/large_object/inv_api.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの「インバージョン（Inversion）」ファイルシステムに基づくラージオブジェクト（LO）を操作するためのユーザーレベルAPIを提供します。<code>pg_largeobject</code> カタログテーブルを直接操作し、ストリームのような読み書きインターフェースを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/large_object</code> ディレクトリにおける主要な実装ファイルです。SQLレベルの <code>lo_open</code> や <code>lo_read</code> 等の関数が内部で呼び出すバックエンド側の実体であり、システムカタログとユーザー空間の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**LOのライフサイクル管理**: 作成 (<code>inv_create</code>)、オープン (<code>inv_open</code>)、クローズ (<code>inv_close</code>)、削除 (<code>inv_drop</code>)。</li>
+<li>**データアクセス**: <code>pg_largeobject</code> テーブルに対するページ単位の読み込み (<code>inv_read</code>)、書き込み (<code>inv_write</code>)、切り詰め (<code>inv_truncate</code>)。</li>
+<li>**権限チェック**: 各操作におけるACL（アクセス制御リスト）の検証。</li>
+<li>**互換性維持**: 過去の仕様に基づくリソース管理や、<code>pg_largeobject</code> のデータフィールド（TOAST済みデータ）のデコード。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LargeObjectDesc</code>: オープンされたLOの状態（ID、オフセット、フラグ、スナップショット）を保持する構造体。</li>
+<li><code>inv_open</code>: <code>LargeObjectDesc</code> を生成し、権限チェックとスナップショットの初期化を行う。</li>
+<li><code>inv_read</code> / <code>inv_write</code>: 指定されたオフセットに基づき、<code>pg_largeobject</code> のページをスキャンしてデータを読み書きする。</li>
+<li><code>lo_heap_r</code> / <code>lo_index_r</code>: <code>pg_largeobject</code> テーブルとインデックスへのキャッシュされたリレーション参照。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>close_lo_relation</code></li>
+<li><code>inv_close</code></li>
+<li><code>inv_create</code></li>
+<li><code>inv_drop</code></li>
+<li><code>inv_getsize</code></li>
+<li><code>inv_seek</code></li>
+<li><code>inv_tell</code></li>
+<li><code>inv_truncate</code></li>
+<li><code>open_lo_relation</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>open_lo_relation()</code> が呼ばれると、<code>pg_largeobject</code> テーブルとインデックスが現在のトランザクションでオープンされます。 2. **スキャン**: <code>systable_beginscan_ordered</code> を使用し、<code>loid</code> と <code>pageno</code> をキーにして必要なページを順次取得します。 3. **データ処理**:</p>
+<ul>
+<li>読み込み時: ページ間の「穴（hole）」をゼロ埋めし、TOASTされたデータを <code>detoast_attr</code> で展開してバッファにコピーします。</li>
+<li>書き込み時: 既存ページを更新するか、新しいページを挿入します。必要に応じて <code>CatalogTupleUpdateWithInfo</code> や <code>CatalogTupleInsertWithInfo</code> を使用してカタログを更新します。</li>
+<p>4. **終了**: <code>CommandCounterIncrement()</code> を呼び出し、変更を後続の操作から可視化します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_largeobject.h</code>: カタログスキーマ定義。</li>
+<li><code>access/table.h</code>, <code>access/genam.h</code>: テーブルおよびインデックスアクセスのための低レイヤーAPI。</li>
+<li><code>utils/acl.h</code>: ラージオブジェクトに対する権限チェック。</li>
+<li><code>utils/rel.h</code>: リレーションキャッシュ管理。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>libpq/libpq-fs.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/large_object.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/catalog/pg_largeobject.c</code>: カタログのメタデータ管理や、LOの物理的な作成・削除の補助。</li>
+<li><code>src/include/libpq/libpq-fs.h</code>: クライアント側から呼び出されるLO操作関数のプロトタイプ定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>inv_open</code> で割り当てられた <code>LargeObjectDesc</code> は、呼び出し元が適切なメモリコンテキストで管理する必要があります。</li>
+<li>**TOAST**: <code>pg_largeobject.data</code> はTOASTされている可能性があるため、<code>getdatafield</code> 内で必ずデトースト処理が行われます。</li>
+<li>**トランザクション**: <code>lo_heap_r</code> 等のリレーション参照は、トランザクション終了時に <code>close_lo_relation</code> で適切にクローズされるよう設計されています。</li>
+<li>**ページング**: LOは <code>LOBLKSIZE</code>（通常2KB）単位で管理されます。ファイルシステムと同様に、書き込み時にページが飛んでいる場合は「穴」としてゼロ埋めされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__open_lo_relation.html" target="wiki-view"><code>open_lo_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__close_lo_relation.html" target="wiki-view"><code>close_lo_relation</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_create.html" target="wiki-view"><code>inv_create</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_open.html" target="wiki-view"><code>inv_open</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_close.html" target="wiki-view"><code>inv_close</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_drop.html" target="wiki-view"><code>inv_drop</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_getsize.html" target="wiki-view"><code>inv_getsize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_seek.html" target="wiki-view"><code>inv_seek</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_tell.html" target="wiki-view"><code>inv_tell</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_read.html" target="wiki-view"><code>inv_read</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_write.html" target="wiki-view"><code>inv_write</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__large_object__inv_api_c__inv_truncate.html" target="wiki-view"><code>inv_truncate</code></a></li>
+</ul></body></html>

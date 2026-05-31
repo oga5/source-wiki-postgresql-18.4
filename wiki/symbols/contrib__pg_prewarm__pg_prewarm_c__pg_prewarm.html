@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_prewarm__pg_prewarm_c__pg_prewarm.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_prewarm</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pg_prewarm/pg_prewarm.c:59</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたリレーションのブロックを、OS キャッシュまたは共有バッファへ事前に読み込み（プリウォーム）、アクセスを高速化する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum pg_prewarm(PG_FUNCTION_ARGS)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>regclass</code> (リレーションOID)</li>
+<li><code>text</code> (プリウォーム手法: &quot;prefetch&quot;, &quot;read&quot;, &quot;buffer&quot;)</li>
+<li><code>text</code> (フォーク名: &quot;main&quot;, &quot;fsm&quot;, &quot;vm&quot; 等)</li>
+<li><code>int64</code> (開始ブロック番号、省略時は0)</li>
+<li><code>int64</code> (終了ブロック番号、省略時は最終ブロック)</li>
+<li>**出力**: 処理したブロック数 (<code>int64</code>) を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象リレーションに対する <code>SELECT</code> 権限が必要。インデックスの場合は親テーブルの権限を確認する。</li>
+<li>リレーションはストレージを持つ必要がある。</li>
+<li>指定されたフォークが存在しなければならない。</li>
+<li>実行中、長時間処理を考慮して <code>CHECK_FOR_INTERRUPTS()</code> が呼び出される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 引数を解析し、プリウォーム手法 (<code>PrewarmType</code>) を決定する。 2. リレーションをオープンし、権限チェックを行う。インデックスの場合はデッドロック回避のため親テーブルを先にロックする。 3. 指定されたブロック範囲を検証し、NULL の場合はデフォルト値を適用する。 4. 手法に応じたループ処理を実行する:</p>
+<ul>
+<li><code>PREFETCH</code>: <code>PrefetchBuffer</code> を使用し、OS に読み込みヒントを送信する（非同期）。</li>
+<li><code>READ</code>: <code>smgrread</code> を使用し、物理的に読み込む（同期）。</li>
+<li><code>BUFFER</code>: <code>ReadStream</code> を使用し、共有バッファへロードする。</li>
+<p>5. 処理したブロック数を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQL インターフェースから直接呼び出される。<code>autoprewarm.c</code> は本関数を直接呼び出すのではなく、バックグラウンドワーカーとしてプリウォーム状態を管理する。</li>
+<li>**呼び出し先**: <code>relation_open</code>, <code>IndexGetRelation</code>, <code>smgrexists</code>, <code>PrefetchBuffer</code>, <code>smgrread</code>, <code>read_stream_begin_relation</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PrewarmType</code> (列挙型: <code>PREWARM_PREFETCH</code>, <code>PREWARM_READ</code>, <code>PREWARM_BUFFER</code>)</li>
+<li><code>Relation</code></li>
+<li><code>ForkNumber</code></li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>無効なプリウォーム手法や NULL 引数が渡された場合はエラーとなる。</li>
+<li>リレーションがストレージを持たない場合や、指定したフォークが存在しない場合はエラーとなる。</li>
+<li>権限不足時は <code>aclcheck_error</code> を発生させる。</li>
+<li>インデックスの親テーブルがロック取得前に削除された場合、エラーとなる。</li>
+<li><code>PREFETCH</code> モードがビルド時にサポートされていない場合、エラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>BUFFER</code> モードは共有バッファを消費するため、メモリ圧迫に注意が必要。</li>
+<li>インデックスのプリウォーム時は、親テーブルのロックを優先することでデッドロックを回避している。</li>
+<li>処理のキャンセルは <code>CHECK_FOR_INTERRUPTS()</code> により行われるため、ループ内での呼び出しを維持すること。</li>
+</ul></body></html>

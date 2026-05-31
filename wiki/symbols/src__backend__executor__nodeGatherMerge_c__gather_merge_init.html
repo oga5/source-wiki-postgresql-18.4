@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeGatherMerge_c__gather_merge_init.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gather_merge_init</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeGatherMerge.c:442</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>GatherMerge</code> ノードの実行開始時に、各ワーカーおよびリーダープロセスから最初のタプルを取得し、バイナリヒープを構築してマージ処理の準備を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gather_merge_init(GatherMergeState *gm_state)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>GatherMergeState *gm_state</code>（実行状態を保持する構造体）</li>
+<li>**出力**: なし（副作用として <code>gm_state</code> 内のヒープおよびバッファを初期化する）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>gather_merge_setup</code> が呼び出され、必要なメモリ空間とスロットが確保されていること。</li>
+<li><code>gm_state-&gt;nreaders</code> が <code>GatherMerge</code> プランノードの <code>num_workers</code> 以下であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **状態のリセット**: リーダーおよび各ワーカーのタプルスロット、バッファ（<code>nTuples</code>, <code>readCounter</code>, <code>done</code> フラグ）を初期化する。 2. **ヒープの初期化**: <code>binaryheap_reset</code> を呼び出し、ヒープを空にする。 3. **タプルの読み込み**:</p>
+<ul>
+<li>各ソースに対して <code>nowait</code> モードで <code>gather_merge_readnext</code> を試行し、タプルが取得できた場合はヒープに追加する。</li>
+<li>すべてのソースからタプルまたは終了通知が得られるまで、<code>wait</code> モードに切り替えて再試行（<code>reread</code> ループ）を行う。</li>
+<p>4. **ヒープの構築**: <code>binaryheap_build</code> を呼び出し、ヒープ構造を確定させる。 5. **完了フラグ**: <code>gm_state-&gt;gm_initialized</code> を <code>true</code> に設定する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ExecGatherMerge</code>（ソースコード内の文脈より）</li>
+<li>**呼び出し先**: <code>gather_merge_readnext</code>, <code>load_tuple_array</code>, <code>binaryheap_reset</code>, <code>binaryheap_add_unordered</code>, <code>binaryheap_build</code>, <code>ExecClearTuple</code>, <code>CHECK_FOR_INTERRUPTS</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GatherMergeState</code>: 実行状態を管理するメイン構造体。</li>
+<li><code>GMReaderTupleBuffer</code>: 各ワーカーからのタプルを保持するバッファ。</li>
+<li><code>binaryheap</code>: ソート済みのタプルをマージするための優先度付きキュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>CHECK_FOR_INTERRUPTS()</code> により、割り込み発生時に処理が中断される可能性がある。</li>
+<li>ワーカーがタプルを生成しない場合や、すべてのワーカーが終了している場合でも、ヒープの構築と初期化は正常に完了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>GatherMerge</code> の初期化フェーズの核心であり、<code>gm_initialized</code> フラグによって一度だけ実行されることが想定されている。</li>
+<li><code>reread</code> ループは、並列ワーカーからのタプル到着待ちと、リーダーのローカルスキャンを同期させるための重要なロジックである。</li>
+</ul></body></html>

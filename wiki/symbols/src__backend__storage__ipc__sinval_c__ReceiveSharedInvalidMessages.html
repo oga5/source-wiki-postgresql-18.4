@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__sinval_c__ReceiveSharedInvalidMessages.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReceiveSharedInvalidMessages</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/storage/ipc/sinval.c:68</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリ上のキャッシュ無効化（SI）メッセージキューからメッセージを読み込み、各バックエンドのローカルキャッシュを同期させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *msg),
+                                  void (*resetFunction) (void))</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>invalFunction</code>: 個別の無効化メッセージを処理するコールバック関数。</li>
+<li><code>resetFunction</code>: キャッシュの全リセットが必要な場合に呼び出されるコールバック関数。</li>
+<li>**出力**: なし（副作用としてキャッシュの更新および共有メモリのクリーンアップを行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>静的バッファ <code>messages</code> を使用し、再帰的な呼び出しが発生してもスタック上のメッセージを安全に処理する。</li>
+<li><code>SharedInvalidMessageCounter</code> が処理ごとにインクリメントされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **再帰処理の継続**: 前回の呼び出しで処理しきれなかったメッセージがある場合、まずそれを処理する。 2. **メッセージ取得**: <code>SIGetDataEntries</code> を呼び出し、共有メモリからメッセージを取得する。 3. **リセット処理**: <code>SIGetDataEntries</code> が負の値を返した場合、<code>resetFunction</code> を実行して終了する。 4. **メッセージ適用**: 取得したメッセージをループで順次 <code>invalFunction</code> に渡す。 5. **ループ継続**: バッファが満杯（<code>MAXINVALMSGS</code>）の場合、追加のメッセージが存在する可能性があるため、取得処理を繰り返す。 6. **キャッチアップ完了**: <code>catchupInterruptPending</code> が真の場合、フラグを解除し <code>SICleanupQueue</code> を呼び出して、次のバックエンドへキャッチアップ信号を伝播させる。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/utils/cache/inval.c:938</code> (<code>LocalExecuteInvalidationMessage</code> を引数として呼び出し)</li>
+<li>**呼び出し先**:</li>
+<li><code>SIGetDataEntries</code> (共有メモリからのメッセージ取得)</li>
+<li><code>invalFunction</code> (引数で渡されたコールバック)</li>
+<li><code>resetFunction</code> (引数で渡されたコールバック)</li>
+<li><code>SICleanupQueue</code> (キューの整理)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SharedInvalidationMessage</code>: 処理対象のメッセージ構造体。</li>
+<li><code>MAXINVALMSGS</code>: 一度に処理するメッセージの最大数（32）。</li>
+<li><code>SharedInvalidMessageCounter</code>: 処理されたメッセージの総数。</li>
+<li><code>catchupInterruptPending</code>: キャッチアップが必要かを示すフラグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キューオーバーフロー**: <code>SIGetDataEntries</code> が <code>MAXINVALMSGS</code> を返した場合、ループにより全メッセージの処理を試みる。</li>
+<li>**リセット要求**: <code>SIGetDataEntries</code> が負の値を返すと、個別のメッセージ処理を中断し、キャッシュ全体のリセットを実行する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>nextmsg</code> と <code>nummsgs</code> は <code>volatile</code> 宣言されており、再帰的な呼び出しによる状態破壊を防ぐ設計となっている。</li>
+<li>キャッチアップ信号の伝播（デイジーチェーン）は、システム負荷の急増を避けるための意図的な設計である。</li>
+</ul></body></html>

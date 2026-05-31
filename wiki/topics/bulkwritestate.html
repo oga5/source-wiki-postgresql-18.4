@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/bulkwritestate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BulkWriteState</h1>
+<h2>概念</h2>
+<p><code>BulkWriteState</code> は、PostgreSQLにおいてリレーションの新規作成や初期ロード（インデックス構築やテーブル再構築など）を行う際、共有バッファマネージャを介さずに直接ストレージへ効率的にデータを書き込むための状態管理を行う構造体です。</p>
+<p>ヘッダーファイル <code>src/include/storage/bulk_write.h</code> では不透明型（opaque type）として定義されており、具体的な構造体のメンバなどの実装詳細は <code>src/backend/storage/smgr/bulk_write.c</code> に隠蔽されています。</p>
+<h2>なぜ重要か</h2>
+<p>通常のバッファマネージャを経由する書き込みは、大量のデータ挿入時にオーバーヘッドとなります。<code>BulkWriteState</code> を使用することで、共有バッファプールをバイパスして直接物理ストレージへ書き込み、WAL（Write-Ahead Logging）の記録や物理書き込みをバッチ処理（キューイング）できます。これにより、インデックス構築（GiST, B-Tree, SP-Gistなど）やテーブル再構築時のI/Oパフォーマンスが大幅に向上します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/smgr</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/smgr/bulk_write.c#BulkWriteState</code>**</li>
+<p>構造体の実体定義です。以下のメンバを含みます。</p>
+<li><code>SMgrRelation smgr</code>: 書き込み対象のリレーションハンドル。</li>
+<li><code>ForkNumber forknum</code>: フォーク番号。</li>
+<li><code>bool use_wal</code>: WALを使用するかどうかのフラグ。</li>
+<li><code>int npending</code>: 保留中の書き込み数。</li>
+<li><code>PendingWrite pending_writes[MAX_PENDING_WRITES]</code>: 書き込み待ちのページ情報を保持する配列。</li>
+<li><code>BlockNumber relsize</code>: リレーションサイズ。</li>
+<li><code>XLogRecPtr start_RedoRecPtr</code>: 操作開始時のRedoレコードポインタ。</li>
+<li><code>MemoryContext memcxt</code>: メモリコンテキスト。</li>
+</ul>
+<ul>
+<li>**<code>symbol:src/include/storage/bulk_write.h#BulkWriteState</code>**</li>
+<p>外部モジュールに公開される不透明型（<code>typedef struct BulkWriteState BulkWriteState;</code>）としての定義です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元（<code>gistbuild.c</code>, <code>rewriteheap.c</code>, <code>nbtree.c</code>, <code>nbtsort.c</code>, <code>spginsert.c</code>, <code>catalog/storage.c</code> など）が <code>smgr_bulk_start_rel</code> または <code>smgr_bulk_start_smgr</code> を呼び出し、<code>BulkWriteState</code> を生成・初期化します。 2. **書き込み要求（キューイング）**: 呼び出し元が <code>smgr_bulk_write</code> を介してページデータを渡します。データは内部の <code>pending_writes</code> 配列に蓄積されます。 3. **バッチ処理（自動フラッシュ）**: 蓄積された書き込み数 <code>npending</code> が <code>MAX_PENDING_WRITES</code> に達すると、内部関数 <code>smgr_bulk_flush</code> が自動的に呼び出され、WALの記録とディスクへの物理書き込みがバッチ実行されます。 4. **終了処理**: 呼び出し元が <code>smgr_bulk_finish</code> を呼び出します。これにより、未書き込みの全ページ（保留中のデータ）がフラッシュされ、必要に応じて <code>fsync</code> が実行されて永続性が保証され、リソースが解放されます。</p>
+<p>*注意: 各呼び出し元（GiSTやB-Tree構築など）の内部における具体的なデータ生成ロジックや、詳細なWALレコードのレイアウトなど、これ以上の詳細なエンドツーエンドのフローは提供されたモジュール情報からは未確定です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**排他アクセスの保証**: 対象リレーションに対して、他のバックエンドが同時にアクセスしない（排他制御が保証されている）環境で使用されなければなりません。</li>
+<li>**バッファ所有権の移譲**: <code>smgr_bulk_write</code> に渡されたバッファの所有権は <code>BulkWriteState</code> に移譲されるため、呼び出し側で <code>pfree</code> してはなりません。</li>
+<li>**キャッシュの非整合性**: 本構造体は共有バッファプールをバイパスするため、キャッシュ整合性の管理は呼び出し側の責務となります。書き込み完了後にデータを読み込む場合は、ディスクから再読み込みする必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**終了処理の呼び出し漏れ**: <code>smgr_bulk_finish</code> を呼び出さない場合、保留中のデータがディスクに完全にフラッシュされず、データが失われる可能性があります。</li>
+<li>**共有バッファプールとの混在**: 共有バッファプールを介した通常のアクセスと混在させると、キャッシュの不整合が発生します。</li>
+<li>**チェックポイントとの競合**: チェックポイント発生時に <code>smgr_bulk_finish</code> が実行される場合、<code>MyProc-&gt;delayChkptFlags</code> を用いてチェックポイントを一時的に抑制し、書き込み完了後の <code>fsync</code> 漏れを防ぐ必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/smgr/bulk_write.c</code></li>
+<p>構造体の詳細な実装、<code>smgr_bulk_flush</code> などの内部ロジックが記述されています。</p>
+<li><code>src/include/storage/bulk_write.h</code></li>
+<p>外部公開されているAPI定義や、関連データ構造（<code>BulkWriteBuffer</code> など）が記述されています。</p>
+</ul></body></html>

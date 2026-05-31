@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtxlog_c__btree_xlog_delete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>btree_xlog_delete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtxlog.c:651</code></li>
+</ul>
+<h2>目的</h2>
+<p>B-tree インデックスの削除操作に関する WAL レコードをリプレイし、対象ページからタプルの削除および更新を適用して物理的な状態を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void btree_xlog_delete(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象の WAL レコード）。</li>
+<li>**出力**: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>ホットスタンバイ環境の場合、ページ更新前に <code>ResolveRecoveryConflictWithSnapshot</code> を呼び出し、リカバリ競合を解決する必要がある。</li>
+<li>ページ更新時にクリーンアップロックは不要。</li>
+<li>ページ内の <code>BTP_HAS_GARBAGE</code> フラグは、削除処理後に適切にクリアされる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **競合解決**: ホットスタンバイ環境であれば、<code>xl_btree_delete</code> 内の <code>snapshotConflictHorizon</code> を用いてリカバリ競合を解決する。 2. **バッファ読み込み**: <code>XLogReadBufferForRedo</code> を呼び出し、対象ブロックが <code>BLK_NEEDS_REDO</code> を返す場合のみ処理を続行する。 3. **更新適用**: <code>xlrec-&gt;nupdated &gt; 0</code> の場合、<code>btree_xlog_updates</code> を呼び出してタプルの更新を反映する。 4. **削除適用**: <code>xlrec-&gt;ndeleted &gt; 0</code> の場合、<code>PageIndexMultiDelete</code> を使用して指定されたオフセットのタプルを削除する。 5. **フラグ更新**: ページ内の <code>btpo_flags</code> から <code>BTP_HAS_GARBAGE</code> ビットをクリアする。 6. **コミット**: ページの LSN を更新し、バッファをダーティとしてマークする。 7. **解放**: バッファが有効であればロックを解除し解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>btree_redo</code>（<code>src/backend/access/nbtree/nbtxlog.c:1051</code> 付近でディスパッチされる）。</li>
+<li>**呼び出し先**:</li>
+<li><code>ResolveRecoveryConflictWithSnapshot</code></li>
+<li><code>XLogRecGetBlockTag</code></li>
+<li><code>XLogReadBufferForRedo</code></li>
+<li><code>XLogRecGetBlockData</code></li>
+<li><code>btree_xlog_updates</code></li>
+<li><code>PageIndexMultiDelete</code></li>
+<li><code>BTPageGetOpaque</code></li>
+<li><code>PageSetLSN</code></li>
+<li><code>MarkBufferDirty</code></li>
+<li><code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_btree_delete</code>: 削除操作の WAL レコード構造体。</li>
+<li><code>xl_btree_update</code>: 更新操作の WAL レコード構造体。</li>
+<li><code>BTPageOpaque</code>: B-tree ページヘッダーの不透明部分（<code>btpo_flags</code> を含む）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> 以外を返した場合、ページ更新はスキップされる。</li>
+<li><code>nupdated</code> または <code>ndeleted</code> が 0 の場合、それぞれの処理は実行されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はリカバリ時の物理的整合性を保証する。論理的な削除操作（<code>nbtinsert.c</code> 等）とは異なり、ロックの取得は簡略化されている。</li>
+<li><code>BTP_HAS_GARBAGE</code> フラグのクリアは必須であり、削除後のページ状態を正しく反映させるために重要である。</li>
+</ul></body></html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_xlog_c__heap_xlog_update.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_xlog_update</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam_xlog.c:682</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープテーブルに対する更新操作（UPDATE）のWALレコードをリプレイし、対象ページのタプル状態を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void heap_xlog_update(XLogReaderState *record, bool hot_update)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>record</code>: 処理対象のWALレコード（<code>XLogReaderState</code>）。</li>
+<li><code>hot_update</code>: HOT（Heap Only Tuple）更新であるかを示すフラグ。</li>
+<li>出力: なし（副作用としてバッファおよび可視性マップを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> により、対象ページが最新でない場合のみ更新が適用される。</li>
+<li>更新対象が別ページにまたがる場合、デッドロック回避のためページ番号順のロック取得が推奨されるが、WALリプレイ中は単一スレッド動作のため競合は発生しない。</li>
+<li>Hot Standby環境において、更新後のページが反映されるまで元のページをアンロックしてはならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **可視性マップの更新**: <code>XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED</code> フラグがある場合、旧ページの可視性マップビットをクリアする。 2. **旧タプルの更新**:</p>
+<ul>
+<li><code>XLogReadBufferForRedo</code> で旧ページを取得。</li>
+<li>タプルの <code>infomask</code> を更新し、<code>t_ctid</code> に新しいタプルの位置（<code>newtid</code>）を書き込む。</li>
+<li>ページを「プルーニング候補」としてマークし、LSNを更新してダーティにする。</li>
+<p>3. **新タプルの挿入**:</p>
+<li><code>oldblk == newblk</code> の場合は旧ページを再利用。</li>
+<li><code>XLOG_HEAP_INIT_PAGE</code> フラグがある場合はページを初期化。</li>
+<li><code>XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED</code> フラグがある場合、新ページの可視性マップビットをクリア。</li>
+<li>新しいタプルデータをページに書き込む（ソースコードはここで終了）。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>heap_redo</code>（<code>src/backend/access/heap/heapam_xlog.c</code> 内のディスパッチャ）。</li>
+<li>呼び出し先: <code>XLogRecGetData</code>, <code>XLogRecGetBlockTag</code>, <code>visibilitymap_clear</code>, <code>XLogReadBufferForRedo</code>, <code>PageSetPrunable</code>, <code>MarkBufferDirty</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_heap_update</code>: 更新操作のWALレコード構造体。</li>
+<li><code>XLogReaderState</code>: WALレコード読み取り状態。</li>
+<li><code>Buffer</code>: ページバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber</code> が期待値と一致しない場合、<code>PANIC</code> を発生させる。</li>
+<li><code>hot_update</code> が真の場合、ページをまたぐ更新は発生しない（<code>Assert</code> で検証）。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>heap_redo</code> から呼び出される。</li>
+<li>新しいWALレコードタイプを追加した際は、<code>heap_mask</code> 関数で非決定的なビットをマスクし、リカバリテストの偽陽性を防ぐ必要がある。</li>
+<li><code>XLogReadBufferForRedo</code> の戻り値が <code>BLK_NEEDS_REDO</code> でない場合、ページ更新処理はスキップされる。</li>
+</ul></body></html>

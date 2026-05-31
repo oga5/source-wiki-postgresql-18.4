@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_split_complete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hash_xlog_split_complete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/hash/hash_xlog.c:441</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスの分割（Split）処理完了時に記録されたWALレコードをリプレイし、旧バケットおよび新バケットのページフラグを更新して整合性を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void hash_xlog_split_complete(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> には <code>xl_hash_split_complete</code> 構造体が含まれている必要がある。</li>
+<li>リプレイ対象のバッファ（旧バケットおよび新バケット）が正常に読み込めること。</li>
+<li>ページフラグの更新は、フルページイメージから復元された場合であっても実行される（フラグがイメージに含まれないため）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>xl_hash_split_complete</code> データを取得する。 2. **旧バケットの処理**:</p>
+<ul>
+<li><code>XLogReadBufferForRedo</code> を呼び出し、旧バケットのページを取得する。</li>
+<li>ページが更新対象（<code>BLK_NEEDS_REDO</code> または <code>BLK_RESTORED</code>）であれば、<code>hasho_flag</code> を <code>xlrec-&gt;old_bucket_flag</code> に更新する。</li>
+<li>ページにLSNを書き込み、バッファをダーティにする。</li>
+<li>バッファを解放する。</li>
+<p>3. **新バケットの処理**:</p>
+<li>同様に <code>XLogReadBufferForRedo</code> で新バケットのページを取得する。</li>
+<li>ページが更新対象であれば、<code>hasho_flag</code> を <code>xlrec-&gt;new_bucket_flag</code> に更新する。</li>
+<li>ページにLSNを書き込み、バッファをダーティにする。</li>
+<li>バッファを解放する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>hash_redo</code>（<code>src/backend/access/hash/hash_xlog.c:1092</code> 付近で、WALレコード種別に基づきディスパッチされる）。</li>
+<li>**呼び出し先**: </li>
+<li><code>XLogRecGetData</code></li>
+<li><code>XLogReadBufferForRedo</code></li>
+<li><code>BufferGetPage</code></li>
+<li><code>HashPageGetOpaque</code></li>
+<li><code>PageSetLSN</code></li>
+<li><code>MarkBufferDirty</code></li>
+<li><code>BufferIsValid</code></li>
+<li><code>UnlockReleaseBuffer</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_hash_split_complete</code>: 分割完了時のフラグ情報を含むWALレコード構造体。</li>
+<li><code>HashPageOpaque</code>: ハッシュインデックスページのメタデータ構造体（<code>hasho_flag</code> を保持）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> がバッファを取得できない場合、その後の処理はスキップされる。</li>
+<li>ページがフルページイメージとして復元された場合でも、フラグの更新は必須であるため、条件分岐により適切に処理される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は冪等である。既に適用済みの変更に対して再度実行されても、ページフラグが同じ値で上書きされるだけであり、副作用はない。</li>
+<li><code>old_bucket_flag</code> および <code>new_bucket_flag</code> は、分割後のバケット状態を正しく反映させるために不可欠である。</li>
+</ul></body></html>

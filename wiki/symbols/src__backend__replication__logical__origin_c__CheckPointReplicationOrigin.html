@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__origin_c__CheckPointReplicationOrigin.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CheckPointReplicationOrigin</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/origin.c:595</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションの進捗状況（レプリケーション起点）を共有メモリからディスクへ永続化し、チェックポイント完了時に整合性を保証する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void CheckPointReplicationOrigin(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし（共有メモリ上の <code>replication_states</code> 配列および <code>max_active_replication_origins</code> を参照）。</li>
+<li>**出力**: なし（副作用として <code>pg_replorigin_checkpoint</code> ファイルへの書き出しおよび <code>durable_rename</code> による永続化を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>max_active_replication_origins &gt; 0</code> であること。</li>
+<li>呼び出し時に他のチェックポイント処理が並行して実行されていないこと。</li>
+<li>共有メモリ上の各 <code>ReplicationState</code> は、個別の <code>lock</code> によって保護されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 一時ファイル（<code>pg_replorigin_checkpoint.tmp</code>）を作成し、マジックナンバーを書き込む。 2. <code>ReplicationOriginLock</code> を共有モードで取得し、起点情報の作成・削除を抑止する。 3. 全ての有効な <code>ReplicationState</code> を走査し、以下の処理を繰り返す：</p>
+<ul>
+<li>各状態の <code>lock</code> を取得し、<code>remote_lsn</code> と <code>local_lsn</code> をコピーする。</li>
+<li><code>XLogFlush(local_lsn)</code> を呼び出し、該当するローカルのコミットレコードがディスクにフラッシュされていることを保証する。</li>
+<li>状態データを一時ファイルへ書き出す。</li>
+<p>4. CRCを計算・書き込み、ファイルを閉じる。 5. <code>durable_rename</code> を使用して、一時ファイルを永続的なチェックポイントファイルへ置き換える。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xlog.c</code>（チェックポイント処理の一部として呼び出される）。</li>
+<li>**呼び出し先**: <code>XLogFlush</code>, <code>LWLockAcquire</code>, <code>LWLockRelease</code>, <code>OpenTransientFile</code>, <code>CloseTransientFile</code>, <code>durable_rename</code> 等のストレージおよびWAL管理関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationState</code>: 共有メモリ上の進捗管理構造体。</li>
+<li><code>ReplicationStateOnDisk</code>: ディスク書き出し用の固定長構造体。</li>
+<li><code>ReplicationOriginLock</code>: 起点テーブル全体を保護するロック。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ファイル作成、書き込み、またはクローズに失敗した場合、<code>PANIC</code> を発生させてプロセスを停止する。</li>
+<li>ディスク容量不足（<code>ENOSPC</code>）が発生した場合も <code>PANIC</code> となる。</li>
+<li><code>max_active_replication_origins</code> が 0 の場合は何もせず即座に復帰する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はチェックポイントの整合性を維持するため、<code>XLogFlush</code> を介してローカルLSNの永続化を強制している。</li>
+<li>内部ID（<code>roident</code>）が <code>InvalidRepOriginId</code> のエントリはスキップされる。</li>
+<li>8バイトのLSN書き込みのアトミック性を保証するため、必ず各 <code>ReplicationState</code> のロックを取得してから読み出すこと。</li>
+</ul></body></html>

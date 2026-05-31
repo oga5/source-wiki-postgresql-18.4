@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/ecpg/ecpglib/prepare.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/interfaces/ecpg/ecpglib/prepare.c</h1>
+<h2>概要</h2>
+<p>ECPG（Embedded SQL for C）におけるプリペアドステートメントの管理、キャッシュ、およびライフサイクルを制御するモジュールです。SQLの <code>PREPARE</code> および <code>DEALLOCATE</code> コマンドの実行と、自動プリペア機能のためのステートメントキャッシュを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>ecpglib</code> の一部として、アプリケーションが発行する動的SQLの準備と再利用を担います。<code>execute.c</code> などがクエリを実行する際、このモジュールが提供するキャッシュ機構を利用することで、バックエンドへの通信オーバーヘッドを削減します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ステートメントの準備**: <code>ECPGprepare</code> を通じたSQLのプリペアと、C変数からプレースホルダ（<code>$n</code>）への変換。</li>
+<li>**ライフサイクル管理**: プリペアドステートメントの登録、検索、および <code>DEALLOCATE</code> による破棄。</li>
+<li>**自動キャッシュ**: <code>ecpg_auto_prepare</code> によるクエリのハッシュベースのキャッシュ管理（LRUに近いアルゴリズムで古いエントリを置換）。</li>
+<li>**接続管理**: 接続ごとのプリペアドステートメントリストの維持と、接続終了時のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ECPGprepare</code>: <code>EXEC SQL PREPARE</code> 文のフロントエンド実装。</li>
+<li><code>ECPGdeallocate</code>: <code>EXEC SQL DEALLOCATE</code> 文のフロントエンド実装。</li>
+<li><code>ecpg_auto_prepare</code>: クエリを自動的にキャッシュし、必要に応じてプリペアを行う内部関数。</li>
+<li><code>stmtCacheEntries</code>: キャッシュされたステートメントを保持するハッシュテーブル構造体。</li>
+<li><code>replace_variables</code>: SQL内のホスト変数（<code>:</code> や <code>?</code>）をPostgreSQL形式の <code>$n</code> に変換するパーサ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AddStmtToCache</code></li>
+<li><code>ECPGdeallocate_all</code></li>
+<li><code>ECPGprepared_statement</code></li>
+<li><code>HashStmt</code></li>
+<li><code>SearchStmtCache</code></li>
+<li><code>ecpg_find_prepared_statement</code></li>
+<li><code>ecpg_register_prepared_stmt</code></li>
+<li><code>prepare_common</code></li>
+<li><code>stmtCacheEntry</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **準備**: <code>ECPGprepare</code> が呼ばれると、<code>replace_variables</code> でクエリを正規化し、<code>PQprepare</code> でバックエンドに送信します。 2. **登録**: 成功したステートメントは <code>prepared_statement</code> 構造体として接続オブジェクト（<code>connection</code>）のリストにリンクされます。 3. **キャッシュ**: <code>ecpg_auto_prepare</code> は <code>HashStmt</code> でクエリをハッシュ化し、<code>stmtCacheEntries</code> を検索します。ヒットすれば既存のIDを返し、ミスすれば新規IDを生成してキャッシュに追加します。 4. **破棄**: <code>deallocate_one</code> が呼び出されると、バックエンドに対して <code>DEALLOCATE</code> コマンドを発行し、メモリを解放してリストから削除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: libpqの基本機能。</li>
+<li><code>ecpglib.h</code>, <code>ecpglib_extern.h</code>: ECPGライブラリの内部インターフェース。</li>
+<li><code>sqlca.h</code>: SQL通信領域（SQLCA）の定義。</li>
+<li><code>ctype.h</code>: 文字列解析用。</li>
+<li><code>ecpgerrno.h</code></li>
+<li><code>ecpgtype.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/interfaces/ecpg/ecpglib/execute.c</code>: このモジュールで準備されたステートメントを実際に実行するコード。</li>
+<li><code>src/include/commands/prepare.h</code>: サーバー側のプリペアドステートメント管理との概念的な対応。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの仕組み**: <code>stmtCacheNBuckets</code>（2039）個のバケットを持ち、各バケットは <code>stmtCacheEntPerBucket</code>（8）個の固定長エントリを持ちます。ハッシュ衝突時は最も実行回数（<code>execs</code>）が少ないエントリが置換対象となります。</li>
+<li>**自動プリペア**: ECPGの自動プリペア機能は、アプリケーションが明示的に <code>PREPARE</code> を書かなくても、ライブラリ側でクエリをハッシュ化して自動的に <code>PQprepare</code> を発行する仕組みです。</li>
+<li>**メモリ管理**: <code>ecpg_alloc</code> / <code>ecpg_free</code> を使用してメモリを管理しています。<code>deallocate_one</code> 実行時のメモリリークには注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__stmtCacheEntry.html" target="wiki-view"><code>stmtCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ecpg_register_prepared_stmt.html" target="wiki-view"><code>ecpg_register_prepared_stmt</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__replace_variables.html" target="wiki-view"><code>replace_variables</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__prepare_common.html" target="wiki-view"><code>prepare_common</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ECPGprepare.html" target="wiki-view"><code>ECPGprepare</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ecpg_find_prepared_statement.html" target="wiki-view"><code>ecpg_find_prepared_statement</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ECPGdeallocate.html" target="wiki-view"><code>ECPGdeallocate</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ECPGdeallocate_all.html" target="wiki-view"><code>ECPGdeallocate_all</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__ECPGprepared_statement.html" target="wiki-view"><code>ECPGprepared_statement</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__HashStmt.html" target="wiki-view"><code>HashStmt</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__SearchStmtCache.html" target="wiki-view"><code>SearchStmtCache</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__prepare_c__AddStmtToCache.html" target="wiki-view"><code>AddStmtToCache</code></a></li>
+</ul></body></html>

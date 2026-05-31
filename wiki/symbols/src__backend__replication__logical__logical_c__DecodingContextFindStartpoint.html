@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__logical_c__DecodingContextFindStartpoint.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DecodingContextFindStartpoint</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/logical.c:634</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングを開始するために、レプリケーションスロットの <code>restart_lsn</code> からWALを読み進め、整合性のある開始点（Consistent Point）を特定する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void DecodingContextFindStartpoint(LogicalDecodingContext *ctx)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>LogicalDecodingContext *ctx</code>（論理デコーディングの状態を保持するコンテキスト構造体）</li>
+<li>**出力**: なし（副作用として <code>ctx</code> 内のリーダー状態更新およびスロット情報の更新を行う）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ctx-&gt;slot</code> が有効であること。</li>
+<li><code>ctx-&gt;reader</code> が初期化済みであること。</li>
+<li>呼び出し前に <code>slot-&gt;data.restart_lsn</code> が開始位置として設定されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>XLogBeginRead</code> を呼び出し、スロットの <code>restart_lsn</code> からWALの読み取りを開始する。 2. <code>DecodingContextReady(ctx)</code> が真を返すまで、以下のループを繰り返す。</p>
+<ul>
+<li><code>XLogReadRecord</code> でWALレコードを読み込む。</li>
+<li><code>LogicalDecodingProcessRecord</code> を呼び出し、レコードを処理してコンテキストの状態を更新する。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を実行し、割り込み要求をチェックする。</li>
+<p>3. 整合性のある地点に到達後、スロットの <code>confirmed_flush</code> を最後に読み込んだレコードの終了位置（<code>ctx-&gt;reader-&gt;EndRecPtr</code>）に更新する。 4. <code>two_phase</code> が有効な場合、<code>two_phase_at</code> も同様に更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/slotfuncs.c:159</code></li>
+<li><code>src/backend/replication/walsender.c:1314</code></li>
+<li>**呼び出し先**:</li>
+<li><code>XLogBeginRead</code></li>
+<li><code>XLogReadRecord</code></li>
+<li><code>LogicalDecodingProcessRecord</code></li>
+<li><code>DecodingContextReady</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogicalDecodingContext</code>: デコーディングの主要状態管理構造体。</li>
+<li><code>ReplicationSlot</code>: レプリケーションスロットのメタデータ（<code>restart_lsn</code>, <code>confirmed_flush</code> 等）。</li>
+<li><code>XLogReaderState</code>: WAL読み取り用構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadRecord</code> がエラーを返した場合、<code>elog(ERROR)</code> により処理を中断する。</li>
+<li>レコードが読み込めない場合（<code>!record</code>）、整合性のある開始点が見つからないものとして <code>elog(ERROR)</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は整合性のある地点に到達するまでループするため、WALの量によっては長時間実行される可能性がある。</li>
+<li><code>two_phase</code> 関連の更新はスピンロックで保護されているため、スロットの排他制御に注意すること。</li>
+</ul></body></html>

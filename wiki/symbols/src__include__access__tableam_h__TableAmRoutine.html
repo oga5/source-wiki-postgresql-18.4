@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__access__tableam_h__TableAmRoutine.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TableAmRoutine</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/include/access/tableam.h:288</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのテーブルアクセス手法（Table AM）を抽象化するための関数ポインタ群を保持する構造体です。ストレージエンジンに依存しない汎用的なテーブル操作APIを提供し、<code>heap</code> 以外の物理ストレージ実装の追加を可能にします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct TableAmRoutine {
+    NodeTag type;
+    const TupleTableSlotOps *(*slot_callbacks) (Relation rel);
+    TableScanDesc (*scan_begin) (...);
+    void (*scan_end) (TableScanDesc scan);
+    void (*scan_rescan) (...);
+    bool (*scan_getnextslot) (...);
+    void (*scan_set_tidrange) (...);
+    bool (*scan_getnextslot_tidrange) (...);
+    Size (*parallelscan_estimate) (Relation rel);
+    Size (*parallelscan_initialize) (...);
+    void (*parallelscan_reinitialize) (...);
+    struct IndexFetchTableData *(*index_fetch_begin) (Relation rel);
+    void (*index_fetch_reset) (...);
+    void (*index_fetch_end) (...);
+    bool (*index_fetch_tuple) (...);
+    /* ...以降、タプル操作等のコールバックが続く */
+} TableAmRoutine;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>Relation</code> 構造体や <code>TableScanDesc</code> などのコンテキスト情報。</li>
+<li>**出力**: 各操作の結果（<code>bool</code> による成功判定、<code>TupleTableSlot</code> へのタプル格納、<code>Size</code> によるメモリ見積もりなど）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>type</code> フィールドには必ず <code>T_TableAmRoutine</code> が設定されている必要があります。</li>
+<li><code>scan_set_tidrange</code> を実装する場合、<code>scan_getnextslot_tidrange</code> も併せて実装する必要があります。</li>
+<li>各操作は、呼び出し側が適切なリレーションロックを保持していることを前提とします。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**ディスパッチ**: <code>table_*</code> で始まるラッパー関数が、<code>Relation-&gt;rd_tableam</code> に格納された本構造体の関数ポインタを呼び出すことで、具体的なストレージ実装（<code>heapam.c</code> 等）へ処理を委譲します。</li>
+<li>**スキャン**: <code>scan_begin</code> で開始し、<code>scan_getnextslot</code> でタプルを順次取得します。TID範囲指定スキャンや並列スキャンにも対応しています。</li>
+<li>**インデックススキャン**: <code>index_fetch_tuple</code> を通じて、インデックスから得られた TID に基づくタプルのフェッチと可視性判定を行います。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/table/tableam.c</code>（<code>rel-&gt;rd_tableam</code> を経由）、<code>src/backend/utils/cache/relcache.c</code>（初期化時）。</li>
+<li>**呼び出し先**: 各AMの実装（例: <code>heapam_handler.c</code> 内の <code>heapam_methods</code>）。</li>
+<li>*注: 特定の関数呼び出しの連鎖については、ソースコード全体を通じた動的な解析が必要です。*</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: テーブルのメタデータと AM への参照を保持。</li>
+<li><code>TableScanDesc</code>: スキャン状態を保持する基底構造体。</li>
+<li><code>TupleTableSlot</code>: タプルデータを保持するスロット。</li>
+<li><code>IndexFetchTableData</code>: インデックススキャン時のフェッチ状態を保持。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>scan_set_tidrange</code> は、TID がテーブルの範囲外である場合や、無効なオフセットを指定された場合でも適切に処理する必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は直接呼び出さず、必ず <code>table_</code> プレフィックスのついたラッパー関数を経由してください。</li>
+<li>新しい AM を追加する際は、全フィールドを適切に埋める必要があります。</li>
+<li><code>index_fetch_tuple</code> の <code>call_again</code> 引数は、同一 TID に対して複数のタプルが存在する可能性がある場合に制御に使用されます。</li>
+</ul></body></html>

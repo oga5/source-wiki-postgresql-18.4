@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/walreceiverfuncs.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/replication/walreceiverfuncs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのスタートアッププロセス（リカバリプロセス）が、WALレシーバープロセスと通信・制御を行うためのインターフェースを提供します。WALレシーバーの実際の動作ロジックは <code>walreceiver.c</code> に記述されていますが、本ファイルは共有メモリを介した状態管理とプロセス間通信の窓口となります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication</code> モジュールにおいて、スタンバイサーバーがプライマリからWALをストリーミング受信する際の「制御層」を担います。スタートアッププロセスがWALレシーバーの起動・停止・状態監視を行うためのAPIを提供し、共有メモリ上の <code>WalRcvData</code> 構造体を介して情報を同期します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ライフサイクル管理**: WALレシーバーの起動要求（<code>RequestXLogStreaming</code>）および停止要求（<code>ShutdownWalRcv</code>）の実行。</li>
+<li>**状態監視**: WALレシーバーの稼働状況（<code>WalRcvRunning</code>, <code>WalRcvStreaming</code>）の提供。</li>
+<li>**共有メモリ管理**: <code>WalRcv</code> 構造体の初期化と、スピンロックを用いた安全なアクセス制御。</li>
+<li>**統計情報の提供**: 受信済みWAL位置（Flush/Write位置）や、レプリケーション遅延・転送レイテンシの算出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>WalRcv</code>: WALレシーバーの状態を保持する共有メモリ上のグローバル構造体。</li>
+<li><code>RequestXLogStreaming()</code>: スタートアッププロセスからWALレシーバーへストリーミング開始を指示する関数。</li>
+<li><code>ShutdownWalRcv()</code>: WALレシーバーを安全に停止させ、終了を待機する関数。</li>
+<li><code>GetWalRcvFlushRecPtr()</code>: 現在のWAL受信・フラッシュ位置を取得する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetReplicationApplyDelay</code></li>
+<li><code>GetReplicationTransferLatency</code></li>
+<li><code>GetWalRcvFlushRecPtr</code></li>
+<li><code>GetWalRcvWriteRecPtr</code></li>
+<li><code>RequestXLogStreaming</code></li>
+<li><code>ShutdownWalRcv</code></li>
+<li><code>WalRcvRunning</code></li>
+<li><code>WalRcvShmemInit</code></li>
+<li><code>WalRcvShmemSize</code></li>
+<li><code>WalRcvStreaming</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起動**: スタートアッププロセスが <code>RequestXLogStreaming</code> を呼び出し、共有メモリの <code>walRcvState</code> を <code>WALRCV_STARTING</code> に更新後、Postmasterへ <code>PMSIGNAL_START_WALRECEIVER</code> を送信します。 2. **監視**: スタートアッププロセスは <code>WalRcvRunning</code> 等を通じて状態を定期的に確認します。タイムアウトが発生した場合は、強制的に状態を <code>WALRCV_STOPPED</code> へ遷移させます。 3. **停止**: <code>ShutdownWalRcv</code> が呼ばれると、状態を <code>WALRCV_STOPPING</code> に変更し、WALレシーバープロセスへ <code>SIGTERM</code> を送信。その後、状態が <code>WALRCV_STOPPED</code> になるまで条件変数（<code>walRcvStoppedCV</code>）で待機します。 4. **データ同期**: WALレシーバーが受信したWAL位置は、<code>WalRcv</code> 構造体の各フィールドに書き込まれ、スタートアッププロセスがそれを読み取ることでリカバリの進捗を判断します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/walreceiver.h</code>: 共有メモリ構造体 <code>WalRcvData</code> の定義。</li>
+<li><code>storage/shmem.h</code>: 共有メモリの割り当てと初期化。</li>
+<li><code>storage/pmsignal.h</code>: Postmasterへのシグナル送信。</li>
+<li><code>access/xlog_internal.h</code>: WAL位置（<code>XLogRecPtr</code>）の操作。</li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/walreceiver.c</code>: WALレシーバープロセスのメインループと実処理。</li>
+<li><code>src/backend/access/transam/xlogrecovery.c</code>: スタートアッププロセスがWALレシーバーの情報を利用してリカバリを行う箇所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の関数は、主にスタートアッププロセスから呼び出されることを想定しています。</li>
+<li>共有メモリへのアクセスには必ず <code>WalRcv-&gt;mutex</code>（スピンロック）を使用し、競合を防ぐ設計になっています。</li>
+<li><code>WalRcvRunning</code> 等で実装されているタイムアウト処理は、WALレシーバーが何らかの理由で起動に失敗した際に、リカバリプロセスが永久に待機状態になるのを防ぐ重要な安全装置です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__WalRcvShmemSize.html" target="wiki-view"><code>WalRcvShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__WalRcvShmemInit.html" target="wiki-view"><code>WalRcvShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__WalRcvRunning.html" target="wiki-view"><code>WalRcvRunning</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__WalRcvStreaming.html" target="wiki-view"><code>WalRcvStreaming</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__ShutdownWalRcv.html" target="wiki-view"><code>ShutdownWalRcv</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__RequestXLogStreaming.html" target="wiki-view"><code>RequestXLogStreaming</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__GetWalRcvFlushRecPtr.html" target="wiki-view"><code>GetWalRcvFlushRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__GetWalRcvWriteRecPtr.html" target="wiki-view"><code>GetWalRcvWriteRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__GetReplicationApplyDelay.html" target="wiki-view"><code>GetReplicationApplyDelay</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiverfuncs_c__GetReplicationTransferLatency.html" target="wiki-view"><code>GetReplicationTransferLatency</code></a></li>
+</ul></body></html>

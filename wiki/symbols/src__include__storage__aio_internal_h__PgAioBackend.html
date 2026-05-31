@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__aio_internal_h__PgAioBackend.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PgAioBackend</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/aio_internal.h:191</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL の非同期 I/O (AIO) サブシステムにおいて、各バックエンドプロセスごとの I/O 状態、ステージング領域、および I/O キューを管理する制御構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct PgAioBackend
+{
+    uint32      io_handle_off;
+    dclist_head idle_ios;
+    PgAioHandle *handed_out_io;
+    bool        in_batchmode;
+    uint16      num_staged_ios;
+    PgAioHandle *staged_ios[PGAIO_SUBMIT_BATCH_SIZE];
+    dclist_head in_flight_ios;
+} PgAioBackend;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>pgaio_io_acquire()</code> 等により取得された <code>PgAioHandle</code> が <code>handed_out_io</code> に保持されます。</li>
+<li>**出力**: <code>staged_ios</code> 配列および <code>in_flight_ios</code> リストを通じて、実行待ちまたは実行中の I/O 操作を管理します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>handed_out_io</code> は、定義（I/O への関連付け）または解放（<code>pgaio_io_release</code>）が行われるまで、一度に一つしか保持できません。</li>
+<li><code>staged_ios</code> は <code>PGAIO_SUBMIT_BATCH_SIZE</code>（32）を上限とします。</li>
+<li><code>in_flight_ios</code> は、提出時刻順にソートされたリンクドリストとして維持されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **取得**: <code>pgaio_io_acquire()</code> を呼び出し、<code>handed_out_io</code> を介してハンドルを確保します。 2. **ステージング**: <code>pgaio_io_stage()</code> によりハンドルを <code>staged_ios</code> に格納し、<code>num_staged_ios</code> を更新します。 3. **提出**: <code>in_batchmode</code> が有効な場合、バッチ処理を経て <code>in_flight_ios</code> へ移行します。 4. **完了と回収**: 他のバックエンドによって完了された I/O も <code>in_flight_ios</code> に含まれる可能性があり、本バックエンドがそれを検知した際に回収（reclaim）を行います。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/aio/aio.c</code> および <code>src/backend/storage/aio/aio_init.c</code> で参照・初期化されます。</li>
+<li>**呼び出し先**: <code>PgAioHandle</code> 構造体および <code>dclist</code>（リンクドリスト）操作関数群を利用します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgAioHandle</code>: 個別の I/O 操作を追跡する構造体。</li>
+<li><code>PgAioCtl</code>: システム全体で共有される AIO 制御構造体（<code>backend_state</code> 配列として保持）。</li>
+<li><code>dclist_head</code>: <code>lib/ilist.h</code> で定義される双方向リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>staged_ios</code> が <code>PGAIO_SUBMIT_BATCH_SIZE</code> を超える場合、バッチ処理の制限に抵触します。</li>
+<li><code>handed_out_io</code> が適切に解放されない場合、後続の <code>pgaio_io_acquire()</code> が失敗する可能性があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>PgAioCtl</code> の一部としてプロセスごとに割り当てられます。</li>
+<li><code>in_flight_ios</code> のリスト操作は、I/O 完了時の競合を避けるため、適切なロックまたはアトミックな状態遷移が必要です。</li>
+</ul></body></html>

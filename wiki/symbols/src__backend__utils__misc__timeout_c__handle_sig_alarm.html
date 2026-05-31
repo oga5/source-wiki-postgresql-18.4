@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__misc__timeout_c__handle_sig_alarm.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>handle_sig_alarm</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/misc/timeout.c:363</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>SIGALRM</code> シグナルを受信した際に、期限切れとなったタイムアウトタスクを特定して実行し、必要に応じて次回のタイマーを再スケジュールするシグナルハンドラです。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void handle_sig_alarm(SIGNAL_ARGS)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>SIGNAL_ARGS</code>（シグナルハンドラの標準引数）。</li>
+<li>**出力**: なし（副作用としてプロセスの状態更新およびタイマーの再設定を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>HOLD_INTERRUPTS()</code> により、ハンドラ実行中の割り込みを禁止する。</li>
+<li><code>alarm_enabled</code> が真の場合のみ、タイムアウト処理を実行する。</li>
+<li><code>active_timeouts</code> 配列は期限順にソートされている必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>HOLD_INTERRUPTS()</code> を呼び出し、割り込みを禁止する。 2. <code>SetLatch(MyLatch)</code> を呼び出し、待機中のプロセスを起床させる。 3. <code>signal_pending</code> フラグを <code>false</code> にリセットする。 4. <code>alarm_enabled</code> が有効な場合、<code>disable_alarm()</code> で一時的にタイマーを停止する。 5. <code>active_timeouts</code> を走査し、現在時刻 (<code>now</code>) を過ぎているタスクを順次実行する。</p>
+<ul>
+<li><code>remove_timeout_index(0)</code> でタスクをリストから削除する。</li>
+<li><code>timeout_handler()</code> を呼び出す。</li>
+<li>繰り返し実行が必要なタスク（<code>interval_in_ms &gt; 0</code>）の場合、次回の期限を計算して <code>enable_timeout()</code> で再登録する。</li>
+<p>6. 全ての処理終了後、<code>schedule_alarm(now)</code> を呼び出し、次のタイマーを予約する。 7. <code>RESUME_INTERRUPTS()</code> を呼び出し、割り込みを許可して終了する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>SIGALRM</code> シグナル発生時にカーネルから呼び出される。<code>src/backend/utils/misc/timeout.c</code> 内で <code>pqsignal(SIGALRM, handle_sig_alarm)</code> として登録される。</li>
+<li>**呼び出し先**: <code>SetLatch</code>, <code>disable_alarm</code>, <code>remove_timeout_index</code>, <code>timeout_handler</code> (各タスクのコールバック), <code>enable_timeout</code>, <code>schedule_alarm</code>, <code>GetCurrentTimestamp</code>, <code>TimestampTzPlusMilliseconds</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>active_timeouts</code>: 実行待ちのタイムアウトタスクを保持する配列。</li>
+<li><code>timeout_params</code>: 個々のタイムアウト設定を保持する構造体。</li>
+<li><code>alarm_enabled</code>: タイムアウト処理の有効/無効を制御するフラグ。</li>
+<li><code>signal_pending</code>: シグナルが保留中かを示すフラグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>num_active_timeouts</code> が 0 の場合、タスク実行ループはスキップされる。</li>
+<li>タイムアウト処理中に <code>now</code> を更新し、ハンドラ実行時間の増大に対応する。</li>
+<li><code>new_fin_time</code> の計算において、大幅な遅延が発生した場合は現在時刻を基準に再計算を行う。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>ハンドラ内での <code>elog(FATAL)</code> や <code>longjmp</code> は状態の不整合を招くため避けること。</li>
+<li><code>CheckDeadLock</code> のような重い処理がハンドラ内で呼び出される可能性があるため、実行時間の考慮が必要。</li>
+<li><code>signal_pending</code> は <code>alarm_enabled</code> の状態に関わらずリセットされる。</li>
+</ul></body></html>

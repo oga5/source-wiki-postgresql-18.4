@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/fmgr/funcapi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/fmgr/funcapi.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの関数呼び出しインターフェース（fmgr）において、集合を返す関数（SRF: Set Returning Functions）や、複合型を返す関数、および多相型（Polymorphic types）引数を扱うためのユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>fmgr.c</code> が関数呼び出しの基盤を担うのに対し、本ファイルは関数が実行時に必要とするメタデータ（戻り値の型、タプル記述子、多相型の解決など）を動的に決定・構築するための高レベルな支援機能を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SRFのライフサイクル管理**: <code>FuncCallContext</code> を用いた複数回呼び出しにまたがる状態保持とクリーンアップ。</li>
+<li>**型解決**: <code>RECORD</code> 型や多相型（<code>anyelement</code>, <code>anyarray</code> 等）の戻り値・引数型を、呼び出し時のコンテキストから動的に確定させる。</li>
+<li>**タプル記述子の生成**: 関数定義（<code>pg_proc</code>）やリレーション情報に基づき、戻り値の構造（<code>TupleDesc</code>）を構築する。</li>
+<li>**可変長引数の処理**: <code>VARIADIC</code> 引数の展開と型情報の抽出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>FuncCallContext</code>: SRFが複数回呼び出される際に状態を保持するための構造体。</li>
+<li><code>InitMaterializedSRF</code>: マテリアライズドモード（<code>Tuplestore</code>）で結果を返すSRFの初期化を行う。</li>
+<li><code>get_call_result_type</code>: 関数呼び出し情報から戻り値の型とタプル記述子を解決する。</li>
+<li><code>resolve_polymorphic_tupdesc</code>: 戻り値のタプル記述子に含まれる多相型を、実際の引数型に基づいて具体化する。</li>
+<li><code>extract_variadic_args</code>: <code>VARIADIC</code> 引数を通常の引数配列として展開する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RelationNameGetTupleDesc</code></li>
+<li><code>TypeGetTupleDesc</code></li>
+<li><code>end_MultiFuncCall</code></li>
+<li><code>get_expr_result_type</code></li>
+<li><code>get_func_result_type</code></li>
+<li><code>init_MultiFuncCall</code></li>
+<li><code>internal_get_result_type</code></li>
+<li><code>per_MultiFuncCall</code></li>
+<li><code>polymorphic_actuals</code></li>
+<li><code>shutdown_MultiFuncCall</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: SRFが最初に呼ばれると、<code>init_MultiFuncCall</code> が <code>FuncCallContext</code> を作成し、<code>fn_extra</code> に保存します。 2. **型解決**: <code>get_call_result_type</code> が呼び出されると、<code>pg_proc</code> のカタログ情報と <code>call_expr</code>（式ツリー）を突き合わせ、多相型を解決します。 3. **多相型解決**: <code>resolve_polymorphic_tupdesc</code> は、<code>anyelement</code> 等のプレースホルダーを、呼び出し側の引数型から推論して置換します。 4. **終了**: <code>end_MultiFuncCall</code> または <code>shutdown_MultiFuncCall</code> が、<code>ExprContext</code> のコールバックとして登録され、メモリコンテキストを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: 関数定義と型情報の取得。</li>
+<li><code>utils/syscache.h</code>: <code>pg_proc</code> 等のシステムカタログキャッシュへのアクセス。</li>
+<li><code>utils/tuplestore.h</code>: マテリアライズドSRFの結果格納用。</li>
+<li><code>funcapi.h</code>: 公開されているデータ構造定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/fmgr/fmgr.c</code>: 関数呼び出しのコアロジック。</li>
+<li><code>src/backend/executor/execSRF.c</code>: SRFの実行時処理（本ファイルのユーティリティを利用）。</li>
+<li><code>src/include/funcapi.h</code>: 本ファイルで定義される関数のヘッダー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の <code>resolve_polymorphic_*</code> 系関数は、パーサーが型の一貫性を保証していることを前提としています。</li>
+<li><code>get_call_result_type</code> はコストが高いため、SRF内で呼び出す場合は初回のみ実行し、結果を <code>FuncCallContext</code> にキャッシュするのが定石です。</li>
+<li><code>TYPEFUNC_RECORD</code> が返された場合、その時点では戻り値の構造が確定していないことを意味します。呼び出し側で適切な処理が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__polymorphic_actuals.html" target="wiki-view"><code>polymorphic_actuals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__InitMaterializedSRF.html" target="wiki-view"><code>InitMaterializedSRF</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__init_MultiFuncCall.html" target="wiki-view"><code>init_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__per_MultiFuncCall.html" target="wiki-view"><code>per_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__end_MultiFuncCall.html" target="wiki-view"><code>end_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__shutdown_MultiFuncCall.html" target="wiki-view"><code>shutdown_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html" target="wiki-view"><code>get_call_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_expr_result_type.html" target="wiki-view"><code>get_expr_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_func_result_type.html" target="wiki-view"><code>get_func_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__internal_get_result_type.html" target="wiki-view"><code>internal_get_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__RelationNameGetTupleDesc.html" target="wiki-view"><code>RelationNameGetTupleDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__TypeGetTupleDesc.html" target="wiki-view"><code>TypeGetTupleDesc</code></a></li>
+</ul></body></html>

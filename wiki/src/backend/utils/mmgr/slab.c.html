@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mmgr/slab.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mmgr/slab.c</h1>
+<h2>概要</h2>
+<p><code>slab.c</code> は、PostgreSQL のメモリコンテキスト（<code>MemoryContext</code>）の一種である「SLAB アロケータ」を実装しています。固定サイズのオブジェクトを大量に割り当て・解放するユースケースに最適化されており、メモリ断片化を最小限に抑えつつ、効率的なメモリ管理を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/mmgr</code> サブシステムにおいて、特定のサイズに特化したメモリ管理を提供します。汎用的な <code>aset.c</code>（AllocSet）と比較して、サイズが固定であるという制約を活かし、管理オーバーヘッドを削減しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**固定サイズ割り当て**: 指定された <code>chunkSize</code> のオブジェクトを効率的に管理。</li>
+<li>**ブロック管理**: メモリを <code>blockSize</code> 単位のブロックで確保し、内部を <code>chunkSize</code> ごとに分割。</li>
+<li>**断片化抑制**: 割り当て済みブロックを「空きチャンク数」に基づいてリスト化し、最も埋まっているブロックを優先的に使用することで、空きブロックを早期に回収可能にする。</li>
+<li>**再利用**: 解放されたブロックを <code>emptyblocks</code> リストで保持し、新規 <code>malloc</code> を抑制。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SlabContext</code>: SLAB アロケータのメイン構造体。ブロックリストや設定値を保持。</li>
+<li><code>SlabBlock</code>: ブロック単位の管理構造体。空きチャンクのリスト（<code>freehead</code>）と未使用領域のポインタ（<code>unused</code>）を管理。</li>
+<li><code>SlabAlloc</code>: メモリ割り当てのメイン関数。</li>
+<li><code>SlabFree</code>: メモリ解放のメイン関数。</li>
+<li><code>SLAB_BLOCKLIST_COUNT</code>: 空きチャンク数に応じてブロックを分類するリストの数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SlabAllocInvalidSize</code></li>
+<li><code>SlabAllocSetupNewChunk</code></li>
+<li><code>SlabBlocklistIndex</code></li>
+<li><code>SlabContextCreate</code></li>
+<li><code>SlabDelete</code></li>
+<li><code>SlabGetNextFreeChunk</code></li>
+<li><code>SlabRealloc</code></li>
+<li><code>SlabReset</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て (<code>SlabAlloc</code>)**:</p>
+<ul>
+<li><code>curBlocklistIndex</code> を参照し、空きがある最も「埋まっている」ブロックを選択。</li>
+<li>ブロック内の <code>freehead</code>（解放済みチャンク）または <code>unused</code>（未使用領域）からチャンクを取得。</li>
+<li>チャンク取得後、空き数が変化した場合はブロックを適切な <code>blocklist</code> へ移動。</li>
+<p>2. **解放 (<code>SlabFree</code>)**:</p>
+<li>チャンクを <code>freehead</code> リストの先頭に挿入し、<code>nfree</code> をインクリメント。</li>
+<li>ブロックが完全に空になった場合、<code>emptyblocks</code> リストへ移動するか、メモリを <code>free()</code> する。</li>
+<p>3. **初期化 (<code>SlabContextCreate</code>)**:</p>
+<li>指定されたサイズから <code>chunksPerBlock</code> を算出し、管理構造体を初期化。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>lib/ilist.h</code>: 双方向リスト（<code>dlist</code>）の利用。</li>
+<li><code>utils/memutils_internal.h</code>: メモリコンテキストの内部インターフェース。</li>
+<li><code>utils/memutils_memorychunk.h</code>: チャンクヘッダーの操作。</li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/mcxt.c</code>: メモリコンテキストの基盤となる管理ロジック。</li>
+<li><code>src/backend/utils/mmgr/aset.c</code>: 汎用的なメモリコンテキスト実装（比較対象）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**制約**: <code>SlabRealloc</code> はサポートされていません。<code>SlabAlloc</code> で要求するサイズは、コンテキスト作成時に指定した <code>chunkSize</code> と完全に一致する必要があります。</li>
+<li>**最適化**: <code>SlabAlloc</code> は頻繁に呼ばれるため、スタックフレームの生成を避けるために <code>pg_noinline</code> なヘルパー関数へロジックを分離しています。</li>
+<li>**デバッグ**: <code>MEMORY_CONTEXT_CHECKING</code> が有効な場合、<code>SlabCheck</code> 関数が実行され、メモリの二重解放や境界外書き込みを検出します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabContext.html" target="wiki-view"><code>SlabContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabBlock.html" target="wiki-view"><code>SlabBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabBlocklistIndex.html" target="wiki-view"><code>SlabBlocklistIndex</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabGetNextFreeChunk.html" target="wiki-view"><code>SlabGetNextFreeChunk</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabContextCreate.html" target="wiki-view"><code>SlabContextCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabReset.html" target="wiki-view"><code>SlabReset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabDelete.html" target="wiki-view"><code>SlabDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabAllocSetupNewChunk.html" target="wiki-view"><code>SlabAllocSetupNewChunk</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabAllocInvalidSize.html" target="wiki-view"><code>SlabAllocInvalidSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabAlloc.html" target="wiki-view"><code>SlabAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabFree.html" target="wiki-view"><code>SlabFree</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mmgr__slab_c__SlabRealloc.html" target="wiki-view"><code>SlabRealloc</code></a></li>
+</ul></body></html>

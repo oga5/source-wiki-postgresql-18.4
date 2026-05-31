@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/validate-relation-kind.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>validate_relation_kind</h1>
+<h2>概念</h2>
+<p><code>validate_relation_kind</code> は、PostgreSQLのアクセスメソッド層において、操作対象のリレーション（<code>Relation</code>）がそのモジュールで処理可能な正しい種別（<code>relkind</code>）であるかを検証するためのガードレール関数です。</p>
+<p>この関数は、各モジュール（インデックス、シーケンス、テーブル）で個別に <code>static inline</code> 関数として定義されており、それぞれのコンテキストに応じたリレーション種別の妥当性検査を行います。</p>
+<h2>なぜ重要か</h2>
+<p>この関数は、不正なリレーション種別に対する操作を早期に検出し、システムの型安全性を保証するために重要です。</p>
+<ul>
+<li>**不正操作の防止**: 例えば、インデックス操作関数に対してテーブルやシーケンスが渡されたり、テーブル操作関数に対してインデックスや複合型が渡されたりするのを防ぎます。</li>
+<li>**早期のエラーハンドリング**: 処理の初期段階で <code>ereport(ERROR)</code> を発生させてトランザクションを安全に中断（アボート）させることで、未定義動作やデータの破損を防ぎます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<p>本機能には以下の3つのモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/access/index</code></li>
+<li><code>module:src/backend/access/sequence</code></li>
+<li><code>module:src/backend/access/table</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関連する主要なエンティティ（シンボル）は以下の通りです。</p>
+<ul>
+<li><code>symbol:src/backend/access/index/indexam.c#validate_relation_kind</code></li>
+<li>対象リレーションがインデックスとして有効な種別（<code>RELKIND_INDEX</code> または <code>RELKIND_PARTITIONED_INDEX</code>）であるかを検証します。</li>
+<li><code>symbol:src/backend/access/sequence/sequence.c#validate_relation_kind</code></li>
+<li>対象リレーションがシーケンス（<code>RELKIND_SEQUENCE</code>）であることを検証します。</li>
+<li><code>symbol:src/backend/access/table/table.c#validate_relation_kind</code></li>
+<li>対象リレーションがテーブルとして有効であるかを検証し、不適切な種別（<code>RELKIND_INDEX</code>、<code>RELKIND_PARTITIONED_INDEX</code>、<code>RELKIND_COMPOSITE_TYPE</code>）である場合はエラーを発生させます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける検証の具体的なエンドツーエンドの呼び出しフロー（どのシステムコールや上位APIからどのように伝播するか）の全貌は、提供された情報からは完全には明らかになっていません。</p>
+<p>現時点で判明している部分的な流れは以下の通りです：</p>
+<p>1. 各モジュール（インデックス操作、シーケンス操作、テーブルオープン処理など）の処理の直前、または初期段階で <code>validate_relation_kind(Relation r)</code> が呼び出されます。 2. 引数として渡された <code>Relation</code> 構造体の <code>rd_rel-&gt;relkind</code> フィールドが参照されます。 3. 各モジュール固有の許容条件（または拒否条件）に照らし合わせて検証が行われます。 4. 検証を通過した場合は、そのまま後続の処理が継続されます。 5. 検証に失敗した場合、<code>RelationGetRelationName</code> や <code>errdetail_relkind_not_supported</code> を用いてエラー情報を構築し、<code>ereport(ERROR, ...)</code> を呼び出してトランザクションを中断します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効なポインタの存在**: 入力される <code>Relation r</code> は有効なポインタであり、かつ <code>r-&gt;rd_rel</code>（<code>Form_pg_class</code> 構造体）が初期化済みでなければなりません。これが満たされない場合、セグメンテーション違反などの未定義動作を引き起こす可能性があります。</li>
+<li>**モジュールごとの独立性**: 各関数は <code>static inline</code> として定義されており、それぞれのファイル内でのみ有効です。各モジュールが自身の責務（インデックス、シーケンス、テーブル）に応じた固有の不変条件を保証します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>validate_relation_kind</code> は複数のファイル（<code>indexam.c</code>、<code>sequence.c</code>、<code>table.c</code>）で個別に定義されています。これらはグローバルな共通関数ではなく、それぞれ独立した検証ロジックを持っています。そのため、あるモジュールでの変更（例: 新しいリレーション種別の追加に伴うテーブル側の除外条件の追加など）を行う際に、他のモジュールの同名関数と混同したり、一貫性の維持を忘れたりする可能性があります。</li>
+<li>**NULLポインタや未初期化状態**: <code>Relation</code> 構造体やその内部の <code>rd_rel</code> が適切に初期化されていない状態で呼び出すと、NULLポインタ参照によるクラッシュが発生する危険性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<p>各モジュールにおける具体的な検証ロジックと、それがどのように呼び出されているかを確認するには、以下のソースファイルを参照してください。</p>
+<ul>
+<li><code>src/backend/access/index/indexam.c</code></li>
+<li><code>src/backend/access/sequence/sequence.c</code></li>
+<li><code>src/backend/access/table/table.c</code></li>
+</ul></body></html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlogrecovery_c__FinishWalRecovery.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>FinishWalRecovery</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xlogrecovery.c:1476</code></li>
+</ul>
+<h2>目的</h2>
+<p>リカバリ終了時のクリーンアップ処理を行い、データベースを書き込み可能な通常状態へ移行するための情報を収集・生成する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>EndOfWalRecoveryInfo *FinishWalRecovery(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし（グローバルなリカバリ状態および共有メモリ上の <code>XLogRecoveryCtl</code> を参照）。</li>
+<li>**出力**: <code>EndOfWalRecoveryInfo</code> 構造体へのポインタ。リカバリ終了後のWAL書き込み開始位置、最後のWALページ、リカバリ停止理由、およびタイムライン情報を含む。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>本関数呼び出し時点で、WALの適用（Redo）は完了している必要がある。</li>
+<li><code>WalRcvStreaming()</code> が偽であることを前提とする（呼び出し前に <code>XLogShutdownWalRcv()</code> が実行されていること）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **サービス停止**: <code>XLogShutdownWalRcv()</code> および <code>ShutDownSlotSync()</code> を呼び出し、WAL受信およびスロット同期を停止する。 2. **モード切替**: <code>StandbyMode</code> を <code>false</code> に設定する。 3. **終端特定**: <code>XLogRecoveryCtl</code> から最後にリプレイしたレコード位置を取得し、<code>ReadRecord</code> を用いてWALの物理的な終端（<code>endOfLog</code>）を確定する。 4. **アーカイブリカバリ終了**: <code>ArchiveRecoveryRequested</code> が真の場合、<code>InArchiveRecovery</code> を <code>false</code> にし、開いているWALファイルがあれば閉じる。 5. **部分ブロック処理**: <code>endOfLog</code> がブロック境界で終わっていない場合、その部分的なページ内容を <code>result-&gt;lastPage</code> にコピーし、呼び出し元がWAL書き込みを再開できるようにする。 6. **メタデータ収集**: リカバリ停止理由、タイムラインID、および中断されたレコード情報を <code>result</code> に格納して返却する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/xlog.c</code></li>
+<li>**呼び出し先**: <code>XLogShutdownWalRcv</code>, <code>ShutDownSlotSync</code>, <code>XLogPrefetcherBeginRead</code>, <code>ReadRecord</code>, <code>getRecoveryStopReason</code>, <code>palloc</code>, <code>memcpy</code>, <code>close</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>EndOfWalRecoveryInfo</code>: リカバリ終了情報を保持する構造体。</li>
+<li><code>XLogRecoveryCtl</code>: リカバリの進捗状態を管理する共有メモリ構造体。</li>
+<li><code>xlogreader</code>: WAL読み込み状態を保持する内部状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>endOfLog</code> がブロック境界にある場合、<code>lastPage</code> は <code>NULL</code> となる。</li>
+<li><code>readFile</code> が開いている場合、Windows環境でのファイル操作競合を避けるため明示的にクローズする。</li>
+<li>リカバリ中にタイムライン切り替えが発生した場合、<code>result-&gt;endOfLogTLI</code> は現在のセグメントのタイムラインを正しく反映する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はスタートアッププロセスがリカバリから通常運用へ移行する際の境界点である。</li>
+<li><code>lastPage</code> のコピー処理は、WALの末尾に新しいレコードを追記するための重要な初期化ステップであるため、変更時は <code>xlogreader</code> のバッファ状態との整合性に注意すること。</li>
+</ul></body></html>

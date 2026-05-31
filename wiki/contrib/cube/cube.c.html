@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/cube/cube.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/cube/cube.c</h1>
+<h2>概要</h2>
+<p><code>cube.c</code> は、PostgreSQL の多次元ボックス（<code>NDBOX</code>）型に対する演算ロジックと、GiST 索引サポートを実装するコアファイルです。文字列・バイナリの入出力、空間演算（包含、重なり、距離）、および GiST 索引の構築・検索に必要なメソッドを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>cubedata.h</code> で定義された <code>NDBOX</code> 構造体に対する操作の実装層です。PostgreSQL のバックエンド関数として呼び出されるインターフェースを提供し、空間データ型としての振る舞いを定義します。</p>
+<h2>責務</h2>
+<ul>
+<li>**入出力処理**: 文字列（<code>cube_in</code>/<code>out</code>）およびバイナリ（<code>cube_send</code>/<code>recv</code>）形式の変換。</li>
+<li>**空間演算**: 包含、重なり、距離（ユークリッド、タクシー、チェビシェフ）計算。</li>
+<li>**GiST 索引サポート**: 索引の構築、分割、一致判定、ペナルティ計算。</li>
+<li>**型変換・操作**: 配列からの構築、次元の追加、サブセット抽出、座標取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>GiST 索引サポート</h3>
+<ul>
+<li><code>g_cube_consistent</code>: 検索条件との一致判定（リーフ/内部ノード分岐）。</li>
+<li><code>g_cube_union</code>: 複数の <code>NDBOX</code> を包含する最小境界ボックス（MBB）の計算。</li>
+<li><code>g_cube_picksplit</code>: GiST 索引のページ分割アルゴリズム。</li>
+<li><code>g_cube_penalty</code>: 索引挿入時のペナルティ（面積増加量）計算。</li>
+</ul>
+<h3>演算・比較ロジック</h3>
+<ul>
+<li><code>cube_union_v0</code>: 2つの <code>NDBOX</code> の和集合（MBB）を計算する内部関数。</li>
+<li><code>cube_overlap_v0</code>: 2つのボックスの重なり判定。</li>
+<li><code>cube_contains_v0</code>: ボックスの包含関係判定。</li>
+<li><code>cube_cmp_v0</code>: ボックス間の順序比較（B-tree 索引等で使用）。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>cube_in</code>: パーサー（Flex/Bison）を呼び出し、文字列から <code>NDBOX</code> を生成。</li>
+<li><code>cube_coord_llur</code>: KNN-GiST 検索をサポートするための座標取得関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cube_a_f8</code></li>
+<li><code>cube_a_f8_f8</code></li>
+<li><code>cube_in</code></li>
+<li><code>cube_out</code></li>
+<li><code>cube_recv</code></li>
+<li><code>cube_send</code></li>
+<li><code>cube_subset</code></li>
+<li><code>g_cube_compress</code></li>
+<li><code>g_cube_consistent</code></li>
+<li><code>g_cube_decompress</code></li>
+<li><code>g_cube_penalty</code></li>
+<li><code>g_cube_union</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **データ入力**: <code>cube_in</code> が <code>cube_scanner_init</code> と <code>cube_yyparse</code> を経由して <code>NDBOX</code> を生成します。 2. **GiST 検索**: <code>g_cube_consistent</code> が呼び出されると、<code>GIST_LEAF</code> マクロでノード種別を判定し、<code>g_cube_leaf_consistent</code> または <code>g_cube_internal_consistent</code> へ処理を委譲します。 3. **演算処理**: 多くの演算（<code>cube_union</code>, <code>cube_inter</code> 等）は、引数の次元数を比較し、<code>palloc</code> で新しい <code>NDBOX</code> を確保して結果を書き込みます。 4. **メモリ管理**: <code>PG_FREE_IF_COPY</code> を使用して、入力引数がコピーである場合にのみメモリを解放し、メモリリークを防いでいます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>access/gist.h</code>: PostgreSQL コア機能および GiST インターフェース。</li>
+<li><code>cubedata.h</code>: <code>NDBOX</code> 構造体定義および <code>LL_COORD</code>/<code>UR_COORD</code> 等のアクセサマクロ。</li>
+<li><code>utils/array.h</code>, <code>utils/float.h</code>: 配列操作および浮動小数点数処理。</li>
+<li><code>math.h</code>: 距離計算のための <code>fabs</code>, <code>sqrt</code> 等。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>cubedata.h</code>: <code>NDBOX</code> のメモリレイアウトとアクセサの定義。</li>
+<li><code>cube_scan.l</code> / <code>cube_gram.y</code> (推測): <code>cube_in</code> が依存する字句解析・構文解析定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: <code>NDBOX</code> は可変長構造体です。<code>palloc</code> 時に <code>offsetof(NDBOX, x) + sizeof(double) * nitems</code> を用いて動的にサイズを決定しています。</li>
+<li>**不変条件**: <code>IS_POINT</code> フラグが立っている場合、座標配列のレイアウトが異なります。古いデータ形式との互換性のため、<code>cube_is_point_internal</code> はフラグだけでなく座標値の一致も確認します。</li>
+<li>**GiST 索引**: <code>g_cube_picksplit</code> は Guttman のアルゴリズムを採用しています。<code>seed_1</code>, <code>seed_2</code> を選定し、残りの要素をどちらのページに割り当てるかを決定する複雑なループが含まれます。</li>
+<li>**省略された詳細**: 字句解析器（Flex）および構文解析器（Bison）のソースコードは本ファイルには含まれていません。これらは <code>cube_in</code> の実装においてブラックボックスとして扱われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_in.html" target="wiki-view"><code>cube_in</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_a_f8_f8.html" target="wiki-view"><code>cube_a_f8_f8</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_a_f8.html" target="wiki-view"><code>cube_a_f8</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_subset.html" target="wiki-view"><code>cube_subset</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_out.html" target="wiki-view"><code>cube_out</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_send.html" target="wiki-view"><code>cube_send</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__cube_recv.html" target="wiki-view"><code>cube_recv</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__g_cube_consistent.html" target="wiki-view"><code>g_cube_consistent</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__g_cube_union.html" target="wiki-view"><code>g_cube_union</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__g_cube_compress.html" target="wiki-view"><code>g_cube_compress</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__g_cube_decompress.html" target="wiki-view"><code>g_cube_decompress</code></a></li>
+<li><a href="../../symbols/contrib__cube__cube_c__g_cube_penalty.html" target="wiki-view"><code>g_cube_penalty</code></a></li>
+</ul></body></html>

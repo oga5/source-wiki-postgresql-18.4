@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__user_c__AddRoleMems.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AddRoleMems</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/commands/user.c:1680</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたロールに対して、メンバーとなるロールのリストを追加（メンバーシップの付与）します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void AddRoleMems(Oid currentUserId, const char *rolename, Oid roleid,
+                        List *memberSpecs, List *memberIds,
+                        Oid grantorId, GrantRoleOptions *popt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>currentUserId</code>: 操作を実行するユーザーのOID。</li>
+<li><code>rolename</code>: 対象ロール名。</li>
+<li><code>roleid</code>: 対象ロールのOID。</li>
+<li><code>memberSpecs</code>: 追加するメンバーの <code>RoleSpec</code> リスト。</li>
+<li><code>memberIds</code>: 追加するメンバーのOIDリスト。</li>
+<li><code>grantorId</code>: 権限付与者（GRANTOR）のOID。</li>
+<li><code>popt</code>: <code>ADMIN OPTION</code> 等のオプションを含む <code>GrantRoleOptions</code> 構造体。</li>
+<li>**出力**: なし（成功時はカタログ更新、失敗時はエラーをスロー）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>list_length(memberSpecs) == list_length(memberIds)</code> であること。</li>
+<li>メンバーシップの循環（ループ）は禁止されており、チェックされる。</li>
+<li><code>pg_database_owner</code> をメンバーに含めることはできない。</li>
+<li><code>ADMIN OPTION</code> を付与する場合、付与者自身がその権限を失うような循環的な付与は禁止される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>check_role_grantor</code> を呼び出し、付与者の正当性を検証する。 2. <code>pg_auth_members</code> カタログを <code>RowExclusiveLock</code> で開き、対象ロールに対して <code>ShareUpdateExclusiveLock</code> を取得して競合を防ぐ。 3. メンバーごとに以下のチェックを行う:</p>
+<ul>
+<li><code>pg_database_owner</code> ではないこと。</li>
+<li>メンバーシップのループ（自身をメンバーにする等）が発生しないこと。</li>
+<p>4. <code>popt-&gt;admin</code> が真の場合、<code>plan_member_revoke</code> を用いて再帰的な権限剥奪の影響をシミュレートし、循環的な <code>ADMIN OPTION</code> 付与が発生しないか検証する。 5. 検証通過後、<code>pg_auth_members</code> カタログを走査し、既存のメンバーシップがあれば更新（<code>Update</code>）、なければ新規挿入（<code>Insert</code>）を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/user.c</code> 内の <code>GrantRole</code> 等のロール管理関数から呼び出される。</li>
+<li>**呼び出し先**: <code>check_role_grantor</code>, <code>table_open</code>, <code>LockSharedObject</code>, <code>is_member_of_role_nosuper</code>, <code>SearchSysCacheList1</code>, <code>initialize_revoke_actions</code>, <code>plan_member_revoke</code>, <code>SearchSysCache3</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_auth_members</code>: メンバーシップ情報を保持するシステムカタログ。</li>
+<li><code>GrantRoleOptions</code>: 権限付与時のオプション（ADMIN, INHERIT, SET）を保持。</li>
+<li><code>RevokeRoleGrantAction</code>: 権限剥奪時のアクションを定義する列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>ERRCODE_FEATURE_NOT_SUPPORTED</code>: <code>pg_database_owner</code> をメンバーに追加しようとした場合。</li>
+<li><code>ERRCODE_INVALID_GRANT_OPERATION</code>: メンバーシップのループが発生した場合、または <code>ADMIN OPTION</code> の循環付与が発生した場合。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_auth_members</code> を直接操作するため、カタログの整合性維持が最優先されます。</li>
+<li><code>ADMIN OPTION</code> の循環チェックには <code>plan_member_revoke</code> を使用したシミュレーションが含まれており、複雑な依存関係を考慮する必要があります。</li>
+<li>メンバーシップの変更は <code>LockSharedObject</code> によるロック下で行われ、並行実行による競合を回避しています。</li>
+</ul></body></html>

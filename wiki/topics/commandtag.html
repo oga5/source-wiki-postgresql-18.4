@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/commandtag.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CommandTag</h1>
+<h2>概念</h2>
+<p><code>CommandTag</code> は、PostgreSQLにおいて実行されたSQLコマンドの種類（例: <code>INSERT</code>, <code>SELECT</code>, <code>CREATE TABLE</code> など）を識別するための列挙型（<code>enum</code>）です。パースツリーからコマンドの種類を判定し、クライアントへのコマンド完了通知（<code>CommandComplete</code>）やイベントトリガー、DDLの逆パース（deparse）などの処理で利用されます。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**クライアント・サーバー間プロトコルの基盤**: クライアントに対して実行完了したコマンドの種類を通知する <code>CommandComplete</code> メッセージの生成に利用されます。</li>
+<li>**イベントトリガーや機能制御**: イベントトリガーのフィルタリングや、コマンドごとの行数表示の可否判定、イベントトリガーの対応状況の確認などに使用されます。</li>
+<li>**DDLの解析・テスト**: DDL操作の内容を保持する <code>CollectedCommand</code> からコマンドタグを生成し、DDLの逆パースやテストモジュール（<code>test_ddl_deparse</code>）での検証に役立ちます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/tcop</code>: コマンドタグの決定（<code>utility.c</code>）や、コマンド名取得などのユーティリティ処理を担当します。</li>
+<li><code>module:src/include/tcop</code>: <code>CommandTag</code> 列挙型の定義（<code>cmdtag.h</code>）や、コマンドリスト（<code>cmdtaglist.h</code>）を保持します。</li>
+<li><code>module:src/test/modules/test_ddl_deparse</code>: DDL逆パースのテストにおいて、コマンドタグを取得・検証する関数を提供します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/tcop/cmdtag.h#CommandTag</code>**: SQLコマンドの種類を識別する列挙型。<code>tcop/cmdtaglist.h</code> をインクルードして全SQLコマンドの列挙子を定義します。</li>
+<li>**<code>symbol:src/backend/tcop/utility.c#CreateCommandTag</code>**: 与えられたSQLパースツリー（<code>Node *parsetree</code>）を解析し、対応する <code>CommandTag</code> を決定して返す関数です。</li>
+<li>**<code>symbol:src/test/modules/test_ddl_deparse/test_ddl_deparse.c#get_command_tag</code>**: テストモジュール用の関数。<code>CollectedCommand</code> 構造体のパースツリーからコマンド名を取得し、テキスト形式（<code>Datum</code>）で返します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **パースツリーの解析**: SQL文が解析され、<code>Node *parsetree</code>（または <code>RawStmt</code>）が生成されます。 2. **タグの決定**: <code>CreateCommandTag(parsetree)</code> が呼び出され、ノードの型（<code>T_InsertStmt</code>, <code>T_SelectStmt</code> など）や内部フィールド（<code>TransactionStmt</code> の <code>kind</code> など）に基づいて適切な <code>CommandTag</code> が決定されます。 3. **コマンドの実行と完了通知**:</p>
+<ul>
+<li>コマンド実行後、<code>QueryCompletion</code> 構造体などを通じて <code>CommandTag</code> が保持されます。</li>
+<li><code>CommandTag</code> から対応する文字列（コマンド名）が取得され、クライアントへ完了通知として送信されます。</li>
+<li>イベントトリガー（<code>src/backend/commands/event_trigger.c</code>）などの処理でも、このタグ情報がフィルタリング等に利用されます。</li>
+<p>4. **テスト・デバッグ（DDL逆パース時など）**: <code>test_ddl_deparse</code> モジュールでは、<code>CollectedCommand</code> 内のパースツリーから <code>CreateCommandName</code> を介してコマンド名を取得し、テスト検証用のテキストとして出力します。</p>
+</ul>
+<p>*注意: クライアントへの送信処理の具体的な関数呼び出しや、<code>QueryCompletion</code> への格納タイミングなど、詳細なエンドツーエンドの制御フローの全容は提供されたソースコードの範囲内では完全には網羅されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**定義の整合性**: 新しいSQLコマンドを追加する場合、<code>src/include/tcop/cmdtaglist.h</code> に定義を追加する必要があり、この列挙値は <code>cmdtag.c</code> 内の属性テーブル（<code>tag_behavior</code>）と整合していなければなりません。</li>
+<li>**パースツリーの有効性**: <code>CreateCommandTag</code> に渡される <code>parsetree</code> は、<code>nodeTag()</code> で識別可能な有効なノードである必要があります。</li>
+<li>**NULLの許容**: <code>get_command_tag</code> において、<code>CollectedCommand</code> の <code>parsetree</code> が <code>NULL</code> の場合は安全に <code>NULL</code> を返します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**未知のノード型**: <code>CreateCommandTag</code> において、未知のノードタイプが渡された場合、<code>switch</code> 文の <code>default</code> 節がないケースでは未定義の挙動となる可能性があります（一部のステートメント種別では <code>CMDTAG_UNKNOWN</code> を返します）。</li>
+<li>**新規コマンド追加時の漏れ**: 新しいSQLコマンドを追加した際、<code>cmdtaglist.h</code> への追加や <code>CreateCommandTag</code> の <code>switch</code> 文へのケース追加を怠ると、正しい <code>CommandTag</code> が割り当てられず <code>CMDTAG_UNKNOWN</code> になったり、予期せぬ動作を引き起こしたりします。</li>
+<li>**特殊なロジック**: <code>INSERT</code> コマンドのタグには、歴史的な理由により &quot;0&quot; を含む特殊なロジックが存在するため、文字列変換や処理の際には注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/tcop/cmdtag.h</code>: <code>CommandTag</code> 列挙型の定義。</li>
+<li><code>src/backend/tcop/utility.c</code>: <code>CreateCommandTag</code> によるパースツリーからタグへの変換ロジック。</li>
+<li><code>src/test/modules/test_ddl_deparse/test_ddl_deparse.c</code>: <code>get_command_tag</code> を用いたテストモジュールでの利用例。</li>
+</ul></body></html>

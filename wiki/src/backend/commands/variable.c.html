@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/variable.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/variable.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのGUC（Grand Unified Configuration）パラメータのうち、複雑な検証ロジックや状態遷移を伴う「特殊な変数」のハンドリングを実装しています。主に <code>SET</code> コマンドによって実行される設定変更のバリデーションと適用を担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、SQLレベルでの設定変更要求をシステム内部の状態へ反映させる仲介役です。単純な数値や文字列の代入ではなく、システムカタログの参照、トランザクション状態の確認、あるいは外部リソース（タイムゾーンファイル等）の読み込みが必要なパラメータを扱います。</p>
+<h2>責務</h2>
+<ul>
+<li>**バリデーション (<code>check_hook</code>)**: 設定値が構文的に正しいか、現在のトランザクション状態や権限で変更可能かを検証します。</li>
+<li>**適用 (<code>assign_hook</code>)**: 検証済みの値を内部変数へ反映させ、必要に応じて関連するキャッシュのクリアや統計情報の更新を行います。</li>
+<li>**表示 (<code>show_hook</code>)**: 特殊なフォーマット（8進数表記など）が必要な変数の出力形式を制御します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>check_datestyle</code> / <code>assign_datestyle</code>: 日付形式の複雑な構文解析と状態反映。</li>
+<li><code>check_timezone</code> / <code>assign_timezone</code>: タイムゾーン名の解決とセッション状態への適用。</li>
+<li><code>check_transaction_read_only</code> / <code>check_transaction_isolation</code>: トランザクション開始後の変更制限など、SQL標準に準拠した制約チェック。</li>
+<li><code>check_session_authorization</code> / <code>check_role</code>: ユーザー権限の検証とセッションIDの切り替え。</li>
+<li><code>check_client_encoding</code>: クライアントエンコーディングの検証と変換プロセスの準備。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>assign_log_timezone</code></li>
+<li><code>assign_timezone_abbreviations</code></li>
+<li><code>check_log_timezone</code></li>
+<li><code>check_timezone_abbreviations</code></li>
+<li><code>role_auth_extra</code></li>
+<li><code>show_log_timezone</code></li>
+<li><code>show_timezone</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **GUCサブシステムからの呼び出し**: ユーザーが <code>SET</code> を実行すると、GUCフレームワークが対応する <code>check_hook</code> を呼び出します。 2. **検証**: <code>check_hook</code> 内で <code>pstrdup</code> 等を用いて値を解析し、エラーがあれば <code>GUC_check_errdetail</code> で報告して <code>false</code> を返します。 3. **中間データの受け渡し**: 検証に成功した場合、<code>extra</code> 引数を通じて適用に必要な構造体や値を <code>assign_hook</code> へ渡します。 4. **適用**: <code>assign_hook</code> が呼び出され、グローバル変数やセッション状態を更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/guc_hooks.h</code>: GUCフックのインターフェース定義。</li>
+<li><code>utils/syscache.h</code>: ロールや権限情報の検索に使用。</li>
+<li><code>access/xact.h</code>: トランザクション状態の確認。</li>
+<li><code>utils/datetime.h</code> / <code>utils/tzparser.h</code>: 日付・タイムゾーン関連の処理。</li>
+<li><code>mb/pg_wchar.h</code>: エンコーディング関連の処理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlogprefetcher.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>postmaster/syslogger.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/backend_status.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/misc/guc.c</code>: GUCパラメータの定義とフックの登録場所。</li>
+<li><code>src/backend/utils/adt/datetime.c</code>: 日付・時刻の内部表現と計算ロジック。</li>
+<li><code>src/backend/utils/init/miscinit.c</code>: セッションユーザーやロールの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクション制約**: <code>check_transaction_*</code> 系関数は、トランザクションの進行状況（<code>FirstSnapshotSet</code> など）を厳密にチェックしています。これらは並列ワーカーの初期化時など、特殊なコンテキストでの挙動に注意が必要です。</li>
+<li>**メモリ管理**: <code>check_hook</code> 内で <code>extra</code> に割り当てたメモリは、GUCサブシステムが管理します。<code>guc_malloc</code> を使用し、メモリリークを防ぐ設計になっています。</li>
+<li>**エラーハンドリング**: <code>check_hook</code> 内でのエラー報告は、ユーザーに分かりやすいメッセージを出すために <code>GUC_check_errmsg</code> 等の専用マクロを使用してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__variable_c__check_datestyle.html" target="wiki-view"><code>check_datestyle</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__assign_datestyle.html" target="wiki-view"><code>assign_datestyle</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__check_timezone.html" target="wiki-view"><code>check_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__assign_timezone.html" target="wiki-view"><code>assign_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__show_timezone.html" target="wiki-view"><code>show_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__check_log_timezone.html" target="wiki-view"><code>check_log_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__assign_log_timezone.html" target="wiki-view"><code>assign_log_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__show_log_timezone.html" target="wiki-view"><code>show_log_timezone</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__check_timezone_abbreviations.html" target="wiki-view"><code>check_timezone_abbreviations</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__assign_timezone_abbreviations.html" target="wiki-view"><code>assign_timezone_abbreviations</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__check_transaction_read_only.html" target="wiki-view"><code>check_transaction_read_only</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__variable_c__role_auth_extra.html" target="wiki-view"><code>role_auth_extra</code></a></li>
+</ul></body></html>

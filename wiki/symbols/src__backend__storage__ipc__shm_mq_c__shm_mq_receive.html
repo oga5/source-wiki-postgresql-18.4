@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_receive.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shm_mq_receive</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/shm_mq.c:571</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリメッセージキューからメッセージを受信します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>shm_mq_result shm_mq_receive(shm_mq_handle *mqh, Size *nbytesp, void **datap, bool nowait)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>mqh</code>: キューへのアクセス用プライベートハンドル。</li>
+<li><code>nbytesp</code>: 受信したメッセージのサイズを格納するポインタ（出力）。</li>
+<li><code>datap</code>: 受信したメッセージデータへのポインタを格納するポインタ（出力）。</li>
+<li><code>nowait</code>: <code>true</code> の場合、データがない場合にブロッキングせず <code>SHM_MQ_WOULD_BLOCK</code> を返します。</li>
+<li>戻り値: <code>SHM_MQ_SUCCESS</code>（成功）、<code>SHM_MQ_WOULD_BLOCK</code>（待機が必要）、<code>SHM_MQ_DETACHED</code>（相手側が切断済み）のいずれか。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元プロセスが、当該キューの受信側（<code>mq-&gt;mq_receiver == MyProc</code>）として登録されている必要があります。</li>
+<li>メッセージサイズが <code>MaxAllocSize</code> を超える場合はエラーとなります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **接続確認**: 送信側が未接続の場合、<code>nowait</code> 設定に応じて待機または状態確認を行います。 2. **消費済み領域の解放**: 蓄積された消費済みデータ量がリングバッファサイズの1/4を超えた場合、共有メモリ上の読み取りポインタを更新します。 3. **メッセージ長取得**: メッセージの長さを示すワードを読み取ります。必要に応じて複数回に分けて読み込み、再構築します。 4. **データ読み取り**: メッセージ本体を読み取ります。</p>
+<ul>
+<li>共有メモリ上で連続している場合は、その領域を直接指すポインタを返します。</li>
+<li>リングバッファを跨いでいる場合は、内部バッファにコピーして返します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>parallel.c</code>、<code>tqueue.c</code>、<code>pqmq.c</code>、<code>applyparallelworker.c</code>、および <code>test_shm_mq</code> モジュールから呼び出されます。</li>
+<li>**呼び出し先**: <code>shm_mq_receive_bytes</code>、<code>shm_mq_counterparty_gone</code>、<code>shm_mq_wait_internal</code>、<code>shm_mq_inc_bytes_read</code> 等を内部的に呼び出します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>shm_mq</code>: 共有メモリ上のキュー本体。</li>
+<li><code>shm_mq_handle</code>: プロセス固有のキュー操作用ハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メッセージサイズ超過**: <code>nbytes &gt; MaxAllocSize</code> の場合、<code>ereport(ERROR)</code> で停止します。</li>
+<li>**相手側の切断**: 送信側が終了している場合、<code>SHM_MQ_DETACHED</code> を返します。</li>
+<li>**バッファ不足**: メッセージがリングバッファを跨ぐ場合、<code>mqh-&gt;mqh_buffer</code> を動的に拡張します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>SetLatch()</code> の呼び出し頻度を抑えるため、読み取りポインタの更新は一定量溜まるまで遅延されます。</li>
+<li>メッセージ長ワードがアライメント境界を跨ぐ可能性があるため、<code>sizeof(Size) &gt; MAXIMUM_ALIGNOF</code> の環境では再構築処理が実行されます。</li>
+</ul></body></html>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/detoast.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/detoast.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「TOAST（The Oversized-Attribute Storage Technique）」されたデータや、圧縮・間接参照・展開済みオブジェクトとして格納された可変長データ（<code>varlena</code>）を、通常のメモリ内形式へ復元（detoast）するための機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> モジュールにおいて、ストレージ層と実行エンジンの中間に位置します。テーブルから読み出したデータが特殊な形式（外部参照、圧縮、ショートヘッダー等）である場合に、それを透過的に通常のデータとして扱えるように変換する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ復元**: 外部ストレージ（TOASTテーブル）からのデータ取得。</li>
+<li>**解凍**: 圧縮されたデータの展開（PGLZ, LZ4等）。</li>
+<li>**形式変換**: 間接ポインタの解決や、ショートヘッダーから標準ヘッダーへの変換。</li>
+<li>**部分取得**: データ全体を読み込まず、必要なオフセットと長さのみを抽出するスライス処理。</li>
+<li>**サイズ計算**: 物理的な格納サイズと、復元後の論理的なサイズの算出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>detoast_attr</code>: 外部データや圧縮データを完全に復元する主要な公開関数。</li>
+<li><code>detoast_attr_slice</code>: データの特定範囲のみを効率的に取得する関数。</li>
+<li><code>toast_fetch_datum</code>: TOASTテーブルからデータを読み出す内部関数。</li>
+<li><code>toast_decompress_datum</code>: 圧縮されたデータを展開する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>detoast_external_attr</code></li>
+<li><code>toast_datum_size</code></li>
+<li><code>toast_decompress_datum_slice</code></li>
+<li><code>toast_fetch_datum_slice</code></li>
+<li><code>toast_raw_datum_size</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力判定**: <code>VARATT_IS_*</code> マクロ群を使用して、入力データがどの形式（外部、圧縮、間接、展開済み、ショート）かを判定します。 2. **再帰的解決**: 間接ポインタや外部参照の場合、必要に応じて再帰的に処理を行い、最終的な実体へ到達します。 3. **変換処理**:</p>
+<ul>
+<li>外部データであれば <code>toast_fetch_datum</code> で読み込み。</li>
+<li>圧縮データであれば <code>toast_decompress_datum</code> で展開。</li>
+<li>ショートヘッダーであればメモリを再確保して標準ヘッダーへ変換。</li>
+<p>4. **メモリ管理**: 復元されたデータは <code>palloc</code> され、呼び出し元が <code>pfree</code> 可能な形式で返されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/toast_internals.h</code>: TOAST関連の内部構造体やマクロ。</li>
+<li><code>access/tableam.h</code>: テーブルアクセス層の抽象化インターフェース。</li>
+<li><code>common/pg_lzcompress.h</code>: 圧縮・解凍アルゴリズムの定義。</li>
+<li><code>utils/expandeddatum.h</code>: 展開済みオブジェクトの処理。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/detoast.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/access/common/toast_internals.c</code>: TOASTテーブルの操作やチャンク管理の補助。</li>
+<li><code>src/backend/access/common/toast_compression.c</code>: 圧縮メソッドの管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理の注意**: 本ファイル内の関数は、呼び出し元が <code>pfree</code> することを前提にメモリを割り当てることが多いため、メモリリークに注意してください。</li>
+<li>**スライス処理**: <code>detoast_attr_slice</code> は、圧縮データに対して「先頭からのスライス」のみをサポートする場合があります。これは圧縮アルゴリズムの特性上、途中からの展開が困難なためです。</li>
+<li>**アライメント**: <code>VARATT_EXTERNAL_GET_POINTER</code> マクロは、アライメントが保証されない外部ポインタを安全に扱うための重要な工夫です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__detoast_external_attr.html" target="wiki-view"><code>detoast_external_attr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__detoast_attr.html" target="wiki-view"><code>detoast_attr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__detoast_attr_slice.html" target="wiki-view"><code>detoast_attr_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_fetch_datum.html" target="wiki-view"><code>toast_fetch_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_fetch_datum_slice.html" target="wiki-view"><code>toast_fetch_datum_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_decompress_datum.html" target="wiki-view"><code>toast_decompress_datum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_decompress_datum_slice.html" target="wiki-view"><code>toast_decompress_datum_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_raw_datum_size.html" target="wiki-view"><code>toast_raw_datum_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__detoast_c__toast_datum_size.html" target="wiki-view"><code>toast_datum_size</code></a></li>
+</ul></body></html>

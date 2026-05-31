@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginfast_c__shiftList.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shiftList</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginfast.c:553</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのペンディングリストから、処理済みのページを削除し、メタページの管理情報を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void shiftList(Relation index, Buffer metabuffer, BlockNumber newHead,
+                      bool fill_fsm, IndexBulkDeleteResult *stats)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>index</code>: 対象のインデックスリレーション。</li>
+<li><code>metabuffer</code>: GINメタページのバッファ。</li>
+<li><code>newHead</code>: 削除対象リストの終了地点（このブロック番号に到達するまで削除を行う）。</li>
+<li><code>fill_fsm</code>: <code>true</code> の場合、削除したページをFSM（Free Space Map）へ返却する。</li>
+<li><code>stats</code>: 削除されたページ数を記録する統計構造体（NULL可）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>metabuffer</code> は排他ロックされている必要がある。</li>
+<li><code>newHead</code> は現在のペンディングリストのヘッドから到達可能なブロック番号であること。</li>
+<li>削除対象の各ページは、処理中に排他ロックされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 現在のメタページのヘッドから <code>newHead</code> に到達するまで、<code>GIN_NDELETE_AT_ONCE</code>（定数）単位でページを読み込み、排他ロックを取得する。 2. 各ページのタプル数を集計し、メタページのペンディングリスト管理情報（<code>head</code>, <code>nPendingPages</code>, <code>nPendingHeapTuples</code>）を更新する。 3. 削除対象ページのフラグを <code>GIN_DELETED</code> に設定する。 4. WALが必要な場合、メタページと削除対象ページ群の変更を記録する。 5. クリティカルセクション内でメタページと各ページを更新し、LSNを設定する。 6. 処理終了後、各バッファをアンロック・解放する。 7. <code>fill_fsm</code> が真であれば、削除したページを <code>RecordFreeIndexPage</code> を通じてFSMへ返却する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginfast.c</code> 内の <code>ginInsertCleanup</code> から呼び出される。</li>
+<li>**呼び出し先**: <code>ReadBuffer</code>, <code>LockBuffer</code>, <code>BufferGetPage</code>, <code>GinPageGetMeta</code>, <code>GinPageGetOpaque</code>, <code>GinPageIsDeleted</code>, <code>XLogEnsureRecordSpace</code>, <code>START_CRIT_SECTION</code>, <code>MarkBufferDirty</code>, <code>XLogBeginInsert</code>, <code>XLogRegisterBuffer</code>, <code>XLogRegisterData</code>, <code>XLogInsert</code>, <code>PageSetLSN</code>, <code>UnlockReleaseBuffer</code>, <code>END_CRIT_SECTION</code>, <code>RecordFreeIndexPage</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GinMetaPageData</code>: メタページ内のペンディングリスト管理構造体。</li>
+<li><code>ginxlogDeleteListPages</code>: 削除操作を記録するためのWALログ構造体。</li>
+<li><code>Buffer</code>: インデックスページを保持するバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>newHead</code> が <code>InvalidBlockNumber</code> の場合、リスト全体が空になったとみなし、メタページのテール情報やカウントをリセットする。</li>
+<li>ページ削除中にクラッシュした場合、WALによりメタページと各ページの整合性が保たれる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は一度に大量のページを操作するため、WAL記録前に <code>XLogEnsureRecordSpace</code> を呼び出し、必要な領域を確保している。</li>
+<li><code>pd_lower</code> の更新は、古いPostgreSQLバージョンとの互換性維持およびメタページ圧縮時のデータ消失防止のために必須である。</li>
+</ul></body></html>

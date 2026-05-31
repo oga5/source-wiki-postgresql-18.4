@@ -1,0 +1,83 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/fuzzystrmatch/dmetaphone.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/fuzzystrmatch/dmetaphone.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、文字列の音韻的類似性を判定する「Double Metaphone」アルゴリズムの PostgreSQL 実装です。入力された文字列から、発音に基づく「プライマリ」および「オルタネート（代替）」の2種類のコードを生成します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/fuzzystrmatch</code> モジュールの一部として、SQL から呼び出し可能な <code>dmetaphone</code> および <code>dmetaphone_alt</code> 関数を提供します。主に検索クエリにおける発音の揺れを吸収するためのインデックス作成や、データクレンジングに利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**SQL インターフェース**: PostgreSQL の <code>text</code> 型と C 実装の橋渡し。</li>
+<li>**音韻コード生成**: Double Metaphone アルゴリズムによる文字列の符号化。</li>
+<li>**メモリ管理**: PostgreSQL のメモリコンテキスト（<code>palloc</code>/<code>repalloc</code>）を利用したバッファ管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>SQL インターフェース</h3>
+<ul>
+<li><code>dmetaphone(PG_FUNCTION_ARGS)</code>: プライマリコードを返す SQL 関数。</li>
+<li><code>dmetaphone_alt(PG_FUNCTION_ARGS)</code>: オルタネートコードを返す SQL 関数。</li>
+</ul>
+<h3>データ構造と管理</h3>
+<ul>
+<li><code>metastring</code>: 文字列バッファ、長さ、バッファサイズを保持する構造体。</li>
+<li><code>NewMetaString</code>, <code>DestroyMetaString</code>: <code>metastring</code> のライフサイクル管理。</li>
+<li><code>IncreaseBuffer</code>: バッファの動的拡張。</li>
+</ul>
+<h3>アルゴリズム実装</h3>
+<ul>
+<li><code>DoubleMetaphone(char *str, char **codes)</code>: アルゴリズムの核となる関数。プライマリとオルタネートを同時に計算し、結果を <code>codes</code> 配列に格納する。</li>
+<li><code>MetaphAdd</code>: コード生成バッファへの追記。</li>
+<li><code>StringAt</code>, <code>GetAt</code>, <code>SetAt</code>: 文字列の走査と照合を行うヘルパー。</li>
+<li><code>IsVowel</code>, <code>SlavoGermanic</code>, <code>MakeUpper</code>: 言語的特性に基づく判定および正規化。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DestroyMetaString</code></li>
+<li><code>DoubleMetaphone</code></li>
+<li><code>GetAt</code></li>
+<li><code>IncreaseBuffer</code></li>
+<li><code>IsVowel</code></li>
+<li><code>MakeUpper</code></li>
+<li><code>MetaphAdd</code></li>
+<li><code>NewMetaString</code></li>
+<li><code>SetAt</code></li>
+<li><code>SlavoGermanic</code></li>
+<li><code>StringAt</code></li>
+<li><code>metastring</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>PG_GETARG_TEXT_PP</code> で <code>text</code> 型を受け取り、<code>text_to_cstring</code> で C 文字列に変換。 2. **初期化**: <code>NewMetaString</code> で入力文字列をラップし、大文字化。 3. **メインループ**: <code>DoubleMetaphone</code> 内で文字列を走査し、文字種（A-Z）に応じたルールを適用。 4. **コード生成**: <code>MetaphAdd</code> を用いてプライマリとオルタネートのバッファを構築。 5. **出力**: <code>codes</code> 配列から該当する結果を取り出し、<code>cstring_to_text</code> を経由して <code>PG_RETURN_TEXT_P</code> で返却。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>utils/builtins.h</code>: PostgreSQL コア機能。</li>
+<li><code>string.h</code>, <code>ctype.h</code>, <code>stdlib.h</code>: 標準 C ライブラリ。</li>
+<li><code>assert.h</code></li>
+<li><code>stdarg.h</code></li>
+<li><code>stdio.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/fuzzystrmatch/fuzzystrmatch.c</code>: モジュールの基本インターフェース。</li>
+<li><code>contrib/fuzzystrmatch/daitch_mokotoff.c</code>: 別の音韻アルゴリズム実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: PostgreSQL のメモリコンテキストに依存しており、<code>pfree</code> を明示的に呼び出さない設計です。これはモジュール再読み込み時の安定性を考慮した実装上の判断です。</li>
+<li>**パフォーマンス**: 各関数呼び出しでプライマリとオルタネートの両方を計算し、不要な方を破棄する設計のため、若干の非効率性があります。</li>
+<li>**制約**: 入力文字列が NULL の場合、<code>STRICT</code> 宣言がないとセグメンテーションフォールトを引き起こす可能性があるため、SQL 宣言時には <code>STRICT</code> を指定することが推奨されます。</li>
+<li>**実装の由来**: 本コードは Perl の <code>Text::DoubleMetaphone</code> モジュールを移植したものであり、アルゴリズムのロジックはオリジナルの C++ 実装に準拠しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__metastring.html" target="wiki-view"><code>metastring</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__NewMetaString.html" target="wiki-view"><code>NewMetaString</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__DestroyMetaString.html" target="wiki-view"><code>DestroyMetaString</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__IncreaseBuffer.html" target="wiki-view"><code>IncreaseBuffer</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__MakeUpper.html" target="wiki-view"><code>MakeUpper</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__IsVowel.html" target="wiki-view"><code>IsVowel</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__SlavoGermanic.html" target="wiki-view"><code>SlavoGermanic</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__GetAt.html" target="wiki-view"><code>GetAt</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__SetAt.html" target="wiki-view"><code>SetAt</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__StringAt.html" target="wiki-view"><code>StringAt</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__MetaphAdd.html" target="wiki-view"><code>MetaphAdd</code></a></li>
+<li><a href="../../symbols/contrib__fuzzystrmatch__dmetaphone_c__DoubleMetaphone.html" target="wiki-view"><code>DoubleMetaphone</code></a></li>
+</ul></body></html>

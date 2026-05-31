@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/jit/jit.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/jit/jit.c</h1>
+<h2>概要</h2>
+<p><code>jit.c</code> は、PostgreSQL における JIT（Just-In-Time）コンパイル機能の抽象化レイヤーです。特定の JIT 実装（LLVM など）に依存しない共通のインターフェースを提供し、動的にロードされた JIT プロバイダーへの呼び出しを仲介します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/jit</code> モジュールの中心的なディスパッチャーです。実行エンジン（Executor）からの JIT 要求を受け取り、設定されたプロバイダーがロード済みであるかを確認した上で、実際のコンパイル処理をプロバイダーへ委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロバイダーの動的ロード**: <code>jit_provider</code> GUC で指定された共有ライブラリをロードし、コールバック関数を初期化する。</li>
+<li>**実行時制御**: JIT の有効/無効の判定、およびエラー発生時のリセット処理。</li>
+<li>**インターフェースの抽象化**: 実行エンジンに対して、プロバイダーの実装詳細を隠蔽した関数（<code>jit_compile_expr</code> 等）を提供する。</li>
+<li>**計測データの集計**: 複数のワーカーや処理単位で発生した JIT 関連の統計情報（<code>JitInstrumentation</code>）を集計する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>jit_enabled</code>, <code>jit_provider</code>: JIT の有効化および使用するプロバイダーを指定する GUC 変数。</li>
+<li><code>provider</code>: ロードされた JIT プロバイダーの関数ポインタを保持する構造体。</li>
+<li><code>provider_init()</code>: プロバイダーのロードと初期化を一度だけ行う内部関数。</li>
+<li><code>jit_compile_expr()</code>: 式の JIT コンパイルを試みるメインのエントリポイント。</li>
+<li><code>InstrJitAgg()</code>: JIT 処理の統計情報を集計するためのユーティリティ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InstrJitAgg</code></li>
+<li><code>jit_compile_expr</code></li>
+<li><code>jit_release_context</code></li>
+<li><code>jit_reset_after_error</code></li>
+<li><code>pg_jit_available</code></li>
+<li><code>provider_init</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pg_jit_available</code> または <code>jit_compile_expr</code> が呼ばれると <code>provider_init</code> が実行される。 2. **ロード**: <code>provider_init</code> は <code>pkglib_path</code> から共有ライブラリを探索し、<code>_PG_jit_provider_init</code> を呼び出して <code>provider</code> 構造体を埋める。 3. **委譲**: <code>jit_compile_expr</code> は、現在の <code>ExprState</code> が JIT 対象か判定し、条件を満たせば <code>provider.compile_expr</code> を呼び出す。 4. **エラー処理**: エラー発生時は <code>jit_reset_after_error</code> を通じてプロバイダー側の状態をクリーンアップする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>jit/jit.h</code>: 共通のデータ構造とインターフェース定義。</li>
+<li><code>fmgr.h</code>, <code>utils/fmgrprotos.h</code>: PostgreSQL の関数管理および動的ロード機能。</li>
+<li><code>nodes/execnodes.h</code>: 実行計画の状態（<code>ExprState</code>）を参照するために使用。</li>
+<li><code>portability/instr_time.h</code>: JIT 処理時間の計測に使用。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/types.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/jit/jit.h</code>: 本ファイルが実装するインターフェースの定義。</li>
+<li><code>src/backend/jit/llvm/</code>: 実際の JIT 実装（LLVM を使用する場合のプロバイダー）。</li>
+<li><code>src/backend/executor/</code>: JIT を利用する実行エンジン側のコード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル自体には LLVM 等の具体的なコンパイルロジックは含まれていません。あくまで「プロバイダーをどう呼び出すか」という枠組みを定義しています。</li>
+<li><code>provider_failed_loading</code> フラグにより、一度ロードに失敗したプロバイダーへの再試行を抑止し、パフォーマンス低下を防ぐ設計になっています。</li>
+<li>JIT の有効性はセッション単位の GUC 設定に強く依存するため、デバッグ時は <code>jit_enabled</code> や <code>jit_dump_bitcode</code> などの GUC を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__jit__jit_c__pg_jit_available.html" target="wiki-view"><code>pg_jit_available</code></a></li>
+<li><a href="../../../symbols/src__backend__jit__jit_c__provider_init.html" target="wiki-view"><code>provider_init</code></a></li>
+<li><a href="../../../symbols/src__backend__jit__jit_c__jit_reset_after_error.html" target="wiki-view"><code>jit_reset_after_error</code></a></li>
+<li><a href="../../../symbols/src__backend__jit__jit_c__jit_release_context.html" target="wiki-view"><code>jit_release_context</code></a></li>
+<li><a href="../../../symbols/src__backend__jit__jit_c__jit_compile_expr.html" target="wiki-view"><code>jit_compile_expr</code></a></li>
+<li><a href="../../../symbols/src__backend__jit__jit_c__InstrJitAgg.html" target="wiki-view"><code>InstrJitAgg</code></a></li>
+</ul></body></html>

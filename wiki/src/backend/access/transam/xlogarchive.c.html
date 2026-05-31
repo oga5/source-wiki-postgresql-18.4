@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlogarchive.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogarchive.c</h1>
+<h2>概要</h2>
+<p>WAL（Write-Ahead Log）ファイルのアーカイブおよびリストア処理を管理するモジュールです。外部ストレージへのWAL転送や、リカバリ時のアーカイブからのファイル取得、およびアーカイブ状態（<code>.ready</code> / <code>.done</code>）の管理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> サブシステムの一部として、WALの永続性とリカバリのライフサイクルを支えます。主に <code>xlog.c</code>（WALの生成・管理）と <code>pgarch.c</code>（アーカイブプロセス）の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**リストア**: <code>restore_command</code> を実行し、アーカイブから必要なWALセグメントを <code>pg_wal</code> ディレクトリへ取得する。</li>
+<li>**通知**: アーカイブが必要なWALセグメントに対して <code>.ready</code> ファイルを作成し、アーカイブプロセスに通知する。</li>
+<li>**状態管理**: WALセグメントのアーカイブ完了状態（<code>.done</code>）を追跡し、不要なセグメントの削除やリサイクルを制御する。</li>
+<li>**コマンド実行**: リカバリ終了時やクリーンアップ時に必要な外部シェルコマンドを安全に実行する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>RestoreArchivedFile</code>: リカバリ中にアーカイブからファイルを復元するメイン関数。</li>
+<li><code>XLogArchiveNotify</code>: 特定のWALファイルに対するアーカイブ要求（<code>.ready</code>）を作成する。</li>
+<li><code>XLogArchiveCheckDone</code>: ファイルがアーカイブ済みかを確認し、未処理なら通知を行う。</li>
+<li><code>KeepFileRestoredFromArchive</code>: リストアされたファイルを永続化し、アーカイブ状態を更新する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecuteRecoveryCommand</code></li>
+<li><code>XLogArchiveCleanup</code></li>
+<li><code>XLogArchiveForceDone</code></li>
+<li><code>XLogArchiveIsBusy</code></li>
+<li><code>XLogArchiveIsReady</code></li>
+<li><code>XLogArchiveIsReadyOrDone</code></li>
+<li><code>XLogArchiveNotifySeg</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **リストア時**: <code>RestoreArchivedFile</code> が <code>recovery_command</code> を構築し、<code>system()</code> で外部コマンドを実行。成功すれば <code>KeepFileRestoredFromArchive</code> でファイルを <code>pg_wal</code> に配置し、<code>.done</code> または <code>.ready</code> を作成する。 2.  **アーカイブ時**: <code>XLogArchiveNotify</code> が <code>.ready</code> ファイルを作成し、<code>PgArchWakeup()</code> でアーカイブプロセスを起動する。 3.  **クリーンアップ時**: <code>XLogArchiveCheckDone</code> が <code>.done</code> の存在を確認し、削除可能か判断する。存在しない場合は <code>.ready</code> を再作成してアーカイブを促す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xlog_internal.h</code>: WAL管理の基本定義。</li>
+<li><code>postmaster/pgarch.h</code>: アーカイブプロセスとの連携。</li>
+<li><code>storage/fd.h</code>: ファイル操作（<code>AllocateFile</code>, <code>durable_rename</code> 等）。</li>
+<li><code>common/archive.h</code>, <code>common/percentrepl.h</code>: アーカイブコマンドの構築と置換処理。</li>
+<li><code>access/xlogarchive.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/startup.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/postmaster/pgarch.c</code>: このファイルが作成した <code>.ready</code> ファイルを監視し、実際にアーカイブを実行するプロセス。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: WALの生成・削除のライフサイクルを管理する中心的なファイル。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ファイル名**: アーカイブ状態ファイル（<code>.ready</code>, <code>.done</code>）は、WALセグメント名にサフィックスを付与した形式で <code>pg_wal/archive_status</code> に配置されます。</li>
+<li>**競合回避**: <code>KeepFileRestoredFromArchive</code> 内のWindows固有の処理（<code>.deleted</code> リネーム）は、ファイルハンドルが残っている状態でのリネーム失敗を防ぐためのものです。</li>
+<li>**シグナル処理**: <code>system()</code> を呼び出す際は、リカバリプロセスがシグナル（SIGTERM等）を適切に処理できるよう <code>PreRestoreCommand</code> / <code>PostRestoreCommand</code> で保護されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__RestoreArchivedFile.html" target="wiki-view"><code>RestoreArchivedFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__ExecuteRecoveryCommand.html" target="wiki-view"><code>ExecuteRecoveryCommand</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__KeepFileRestoredFromArchive.html" target="wiki-view"><code>KeepFileRestoredFromArchive</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveNotify.html" target="wiki-view"><code>XLogArchiveNotify</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveNotifySeg.html" target="wiki-view"><code>XLogArchiveNotifySeg</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveForceDone.html" target="wiki-view"><code>XLogArchiveForceDone</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveCheckDone.html" target="wiki-view"><code>XLogArchiveCheckDone</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveIsBusy.html" target="wiki-view"><code>XLogArchiveIsBusy</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveIsReadyOrDone.html" target="wiki-view"><code>XLogArchiveIsReadyOrDone</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveIsReady.html" target="wiki-view"><code>XLogArchiveIsReady</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlogarchive_c__XLogArchiveCleanup.html" target="wiki-view"><code>XLogArchiveCleanup</code></a></li>
+</ul></body></html>

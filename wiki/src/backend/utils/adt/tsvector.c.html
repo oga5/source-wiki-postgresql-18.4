@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tsvector.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tsvector.c</h1>
+<h2>概要</h2>
+<p><code>tsvector.c</code> は、PostgreSQL の全文検索用データ型である <code>tsvector</code> の入出力処理を担うモジュールです。テキスト表現（文字列）と内部バイナリ表現の相互変換、およびネットワーク転送用のシリアライズ・デシリアライズ機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内において、全文検索サブシステム（<code>tsearch</code>）のデータ型定義を支える基盤層に位置します。<code>tsvector_op.c</code> などが提供する検索演算子や関数が操作する「正規化されたデータ構造」を生成・解釈する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**テキスト解析と構築**: <code>tsvectorin</code> を通じて、入力文字列をトークン化し、重複排除とソートを経て効率的なバイナリ形式へ変換する。</li>
+<li>**シリアライズ/デシリアライズ**: <code>tsvectorsend</code> / <code>tsvectorrecv</code> を用いて、データベース間転送やクライアント通信用のバイナリ形式を処理する。</li>
+<li>**データ整合性の維持**: <code>uniquePos</code> や <code>uniqueentry</code> を使用し、<code>tsvector</code> 内の語彙（lexeme）と位置情報（position）の順序・重複制約を強制する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>tsvectorin</code> / <code>tsvectorout</code>: SQL レベルの <code>tsvector</code> 型の入出力関数。</li>
+<li><code>tsvectorsend</code> / <code>tsvectorrecv</code>: バイナリ形式の送受信関数。</li>
+<li><code>WordEntryIN</code>: 入力処理中に使用される、<code>WordEntry</code> とその位置情報を保持する一時的な構造体。</li>
+<li><code>uniqueentry</code>: 複数のトークンをソートし、重複を排除して <code>tsvector</code> の内部レイアウトを構築する中核関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>compareWordEntryPos</code></li>
+<li><code>compareentry</code></li>
+<li><code>uniquePos</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力 (<code>tsvectorin</code>)**:</p>
+<ul>
+<li><code>init_tsvector_parser</code> で入力を解析し、トークンと位置情報のリストを取得。</li>
+<li><code>uniqueentry</code> でトークンをソートし、同一語彙の情報をマージ。</li>
+<li>最終的な <code>TSVector</code> 構造体（ヘッダー＋語彙配列＋位置情報データ）をメモリ上に構築。</li>
+<p>2. **出力 (<code>tsvectorout</code>)**:</p>
+<li><code>TSVector</code> 内部の <code>WordEntry</code> 配列を走査。</li>
+<li>語彙文字列をエスケープし、位置情報があれば <code>:pos</code> 形式で連結して文字列を生成。</li>
+<p>3. **バイナリ転送**:</p>
+<li><code>tsvectorsend</code> は <code>StringInfo</code> を介して、語彙と位置情報を順次ネットワークバイトオーダー（または適切な形式）で書き出す。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>tsearch/ts_utils.h</code>: 全文検索のパーサーやユーティリティ関数。</li>
+<li><code>libpq/pqformat.h</code>: バイナリ送受信用の <code>StringInfo</code> インターフェース。</li>
+<li><code>utils/memutils.h</code>: メモリ管理（<code>palloc</code>, <code>repalloc</code>）。</li>
+<li><code>varatt.h</code>: 可変長データ型のヘッダー操作。</li>
+<li><code>common/int.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tsearch/ts_locale.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/tsvector_parser.c</code>: <code>tsvectorin</code> が依存するトークン解析ロジック。</li>
+<li><code>src/backend/utils/adt/tsvector_op.c</code>: <code>tsvector</code> 型に対する演算子や関数群。</li>
+<li><code>src/include/tsearch/ts_type.h</code>: <code>TSVector</code> や <code>WordEntry</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>tsvectorin</code> は入力サイズに応じて動的にバッファを拡張します。大規模なデータセットを扱う場合、<code>repalloc</code> によるメモリ再割り当てが頻発するため注意が必要です。</li>
+<li>**制約**: <code>tsvector</code> 内の語彙は常にソート済みである必要があります。<code>tsvectorrecv</code> では、入力がソートされていない場合に備えて <code>needSort</code> フラグによる事後ソートを行っています。</li>
+<li>**位置情報**: <code>WordEntryPos</code> は <code>uint16</code> で表現され、位置と重み（Weight）をパックしています。ビット操作を行う際は <code>tsearch/ts_type.h</code> のマクロ定義を必ず参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__WordEntryIN.html" target="wiki-view"><code>WordEntryIN</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__compareWordEntryPos.html" target="wiki-view"><code>compareWordEntryPos</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__uniquePos.html" target="wiki-view"><code>uniquePos</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__compareentry.html" target="wiki-view"><code>compareentry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__uniqueentry.html" target="wiki-view"><code>uniqueentry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__tsvectorin.html" target="wiki-view"><code>tsvectorin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__tsvectorout.html" target="wiki-view"><code>tsvectorout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__tsvectorsend.html" target="wiki-view"><code>tsvectorsend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_c__tsvectorrecv.html" target="wiki-view"><code>tsvectorrecv</code></a></li>
+</ul></body></html>

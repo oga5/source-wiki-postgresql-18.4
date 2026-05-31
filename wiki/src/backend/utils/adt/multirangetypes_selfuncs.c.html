@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/multirangetypes_selfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/multirangetypes_selfuncs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのマルチレンジ型（<code>multirange</code>）に対する演算子の選択率（selectivity）を推定するための関数群を提供します。クエリプランナがコスト見積もりを行う際、統計情報（ヒストグラム）を用いて、特定の条件に合致する行の割合を算出します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、マルチレンジ型に関連する統計的推論を担います。レンジ型（<code>rangetypes</code>）の統計処理を拡張し、複数のレンジを保持するマルチレンジ特有のデータ分布を考慮した推定を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**選択率の計算**: <code>multirangesel</code> を通じて、<code>@&gt;</code>（含む）、<code>&amp;&amp;</code>（重なる）などの演算子に対する選択率を算出する。</li>
+<li>**統計情報の活用**: <code>pg_statistic</code> から取得した境界値ヒストグラムおよびレンジ長ヒストグラムを解析する。</li>
+<li>**デフォルト推定**: 統計情報が不足している場合や、計算不能なケースに対する安全なデフォルト値を返す。</li>
+<li>**空集合の処理**: マルチレンジ特有の「空（empty）」状態の割合を考慮した補正を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>multirangesel</code>: プランナから呼び出されるメインの選択率推定関数。</li>
+<li><code>calc_multirangesel</code>: 統計情報を基に、空集合の割合を考慮しながら選択率を計算する中心的なロジック。</li>
+<li><code>calc_hist_selectivity</code>: 境界値ヒストグラムを用いて演算子ごとの選択率を算出する。</li>
+<li><code>rbound_bsearch</code>: 境界値ヒストグラムに対する二分探索を行い、定数がどのビンに該当するかを特定する。</li>
+<li><code>calc_length_hist_frac</code>: レンジ長ヒストグラムを用いて、指定された範囲内に収まる割合を積分計算する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>calc_hist_selectivity_contained</code></li>
+<li><code>calc_hist_selectivity_contains</code></li>
+<li><code>calc_hist_selectivity_scalar</code></li>
+<li><code>default_multirange_selectivity</code></li>
+<li><code>get_distance</code></li>
+<li><code>get_len_position</code></li>
+<li><code>get_position</code></li>
+<li><code>length_hist_bsearch</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **エントリ**: <code>multirangesel</code> が呼び出され、変数（Var）と定数（Const）のペアを抽出する。 2.  **前処理**: 定数がマルチレンジ型でない場合（例: 要素単体との比較）は、比較可能な形に変換する。 3.  **統計取得**: <code>calc_multirangesel</code> が <code>pg_statistic</code> から NULL率、空集合率、境界ヒストグラムを読み込む。 4.  **計算**: <code>calc_hist_selectivity</code> が演算子に応じて境界値の比較やレンジ長の積分を行い、確率を算出する。 5.  **統合**: 空集合の割合とヒストグラムによる推定値を合成し、最終的な選択率を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/multirangetypes.h</code>, <code>utils/rangetypes.h</code>: マルチレンジ/レンジ型の基本構造と操作。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定の共通基盤。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュとサブタイプ比較関数の取得。</li>
+<li><code>catalog/pg_statistic.h</code>: 統計情報テーブルの定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>math.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/rangetypes_selfuncs.c</code>: レンジ型の選択率推定ロジック。本ファイルの基礎となっており、多くのヘルパー関数が概念的に共通しています。</li>
+<li><code>src/backend/utils/adt/multirangetypes.c</code>: マルチレンジ型のデータ構造と基本的な操作関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**統計の仮定**: 本ファイルの実装は、レンジの長さと下限値が独立しているという統計的な仮定に基づいています。</li>
+<li>**サブタイプ依存**: 境界値の比較には、各型のサブタイプに定義された比較関数や <code>subdiff</code> 関数が使用されます。これらが正しく定義されていない型では、推定精度が低下したり、デフォルト値にフォールバックしたりします。</li>
+<li>**デバッグ**: 複雑な計算（特に <code>calc_length_hist_frac</code> の積分処理）が含まれるため、推定値が不自然な場合は、<code>pg_statistic</code> のヒストグラムデータが適切に生成されているか（<code>ANALYZE</code> の結果）を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__default_multirange_selectivity.html" target="wiki-view"><code>default_multirange_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_multirangesel.html" target="wiki-view"><code>calc_multirangesel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_hist_selectivity.html" target="wiki-view"><code>calc_hist_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_hist_selectivity_scalar.html" target="wiki-view"><code>calc_hist_selectivity_scalar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__rbound_bsearch.html" target="wiki-view"><code>rbound_bsearch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__length_hist_bsearch.html" target="wiki-view"><code>length_hist_bsearch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__get_position.html" target="wiki-view"><code>get_position</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__get_len_position.html" target="wiki-view"><code>get_len_position</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__get_distance.html" target="wiki-view"><code>get_distance</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_length_hist_frac.html" target="wiki-view"><code>calc_length_hist_frac</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_hist_selectivity_contained.html" target="wiki-view"><code>calc_hist_selectivity_contained</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__multirangetypes_selfuncs_c__calc_hist_selectivity_contains.html" target="wiki-view"><code>calc_hist_selectivity_contains</code></a></li>
+</ul></body></html>

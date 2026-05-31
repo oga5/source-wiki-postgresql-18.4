@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/funccache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/funccache.c</h1>
+<h2>概要</h2>
+<p><code>funccache.c</code> は、PostgreSQL における関数実行データのキャッシュ管理を行うモジュールです。SQL や PL/pgSQL など、複数の言語で共通して利用可能なキャッシュ機構を提供し、関数呼び出し時のオーバーヘッドを削減します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> サブシステムの一部として、関数定義（<code>pg_proc</code>）と実行時のコンテキスト（引数型、照合順序、トリガー情報など）を紐付けたキャッシュを提供します。これにより、多相関数（polymorphic function）のように、引数の型によって実行計画が異なる関数の効率的な再利用を可能にします。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュのライフサイクル管理**: 関数実行データのハッシュテーブルへの格納、検索、削除。</li>
+<li>**無効化の検知**: <code>pg_proc</code> の更新（<code>xmin</code> や <code>ctid</code> の変化）を検知し、古いキャッシュを破棄する。</li>
+<li>**コンパイルの抽象化**: 言語固有のコンパイル処理をコールバック経由で実行し、結果をキャッシュする。</li>
+<li>**多相型の解決**: 実行時に確定した引数型に基づき、キャッシュキーを生成する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>cfunc_hashtable</code>: キャッシュを保持するグローバルなハッシュテーブル。</li>
+<li><code>CachedFunction</code>: コンパイル済み関数の基底構造体。言語固有のデータが後に続く。</li>
+<li><code>CachedFunctionHashKey</code>: キャッシュの検索キー。関数OID、引数型、照合順序、トリガーOID等を含む。</li>
+<li><code>cached_function_compile()</code>: キャッシュの検索・コンパイル・挿入を行うメインエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CachedFunctionHashEntry</code></li>
+<li><code>cached_function_compile</code></li>
+<li><code>cfunc_hash</code></li>
+<li><code>cfunc_hashtable_delete</code></li>
+<li><code>cfunc_hashtable_init</code></li>
+<li><code>cfunc_hashtable_insert</code></li>
+<li><code>cfunc_hashtable_lookup</code></li>
+<li><code>cfunc_match</code></li>
+<li><code>cfunc_resolve_polymorphic_argtypes</code></li>
+<li><code>compute_function_hashkey</code></li>
+<li><code>delete_function</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>cached_function_compile</code> が呼び出されると、現在の実行コンテキストから <code>CachedFunctionHashKey</code> を生成し、ハッシュテーブルを検索します。 2. **検証**: キャッシュが存在する場合、<code>pg_proc</code> の <code>xmin</code>/<code>ctid</code> と比較し、定義が最新か確認します。古い場合は <code>delete_function</code> で破棄します。 3. **コンパイル**: キャッシュミスまたは無効な場合、提供された <code>ccallback</code> を実行して関数をコンパイルし、<code>TopMemoryContext</code> に確保したメモリへ格納します。 4. **挿入**: 新規作成されたエントリを <code>cfunc_hashtable_insert</code> でハッシュテーブルに登録します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_proc.h</code>: 関数定義のメタデータ取得。</li>
+<li><code>utils/syscache.h</code>: <code>pg_proc</code> システムキャッシュの検索。</li>
+<li><code>utils/hsearch.h</code>: ハッシュテーブル操作。</li>
+<li><code>utils/funccache.h</code>: 共有データ構造とコールバック定義。</li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/funccache.h</code>: 本ファイルのデータ構造定義とコールバック型定義。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: システムカタログキャッシュの基盤。</li>
+<li><code>src/backend/utils/fmgr/fmgr.c</code>: 関数マネージャの実行基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: キャッシュエントリは <code>TopMemoryContext</code> に割り当てられ、バックエンドの生存期間中保持されます。</li>
+<li>**多相型の扱い**: <code>cfunc_resolve_polymorphic_argtypes</code> は標準の解決ロジックに加え、<code>RECORD</code> 型の入力引数も個別のキャッシュエントリとして扱うよう拡張されています。</li>
+<li>**トリガーの扱い**: トリガー関数は、呼び出し元のトリガーOIDをキーに含めることで、トリガーごとに個別のキャッシュを生成します。</li>
+<li>**注意点**: <code>use_count</code> が 0 でないキャッシュエントリは、現在実行中のクエリが存在する可能性があるため、即座にメモリ解放されない場合があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__CachedFunctionHashEntry.html" target="wiki-view"><code>CachedFunctionHashEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_hashtable_init.html" target="wiki-view"><code>cfunc_hashtable_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_hash.html" target="wiki-view"><code>cfunc_hash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_match.html" target="wiki-view"><code>cfunc_match</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_hashtable_lookup.html" target="wiki-view"><code>cfunc_hashtable_lookup</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_hashtable_insert.html" target="wiki-view"><code>cfunc_hashtable_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_hashtable_delete.html" target="wiki-view"><code>cfunc_hashtable_delete</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__compute_function_hashkey.html" target="wiki-view"><code>compute_function_hashkey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cfunc_resolve_polymorphic_argtypes.html" target="wiki-view"><code>cfunc_resolve_polymorphic_argtypes</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__delete_function.html" target="wiki-view"><code>delete_function</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__funccache_c__cached_function_compile.html" target="wiki-view"><code>cached_function_compile</code></a></li>
+</ul></body></html>

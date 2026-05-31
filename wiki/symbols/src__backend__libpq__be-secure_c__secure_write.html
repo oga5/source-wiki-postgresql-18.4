@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__libpq__be-secure_c__secure_write.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>secure_write</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/libpq/be-secure.c:304</code></li>
+</ul>
+<h2>目的</h2>
+<p>クライアントとの通信において、暗号化方式（SSL/TLS、GSSAPI）または平文のいずれか適切な手段を選択し、データを安全に書き込むための抽象化インターフェースを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ssize_t secure_write(Port *port, const void *ptr, size_t len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>port</code>: 通信状態や暗号化フラグを保持する <code>Port</code> 構造体へのポインタ。</li>
+<li><code>ptr</code>: 書き込むデータが格納されたバッファ。</li>
+<li><code>len</code>: 書き込むデータのバイト数。</li>
+<li>**出力**:</li>
+<li>成功時は書き込んだバイト数（<code>ssize_t</code>）、失敗時は <code>-1</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>port</code> が有効な接続状態であること。</li>
+<li>割り込み処理（<code>ProcessClientWriteInterrupt</code>）が呼び出しの前後で適切に実行されること。</li>
+<li>非ブロッキングモード（<code>port-&gt;noblock</code> が偽）の場合、ソケットが書き込み可能になるまで待機するループが保証されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **割り込みチェック**: <code>ProcessClientWriteInterrupt(false)</code> を呼び出し、保留中の割り込みを処理します。 2. **書き込み実行**: <code>port</code> の設定に基づき、以下のいずれかの関数を呼び出します。</p>
+<ul>
+<li>SSL有効時: <code>be_tls_write</code></li>
+<li>GSSAPI有効時: <code>be_gssapi_write</code></li>
+<li>それ以外: <code>secure_raw_write</code></li>
+<p>3. **ブロッキング制御**: 書き込みが <code>EWOULDBLOCK</code> または <code>EAGAIN</code> で失敗し、かつ非ブロッキングモードでない場合、<code>WaitEventSet</code> を使用してソケットが書き込み可能になるまで待機します。</p>
+<li>待機中にポストマスターの終了が検知された場合は <code>FATAL</code> エラーを発生させます。</li>
+<li>割り込み（<code>WL_LATCH_SET</code>）が発生した場合は、ラッチをリセットし割り込み処理を実行してから再試行します。</li>
+<p>4. **終了処理**: 最後に再度 <code>ProcessClientWriteInterrupt(false)</code> を呼び出し、書き込み完了後の割り込みを処理して結果を返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/libpq/pqcomm.c:1374</code></li>
+<li><code>src/backend/tcop/backend_startup.c:604</code></li>
+<li><code>src/backend/tcop/backend_startup.c:667</code></li>
+<li>**呼び出し先**:</li>
+<li><code>be_tls_write</code> (SSL有効時)</li>
+<li><code>be_gssapi_write</code> (GSSAPI有効時)</li>
+<li><code>secure_raw_write</code> (平文時)</li>
+<li><code>ProcessClientWriteInterrupt</code></li>
+<li><code>WaitEventSetWait</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Port</code>: 通信状態、暗号化フラグ（<code>ssl_in_use</code>, <code>gss</code>）、ブロッキング設定（<code>noblock</code>）を保持。</li>
+<li><code>WaitEventSet</code>: I/O待機イベント管理用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**書き込みエラー**: <code>n &lt; 0</code> かつ <code>EWOULDBLOCK</code>/<code>EAGAIN</code> 以外の場合、呼び出し元へエラーが伝播します。</li>
+<li>**ポストマスター終了**: 待機中にポストマスターが終了した場合、<code>FATAL</code> エラーによりプロセスが終了します。</li>
+<li>**割り込み**: 待機中に割り込みが発生した場合、再試行ループにより処理が継続されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>be-secure-openssl.c</code> や <code>be-secure-gssapi.c</code> と密接に連携しています。具体的な暗号化ロジックの変更は各実装ファイルを確認してください。</li>
+<li><code>retry</code> ループ内での <code>WaitEventSet</code> の利用は、PostgreSQLの非同期的な割り込み処理を正しく扱うための重要なパターンです。修正時は <code>secure_read</code> との整合性に注意してください。</li>
+</ul></body></html>

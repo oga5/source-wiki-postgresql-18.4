@@ -1,0 +1,134 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/selfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/selfuncs.c</h1>
+<h2>概要</h2>
+<p><code>selfuncs.c</code> は、PostgreSQL のクエリプランナが使用する「選択率（Selectivity）」推定関数およびインデックスの「コスト推定」関数の実装を担う中心的なファイルです。SQL レベルで定義された演算子（<code>oprrest</code>, <code>oprjoin</code>）の背後で動作し、統計情報（<code>pg_statistic</code>）やヒストグラムを用いて、特定の条件式がテーブルの何割の行に一致するかを推定します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、データ型ごとの演算子とプランナを橋渡しします。プランナが実行計画を立てる際、インデックススキャンや結合アルゴリズムの選択を最適化するために、このファイルで定義された関数が呼び出されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**選択率推定**: 制限句（<code>WHERE</code> 句）および結合句の選択率（0.0〜1.0）の計算。</li>
+<li>**統計情報の活用**: <code>pg_statistic</code> から MCV（Most Common Values）やヒストグラムを取得し、分布に基づいた推定を行う。</li>
+<li>**インデックスコスト推定**: 各インデックスアクセスメソッド（B-Tree, GIN, BRIN 等）のコスト計算ロジックの提供。</li>
+<li>**型変換支援**: 統計情報とクエリ内の定数を比較可能なスケールに変換するユーティリティの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>選択率推定関数</h3>
+<ul>
+<li><code>eqsel</code>, <code>neqsel</code>: 等価・不等価演算子の選択率推定。</li>
+<li><code>scalarltsel</code>, <code>scalarlesel</code>, <code>scalargtsel</code>, <code>scalargesel</code>: スカラー値の不等号比較の選択率推定。</li>
+<li><code>boolvarsel</code>, <code>booltestsel</code>, <code>nulltestsel</code>: ブール型や NULL 判定の選択率推定。</li>
+<li><code>scalararraysel</code>: <code>ANY</code>/<code>ALL</code> 演算子の選択率推定。</li>
+</ul>
+<h3>内部計算・ユーティリティ</h3>
+<ul>
+<li><code>eqsel_internal</code>: 等価・不等価推定の共通ロジック。</li>
+<li><code>mcv_selectivity</code>: MCV リストを用いた選択率計算。</li>
+<li><code>histogram_selectivity</code>: ヒストグラムを用いた選択率計算。</li>
+<li><code>generic_restriction_selectivity</code>: 統計情報が存在する場合の汎用的な推定ロジック。</li>
+<li><code>convert_to_scalar</code>: 統計情報の境界値とクエリ定数を比較可能な <code>double</code> 型へ変換。</li>
+</ul>
+<h3>コスト推定関数</h3>
+<ul>
+<li><code>genericcostestimate</code>: 多くのインデックスで利用される汎用コスト推定。</li>
+<li><code>btcostestimate</code>, <code>gincostestimate</code>, <code>brincostestimate</code>: 各インデックス型固有のコスト計算。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GinQualCounts</code></li>
+<li><code>GroupVarInfo</code></li>
+<li><code>ReleaseDummy</code></li>
+<li><code>eqsel_internal</code></li>
+<li><code>generic_restriction_selectivity</code></li>
+<li><code>histogram_selectivity</code></li>
+<li><code>ineq_histogram_selectivity</code></li>
+<li><code>mcv_selectivity</code></li>
+<li><code>scalarineqsel_wrapper</code></li>
+<li><code>strip_array_coercion</code></li>
+<li><code>var_eq_const</code></li>
+<li><code>var_eq_non_const</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **プランナからの呼び出し**: プランナが <code>clause_selectivity</code> 等を呼び出し、演算子に対応する関数（<code>oprrest</code> 等）が起動されます。 2. **変数情報の取得**: <code>examine_variable</code> を通じて、対象の列（Var）や式に関する統計情報（<code>VariableStatData</code>）を <code>pg_statistic</code> から取得します。 3. **推定の実行**:</p>
+<ul>
+<li>MCV があれば優先的に使用。</li>
+<li>ヒストグラムがあれば <code>convert_to_scalar</code> で正規化し、線形補間を用いて推定。</li>
+<li>統計情報が不足している場合は、デフォルト値（<code>DEFAULT_EQ_SEL</code> 等）を使用。</li>
+<p>4. **結果のクランプ**: <code>CLAMP_PROBABILITY</code> マクロにより、推定値が 0.0〜1.0 の範囲に収まるよう調整されます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_statistic.h</code>: 統計情報の構造体定義。</li>
+<li><code>optimizer/cost.h</code>, <code>optimizer/pathnode.h</code>: プランナのコスト計算用構造体。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定関数のプロトタイプと定数定義。</li>
+<li><code>access/brin.h</code></li>
+<li><code>access/brin_page.h</code></li>
+<li><code>access/gin.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/index_selfuncs.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_locale.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/spccache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/selfuncs.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/optimizer/path/clausesel.c</code>: 選択率推定の呼び出し元となるプランナのロジック。</li>
+<li><code>src/backend/statistics/</code>: 拡張統計情報（<code>pg_statistic_ext</code>）の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>VariableStatData</code> 内の <code>statsTuple</code> は、呼び出し元で <code>ReleaseVariableStats</code> を使って解放する必要があります。</li>
+<li>**セキュリティ**: <code>statistic_proc_security_check</code> は、統計情報に含まれるデータが非公開情報（RLS 等）を漏洩しないよう、関数が <code>leakproof</code> であるかを確認します。</li>
+<li>**精度**: ヒストグラムの補間はあくまで近似です。特にデータ分布が極端に偏っている場合や、統計情報が古い場合は推定精度が低下します。</li>
+<li>**省略**: 本ファイルは非常に巨大ですが、各データ型に特化した複雑な変換ロジック（<code>convert_to_scalar</code> の詳細など）は、特定の型に依存する補助関数に隠蔽されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__eqsel_internal.html" target="wiki-view"><code>eqsel_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__var_eq_const.html" target="wiki-view"><code>var_eq_const</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__var_eq_non_const.html" target="wiki-view"><code>var_eq_non_const</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__mcv_selectivity.html" target="wiki-view"><code>mcv_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__histogram_selectivity.html" target="wiki-view"><code>histogram_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__generic_restriction_selectivity.html" target="wiki-view"><code>generic_restriction_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__ineq_histogram_selectivity.html" target="wiki-view"><code>ineq_histogram_selectivity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__scalarineqsel_wrapper.html" target="wiki-view"><code>scalarineqsel_wrapper</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__strip_array_coercion.html" target="wiki-view"><code>strip_array_coercion</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__GroupVarInfo.html" target="wiki-view"><code>GroupVarInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__ReleaseDummy.html" target="wiki-view"><code>ReleaseDummy</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__selfuncs_c__GinQualCounts.html" target="wiki-view"><code>GinQualCounts</code></a></li>
+</ul></body></html>

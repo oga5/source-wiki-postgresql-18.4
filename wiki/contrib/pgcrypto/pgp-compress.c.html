@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgcrypto/pgp-compress.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgcrypto/pgp-compress.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PGPデータストリームにおけるZIPおよびZLIB形式の圧縮・伸長機能を提供します。<code>zlib</code> ライブラリをラップし、<code>pgcrypto</code> モジュール内のフィルタパイプライン（<code>PushFilter</code> / <code>PullFilter</code>）に統合するためのインターフェースを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgcrypto</code> モジュールにおいて、暗号化処理の前段または復号処理の後段で実行されるデータ変換フィルタとして機能します。<code>pgp-encrypt.c</code> や <code>pgp-decrypt.c</code> から呼び出され、ストリーム処理の一部として透過的に圧縮・伸長を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**圧縮フィルタの提供**: <code>PushFilter</code> を介して、入力データを <code>zlib</code> で圧縮し、後続のフィルタへ書き出す。</li>
+<li>**伸長フィルタの提供**: <code>PullFilter</code> を介して、ソースから読み込んだデータを <code>zlib</code> で伸長し、要求元へ提供する。</li>
+<li>**リソース管理**: <code>zlib</code> のストリーム状態（<code>z_stream</code>）の初期化、メモリ確保（<code>palloc</code>/<code>pfree</code>）、および終了処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgp_compress_filter</code>: 圧縮用 <code>PushFilter</code> を生成する公開関数。</li>
+<li><code>pgp_decompress_filter</code>: 伸長用 <code>PullFilter</code> を生成する公開関数。</li>
+<li><code>ZipStat</code> / <code>DecomprData</code>: それぞれ圧縮・伸長時の状態を保持する内部構造体。</li>
+<li><code>z_alloc</code> / <code>z_free</code>: <code>zlib</code> が PostgreSQL のメモリ管理機構を使用するためのラッパー関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>compress_flush</code></li>
+<li><code>compress_free</code></li>
+<li><code>compress_init</code></li>
+<li><code>compress_process</code></li>
+<li><code>decompress_free</code></li>
+<li><code>decompress_init</code></li>
+<li><code>decompress_read</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**圧縮**: <code>compress_process</code> が呼び出されると、入力データを <code>deflate()</code> に渡し、圧縮されたチャンクを <code>pushf_write()</code> で下位フィルタへ送出します。終了時には <code>compress_flush()</code> が <code>Z_FINISH</code> を指定して残りのバッファをフラッシュします。</li>
+<li>**伸長**: <code>decompress_read</code> が要求されると、<code>pullf_read()</code> でソースからデータを取得し、<code>inflate()</code> で伸長します。伸長結果は内部バッファに保持され、要求されたサイズ分だけ切り出して返されます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型およびメモリ管理関数。</li>
+<li><code>pgp.h</code>: PGP 関連の定数およびコンテキスト定義。</li>
+<li><code>px.h</code>: <code>pgcrypto</code> の汎用フィルタインターフェース定義。</li>
+<li><code>zlib.h</code>: 圧縮・伸長アルゴリズムの実装（<code>HAVE_LIBZ</code> 定義時のみ）。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgp.c</code>: PGP 処理の全体的な制御とコンテキスト管理。</li>
+<li><code>mbuf.h</code>: フィルタパイプラインで使用されるメモリバッファ管理。</li>
+<li><code>pgp-encrypt.c</code> / <code>pgp-decrypt.c</code>: 本フィルタを実際に利用する上位モジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>zlib</code> がインストールされていない環境では、本ファイル内の関数は <code>PXE_PGP_UNSUPPORTED_COMPR</code> を返すスタブとして動作します。</li>
+<li>伸長処理において、<code>Z_SYNC_FLUSH</code> を使用してストリームの終端判定を行っています。PGP特有のパケット構造に合わせるため、ストリーム終了後に余分なデータがないかを確認するロジックが含まれています。</li>
+<li><code>z_alloc</code> と <code>z_free</code> は、<code>zlib</code> が PostgreSQL の <code>palloc</code> を使用するように強制しており、メモリリークを防ぐ設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__ZipStat.html" target="wiki-view"><code>ZipStat</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__z_alloc.html" target="wiki-view"><code>z_alloc</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__z_free.html" target="wiki-view"><code>z_free</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__compress_init.html" target="wiki-view"><code>compress_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__compress_process.html" target="wiki-view"><code>compress_process</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__compress_flush.html" target="wiki-view"><code>compress_flush</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__compress_free.html" target="wiki-view"><code>compress_free</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__pgp_compress_filter.html" target="wiki-view"><code>pgp_compress_filter</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__DecomprData.html" target="wiki-view"><code>DecomprData</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__decompress_init.html" target="wiki-view"><code>decompress_init</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__decompress_read.html" target="wiki-view"><code>decompress_read</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-compress_c__decompress_free.html" target="wiki-view"><code>decompress_free</code></a></li>
+</ul></body></html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/hemdistsign.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hemdistsign</h1>
+<h2>概念</h2>
+<p><code>hemdistsign</code> は、PostgreSQLのGiST（Generalized Search Tree）インデックス実装において、2つのビットベクトル（シグネチャ）間のハミング距離（異なるビットの総数）を計算するための関数です。この距離は、インデックスノードの分割や類似度の評価、ペナルティ（コスト）計算に利用されます。</p>
+<h2>なぜ重要か</h2>
+<p>GiSTインデックスでは、データをシグネチャと呼ばれるビットベクトルにマッピングして管理します。インデックスの検索効率を高く保つためには、類似したシグネチャを同じノードに集約する必要があります。<code>hemdistsign</code> は、2つのシグネチャがどれだけ異なっているかを高速に判定する手段を提供し、インデックスの構築や更新時における最適なノード分割や配置の決定において重要な役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<p>本機能には以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:contrib/hstore</code></li>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:contrib/pg_trgm</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<p><code>hemdistsign</code> は、各モジュールのGiSTインデックス関連ソースコード内で定義または利用されています。</p>
+<ul>
+<li><code>symbol:contrib/hstore/hstore_gist.c#hemdistsign</code></li>
+<li><code>symbol:contrib/intarray/_intbig_gist.c#hemdistsign</code></li>
+<li><code>symbol:contrib/ltree/_ltree_gist.c#hemdistsign</code></li>
+<li><code>symbol:contrib/pg_trgm/trgm_gist.c#hemdistsign</code></li>
+<li><code>symbol:src/backend/utils/adt/tsgistidx.c#hemdistsign</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>GiSTインデックスの構築やタプル挿入時における詳細なエンドツーエンドの制御フロー（どのタイミングでどの関数がどのように呼び出されるか）の全貌は、提供された情報からは完全には明らかになっていません。</p>
+<p>現時点で判明している部分的な流れは以下の通りです。 1. GiSTインデックスのノード分割処理（例: <code>contrib/intarray/_intbig_gist.c</code> 内の <code>g_intbig_picksplit</code> など）が実行されます。 2. 分割アルゴリズムの中で、2つのビットベクトル（<code>BITVECP</code> 型の <code>a</code> と <code>b</code>）およびその長さ（<code>siglen</code> バイト）を引数として <code>hemdistsign</code> が呼び出されます。 3. <code>hemdistsign</code> は、指定されたバイト数（<code>siglen</code>）だけループを回し、各バイトごとに <code>a</code> と <code>b</code> の排他的論理和（XOR）を計算します。 4. XORの結果をインデックスとして、グローバルなビットカウントテーブル <code>pg_number_of_ones</code> を参照し、異なるビットの数を累積してハミング距離を算出します。 5. 算出されたハミング距離（<code>int</code>）を呼び出し元に返し、ノード分割のコスト評価等に利用されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリの有効性**: 入力されるビットベクトル <code>a</code> および <code>b</code> は、少なくとも <code>siglen</code> バイト以上の有効なメモリ領域を指している必要があります。</li>
+<li>**ルックアップテーブルの存在**: 0〜255の各値に対するビットカウントを保持する <code>pg_number_of_ones</code> 配列がシステム内で利用可能であり、正しく初期化されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**境界条件の未定義動作**: <code>siglen</code> に負の値や、実際のメモリ確保サイズを超える不正なサイズが渡された場合、メモリ境界外アクセス（バッファオーバーラン）が発生する危険性があります。呼び出し側で <code>siglen</code> の整合性を保証する必要があります。</li>
+<li>**NULLポインタ**: <code>a</code> または <code>b</code> が <code>NULL</code> の場合の挙動は定義されていません。</li>
+<li>**重複実装と保守性**: <code>hemdistsign</code> は複数の <code>contrib</code> モジュール（<code>hstore</code>, <code>intarray</code>, <code>ltree</code>, <code>pg_trgm</code> など）で個別に定義または利用されているため、アルゴリズムの変更や最適化（例: 現代的なCPUの <code>popcount</code> 命令の導入など）を行う際には、すべての関連モジュールへの影響を考慮する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/intarray/_intbig_gist.c</code> (特に <code>hemdistsign</code> の定義と <code>g_intbig_picksplit</code> での利用箇所)</li>
+<li><code>contrib/ltree/_ltree_gist.c</code> (もう一つの具体的な <code>hemdistsign</code> 実装例)</li>
+<li><code>contrib/hstore/hstore_gist.c</code></li>
+<li><code>contrib/pg_trgm/trgm_gist.c</code></li>
+<li><code>src/backend/utils/adt/tsgistidx.c</code></li>
+</ul></body></html>

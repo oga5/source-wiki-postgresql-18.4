@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_finish.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>smgr_bulk_finish</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/smgr/bulk_write.c:129</code></li>
+</ul>
+<h2>目的</h2>
+<p>バルク書き込み操作を終了し、保留中のページをフラッシュして、必要に応じてリレーションの永続性を保証（<code>fsync</code> またはチェックポイントへの登録）する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void smgr_bulk_finish(BulkWriteState *bulkstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>BulkWriteState *bulkstate</code>（書き込み状態を保持する構造体へのポインタ）</li>
+<li>**出力**: なし（副作用としてストレージへの書き込みと同期処理を実行）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>bulkstate</code> は <code>smgr_bulk_start_*</code> によって初期化済みであること。</li>
+<li>本関数呼び出し時点で、対象リレーションに対する他のバックエンドからのアクセスがないこと。</li>
+<li><code>MyProc-&gt;delayChkptFlags</code> の操作を行うため、適切なプロセスコンテキストが必要。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **フラッシュ**: <code>smgr_bulk_flush(bulkstate)</code> を呼び出し、キュー内の全ページをストレージへ書き出す。 2. **同期処理の分岐**:</p>
+<ul>
+<li>**一時リレーション**: 何もせず終了。</li>
+<li>**WALログなし（非ログ記録または <code>wal_level=minimal</code>）**: <code>smgrregistersync</code> を呼び出し、チェックポイントでのフラッシュを予約する。</li>
+<li>**WALログあり**: </li>
+<li>チェックポイントとの競合を防ぐため <code>DELAY_CHKPT_START</code> フラグをセットする。</li>
+<li>書き込み開始時と現在の <code>RedoRecPtr</code> を比較し、チェックポイントが介在した場合は <code>smgrimmedsync</code> で即時 <code>fsync</code> を実行する。</li>
+<li>競合がない場合は <code>smgrregistersync</code> でチェックポイントに登録する。</li>
+<li>最後に <code>DELAY_CHKPT_START</code> フラグを解除する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/gist/gistbuild.c</code></li>
+<li><code>src/backend/access/heap/rewriteheap.c</code></li>
+<li><code>src/backend/access/nbtree/nbtree.c</code></li>
+<li><code>src/backend/access/nbtree/nbtsort.c</code></li>
+<li><code>src/backend/access/spgist/spginsert.c</code></li>
+<li><code>src/backend/catalog/storage.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>smgr_bulk_flush</code></li>
+<li><code>SmgrIsTemp</code></li>
+<li><code>smgrregistersync</code></li>
+<li><code>GetRedoRecPtr</code></li>
+<li><code>smgrimmedsync</code></li>
+<li><code>elog</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BulkWriteState</code>: 書き込みの進捗、WALの要否、対象リレーション情報を保持。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>チェックポイントが書き込み中に発生した場合、<code>smgrimmedsync</code> による強制同期が行われる。</li>
+<li><code>wal_level=minimal</code> の場合、<code>smgrDoPendingSyncs</code> がコミット時に同期を担うため、本関数内では同期処理をスキップする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>MyProc-&gt;delayChkptFlags</code> の操作は、チェックポイントによる <code>fsync</code> 漏れを防ぐための重要な排他制御である。</li>
+<li><code>use_wal</code> が偽の場合、一時リレーションと永続リレーション（<code>wal_level=minimal</code>）を区別できないため、保守的な実装（<code>smgrregistersync</code>）となっている。</li>
+</ul></body></html>

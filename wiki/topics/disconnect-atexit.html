@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/disconnect-atexit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>disconnect_atexit</h1>
+<h2>概念</h2>
+<p><code>disconnect_atexit</code> は、PostgreSQL の各種クライアントツールやテストツールにおいて、プログラム終了時に確立されているデータベース接続（libpq 接続）を安全かつ確実に切断・クリーンアップするために用意された静的（<code>static</code>）関数です。複数のモジュールで同名かつ同様の目的を持つ関数として個別に定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>プログラムが正常終了またはエラーによって終了する際、データベースサーバーとの接続（特にレプリケーション接続やテスト用の複数接続）が切断されずに残ることを防ぐために重要です。<code>atexit()</code> を用いてこの関数を登録しておくことで、プログラムの終了経路に関わらず自動的に <code>PQfinish</code> が呼び出され、サーバー側のリソースや接続スロットが速やかに解放されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_basebackup</code></li>
+<li><code>module:src/bin/pg_rewind</code></li>
+<li><code>module:src/test/isolation</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/bin/pg_basebackup/pg_basebackup.c#disconnect_atexit</code></li>
+<li><code>symbol:src/bin/pg_basebackup/pg_receivewal.c#disconnect_atexit</code></li>
+<li><code>symbol:src/bin/pg_basebackup/pg_recvlogical.c#disconnect_atexit</code></li>
+<li><code>symbol:src/bin/pg_rewind/pg_rewind.c#disconnect_atexit</code></li>
+<li><code>symbol:src/test/isolation/isolationtester.c#disconnect_atexit</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各ツールにおける一般的なライフサイクルは以下の通りです。</p>
+<p>1. **登録**: プログラムの初期化フェーズにおいて、<code>atexit(disconnect_atexit)</code> を呼び出して終了時ハンドラとして登録します。</p>
+<ul>
+<li><code>pg_receivewal.c</code> (835行目付近)</li>
+<li><code>pg_recvlogical.c</code> (954行目付近)</li>
+<li><code>pg_rewind.c</code> (300行目付近)</li>
+<li><code>isolationtester.c</code> (151行目付近)</li>
+<p>2. **接続の保持**: 接続が確立されると、ファイルローカルなグローバル変数（<code>conn</code> または <code>conns</code> 配列）に <code>PGconn</code> オブジェクトが格納されます。 3. **自動実行**: プログラムが終了（<code>exit()</code> の呼び出しや <code>main</code> からの復帰）する際、登録された <code>disconnect_atexit</code> が自動的に起動します。 4. **切断処理**:</p>
+<li>**単一接続ツール** (<code>pg_receivewal</code>, <code>pg_recvlogical</code>, <code>pg_rewind</code>): グローバル変数 <code>conn</code> が <code>NULL</code> でないことを確認し、<code>PQfinish(conn)</code> を呼び出します。</li>
+<li>**複数接続ツール** (<code>isolationtester</code>): 保持している接続数 <code>nconns</code> 分だけループを回し、有効な <code>conns[i].conn</code> に対して <code>PQfinish</code> を呼び出します。</li>
+</ul>
+<p>*注意: <code>pg_basebackup.c</code> における具体的な登録箇所や、詳細な内部フローについては提供されたコンテキスト情報からは直接示されておらず、エンドツーエンドの全容は完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**NULL ポインタに対する安全性**: <code>PQfinish</code> は <code>NULL</code> ポインタを渡されても安全に動作するため、接続が未確立（<code>conn</code> が <code>NULL</code>）の状態で呼び出されてもエラーを発生させずに安全に終了しなければなりません。</li>
+<li>**グローバル状態への依存**: 各ツールの <code>disconnect_atexit</code> は、それぞれのファイル内で定義されたグローバル変数（<code>conn</code>、または <code>conns</code> と <code>nconns</code>）の生存期間と状態に依存しています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**コードの重複と一貫性の維持**: 本関数は各ツール（<code>pg_basebackup</code>、<code>pg_receivewal</code>、<code>pg_recvlogical</code>、<code>pg_rewind</code>、<code>isolationtester</code>）のソースコード内に個別に定義されています。共通のクリーンアップ処理の変更や修正を行う際は、それぞれのファイルに存在する同名関数に対して個別に修正を適用し、一貫性を保つ必要があります。</li>
+<li>**非同期終了時の挙動**: <code>atexit</code> ハンドラは通常のプログラム終了時にのみ呼び出されます。シグナル（例: <code>SIGKILL</code>）による強制終了など、特定の異常終了経路においてこのクリーンアップがスキップされる可能性については、各ツールのシグナルハンドラ設計に依存します（本コンテキストからは詳細なシグナル連携は不明です）。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/pg_basebackup.c</code></li>
+<li><code>src/bin/pg_basebackup/pg_receivewal.c</code></li>
+<li><code>src/bin/pg_basebackup/pg_recvlogical.c</code></li>
+<li><code>src/bin/pg_rewind/pg_rewind.c</code></li>
+<li><code>src/test/isolation/isolationtester.c</code></li>
+</ul></body></html>

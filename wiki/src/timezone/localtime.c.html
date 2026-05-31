@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/timezone/localtime.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/timezone/localtime.c</h1>
+<h2>概要</h2>
+<p><code>localtime.c</code> は、PostgreSQL における時刻変換エンジンの核心です。IANA Time Zone Database (TZif) 形式のバイナリファイルを解析し、UNIX タイムスタンプ（<code>pg_time_t</code>）を、指定されたタイムゾーンの分解時刻（<code>pg_tm</code>）へ変換するロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/timezone</code> サブシステムにおいて、<code>pgtz.c</code> がキャッシュ管理やファイル検索を担当するのに対し、本ファイルは「変換ロジック」と「データ構造の解釈」に特化しています。フロントエンドとバックエンドの両方で動作するよう設計されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**TZif 解析**: バイナリ形式のタイムゾーン定義をメモリ上の <code>state</code> 構造体にロード・展開する。</li>
+<li>**時刻変換**: タイムゾーンの遷移ルールに基づき、UTC タイムスタンプをローカル時刻へ変換する。</li>
+<li>**POSIX TZ 文字列処理**: ファイルが存在しない場合に備えた、POSIX 形式の TZ 文字列の動的解析とルール生成。</li>
+<li>**境界判定**: DST（夏時間）の切り替わりや、特定のタイムゾーン略称の有効性を判定するユーティリティの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造と状態</h3>
+<ul>
+<li><code>struct state</code>: タイムゾーンの遷移情報、オフセット、略称、閏秒情報を保持するコア構造体。</li>
+<li><code>union input_buffer</code>: TZif ファイル読み込み用の一時バッファ。</li>
+<li><code>struct rule</code>: POSIX TZ 文字列から生成される遷移ルール。</li>
+</ul>
+<h3>変換・解析関数</h3>
+<ul>
+<li><code>tzloadbody</code>: TZif ファイルを読み込み、<code>state</code> 構造体を構築するメインエンジン。</li>
+<li><code>localsub</code>: <code>pg_localtime</code> の実体。タイムゾーン遷移を二分探索し、<code>timesub</code> を呼び出す。</li>
+<li><code>timesub</code>: タイムスタンプを分解時刻（<code>pg_tm</code>）に変換する低レベル関数。</li>
+<li><code>tzparse</code>: POSIX TZ 文字列を解析し、<code>state</code> 構造体を生成する。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>pg_next_dst_boundary</code>: 次の DST 遷移タイミングを特定する。</li>
+<li><code>pg_interpret_timezone_abbrev</code>: 略称からオフセットと DST フラグを逆引きする。</li>
+<li><code>pg_tz_acceptable</code>: 閏秒対応の有無を判定し、PostgreSQL の時刻演算に適しているか検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>differ_by_repeat</code></li>
+<li><code>file_analysis</code></li>
+<li><code>init_ttinfo</code></li>
+<li><code>leaps_thru_end_of</code></li>
+<li><code>leaps_thru_end_of_nonneg</code></li>
+<li><code>pg_get_next_timezone_abbrev</code></li>
+<li><code>pg_get_timezone_name</code></li>
+<li><code>pg_get_timezone_offset</code></li>
+<li><code>pg_gmtime</code></li>
+<li><code>pg_localtime</code></li>
+<li><code>r_type</code></li>
+<li><code>rule</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tzload</code> が <code>tzloadbody</code> を呼び出し、ファイルから <code>state</code> を構築。 2. **変換**: <code>pg_localtime</code> が <code>localsub</code> を経由し、<code>state-&gt;ats</code>（遷移時刻配列）を二分探索して現在の期間を特定。 3. **計算**: 特定された期間のオフセットを <code>timesub</code> に渡し、<code>pg_tm</code> 構造体を生成。 4. **POSIX フォールバック**: ファイルがない場合、<code>tzparse</code> が文字列からルールを生成し、<code>transtime</code> を用いて遷移テーブルをシミュレートする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>c.h</code>: PostgreSQL の基本型定義。</li>
+<li><code>pgtz.h</code>: <code>state</code> や <code>ttinfo</code> などの共有データ構造。</li>
+<li><code>tzfile.h</code>: IANA TZif フォーマットの定義。</li>
+<li><code>fcntl.h</code>, <code>unistd.h</code>: ファイルシステム操作。</li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>private.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgtz.c</code>: タイムゾーンのキャッシュ管理とファイル検索。</li>
+<li><code>strftime.c</code>: 分解時刻の文字列化。</li>
+<li><code>zic.c</code>: テキスト形式のタイムゾーン定義を TZif バイナリへコンパイルするツール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>tzload</code> は内部で <code>malloc</code> を使用しますが、<code>tzloadbody</code> は呼び出し元から提供されたバッファを使用する設計です。</li>
+<li>**閏秒**: 本モジュールは閏秒を考慮した計算ロジックを含みますが、PostgreSQL の標準的な日付演算では閏秒を無視するため、<code>pg_tz_acceptable</code> によるチェックが重要です。</li>
+<li>**移植性**: <code>private.h</code> を通じて、異なるプラットフォーム間での 32/64 ビット整数やバイトオーダーの差異を吸収しています。</li>
+<li>**省略箇所**: 閏秒の補正ロジック（<code>leapcorr</code>）や、POSIX ルールの複雑な計算（<code>transtime</code>）は、IANA のリファレンス実装をベースとしており、歴史的な経緯から非常に複雑です。これらは変更せず、既存のロジックを維持することが推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__timezone__localtime_c__r_type.html" target="wiki-view"><code>r_type</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__rule.html" target="wiki-view"><code>rule</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__init_ttinfo.html" target="wiki-view"><code>init_ttinfo</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__differ_by_repeat.html" target="wiki-view"><code>differ_by_repeat</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__file_analysis.html" target="wiki-view"><code>file_analysis</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__pg_localtime.html" target="wiki-view"><code>pg_localtime</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__pg_gmtime.html" target="wiki-view"><code>pg_gmtime</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__leaps_thru_end_of_nonneg.html" target="wiki-view"><code>leaps_thru_end_of_nonneg</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__leaps_thru_end_of.html" target="wiki-view"><code>leaps_thru_end_of</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__pg_get_next_timezone_abbrev.html" target="wiki-view"><code>pg_get_next_timezone_abbrev</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__pg_get_timezone_offset.html" target="wiki-view"><code>pg_get_timezone_offset</code></a></li>
+<li><a href="../../symbols/src__timezone__localtime_c__pg_get_timezone_name.html" target="wiki-view"><code>pg_get_timezone_name</code></a></li>
+</ul></body></html>

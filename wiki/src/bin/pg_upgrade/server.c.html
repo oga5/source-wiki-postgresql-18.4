@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/server.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/server.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、<code>pg_upgrade</code> におけるデータベースサーバー（Postmaster）の起動、停止、および接続管理を行うためのユーティリティ関数群を提供します。アップグレード対象となる新旧両方のクラスターに対して、安全かつ一貫した接続環境を構築する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> の中核となるサーバー操作レイヤーです。<code>pg_ctl</code> を介したプロセス制御と、<code>libpq</code> を介したデータベース接続の抽象化を行い、他のモジュールがサーバーの状態を意識せずにクエリを実行できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**サーバーライフサイクル管理**: <code>pg_ctl</code> を使用したサーバーの起動・停止、および <code>atexit</code> フックによる異常終了時のクリーンアップ。</li>
+<li>**接続の確立**: 適切な接続文字列の生成と、接続失敗時のエラーハンドリング。</li>
+<li>**環境の検証**: <code>PGHOST</code> 等の環境変数がリモートサーバーを指していないかのチェック。</li>
+<li>**バージョン情報の取得**: <code>PG_VERSION</code> ファイルの読み込みと解析。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>connectToServer</code>: 指定したデータベースへの接続を確立し、失敗時はプログラムを終了させる。</li>
+<li><code>start_postmaster</code>: <code>pg_ctl</code> を呼び出し、サーバーを起動する。新クラスターの場合はパフォーマンス向上のためのオプション（<code>fsync=off</code> 等）を付与する。</li>
+<li><code>stop_postmaster</code>: 実行中のサーバーを停止する。</li>
+<li><code>executeQueryOrDie</code>: クエリを実行し、失敗した場合はエラーログを出力して終了する。</li>
+<li><code>get_major_server_version</code>: <code>PG_VERSION</code> ファイルからメジャーバージョンを抽出する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_pghost_envvar</code></li>
+<li><code>cluster_conn_opts</code></li>
+<li><code>get_db_conn</code></li>
+<li><code>stop_postmaster_atexit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続**: <code>get_db_conn</code> が <code>ClusterInfo</code> から接続文字列を構築し、<code>PQconnectdb</code> を呼び出します。 2. **起動**: <code>start_postmaster</code> は <code>pg_ctl</code> コマンドを構築して <code>exec_prog</code> で実行し、その後 <code>get_db_conn</code> で接続確認を行います。 3. **終了**: <code>stop_postmaster</code> は <code>os_info.running_cluster</code> を参照して対象を特定し、<code>pg_ctl stop</code> を実行します。 4. **エラー**: 多くの関数は失敗時に <code>pg_fatal</code> や <code>exit(1)</code> を呼び出し、アップグレードプロセス全体を即座に停止させる設計となっています。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>common/connect.h</code>: 接続管理用ユーティリティ。</li>
+<li><code>fe_utils/string_utils.h</code>: 文字列操作およびシェルエスケープ用。</li>
+<li><code>libpq/pqcomm.h</code>: <code>libpq</code> 通信定義。</li>
+<li><code>pg_upgrade.h</code>: モジュール共通のデータ構造（<code>ClusterInfo</code> 等）と定数。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/exec.c</code>: <code>exec_prog</code> 関数を提供し、外部コマンド実行の基盤となる。</li>
+<li><code>src/bin/pg_upgrade/util.c</code>: <code>pg_log</code> や <code>pg_fatal</code> などのログ出力・エラー処理関数を提供。</li>
+<li><code>src/bin/pg_upgrade/pg_upgrade.c</code>: 本モジュールの関数を呼び出し、アップグレードのメインフローを制御する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の <code>start_postmaster</code> は、新クラスター起動時に <code>fsync=off</code> や <code>synchronous_commit=off</code> を強制的に付与します。これはアップグレード速度を優先するためであり、クラッシュ時には再作成が必要であるという前提に基づいています。</li>
+<li><code>check_pghost_envvar</code> は、誤ってリモートサーバーに対して <code>pg_upgrade</code> を実行することを防ぐための重要な安全装置です。</li>
+<li><code>executeQueryOrDie</code> は、実行するクエリの戻り値（<code>PGresult</code>）を呼び出し側で <code>PQclear</code> する必要がある点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__connectToServer.html" target="wiki-view"><code>connectToServer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__get_db_conn.html" target="wiki-view"><code>get_db_conn</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__cluster_conn_opts.html" target="wiki-view"><code>cluster_conn_opts</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__executeQueryOrDie.html" target="wiki-view"><code>executeQueryOrDie</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__get_major_server_version.html" target="wiki-view"><code>get_major_server_version</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__stop_postmaster_atexit.html" target="wiki-view"><code>stop_postmaster_atexit</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__start_postmaster.html" target="wiki-view"><code>start_postmaster</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__stop_postmaster.html" target="wiki-view"><code>stop_postmaster</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__server_c__check_pghost_envvar.html" target="wiki-view"><code>check_pghost_envvar</code></a></li>
+</ul></body></html>

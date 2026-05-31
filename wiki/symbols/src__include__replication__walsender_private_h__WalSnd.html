@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__walsender_private_h__WalSnd.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalSnd</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/include/replication/walsender_private.h:41</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのレプリケーションシステムにおいて、個々のWAL Senderプロセスの実行状態、スタンバイからのフィードバック情報、および同期レプリケーションの優先順位を共有メモリ上で管理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct WalSnd {
+    pid_t           pid;
+    WalSndState     state;
+    XLogRecPtr      sentPtr;
+    bool            needreload;
+    XLogRecPtr      write;
+    XLogRecPtr      flush;
+    XLogRecPtr      apply;
+    TimeOffset      writeLag;
+    TimeOffset      flushLag;
+    TimeOffset      applyLag;
+    int             sync_standby_priority;
+    slock_t         mutex;
+    TimestampTz     replyTime;
+    ReplicationKind kind;
+} WalSnd;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: スタンバイサーバーからのフィードバックメッセージ（LSN進捗、ラグ情報、受信時刻）。</li>
+<li>**出力**: 同期レプリケーションの待機キュー管理や、レプリケーション状態の監視に使用される共有メモリ上の状態値。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pid</code> が 0 の場合、そのWAL Senderは非アクティブとみなされる。</li>
+<li>構造体内の共有変数へのアクセスは、原則として <code>mutex</code>（スピンロック）による保護が必要。ただし、プロセス自身が書き込むフィールドについては、特定の条件下でロックなしの読み取りが許容される設計となっている。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **状態追跡**: <code>WalSndState</code> を通じてプロセスのライフサイクル（STARTUP, STREAMING等）を保持する。 2. **フィードバック更新**: スタンバイから受信した <code>write</code>/<code>flush</code>/<code>apply</code> LSNおよびラグ情報を更新する。 3. **同期管理**: <code>sync_standby_priority</code> を用いて同期スタンバイの優先順位を管理する。 4. **排他制御**: <code>mutex</code> を用いて、複数のプロセス間での共有変数への同時アクセスを制御する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/replication/walsender.c</code>: <code>MyWalSnd</code> を介して自身の状態を更新・参照。</li>
+<li><code>src/backend/replication/syncrep.c</code>: 同期レプリケーションの待機キュー管理のために参照。</li>
+<li>**呼び出し先**: </li>
+<li>本構造体はデータ構造であり、関数を直接呼び出すことはない。操作は <code>walsender.c</code> 等の実装コードによって行われる。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSndState</code>: プロセスの状態を定義する列挙型。</li>
+<li><code>WalSndCtlData</code>: 全WAL Senderを統括するグローバルな共有メモリ構造体。</li>
+<li><code>SyncRepQueue</code>: 同期レプリケーションの待機キュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>write</code>/<code>flush</code>/<code>apply</code> LSNは、スタンバイから値が提供されていない場合、無効な値となる可能性がある。</li>
+<li><code>writeLag</code>/<code>flushLag</code>/<code>applyLag</code> は、計測不能な場合に -1 が設定される。</li>
+<li><code>sync_standby_priority</code> が 0 の場合、そのスタンバイは同期レプリケーションのリストに含まれていないことを示す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されるため、メンバーの追加や変更は共有メモリレイアウトに影響を与える。</li>
+<li><code>pid</code> や <code>needreload</code> などのフィールドはスピンロックが必須である一方、プロセス自身が更新するフィールドのロック要否については、<code>src/include/replication/walsender_private.h</code> のコメントおよび <code>walsender.c</code> の実装を十分に確認すること。</li>
+</ul></body></html>

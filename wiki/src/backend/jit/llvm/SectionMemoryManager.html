@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/jit/llvm/SectionMemoryManager.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/jit/llvm/SectionMemoryManager.cpp</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのJITコンパイル環境において、LLVMの<code>SectionMemoryManager</code>をバックポートした実装です。主にARMアーキテクチャ等の環境で発生するメモリレイアウトの不整合を解消し、JIT生成コードのメモリ管理を最適化するために提供されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/jit/llvm</code> モジュールにおいて、LLVMのMCJIT/RuntimeDyldが生成した機械語コードやデータを、実行可能なメモリ領域へ配置・保護する役割を担います。標準のLLVM実装をラップし、PostgreSQL固有の要件（ARM ABIへの適合など）を満たすための調整レイヤーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メモリの動的確保**: <code>allocateSection</code> を通じて、コード、読み取り専用データ、読み書き可能データの各セクションにメモリを割り当てる。</li>
+<li>**メモリ保護の管理**: <code>finalizeMemory</code> を呼び出すことで、各セクションに適切なページ権限（実行可能、読み取り専用など）を適用する。</li>
+<li>**キャッシュの整合性**: 命令キャッシュの無効化（<code>invalidateInstructionCache</code>）を行い、JIT生成コードの実行直前にCPUキャッシュを同期させる。</li>
+<li>**メモリの再利用**: 確保済みのメモリブロックを管理し、断片化を抑えつつ効率的に再利用する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SectionMemoryManager</code>: メモリ管理のメインクラス。<code>RTDyldMemoryManager</code>を継承。</li>
+<li><code>allocateSection</code>: セクションごとのメモリ確保を行う中心的なメソッド。</li>
+<li><code>finalizeMemory</code>: 確保したメモリの権限を確定させ、実行可能状態にする。</li>
+<li><code>MemoryMapper</code>: OSからのメモリ確保を抽象化するインターフェース。<code>DefaultMMapper</code>が標準実装として提供される。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>allocateCodeSection</code></li>
+<li><code>allocateDataSection</code></li>
+<li><code>anchor</code></li>
+<li><code>applyMemoryGroupPermissions</code></li>
+<li><code>hasSpace</code></li>
+<li><code>invalidateInstructionCache</code></li>
+<li><code>reserveAllocationSpace</code></li>
+<li><code>trimBlockToPageSize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>SectionMemoryManager</code>がインスタンス化され、<code>MemoryMapper</code>が設定される。 2. **確保**: <code>allocateCodeSection</code> / <code>allocateDataSection</code> が呼ばれると、<code>allocateSection</code> が実行される。まず既存の<code>FreeMem</code>（空き領域）を検索し、なければ<code>MemoryMapper</code>経由でOSから新規メモリを確保する。 3. **確定**: JITコンパイル完了後、<code>finalizeMemory</code> が呼ばれる。 4. **権限適用**: <code>applyMemoryGroupPermissions</code> により、<code>PendingMem</code>（未確定領域）に対して<code>mprotect</code>相当の権限変更が行われる。 5. **同期**: 最後に<code>invalidateInstructionCache</code>が実行され、命令キャッシュがフラッシュされる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>jit/llvmjit_backport.h</code>: バックポート用マクロ定義。</li>
+<li><code>jit/SectionMemoryManager.h</code>: クラス定義およびインターフェース。</li>
+<li><code>llvm/Support/MathExtras.h</code>: アライメント計算用ユーティリティ。</li>
+<li><code>llvm/Support/Process.h</code>: ページサイズ取得等のOS抽象化機能。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/jit/SectionMemoryManager.h</code>: 本実装のヘッダーファイル。</li>
+<li><code>llvm::RuntimeDyld</code>: 本マネージャが連携するLLVMの実行エンジンクラス。</li>
+<li><code>src/backend/jit/llvm/llvmjit.c</code>: JITコンパイルのメインフロー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはLLVM 22のコードをベースにしたバックポート版です。将来的にPostgreSQLがサポートするLLVMの最小バージョンが引き上げられた際、またはJITLinkへの移行が完了した際には削除可能です。</li>
+<li><code>reserveAllocationSpace</code> は、特にARM環境でのABI制約を満たすために、連続したメモリ領域を確保する重要なロジックを含んでいます。デバッグ時はこのメソッドの挙動を確認してください。</li>
+<li><code>MemoryMapper</code> を差し替えることで、メモリ確保の挙動をテスト用にモック化することが可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__hasSpace.html" target="wiki-view"><code>hasSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__reserveAllocationSpace.html" target="wiki-view"><code>reserveAllocationSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__allocateDataSection.html" target="wiki-view"><code>allocateDataSection</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__allocateCodeSection.html" target="wiki-view"><code>allocateCodeSection</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__allocateSection.html" target="wiki-view"><code>allocateSection</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__finalizeMemory.html" target="wiki-view"><code>finalizeMemory</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__trimBlockToPageSize.html" target="wiki-view"><code>trimBlockToPageSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__applyMemoryGroupPermissions.html" target="wiki-view"><code>applyMemoryGroupPermissions</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__invalidateInstructionCache.html" target="wiki-view"><code>invalidateInstructionCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__SectionMemoryManager.html" target="wiki-view"><code>SectionMemoryManager</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__MemoryMapper.html" target="wiki-view"><code>MemoryMapper</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__SectionMemoryManager_cpp__anchor.html" target="wiki-view"><code>anchor</code></a></li>
+</ul></body></html>

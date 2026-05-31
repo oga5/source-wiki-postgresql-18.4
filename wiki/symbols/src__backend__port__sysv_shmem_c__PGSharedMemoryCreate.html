@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__sysv_shmem_c__PGSharedMemoryCreate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PGSharedMemoryCreate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/sysv_shmem.c:699</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの共有メモリセグメントを初期化および作成します。System V共有メモリを基盤とし、データディレクトリに関連付けられた一意なキーを用いてセグメントを確保・アタッチします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>PGShmemHeader *PGSharedMemoryCreate(Size size, PGShmemHeader **shim)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>size</code>: 確保する共有メモリのサイズ（バイト単位）。</li>
+<li><code>shim</code>: 共有メモリヘッダーへのポインタを格納する出力用引数。</li>
+<li>**出力**:</li>
+<li>成功時: 共有メモリ領域の先頭アドレス（<code>PGShmemHeader</code> 構造体）を返す。</li>
+<li>失敗時: <code>ereport(FATAL, ...)</code> によりプロセスを終了する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>DataDir</code>（データディレクトリ）が有効であること。</li>
+<li><code>size</code> は <code>PGShmemHeader</code> のサイズを格納するのに十分な大きさであること。</li>
+<li><code>shared_memory_type</code> が <code>SHMEM_TYPE_MMAP</code> の場合、匿名共有メモリが使用され、System V領域は最小限のヘッダーのみとなる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: データディレクトリの inode/device 番号を取得し、共有メモリキーのシードとする。 2. **メモリ確保**:</p>
+<ul>
+<li><code>SHMEM_TYPE_MMAP</code> の場合: <code>CreateAnonymousSegment</code> で実領域を確保し、<code>on_shmem_exit</code> にデタッチ処理を登録。</li>
+<li>それ以外: 指定サイズで System V 共有メモリを確保。</li>
+<p>3. **セグメント探索**: <code>InternalIpcMemoryCreate</code> を呼び出し、利用可能な IPC キーが見つかるまでループする。</p>
+<li>既存セグメントが存在する場合、<code>PGSharedMemoryAttach</code> で状態を確認。</li>
+<li><code>SHMSTATE_UNATTACHED</code>（使用済みだが解放可能）であれば、<code>shmctl(IPC_RMID)</code> で削除して再試行。</li>
+<li><code>SHMSTATE_ATTACHED</code> であれば、他プロセスが使用中と判断し <code>FATAL</code> エラーとする。</li>
+<p>4. **ヘッダー設定**: 確保した領域に <code>PGShmemHeader</code>（PID、マジックナンバー、ディレクトリID等）を書き込む。 5. **戻り値**: 匿名メモリ使用時はそのアドレスを、それ以外は System V 領域のアドレスを返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/ipc/ipci.c</code></li>
+<li>**呼び出し先**: <code>InternalIpcMemoryCreate</code>, <code>CreateAnonymousSegment</code>, <code>PGSharedMemoryAttach</code>, <code>shmget</code>, <code>shmctl</code>, <code>shmdt</code>, <code>dsm_cleanup_using_control_segment</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGShmemHeader</code>: 共有メモリの制御情報を保持する構造体。</li>
+<li><code>IpcMemoryKey</code>, <code>IpcMemoryId</code>: System V IPC の識別子。</li>
+<li><code>IpcMemoryState</code>: セグメントの状態（列挙型）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**Huge Pages**: プラットフォームが非対応、または <code>shared_memory_type</code> が <code>MMAP</code> 以外の場合にエラー。</li>
+<li>**セグメント競合**: 既存の共有メモリが他プロセスによって使用中の場合、<code>FATAL</code> エラーで停止。</li>
+<li>**リソース枯渇**: <code>shmget</code> が失敗し続ける場合、ループによりキーをインクリメントして探索を継続する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>EXEC_BACKEND</code> 環境下では、<code>PGSharedMemoryReAttach</code> による再アタッチ処理が別途必要になる点に注意。</li>
+<li><code>InternalIpcMemoryCreate</code> の失敗は必ずしも致命的ではなく、既存セグメントの再利用や削除のトリガーとして機能する。</li>
+</ul></body></html>

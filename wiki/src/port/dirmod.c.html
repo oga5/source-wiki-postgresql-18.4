@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/port/dirmod.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/port/dirmod.c</h1>
+<h2>概要</h2>
+<p><code>dirmod.c</code> は、Windows 環境におけるディレクトリおよびファイル操作の互換性レイヤーを提供します。POSIX 標準のファイル操作関数が Windows のファイルシステム特性（特に共有違反やジャンクションポイント）と衝突する問題を解決し、PostgreSQL がクロスプラットフォームで安定して動作するように設計されています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/port</code> サブシステムの一部として、OS 固有の差異を吸収する役割を担います。主に Windows 上での <code>rename</code> や <code>unlink</code> の挙動をラップし、他のモジュールがプラットフォームを意識せずにファイル操作を行えるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ファイル操作の堅牢化**: <code>rename</code> や <code>unlink</code> 実行時に発生する共有違反（Sharing Violation）に対して、短時間の再試行（リトライ）ロジックを提供します。</li>
+<li>**Windows ジャンクションポイントの管理**: Windows におけるシンボリックリンクの代替としてジャンクションポイントを操作する <code>pgsymlink</code> および <code>pgreadlink</code> を実装します。</li>
+<li>**エラー変換**: Windows API のエラーコードを POSIX 準拠の <code>errno</code> にマッピングします。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgrename</code>: Windows の <code>MoveFileEx</code> を使用し、共有違反時にリトライを行う <code>rename</code> のラッパー。</li>
+<li><code>pgunlink</code>: <code>unlink</code> または <code>rmdir</code> を適切に選択し、リトライを行う関数。</li>
+<li><code>pgsymlink</code>: ジャンクションポイントを作成するための関数。</li>
+<li><code>pgreadlink</code>: ジャンクションポイントのターゲットパスを読み取る関数。</li>
+<li><code>REPARSE_JUNCTION_DATA_BUFFER</code>: ジャンクションポイントのメタデータを扱うための構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lstat_error_was_status_delete_pending</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **リトライループ**: <code>pgrename</code> や <code>pgunlink</code> は、Windows 特有の <code>ERROR_SHARING_VIOLATION</code> や <code>ERROR_LOCK_VIOLATION</code> を検知すると、<code>pg_usleep</code> を用いて最大 10 秒間リトライを試みます。 2. **ジャンクション操作**: <code>pgsymlink</code> は、ディレクトリを作成した後に <code>DeviceIoControl</code> を呼び出し、<code>FSCTL_SET_REPARSE_POINT</code> を用いてリパースポイントを設定します。 3. **パス変換**: <code>pgreadlink</code> は、取得したパスから Windows 内部形式（<code>\??\</code> プレフィックス）を取り除き、ユーザーが期待する形式へ変換して返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>unistd.h</code>, <code>sys/stat.h</code>: POSIX 互換インターフェース。</li>
+<li><code>windows.h</code>, <code>winioctl.h</code>: Windows API への直接アクセス。</li>
+<li><code>port/win32ntdll.h</code>: NTDLL レベルのステータスチェック（<code>STATUS_DELETE_PENDING</code> 等）。</li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>w32api/winioctl.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/port/win32stat.c</code>: Windows における <code>stat</code> 関連の互換性実装。</li>
+<li><code>src/port/path.c</code>: パス操作全般のユーティリティ。</li>
+<li><code>src/include/port.h</code>: <code>pgrename</code> 等のプロトタイプ宣言が含まれるヘッダー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは主に Windows 環境（<code>WIN32</code>）で有効化されます。Cygwin 環境では一部の挙動が異なるため、条件付きコンパイル（<code>#if defined(WIN32) &amp;&amp; !defined(__CYGWIN__)</code>）に注意してください。</li>
+<li><code>pgunlink</code> 内の <code>lstat_error_was_status_delete_pending</code> は、ファイルが削除保留状態にある場合に <code>ENOENT</code> を正しく解釈するための重要なハックです。</li>
+<li>ジャンクションポイント操作は低レベルな <code>DeviceIoControl</code> を使用しているため、Windows SDK のバージョン差異による影響を受けやすい箇所です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__port__dirmod_c__pgrename.html" target="wiki-view"><code>pgrename</code></a></li>
+<li><a href="../../symbols/src__port__dirmod_c__lstat_error_was_status_delete_pending.html" target="wiki-view"><code>lstat_error_was_status_delete_pending</code></a></li>
+<li><a href="../../symbols/src__port__dirmod_c__pgunlink.html" target="wiki-view"><code>pgunlink</code></a></li>
+<li><a href="../../symbols/src__port__dirmod_c__REPARSE_JUNCTION_DATA_BUFFER.html" target="wiki-view"><code>REPARSE_JUNCTION_DATA_BUFFER</code></a></li>
+<li><a href="../../symbols/src__port__dirmod_c__pgsymlink.html" target="wiki-view"><code>pgsymlink</code></a></li>
+<li><a href="../../symbols/src__port__dirmod_c__pgreadlink.html" target="wiki-view"><code>pgreadlink</code></a></li>
+</ul></body></html>

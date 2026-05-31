@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_rewind__rewind_source_h__rewind_source.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>rewind_source</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/bin/pg_rewind/rewind_source.h:23</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>pg_rewind</code> において、データソース（同期元）がリモート（libpq）かローカルかに関わらず、同一のインターフェースでファイル操作やデータ取得を行うための抽象レイヤーを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct rewind_source
+{
+    void (*traverse_files) (struct rewind_source *, process_file_callback_t);
+    char *(*fetch_file) (struct rewind_source *, const char *, size_t *);
+    void (*queue_fetch_range) (struct rewind_source *, const char *, off_t, size_t);
+    void (*queue_fetch_file) (struct rewind_source *, const char *, size_t);
+    void (*finish_fetch) (struct rewind_source *);
+    XLogRecPtr (*get_current_wal_insert_lsn) (struct rewind_source *);
+    void (*destroy) (struct rewind_source *);
+} rewind_source;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 各関数ポインタは <code>rewind_source</code> 構造体へのポインタを第一引数として受け取ります。</li>
+<li>**出力**: <code>fetch_file</code> は取得したファイル内容（<code>malloc</code> 済み、ヌル終端）を返し、<code>get_current_wal_insert_lsn</code> はソースの現在のWAL挿入位置（<code>XLogRecPtr</code>）を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>fetch_file</code> が返すバッファは常にヌル終端されています。</li>
+<li><code>queue_fetch_range</code> および <code>queue_fetch_file</code> で要求された操作は、<code>finish_fetch</code> が呼び出されるまで実行が保留される場合があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **走査**: <code>traverse_files</code> によりソース内の全ファイルを列挙し、コールバックを適用します。 2. **取得要求**: <code>queue_fetch_range</code> / <code>queue_fetch_file</code> を用いて必要なデータ範囲をキューに蓄積します。 3. **一括実行**: <code>finish_fetch</code> を呼び出すことで、キューイングされた全てのI/O要求を確定的に実行します。 4. **終了**: <code>destroy</code> を呼び出し、関連リソースを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_rewind/libpq_source.c</code> 内の各関数がこの構造体の実装を提供しています。</li>
+<li>**呼び出し先**: <code>process_file_callback_t</code>（ファイル走査時のコールバック）が呼び出されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogRecPtr</code>: WAL位置の表現に使用。</li>
+<li><code>process_file_callback_t</code>: <code>traverse_files</code> で使用されるコールバック型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>queue_fetch_file</code> において、ソースが稼働中のサーバーである場合、ファイルが並行して変更される可能性があります。実装は可能な限り指定された長さ以上のデータをコピーし、切り詰められたファイルの転送を避けることが推奨されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>新しいソースタイプ（例: 新しいプロトコルやストレージ）を追加する場合は、本構造体の全ての関数ポインタを実装する必要があります。</li>
+<li><code>queue_fetch_range</code> は即時実行ではなくキューイングを意図した設計であるため、実装時はネットワーク効率やI/O最適化を考慮してください。</li>
+</ul></body></html>

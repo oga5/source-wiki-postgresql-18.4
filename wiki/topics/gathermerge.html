@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/gathermerge.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GatherMerge</h1>
+<h2>概念</h2>
+<p><code>GatherMerge</code> は、PostgreSQLの並列クエリ実行において、複数の並列ワーカープロセスおよびリーダープロセスからソート済みのタプルを収集（Gather）し、それらのソート順を維持したままマージ（Merge）して単一のソート済みタプルストリームとして出力するための実行プランノードおよび実行機構です。</p>
+<h2>なぜ重要か</h2>
+<p>並列クエリにおいて、各ワーカーが個別にソートされた部分結果を返す場合、単純にそれらを結合するだけでは全体のソート順序が崩れてしまいます。<code>GatherMerge</code> を使用することで、リーダープロセス側で追加のフルソートを行うことなく、各ワーカーから得られるソート済みストリームをバイナリヒープを用いて効率的にマージし、ソート順を維持した結果を上位のノードに提供できるため、並列ソート処理のパフォーマンス向上に極めて重要です。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたソースコードの構成に基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/executor</code>: 実行エンジンにおける <code>GatherMerge</code> の具体的な実行制御ロジック（<code>nodeGatherMerge.c</code> など）を担当します。</li>
+<li><code>module:src/include/nodes</code>: プランノードの定義（<code>plannodes.h</code> など）を担当します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<p>本トピックに関連する主要なエンティティは以下の通りです。</p>
+<ul>
+<li><code>symbol:src/include/nodes/plannodes.h#GatherMerge</code>: <code>GatherMerge</code> プランノードを定義する構造体。</li>
+<li><code>symbol:src/backend/executor/nodeGatherMerge.c#gather_merge_init</code>: <code>GatherMerge</code> ノードの実行開始時に、各ワーカーおよびリーダーから最初のタプルを取得し、マージ用のバイナリヒープを構築・初期化する関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報に基づく、初期化フェーズを中心とした流れは以下の通りです。</p>
+<p>1. **プラン実行の開始**: <code>ExecGatherMerge</code>（<code>gather_merge_init</code> の呼び出し元）から処理が開始されます。 2. **セットアップ**: 事前に <code>gather_merge_setup</code> が呼び出され、必要なメモリ空間やスロットが確保されていることを前提とします。 3. **初期化処理 (<code>gather_merge_init</code>)**:</p>
+<ul>
+<li>リーダーおよび各ワーカーのタプルスロット、バッファ（<code>GMReaderTupleBuffer</code>）をリセットします。</li>
+<li>バイナリヒープ（<code>binaryheap</code>）を初期化します。</li>
+<li>各ソースから <code>nowait</code> モードで最初のタプルを読み込み（<code>gather_merge_readnext</code>）、取得できた場合はヒープに追加します。</li>
+<li>すべてのソースからタプルまたは終了通知が得られるまで、<code>wait</code> モードで再試行（<code>reread</code> ループ）を行います。</li>
+<li><code>binaryheap_build</code> を呼び出してヒープ構造を確定させ、<code>gm_state-&gt;gm_initialized</code> を <code>true</code> に設定します。</li>
+<p>4. **マージとタプル返却**: 初期化完了後、ヒープから最小（または最大）のタプルを順次取り出し、消費されたソースから次のタプルを補充しながら上位ノードへ返却します。</p>
+</ul>
+<p>*注意: 初期化以降の具体的なマージ・返却のループ処理や、ワーカープロセスとの間におけるIPC（プロセス間通信）の低レイヤなエンドツーエンドフローの詳細は、提供されたコンテキストからは未解明です。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の前提条件**: <code>gather_merge_init</code> の呼び出し時点で、<code>gather_merge_setup</code> によるメモリおよびスロットの確保が完了していなければなりません。</li>
+<li>**ワーカー数の整合性**: <code>gm_state-&gt;nreaders</code>（リーダー数/ワーカー接続数）は、<code>GatherMerge</code> プランノードに指定された <code>num_workers</code> 以下でなければなりません。</li>
+<li>**初期化フラグの一貫性**: <code>gather_merge_init</code> の処理が正常に完了すると、<code>gm_state-&gt;gm_initialized</code> が必ず <code>true</code> に設定され、二重初期化が防止されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**割り込みによる中断**: <code>gather_merge_init</code> の内部（特にタプル到着の待機ループなど）では <code>CHECK_FOR_INTERRUPTS()</code> が呼び出されるため、クエリキャンセルなどの割り込みによって初期化処理が途中で中断される可能性があります。</li>
+<li>**ワーカーの無応答・空結果**: ワーカーがタプルを生成しない、または早期に終了した場合でも、ヒープ構築自体は正常に完了するように設計されていますが、並列プロセスの同期やタプル到着待ち（<code>reread</code> ループ）におけるデッドロックや遅延に注意する必要があります（ただし、具体的なデッドロック回避策の詳細は提供されたコンテキストからは未解明です）。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/executor/nodeGatherMerge.c</code>: <code>gather_merge_init</code> や <code>ExecGatherMerge</code> などの具体的な実行ロジックが実装されています。</li>
+<li><code>src/include/nodes/plannodes.h</code>: <code>GatherMerge</code> プランノードの構造体定義が格納されています。</li>
+</ul></body></html>

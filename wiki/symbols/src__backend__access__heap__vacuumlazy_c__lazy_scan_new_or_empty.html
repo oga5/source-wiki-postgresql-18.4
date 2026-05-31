@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_new_or_empty.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>lazy_scan_new_or_empty</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/vacuumlazy.c:1808</code></li>
+</ul>
+<h2>目的</h2>
+<p>VACUUM処理中に遭遇した「新規ページ（All-zeroes）」または「空ページ」を検出し、FSM（空き領域マップ）への登録や可視性マップの更新を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
+                                   Page page, bool sharelock, Buffer vmbuffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>vacrel</code>: VACUUM実行状態を保持する <code>LVRelState</code> 構造体。</li>
+<li><code>buf</code>: 対象ページのバッファ。</li>
+<li><code>blkno</code>: 対象ページのブロック番号。</li>
+<li><code>page</code>: 対象ページのポインタ。</li>
+<li><code>sharelock</code>: 現在のロックが共有ロックであるかを示すフラグ。</li>
+<li><code>vmbuffer</code>: 可視性マップのバッファ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: ページが新規または空であり、処理が完了した場合は <code>true</code>。それ以外の場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し時点で、対象ページに対するバッファピンとロックが保持されていること。</li>
+<li>処理が完了（<code>true</code> を返す）した場合、対象ページのバッファはアンロックおよび解放される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **新規ページ（<code>PageIsNew</code>）の処理**:</p>
+<ul>
+<li>ページが完全にゼロ埋めされている場合、バッファを解放する。</li>
+<li>FSMに空き領域が記録されていない場合、ページ全体を空き領域としてFSMに登録する。</li>
+<p>2. **空ページ（<code>PageIsEmpty</code>）の処理**:</p>
+<li><code>sharelock</code> が真の場合、排他ロックに昇格させる。昇格後も空であることを再確認する。</li>
+<li>ページが可視性マップで <code>all-visible</code> でない場合、クリティカルセクションを開始し、以下を実行する：</li>
+<li>必要に応じてWALログを出力（<code>log_newpage_buffer</code>）。</li>
+<li>ページを <code>all-visible</code> および <code>all-frozen</code> に設定し、可視性マップを更新する。</li>
+<li>統計情報を更新し、FSMに空き領域を登録してバッファを解放する。</li>
+<p>3. **その他**:</p>
+<li>どちらにも該当しない場合、ロックとピンを保持したまま <code>false</code> を返す。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>lazy_scan_heap</code>（<code>src/backend/access/heap/vacuumlazy.c</code> 内のメインスキャンループ）。</li>
+<li>**呼び出し先**: <code>UnlockReleaseBuffer</code>, <code>GetRecordedFreeSpace</code>, <code>RecordPageWithFreeSpace</code>, <code>LockBuffer</code>, <code>MarkBufferDirty</code>, <code>RelationNeedsWAL</code>, <code>PageGetLSN</code>, <code>log_newpage_buffer</code>, <code>PageSetAllVisible</code>, <code>visibilitymap_set</code>, <code>PageGetHeapFreeSpace</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LVRelState</code>: VACUUMの実行状態を管理。</li>
+<li><code>Buffer</code>: バッファマネージャの管理単位。</li>
+<li><code>Page</code>: ヒープページのメモリ表現。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ロック昇格**: 空ページ処理中に共有ロックから排他ロックへ昇格する際、ページ状態が変化した場合は処理を中断し <code>false</code> を返す。</li>
+<li>**WALログ**: ページが初期化されていない状態でリカバリが発生しないよう、必要に応じてWALログを出力する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>lazy_scan_heap</code> からの呼び出し専用である。</li>
+<li>空ページに対する可視性マップの更新は、将来のVACUUM負荷を軽減するための「意欲的（Eager）」な最適化の一環である。</li>
+</ul></body></html>

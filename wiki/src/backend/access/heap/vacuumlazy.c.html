@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/vacuumlazy.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/vacuumlazy.c</h1>
+<h2>概要</h2>
+<p><code>vacuumlazy.c</code> は、PostgreSQLにおける「並行（Lazy）VACUUM」のメインエンジンです。テーブルの物理的なスキャン、不要タプルの剪定（Pruning）、タプル凍結（Freezing）、インデックスのクリーンアップ、およびリレーションの切り詰め（Truncation）を制御します。テーブルをロックせずにメンテナンスを行うため、DML操作と並行して実行可能です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールにおけるメンテナンス層の中核です。<code>heapam.c</code> が提供する低レベルなヒープ操作を利用し、<code>pruneheap.c</code> で剪定ロジックを呼び出し、<code>visibilitymap.c</code> を更新してスキャン効率を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**VACUUMフェーズ管理**: ヒープ走査、インデックス掃除、ヒープ再走査の3フェーズ制御。</li>
+<li>**メモリ管理**: <code>maintenance_work_mem</code> を上限としたデッドタプルID（TID）の蓄積と、溢れた場合のインデックス掃除のトリガー。</li>
+<li>**最適化**: 可視性マップ（VM）を用いたページスキップ、および「Eager Scan」による凍結処理の平準化。</li>
+<li>**安全装置**: トランザクションIDの周回（Wraparound）を防ぐための強制的なメンテナンス（Aggressive VACUUM）とフェイルセーフ機能。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>LVRelState</code>: VACUUM実行中の全コンテキストを保持する構造体。スキャン状態、統計情報、エラー報告用メタデータ、Eager Scanの進捗管理を含む。</li>
+<li><code>VacErrPhase</code>: エラー発生時のコンテキスト特定用列挙型。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>heap_vacuum_rel()</code>: VACUUMのメインエントリーポイント。初期化、フェーズの呼び出し、最終的な統計更新を行う。</li>
+<li><code>lazy_scan_heap()</code>: ヒープ走査のワークホース。ページ単位の剪定と凍結を指揮する。</li>
+<li><code>lazy_scan_prune()</code>: ページ内のHOTチェーン剪定とタプル凍結を実行。</li>
+<li><code>lazy_vacuum()</code>: インデックス掃除とヒープ再走査のディスパッチャー。</li>
+<li><code>lazy_truncate_heap()</code>: 不要になった末尾ページをOSに返却する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LVRelState</code></li>
+<li><code>LVSavedErrInfo</code></li>
+<li><code>VacErrPhase</code></li>
+<li><code>find_next_unskippable_block</code></li>
+<li><code>heap_vac_scan_next_block</code></li>
+<li><code>heap_vacuum_eager_scan_setup</code></li>
+<li><code>heap_vacuum_rel</code></li>
+<li><code>lazy_check_wraparound_failsafe</code></li>
+<li><code>lazy_scan_heap</code></li>
+<li><code>lazy_scan_new_or_empty</code></li>
+<li><code>lazy_scan_noprune</code></li>
+<li><code>lazy_scan_prune</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>heap_vacuum_rel</code> が <code>LVRelState</code> を構築し、<code>vacuum_get_cutoffs</code> で凍結限界を決定。 2. **ヒープ走査 (Phase I)**: <code>lazy_scan_heap</code> が <code>read_stream</code> を介してページを順次読み込み。<code>lazy_scan_prune</code> が不要タプルを特定し、TIDを <code>TidStore</code> に格納。 3. **インデックス掃除 (Phase II)**: <code>TidStore</code> が溢れるか走査完了時、<code>lazy_vacuum</code> がインデックスの <code>ambulkdelete</code> を呼び出し、不要エントリを削除。 4. **ヒープ再走査 (Phase III)**: <code>lazy_vacuum_heap_rel</code> が <code>TidStore</code> にあるTIDを元に、ヒープページ上の <code>LP_DEAD</code> を <code>LP_UNUSED</code> にマークし、領域を解放。 5. **終了処理**: <code>lazy_truncate_heap</code> が末尾の空きページを切り詰め、<code>vac_update_relstats</code> で統計情報を更新。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tidstore.h</code>: デッドタプルIDのメモリ管理。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップのビット操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とロック制御。</li>
+<li><code>commands/vacuum.h</code>: VACUUMパラメータと共通定義。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>portability/instr_time.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>storage/freespace.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/read_stream.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pruneheap.c</code>: <code>heap_page_prune_and_freeze</code> を提供し、実際の剪定ロジックを担う。</li>
+<li><code>vacuumparallel.c</code>: 並行VACUUMのインデックス処理を並列化するロジック。</li>
+<li><code>heapam.c</code>: ヒープアクセスメソッドの基礎。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>LVRelState</code> および <code>TidStore</code> は <code>maintenance_work_mem</code> に基づいて動的に確保されます。並列VACUUM時は共有メモリ（DSM）を使用します。</li>
+<li>**不変条件**: インデックスのTIDが指すヒープ上の <code>LP_DEAD</code> は、インデックス掃除が完了するまで <code>LP_UNUSED</code> にしてはなりません。このため、2パス走査が必須です。</li>
+<li>**パフォーマンス**: <code>SKIP_PAGES_THRESHOLD</code> や <code>EAGER_SCAN_REGION_SIZE</code> などの定数は、I/O効率と凍結処理のオーバーヘッドのトレードオフを調整しています。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であり、<code>TidStore</code> の内部実装や、各インデックスAM（B-tree等）の <code>ambulkdelete</code> の詳細は省略されています。これらは各インデックスAMのソースコードを参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__VacErrPhase.html" target="wiki-view"><code>VacErrPhase</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__LVRelState.html" target="wiki-view"><code>LVRelState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__LVSavedErrInfo.html" target="wiki-view"><code>LVSavedErrInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__heap_vacuum_eager_scan_setup.html" target="wiki-view"><code>heap_vacuum_eager_scan_setup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__heap_vacuum_rel.html" target="wiki-view"><code>heap_vacuum_rel</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_heap.html" target="wiki-view"><code>lazy_scan_heap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__heap_vac_scan_next_block.html" target="wiki-view"><code>heap_vac_scan_next_block</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__find_next_unskippable_block.html" target="wiki-view"><code>find_next_unskippable_block</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_new_or_empty.html" target="wiki-view"><code>lazy_scan_new_or_empty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_prune.html" target="wiki-view"><code>lazy_scan_prune</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__lazy_scan_noprune.html" target="wiki-view"><code>lazy_scan_noprune</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__vacuumlazy_c__lazy_check_wraparound_failsafe.html" target="wiki-view"><code>lazy_check_wraparound_failsafe</code></a></li>
+</ul></body></html>

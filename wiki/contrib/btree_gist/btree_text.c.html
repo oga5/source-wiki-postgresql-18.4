@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/btree_gist/btree_text.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/btree_gist/btree_text.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのGiSTインデックスにおいて、<code>text</code>型および<code>bpchar</code>（空白埋め固定長文字）型のB-treeライクな振る舞いを実現するためのサポート関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/btree_gist</code> モジュールの一部として、可変長データ型に対するGiSTインデックスの構築・検索・維持に必要なインターフェースを実装しています。<code>btree_utils_var.c</code> で定義された汎用的な可変長データ処理ロジックを、<code>text</code>/<code>bpchar</code> 特有の比較関数と組み合わせて具体化する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**GiSTサポート関数の実装**: <code>compress</code>, <code>consistent</code>, <code>union</code>, <code>picksplit</code>, <code>penalty</code>, <code>same</code> といったGiST必須関数を、<code>text</code>/<code>bpchar</code> 用に提供。</li>
+<li>**比較ロジックの抽象化**: <code>gbtree_vinfo</code> 構造体を用いて、インデックス操作に必要な比較関数（gt, ge, eq, le, lt, cmp）を定義し、汎用ルーチンへ渡す。</li>
+<li>**ソートサポート**: <code>SortSupport</code> インターフェースを実装し、インデックス構築時のソート効率を向上させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>tinfo</code> / <code>bptinfo</code>: <code>text</code>型および<code>bpchar</code>型それぞれの比較関数や型情報を保持する <code>gbtree_vinfo</code> 構造体。</li>
+<li><code>gbt_text_consistent</code> / <code>gbt_bpchar_consistent</code>: インデックス検索時に条件を満たすか判定する関数。</li>
+<li><code>gbt_text_compress</code> / <code>gbt_bpchar_compress</code>: インデックス格納用にデータを圧縮・変換する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>gbt_bpcharcmp</code></li>
+<li><code>gbt_bpchareq</code></li>
+<li><code>gbt_bpcharge</code></li>
+<li><code>gbt_bpchargt</code></li>
+<li><code>gbt_bpcharle</code></li>
+<li><code>gbt_bpcharlt</code></li>
+<li><code>gbt_textcmp</code></li>
+<li><code>gbt_texteq</code></li>
+<li><code>gbt_textge</code></li>
+<li><code>gbt_textgt</code></li>
+<li><code>gbt_textle</code></li>
+<li><code>gbt_textlt</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>compress</code> や <code>consistent</code> 関数内で、必要に応じて <code>pg_database_encoding_max_length()</code> を呼び出し、データベースのエンコーディング情報を <code>tinfo</code> にキャッシュします。 2.  **比較処理**: GiSTの汎用関数（<code>gbt_var_consistent</code> 等）が呼び出されると、内部で <code>tinfo</code> に登録された静的関数（<code>gbt_textgt</code> 等）がコールバックされ、<code>DirectFunctionCall2Coll</code> を介して標準のテキスト比較関数（<code>text_gt</code>, <code>bttextcmp</code> 等）が実行されます。 3.  **データ変換**: <code>gbt_var_compress</code> や <code>gbt_var_union</code> などの <code>btree_utils_var.h</code> で定義された関数が、実際のインデックスキーの構築と管理を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQLの基本定義。</li>
+<li><code>btree_gist.h</code>: GiSTインデックスの共通定義。</li>
+<li><code>btree_utils_var.h</code>: 可変長データ型用のGiSTサポートユーティリティ。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字処理用。</li>
+<li><code>utils/fmgrprotos.h</code>: 関数マネージャのプロトタイプ。</li>
+<li><code>utils/sortsupport.h</code>: ソート最適化用インターフェース。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/btree_gist/btree_utils_var.c</code>: 本ファイルが利用する可変長データ型処理の本体。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>: <code>text</code>型や<code>bpchar</code>型の標準的な比較関数（<code>text_gt</code>, <code>bttextcmp</code> 等）の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>text</code>と<code>bpchar</code>はほぼ同じロジックを共有していますが、比較ルールが異なるため、それぞれ専用の <code>gbtree_vinfo</code> を定義しています。</li>
+<li><code>gbt_bpchar_compress</code> が <code>gbt_text_compress</code> を呼び出しているように、コードの重複を避ける設計になっています。</li>
+<li><code>consistent</code> 関数内の <code>*recheck = false;</code> は、この実装が完全な一致判定を行うことを示しており、GiSTの再チェック（Lossyな結果に対する再評価）が不要であることを意味します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_textgt.html" target="wiki-view"><code>gbt_textgt</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_textge.html" target="wiki-view"><code>gbt_textge</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_texteq.html" target="wiki-view"><code>gbt_texteq</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_textle.html" target="wiki-view"><code>gbt_textle</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_textlt.html" target="wiki-view"><code>gbt_textlt</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_textcmp.html" target="wiki-view"><code>gbt_textcmp</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpchargt.html" target="wiki-view"><code>gbt_bpchargt</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpcharge.html" target="wiki-view"><code>gbt_bpcharge</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpchareq.html" target="wiki-view"><code>gbt_bpchareq</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpcharle.html" target="wiki-view"><code>gbt_bpcharle</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpcharlt.html" target="wiki-view"><code>gbt_bpcharlt</code></a></li>
+<li><a href="../../symbols/contrib__btree_gist__btree_text_c__gbt_bpcharcmp.html" target="wiki-view"><code>gbt_bpcharcmp</code></a></li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtdedup.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtdedup.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのB-treeインデックスにおける重複排除（Deduplication）およびボトムアップ削除（Bottom-up Deletion）を実装するモジュールです。インデックスページの空き容量を確保し、不要なページ分割を抑制することを目的としています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/nbtree</code> サブシステムの一部として、インデックスの物理的な再構成を担います。<code>nbtinsert.c</code> から呼び出され、ページが満杯になった際の救済措置として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**重複排除**: ページ内の重複するインデックスエントリを「Posting List」形式のタプルに統合し、ページ内の空き容量を増やす。</li>
+<li>**ボトムアップ削除**: MVCCの更新によって不要になったインデックスエントリを特定し、<code>tableam</code> と連携して物理的に削除する。</li>
+<li>**Posting Listの管理**: 複数のTIDを保持するタプルの生成、更新、および分割時のTID入れ替え処理。</li>
+<li>**戦略的制御**: ページ分割を遅延させるための「Single Value」戦略の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>_bt_dedup_pass</code>: 重複排除のメインエントリーポイント。ページをスキャンし、Posting Listを構築してページを再構成する。</li>
+<li><code>_bt_bottomupdel_pass</code>: ボトムアップ削除のメインエントリーポイント。削除可能なTIDを特定し、<code>_bt_delitems_delete_check</code> を介して削除を実行する。</li>
+<li><code>_bt_form_posting</code>: Posting List形式のタプルを生成する。</li>
+<li><code>_bt_update_posting</code>: 既存のPosting Listから特定のTIDを削除して更新する。</li>
+<li><code>_bt_swap_posting</code>: Posting Listの分割時に、新しいタプルと既存のTIDを入れ替える。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>BTDedupState</code> を確保し、スキャン対象のページ情報を保持する。 2. **スキャン**: ページ内の各タプルを順次処理し、キーが一致するものを <code>_bt_dedup_save_htid</code> で一時的なPosting Listに蓄積する。 3. **終了処理**:</p>
+<ul>
+<li>重複排除の場合: <code>_bt_dedup_finish_pending</code> でPosting Listタプルを生成し、一時ページ（<code>newpage</code>）に書き込む。</li>
+<li>ボトムアップ削除の場合: <code>_bt_bottomupdel_finish_pending</code> で削除対象のTIDを <code>TM_IndexDeleteOp</code> に登録し、最終的に <code>tableam</code> を呼び出す。</li>
+<p>4. **コミット**: 成功した場合、<code>START_CRIT_SECTION</code> を経てページを更新し、WALを記録する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>access/nbtree.h</code>: B-treeのデータ構造とマクロ。</li>
+<li><code>access/nbtxlog.h</code>: WALレコード定義。</li>
+<li><code>access/xloginsert.h</code>: WAL挿入インターフェース。</li>
+<li><code>utils/rel.h</code>: リレーション情報。</li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nbtinsert.c</code>: このモジュールの機能を呼び出すインデックス挿入ロジック。</li>
+<li><code>nbtsplitloc.c</code>: ページ分割時の戦略（Single Value戦略など）を共有している。</li>
+<li><code>nbtpage.c</code>: ページレベルの操作やフラグ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Posting Listの制約**: Posting List内のTIDは常に昇順で保持される必要があります。</li>
+<li>**アドバイザリな戻り値**: <code>_bt_bottomupdel_pass</code> の戻り値は、呼び出し元に対する「ページ分割を避けるためのヒント」であり、必ずしも削除が成功したことを保証するものではありません。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用するため、関数終了時の <code>pfree</code> 漏れに注意してください。特にエラー発生時のクリーンアップパスが重要です。</li>
+</ul></body></html>

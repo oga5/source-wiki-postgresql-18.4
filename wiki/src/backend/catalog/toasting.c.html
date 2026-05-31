@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/toasting.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/toasting.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおけるTOAST（The Oversized-Attribute Storage Technique）テーブルの生成と管理を担うバックエンドモジュールです。テーブルの属性値がページサイズを超過する場合に備え、補助的なTOASTテーブルを自動生成・関連付けるためのロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> ディレクトリの一部として、テーブル定義の変更（<code>ALTER TABLE</code>）や新規テーブル作成時に呼び出されます。<code>heap.c</code> 等のテーブル作成処理と密接に連携し、システムカタログ（<code>pg_class</code>）の更新や依存関係の記録を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**TOASTテーブルの生成**: 指定されたリレーションに対して、<code>chunk_id</code>, <code>chunk_seq</code>, <code>chunk_data</code> を持つ専用テーブルと、そのインデックスを構築します。</li>
+<li>**依存関係の管理**: メインテーブルとTOASTテーブル間に <code>DEPENDENCY_INTERNAL</code> を設定し、メインテーブル削除時にTOASTテーブルも連鎖削除されるようにします。</li>
+<li>**条件判定**: テーブルがTOASTテーブルを必要とするか（<code>needs_toast_table</code>）を判断し、カタログテーブルや共有テーブルに対する不適切な生成を防止します。</li>
+<li>**ブートストラップ対応**: <code>initdb</code> 中の特殊な生成処理をサポートします。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>NewRelationCreateToastTable</code>: 新規テーブル作成時に呼び出される公開インターフェース。</li>
+<li><code>AlterTableCreateToastTable</code>: <code>ALTER TABLE</code> 等で後からTOASTテーブルを追加する際に使用。</li>
+<li><code>create_toast_table</code>: 内部的な作業用関数。テーブルとインデックスの作成、カタログ更新、依存関係登録の全工程を統括します。</li>
+<li><code>needs_toast_table</code>: TOASTテーブルが必要か否かを判定する述語。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BootstrapToastTable</code></li>
+<li><code>CheckAndCreateToastTable</code></li>
+<li><code>NewHeapCreateToastTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **呼び出し**: <code>NewRelationCreateToastTable</code> 等がテーブルの <code>Oid</code> を受け取り、<code>CheckAndCreateToastTable</code> を経由して <code>create_toast_table</code> を呼び出します。 2.  **判定**: <code>needs_toast_table</code> により、対象がTOASTをサポートすべきか確認します。 3.  **構築**: <code>heap_create_with_catalog</code> を用いてTOASTテーブルを作成し、続いて <code>index_create</code> でB-treeインデックスを構築します。 4.  **カタログ更新**: <code>pg_class</code> の <code>reltoastrelid</code> を更新し、メインテーブルとTOASTテーブルを紐付けます。 5.  **依存登録**: <code>recordDependencyOn</code> を呼び出し、内部依存関係を記録します。 6.  **完了**: <code>CommandCounterIncrement()</code> を実行し、変更を可視化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/heapam.h</code>, <code>access/toast_compression.h</code>: テーブルアクセスおよび圧縮設定。</li>
+<li><code>catalog/heap.h</code>, <code>catalog/index.h</code>: テーブルおよびインデックスのカタログ操作。</li>
+<li><code>catalog/dependency.h</code>: オブジェクト間の依存関係登録。</li>
+<li><code>utils/rel.h</code>, <code>utils/syscache.h</code>: リレーション情報の取得とシステムキャッシュ操作。</li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/toasting.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/toasting.h</code>: 公開関数のプロトタイプ定義。</li>
+<li><code>src/backend/catalog/heap.c</code>: メインテーブル作成処理。TOASTテーブル生成のトリガー元。</li>
+<li><code>src/backend/access/common/toast_internals.c</code>: TOASTデータの実際の読み書きや圧縮ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**インデックスの重要性**: TOASTテーブルには <code>chunk_id</code> と <code>chunk_seq</code> をキーとするユニークインデックスが必須です。これはスライスアクセス（部分的なデータ取得）を効率化するためです。</li>
+<li>**属性のストレージ設定**: TOASTテーブル自体のカラム（<code>chunk_data</code>等）は、再帰的なTOAST発生を防ぐため、強制的に <code>TYPSTORAGE_PLAIN</code> に設定されています。</li>
+<li>**バイナリアップグレード**: <code>IsBinaryUpgrade</code> フラグが立っている場合、通常の判定ロジックをバイパスし、<code>pg_upgrade</code> から提供されたOIDを使用してTOASTテーブルを復元する特殊なパスを通ります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__AlterTableCreateToastTable.html" target="wiki-view"><code>AlterTableCreateToastTable</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__NewHeapCreateToastTable.html" target="wiki-view"><code>NewHeapCreateToastTable</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__NewRelationCreateToastTable.html" target="wiki-view"><code>NewRelationCreateToastTable</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__CheckAndCreateToastTable.html" target="wiki-view"><code>CheckAndCreateToastTable</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__BootstrapToastTable.html" target="wiki-view"><code>BootstrapToastTable</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__create_toast_table.html" target="wiki-view"><code>create_toast_table</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__toasting_c__needs_toast_table.html" target="wiki-view"><code>needs_toast_table</code></a></li>
+</ul></body></html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__procarray_c__ProcArrayStruct.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcArrayStruct</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/procarray.c:71</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの共有メモリ上で、全アクティブなバックエンドプロセス（<code>PGPROC</code>）の配列および、ホットスタンバイ時に必要なトランザクション追跡情報（<code>KnownAssignedXids</code>）を一元管理するためのメイン構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ProcArrayStruct {
+    int         numProcs;
+    int         maxProcs;
+    int         maxKnownAssignedXids;
+    int         numKnownAssignedXids;
+    int         tailKnownAssignedXids;
+    int         headKnownAssignedXids;
+    TransactionId lastOverflowedXid;
+    TransactionId replication_slot_xmin;
+    TransactionId replication_slot_catalog_xmin;
+    int         pgprocnos[FLEXIBLE_ARRAY_MEMBER];
+} ProcArrayStruct;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は共有メモリ上に配置され、<code>ProcArrayLock</code> を介してアクセスされます。</p>
+<ul>
+<li>**入力**: トランザクションの開始・終了、WALからのリカバリ情報、レプリケーションスロットの更新により状態が変更されます。</li>
+<li>**出力**: <code>GetSnapshotData</code> 等の関数を通じて、MVCC判定に必要な実行中トランザクションのリストや境界値を提供します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pgprocnos</code> は <code>PROCARRAY_MAXPROCS</code> エントリを保持する可変長配列として扱われます。</li>
+<li><code>lastOverflowedXid</code> の更新には <code>ProcArrayLock</code> の排他ロックが必要であり、読み取りには共有ロックが必要です。</li>
+<li>共有メモリ上の状態変更時は、マルチプロセッサ環境での整合性を保証するためメモリバリア（<code>pg_read_barrier</code> / <code>pg_write_barrier</code>）が適切に使用される必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**プロセス管理**: <code>numProcs</code> により有効なプロセス数を追跡します。</li>
+<li>**KnownAssignedXids**: ホットスタンバイ時に、プライマリから受信したトランザクション情報を循環バッファとして管理します。<code>head</code> と <code>tail</code> のインデックスを用いて、オーバーフローを防ぎつつ追跡を行います。</li>
+<li>**レプリケーション管理**: レプリケーションスロットごとの <code>xmin</code> および <code>catalog_xmin</code> を保持し、不要な行の削除を抑制します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/ipc/procarray.c</code> 内の各関数（<code>ProcArrayAdd</code>, <code>ProcArrayRemove</code>, <code>GetSnapshotData</code> 等）が、静的変数 <code>procArray</code> を通じて本構造体を操作します。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接関数を呼び出すことはありません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: <code>pgprocnos</code> 配列が指し示す各バックエンドのプロセス状態。</li>
+<li><code>ProcArrayLock</code>: 本構造体へのアクセスを制御する LWLock。</li>
+<li><code>GlobalVisState</code>: 可視性判定のための状態構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>maxProcs</code> を超えるプロセス登録はできません。</li>
+<li><code>KnownAssignedXids</code> のバッファが溢れる場合、<code>lastOverflowedXid</code> を用いて追跡情報を退避させる必要があります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ProcArrayLock</code> は競合が激しいため、パフォーマンス最適化（グループ化処理など）が随時行われています。変更を加える際はロックの粒度に注意してください。</li>
+<li>ホットスタンバイ時のロジックは通常のバックエンド管理と異なるため、<code>standby.c</code> および WAL 処理との整合性を確認してください。</li>
+</ul></body></html>

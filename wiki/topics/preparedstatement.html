@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/preparedstatement.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PreparedStatement</h1>
+<h2>概念</h2>
+<p>PostgreSQLにおけるプリペアドステートメント（準備済みSQL文）は、バックエンドサーバー側とクライアント側（ECPGライブラリ）の双方で、それぞれのコンテキストに応じた構造体として管理されています。</p>
+<ul>
+<li>**バックエンド側 (<code>PreparedStatement</code>)**: SQLレベルまたはFE/BEプロトコル経由で作成された実行計画やメタデータを、セッション内で一元管理します。</li>
+<li>**クライアント側 (<code>prepared_statement</code>)**: ECPG（埋め込みSQL）ライブラリにおいて、接続ごとに準備済みSQL文の状態を管理し、連結リストを構成します。</li>
+</ul>
+<h2>なぜ重要か</h2>
+<p>クエリの解析や実行計画の作成（プランニング）を事前に一度だけ行い、それをキャッシュして再利用することで、同一セッション内での繰り返し実行時のオーバーヘッドを削減し、パフォーマンスを向上させるために重要です。また、ECPGなどのクライアントライブラリ側でも、接続ごとのステートメント状態を追跡・管理するために不可欠です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/commands</code></li>
+<li><code>module:src/interfaces/ecpg/ecpglib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/commands/prepare.h#PreparedStatement</code>**: バックエンド側でプリペアドステートメントのメタデータと実行計画（<code>CachedPlanSource</code>）を保持する構造体。</li>
+<li>**<code>symbol:src/interfaces/ecpg/ecpglib/ecpglib_extern.h#prepared_statement</code>**: ECPGライブラリ側で、接続ごとに準備済みSQL文の状態（<code>prepared</code>）や実行コンテキスト（<code>struct statement</code>）を管理する単方向連結リストのノード構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>バックエンド側とクライアント側（ECPG）を跨ぐ完全なエンドツーエンドの相互作用の詳細は、提供された情報からは完全には明らかになっていませんが、それぞれのモジュール内での処理の流れは以下の通りです。</p>
+<h3>バックエンド側での流れ</h3>
+<p>1.  **登録**: <code>PREPARE</code> コマンド実行時に、<code>StorePreparedStatement</code> を介してハッシュテーブル <code>prepared_queries</code> に <code>PreparedStatement</code> が登録されます。 2.  **実行**: <code>EXECUTE</code> コマンド実行時に、<code>FetchPreparedStatement</code> を介してハッシュテーブルから取得され、<code>plansource</code> を用いてクエリが実行されます。 3.  **削除**: <code>DEALLOCATE</code> コマンド実行時に、<code>DropPreparedStatement</code> を介してハッシュテーブルから削除され、メモリが解放されます。</p>
+<h3>ECPGクライアント側での流れ</h3>
+<p>1.  **生成**: <code>ecpg_alloc</code> を介して <code>prepared_statement</code> 構造体のメモリが動的に割り当てられ、接続（<code>struct connection</code>）の <code>prep_stmts</code> リストに追加されます。 2.  **検索**: <code>ecpg_find_prepared_statement</code> 関数により、名前をキーとしてリストから特定のステートメントが検索されます。 3.  **管理**: 記述子操作（<code>descriptor.c</code>）やプリペアドステートメントの管理ロジック（<code>prepare.c</code>）を通じて状態が管理されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バックエンド側 (<code>PreparedStatement</code>)**:</li>
+<li><code>dynahash.c</code> の仕様により、ハッシュキーとなる <code>stmt_name</code> フィールドが構造体の先頭に配置されていなければなりません。</li>
+<li>各プリペアドステートメントはバックエンド（セッション）ローカルであり、他のバックエンドとは共有されません。</li>
+<li>**ECPGクライアント側 (<code>prepared_statement</code>)**:</li>
+<li><code>next</code> メンバにより、単方向連結リストを形成します。リストの末尾では <code>next</code> が <code>NULL</code> となります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バックエンド側**:</li>
+<li><code>stmt_name</code> の長さは <code>NAMEDATALEN</code> に制限されており、これを超える名前は扱えません。</li>
+<li>ハッシュテーブル検索時にエントリが見つからない場合、<code>hash_search</code> が <code>NULL</code> を返す可能性があります。</li>
+<li>構造体のメモリレイアウトを変更する際、<code>dynahash.c</code> の制約（キーが先頭であること）を維持しないと、ハッシュテーブル操作が破損します。</li>
+<li>**ECPGクライアント側**:</li>
+<li>メモリ割り当て失敗時（<code>ecpg_alloc</code> 経由）の挙動は、ECPGライブラリのメモリ管理ポリシーに依存します。</li>
+<li><code>prepare.c</code> 内のロジックでリストの走査や挿入が行われるため、変更時はリストの整合性に注意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/commands/prepare.h</code>: バックエンド側 <code>PreparedStatement</code> の構造体定義。</li>
+<li><code>src/interfaces/ecpg/ecpglib/ecpglib_extern.h</code>: ECPG側 <code>prepared_statement</code> の構造体定義および検索関数プロトタイプ。</li>
+<li><code>src/backend/commands/prepare.c</code>: バックエンド側でのプリペアドステートメントの登録・検索・削除の実装。</li>
+<li><code>src/interfaces/ecpg/ecpglib/prepare.c</code>: ECPG側でのプリペアドステートメントの生成、検索、管理ロジックの実装。</li>
+</ul></body></html>

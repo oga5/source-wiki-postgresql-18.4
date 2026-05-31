@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/parallel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/parallel.c</h1>
+<h2>概要</h2>
+<p><code>parallel.c</code> は、<code>pg_upgrade</code> における並列処理（マルチプロセス/マルチスレッド）を管理するモジュールです。データベースのアップグレード処理において、コマンド実行やデータ転送を複数のジョブで並行して行うための抽象化レイヤーを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_upgrade</code> のメイン処理から呼び出され、OS 依存の並列化メカニズム（Unix 系では <code>fork</code>、Windows では <code>_beginthreadex</code>）を隠蔽します。これにより、上位のロジックは並列実行の複雑さを意識せずに、ジョブの投入と完了待ちを行えます。</p>
+<h2>責務</h2>
+<ul>
+<li>**並列ジョブの管理**: <code>user_opts.jobs</code> に基づき、実行中のジョブ数を追跡し、上限に達した場合は完了待ち（reap）を行います。</li>
+<li>**OS 抽象化**: Unix と Windows で異なるプロセス/スレッド管理手法を吸収し、統一的な API を提供します。</li>
+<li>**リソースのクリーンアップ**: 終了した子プロセスやスレッドのハンドルを適切に回収し、リソースリークを防ぎます。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>parallel_exec_prog</code>: 外部コマンドを並列実行するための関数。</li>
+<li><code>parallel_transfer_all_new_dbs</code>: テーブルスペースのデータ転送を並列化するための関数。</li>
+<li><code>reap_child</code>: 完了した子プロセス/スレッドを回収し、状態を更新する関数。</li>
+<li><code>parallel_jobs</code>: 現在実行中の並列ジョブ数を保持するグローバル変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>exec_thread_arg</code></li>
+<li><code>transfer_thread_arg</code></li>
+<li><code>win32_exec_prog</code></li>
+<li><code>win32_transfer_all_new_dbs</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ジョブ投入**: <code>parallel_exec_prog</code> 等が呼ばれると、まず <code>reap_child(false)</code> を呼び出し、完了済みのジョブがあれば回収します。 2. **制限チェック**: 現在の <code>parallel_jobs</code> が <code>user_opts.jobs</code> に達していれば、<code>reap_child(true)</code> を呼び出し、いずれかのジョブが完了するまでブロックします。 3. **実行**:</p>
+<ul>
+<li>Unix 系: <code>fork()</code> を行い、子プロセスで <code>exec_prog</code> 等を実行します。</li>
+<li>Windows 系: <code>_beginthreadex</code> を使用し、引数構造体（<code>exec_thread_arg</code> 等）を介して関数を起動します。</li>
+<p>4. **回収**: <code>reap_child</code> は、終了したジョブのステータスを確認し、異常終了時は <code>pg_fatal</code> で停止します。Windows ではハンドルを閉じ、配列を詰め直して次のジョブに備えます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>sys/wait.h</code>: プロセス終了待機用（Unix）。</li>
+<li><code>io.h</code>: Windows 用のファイル/スレッド関連。</li>
+<li><code>pg_upgrade.h</code>: モジュール共通定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/exec.c</code>: 並列化の対象となる単一ジョブの実行ロジックが含まれています。</li>
+<li><code>src/bin/pg_dump/parallel.h</code>: 概念的に類似した並列処理の設計ですが、<code>pg_upgrade</code> とは実装が異なります。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Windows 特有の制約**: Windows では <code>WaitForMultipleObjects</code> の制限により、最大ジョブ数は <code>MAXIMUM_WAIT_OBJECTS</code>（通常 64）に制限されます。</li>
+<li>**エラーハンドリング**: 並列ジョブのいずれかが失敗した場合、即座に <code>pg_fatal</code> が呼ばれ、プロセス全体が停止する設計になっています。</li>
+<li>**スレッド安全性**: Windows 実装では、スレッド間で引数構造体を安全に受け渡すために、配列のポインタ操作とスロット管理が行われています。コードを読む際は、<code>#ifdef WIN32</code> で分岐している箇所に注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__exec_thread_arg.html" target="wiki-view"><code>exec_thread_arg</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__transfer_thread_arg.html" target="wiki-view"><code>transfer_thread_arg</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__parallel_exec_prog.html" target="wiki-view"><code>parallel_exec_prog</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__win32_exec_prog.html" target="wiki-view"><code>win32_exec_prog</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__parallel_transfer_all_new_dbs.html" target="wiki-view"><code>parallel_transfer_all_new_dbs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__win32_transfer_all_new_dbs.html" target="wiki-view"><code>win32_transfer_all_new_dbs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_upgrade__parallel_c__reap_child.html" target="wiki-view"><code>reap_child</code></a></li>
+</ul></body></html>

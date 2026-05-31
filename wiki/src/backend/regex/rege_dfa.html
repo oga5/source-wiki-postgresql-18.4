@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/regex/rege_dfa.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/regex/rege_dfa.c</h1>
+<h2>概要</h2>
+<p>正規表現エンジンにおける決定性有限オートマトン（DFA）の実行ルーチンを実装するファイルです。<code>regexec.c</code> から <code>#include</code> される形で利用され、NFA（非決定性有限オートマトン）をシミュレートしつつ、効率的なマッチングを行うための状態キャッシュ管理と遷移処理を担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/regex</code> サブシステムにおいて、コンパイル済みの正規表現（CNFA）を実際に実行する「実行エンジン」の心臓部です。<code>regexec.c</code> が高レベルなマッチング制御を行うのに対し、本ファイルは DFA の状態遷移、キャッシュの入れ替え、および先読み/後読み（Lookaround）制約の評価を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**マッチングエンジンの提供**: 最長一致 (<code>longest</code>) および最短一致 (<code>shortest</code>) のアルゴリズムの実装。</li>
+<li>**DFA 状態キャッシュ管理**: 遷移結果をキャッシュし、計算量を削減する。キャッシュ溢れ時の置換アルゴリズム (<code>pickss</code>) を含む。</li>
+<li>**先読み/後読み制約の評価**: <code>lacon</code> 関数を通じた複雑な制約の解決。</li>
+<li>**リソース管理**: DFA 構造体の動的な確保と解放 (<code>newdfa</code>, <code>freedfa</code>)。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>longest()</code>: 最長一致を求めるメインループ。</li>
+<li><code>shortest()</code>: 最短一致を求めるメインループ。</li>
+<li><code>miss()</code>: 状態遷移キャッシュのミス発生時に、新しい状態セットを計算しキャッシュへ登録する。</li>
+<li><code>lacon()</code>: 先読み/後読み（Lookaround）制約を評価する。</li>
+<li><code>struct dfa</code>: DFA の実行状態を保持する主要構造体。</li>
+<li><code>struct sset</code>: DFA の状態セット（キャッシュエントリ）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>dfa_backref</code></li>
+<li><code>freedfa</code></li>
+<li><code>getvacant</code></li>
+<li><code>hash</code></li>
+<li><code>initialize</code></li>
+<li><code>lacon</code></li>
+<li><code>lastcold</code></li>
+<li><code>longest</code></li>
+<li><code>matchuntil</code></li>
+<li><code>miss</code></li>
+<li><code>newdfa</code></li>
+<li><code>shortest</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>initialize()</code> が開始状態を作成し、キャッシュを準備します。 2. **スキャン**: <code>longest</code> や <code>shortest</code> が入力文字列を 1 文字ずつ進め、<code>GETCOLOR</code> で文字を色（抽象化されたクラス）に変換します。 3. **遷移**: 現在の状態セットから <code>outs</code> 配列を引きます。キャッシュミス時は <code>miss()</code> が呼ばれ、NFA の遷移を計算して新しい状態セットを生成・キャッシュします。 4. **制約評価**: 遷移中に LACON（Lookaround）が必要な場合、<code>lacon()</code> が再帰的に DFA を呼び出して制約の成否を判定します。 5. **終了判定**: 文字列の終端またはマッチング条件を満たした時点で、<code>POSTSTATE</code> フラグを持つ状態セットに到達しているかを確認します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>regex/regguts.h</code>: DFA 構造体やマクロ定義、内部データ構造の定義。</li>
+<li><code>regexec.c</code>: 本ファイルをインクルードし、コンテキストを提供する親ファイル。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>regcomp.c</code>: DFA が利用する CNFA を構築する。</li>
+<li><code>regc_nfa.c</code>: NFA の構築と最適化を担当。</li>
+<li><code>regexec.c</code>: 本ファイルが提供する関数を呼び出し、マッチングの全体フローを制御する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**インクルードの性質**: 本ファイルは単体でコンパイルされず、<code>regexec.c</code> の一部としてコンパイルされます。そのため、<code>regexec.c</code> 内の変数やマクロに直接アクセス可能です。</li>
+<li>**キャッシュの重要性**: DFA の状態数は爆発する可能性があるため、<code>sset</code> キャッシュの管理（<code>pickss</code>）が性能の鍵です。</li>
+<li>**LACON の再帰**: <code>lacon()</code> は再帰的に DFA を呼び出すため、複雑な正規表現ではスタックオーバーフローのリスクがあります。<code>STACK_TOO_DEEP</code> チェックが組み込まれている点に注意してください。</li>
+<li>**デバッグ**: <code>REG_DEBUG</code> が有効な場合、<code>FDEBUG</code> マクロを通じて詳細な遷移ログが出力されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__longest.html" target="wiki-view"><code>longest</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__shortest.html" target="wiki-view"><code>shortest</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__matchuntil.html" target="wiki-view"><code>matchuntil</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__dfa_backref.html" target="wiki-view"><code>dfa_backref</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__lastcold.html" target="wiki-view"><code>lastcold</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__newdfa.html" target="wiki-view"><code>newdfa</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__freedfa.html" target="wiki-view"><code>freedfa</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__hash.html" target="wiki-view"><code>hash</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__initialize.html" target="wiki-view"><code>initialize</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__miss.html" target="wiki-view"><code>miss</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__lacon.html" target="wiki-view"><code>lacon</code></a></li>
+<li><a href="../../../symbols/src__backend__regex__rege_dfa_c__getvacant.html" target="wiki-view"><code>getvacant</code></a></li>
+</ul></body></html>

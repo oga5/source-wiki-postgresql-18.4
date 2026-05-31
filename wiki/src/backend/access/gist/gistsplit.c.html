@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistsplit.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistsplit.c</h1>
+<h2>概要</h2>
+<p>GiSTインデックスにおけるマルチカラム（複数列）対応のページ分割アルゴリズムを実装するファイルです。単一列の分割結果をベースに、後続の列を使用して「ペナルティなしで移動可能なタプル（don&#x27;t-care）」を再分配し、インデックスの品質を最適化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> モジュールにおいて、ページ分割時の決定ロジックを担います。ユーザー定義の <code>picksplit</code> 関数が単一列しか考慮できないという制約を補完し、インデックス全体の効率を高めるための再帰的な分割処理を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**マルチカラム分割の制御**: 最初の列で分割を行い、必要に応じて後続の列で再分割を試みる。</li>
+<li>**Don&#x27;t-care タプルの特定と再配置**: 特定の列において分割のペナルティがゼロであるタプルを抽出し、より適切な側へ再配置する。</li>
+<li>**ユニオンキーの再計算**: 分割後の各ページ（左・右）について、全列のユニオンキーを再計算し、インデックスの整合性を維持する。</li>
+<li>**フォールバック処理**: ユーザー定義の <code>picksplit</code> が不適切な分割（片側に全タプルを寄せる等）を行った際の補正。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gistSplitByKey</code>: 本ファイルのメインエントリーポイント。再帰的に呼び出され、列ごとに分割を洗練させる。</li>
+<li><code>gistUserPicksplit</code>: ユーザー定義の <code>picksplit</code> 関数を呼び出し、分割結果を評価・調整する。</li>
+<li><code>findDontCares</code>: 指定列において、移動コストがゼロのタプルを特定する。</li>
+<li><code>GistSplitUnion</code>: 分割処理中にユニオンキーを計算するための作業用構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>genericPickSplit</code></li>
+<li><code>gistSplitHalf</code></li>
+<li><code>gistunionsubkey</code></li>
+<li><code>gistunionsubkeyvec</code></li>
+<li><code>placeOne</code></li>
+<li><code>removeDontCares</code></li>
+<li><code>supportSecondarySplit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>gistSplitByKey</code> が呼び出され、対象列の全タプルから <code>GistEntryVector</code> を構築する。 2. **分割実行**: <code>gistUserPicksplit</code> がユーザー定義の関数を呼び出し、初期分割を行う。 3. **再帰的最適化**:</p>
+<ul>
+<li>分割が不十分（don&#x27;t-care タプルが存在）な場合、<code>findDontCares</code> で対象を特定。</li>
+<li>特定されたタプルを抽出し、<code>gistSplitByKey</code> を次の列に対して再帰的に呼び出す。</li>
+<li>再帰から戻った後、結果をマージして最終的な分割状態を確定する。</li>
+<p>4. **最終化**: 全列のユニオンキーを再計算し、呼び出し元へ結果を返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQL定義。</li>
+<li><code>access/gist_private.h</code>: GiST内部構造体および関数プロトタイプ。</li>
+<li><code>utils/rel.h</code>: リレーション情報へのアクセス。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gist/gistproc.c</code>: ユーザー定義の <code>picksplit</code> や <code>penalty</code> 関数の実装。</li>
+<li><code>src/backend/access/gist/gistutil.c</code>: ユニオンキー計算やエントリー初期化などのユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「ペナルティ関数が100%正確ではない」という前提で設計されています。そのため、don&#x27;t-care タプルの移動後には必ずユニオンキーの再計算が行われます。</li>
+<li><code>attno</code> は0から始まる列インデックスです。再帰呼び出しによって <code>attno</code> がインクリメントされ、マルチカラムの最適化が進みます。</li>
+<li>ユーザー定義の <code>picksplit</code> が失敗した場合のフォールバック（<code>genericPickSplit</code>）は、インデックスの品質を保証するための安全装置として機能します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__GistSplitUnion.html" target="wiki-view"><code>GistSplitUnion</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__gistunionsubkeyvec.html" target="wiki-view"><code>gistunionsubkeyvec</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__gistunionsubkey.html" target="wiki-view"><code>gistunionsubkey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__findDontCares.html" target="wiki-view"><code>findDontCares</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__removeDontCares.html" target="wiki-view"><code>removeDontCares</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__placeOne.html" target="wiki-view"><code>placeOne</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__supportSecondarySplit.html" target="wiki-view"><code>supportSecondarySplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__genericPickSplit.html" target="wiki-view"><code>genericPickSplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__gistUserPicksplit.html" target="wiki-view"><code>gistUserPicksplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__gistSplitHalf.html" target="wiki-view"><code>gistSplitHalf</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistsplit_c__gistSplitByKey.html" target="wiki-view"><code>gistSplitByKey</code></a></li>
+</ul></body></html>

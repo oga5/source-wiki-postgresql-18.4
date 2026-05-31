@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiver_c__WalRcvDie.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalRcvDie</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiver.c:780</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>walreceiver</code> プロセスの終了処理を実行し、共有メモリ状態のクリーンアップとプライマリサーバーとの接続切断を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void WalRcvDie(int code, Datum arg)</code></pre>
+<ul>
+<li><code>code</code>: 終了コード（<code>on_shmem_exit</code> の規約に従う）。</li>
+<li><code>arg</code>: <code>TimeLineID</code> へのポインタを保持する <code>Datum</code> 型の引数。</li>
+</ul>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>arg</code> を介して渡される <code>TimeLineID</code>。共有メモリ上の <code>WalRcv</code> 構造体。</li>
+<li>**出力**: なし（副作用として共有メモリの更新とプロセス終了処理を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>*startpointTLI_p</code> が 0 でないこと。</li>
+<li>終了時に <code>walrcv-&gt;pid</code> が <code>MyProcPid</code> と一致していること。</li>
+<li>終了時に <code>walrcv-&gt;walRcvState</code> が <code>WALRCV_STREAMING</code>, <code>RESTARTING</code>, <code>STARTING</code>, <code>WAITING</code>, <code>STOPPING</code> のいずれかであること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>XLogWalRcvFlush</code> を呼び出し、受信済みの全 WAL レコードをディスクへフラッシュする。 2. 共有メモリ上の <code>WalRcv</code> 構造体のスピンロックを取得し、状態を <code>WALRCV_STOPPED</code> に更新、<code>pid</code> を 0 にリセットする。 3. <code>walRcvStoppedCV</code> をブロードキャストし、待機中のプロセスに通知する。 4. <code>wrconn</code> が有効な場合、<code>walrcv_disconnect</code> を呼び出してプライマリとの接続を終了する。 5. <code>WakeupRecovery</code> を呼び出し、スタートアッププロセスへ終了を通知する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>on_shmem_exit</code> に登録された終了ハンドラとして呼び出される（<code>src/backend/replication/walreceiver.c:246</code>）。</li>
+<li>**呼び出し先**:</li>
+<li><code>XLogWalRcvFlush</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>ConditionVariableBroadcast</code></li>
+<li><code>walrcv_disconnect</code></li>
+<li><code>WakeupRecovery</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalRcvData</code> (共有メモリ上の <code>WalRcv</code>)</li>
+<li><code>TimeLineID</code></li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>wrconn</code> が <code>NULL</code> の場合、接続切断処理はスキップされる。</li>
+<li>共有メモリのロック取得に失敗した場合、または前提条件の <code>Assert</code> に違反した場合はプロセスが異常終了する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>on_shmem_exit</code> を通じて呼び出されるため、プロセスの終了シーケンスにおいて確実に実行されることが保証されている。</li>
+<li>終了処理の順序（フラッシュ → 状態更新 → 通知 → 切断）は、リカバリプロセスとの整合性を保つために重要である。</li>
+</ul></body></html>

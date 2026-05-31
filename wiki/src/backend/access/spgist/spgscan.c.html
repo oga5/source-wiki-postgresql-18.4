@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spgscan.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgscan.c</h1>
+<h2>概要</h2>
+<p>SP-GiST インデックスの検索処理（スキャン）を実装するモジュールです。インデックスの木構造を走査し、指定された検索条件（Quals）や順序付け（Order-by）に合致するタプルを抽出します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/spgist</code> サブシステムにおいて、実行エンジンからの検索要求をインデックス構造上の走査に変換するインターフェースを提供します。<code>spgutils.c</code> で定義された状態管理機能を利用し、<code>spgproc.c</code> 等の演算子クラス固有のロジックを呼び出すことで、汎用的な検索フローを実現します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン状態の管理**: <code>SpGistScanOpaque</code> を通じて、検索中のメモリコンテキスト、キュー、走査キーを保持・管理します。</li>
+<li>**木構造の走査**: <code>spgWalk</code> を中心に、インデックスページを辿り、<code>inner_consistent</code> および <code>leaf_consistent</code> メソッドを用いて条件判定を行います。</li>
+<li>**KNN 検索のサポート**: <code>pairingheap</code> を使用した優先度付きキューにより、距離順の検索（Order-by）をサポートします。</li>
+<li>**結果の返却**: <code>spggettuple</code> や <code>spggetbitmap</code> を通じて、検索結果を上位層へ渡します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SpGistScanOpaque</code>: スキャン中の状態を保持する構造体。</li>
+<li><code>spgWalk</code>: インデックス全体または一部を走査する中心的な関数。</li>
+<li><code>spgInnerTest</code> / <code>spgLeafTest</code>: それぞれ内部ノードおよびリーフノードに対する条件判定を行うラッパー。</li>
+<li><code>pairingheap_SpGistSearchItem_cmp</code>: KNN 検索時の優先度を決定する比較関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SpGistLeafTuple</code></li>
+<li><code>SpGistSpecialOffsetNumbers</code></li>
+<li><code>resetSpGistScanOpaque</code></li>
+<li><code>spgAddSearchItemToQueue</code></li>
+<li><code>spgAddStartItem</code></li>
+<li><code>spgAllocSearchItem</code></li>
+<li><code>spgFreeSearchItem</code></li>
+<li><code>spgInitInnerConsistentIn</code></li>
+<li><code>spgPrepareScanKeys</code></li>
+<li><code>spgbeginscan</code></li>
+<li><code>spgrescan</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>spgbeginscan</code> でメモリコンテキストとスキャン状態を確保し、<code>spgrescan</code> で検索キーを解析します。 2. **走査**: <code>spgWalk</code> が <code>scanQueue</code>（ペアリングヒープ）から次に探索すべきノードを取り出します。 3. **判定**:</p>
+<ul>
+<li>内部ノードの場合: <code>spgInnerTest</code> が演算子クラスの <code>inner_consistent</code> を呼び出し、次に探索すべき子ノードをキューに追加します。</li>
+<li>リーフノードの場合: <code>spgLeafTest</code> が <code>leaf_consistent</code> を呼び出し、合致したタプルを結果セットへ追加します。</li>
+<p>4. **終了**: <code>spgendscan</code> で確保したメモリコンテキストを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/spgist_private.h</code>: SP-GiST 内部構造体定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理（ページ読み込み）。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/genam.h</code> / <code>access/relscan.h</code>: インデックススキャンの共通インターフェース。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/spgist/spgutils.c</code>: インデックスの初期化やキャッシュ管理。</li>
+<li><code>src/backend/access/spgist/spgproc.c</code>: 演算子クラスの登録と検証。</li>
+<li><code>src/include/access/spgist.h</code>: 演算子クラスが実装すべきメソッドの定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 検索中に生成される一時的なデータは <code>so-&gt;tempCxt</code> に、走査のキューに関連するデータは <code>so-&gt;traversalCxt</code> に厳密に分離されています。メモリリークを防ぐため、<code>spgWalk</code> 内での <code>MemoryContextReset</code> のタイミングに注意してください。</li>
+<li>**KNN 検索**: <code>pairingheap</code> を使用した順序付き検索は、<code>numberOfNonNullOrderBys &gt; 0</code> の場合にのみ有効化されます。それ以外は深さ優先に近い走査が行われます。</li>
+<li>**リダイレクト**: SP-GiST はタプルの移動（リダイレクト）が発生するため、<code>spgTestLeafTuple</code> 等で <code>SPGIST_REDIRECT</code> 状態を適切にハンドリングしている点を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__SpGistLeafTuple.html" target="wiki-view"><code>SpGistLeafTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__pairingheap_SpGistSearchItem_cmp.html" target="wiki-view"><code>pairingheap_SpGistSearchItem_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgFreeSearchItem.html" target="wiki-view"><code>spgFreeSearchItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgAddSearchItemToQueue.html" target="wiki-view"><code>spgAddSearchItemToQueue</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgAllocSearchItem.html" target="wiki-view"><code>spgAllocSearchItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgAddStartItem.html" target="wiki-view"><code>spgAddStartItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__resetSpGistScanOpaque.html" target="wiki-view"><code>resetSpGistScanOpaque</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgPrepareScanKeys.html" target="wiki-view"><code>spgPrepareScanKeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgbeginscan.html" target="wiki-view"><code>spgbeginscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgrescan.html" target="wiki-view"><code>spgrescan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__spgInitInnerConsistentIn.html" target="wiki-view"><code>spgInitInnerConsistentIn</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgscan_c__SpGistSpecialOffsetNumbers.html" target="wiki-view"><code>SpGistSpecialOffsetNumbers</code></a></li>
+</ul></body></html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__psql__mainloop_c__MainLoop.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MainLoop</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/psql/mainloop.c:32</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>psql</code> における対話的および非対話的な入力処理の中核を担い、指定されたストリームから SQL 文やバックスラッシュコマンドを読み取り、解析および実行するライフサイクルを管理します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int MainLoop(FILE *source)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>FILE *source</code>（読み取り対象の入力ストリーム）</li>
+<li>**出力**: <code>int</code>（終了ステータス。成功時は <code>EXIT_SUCCESS</code>、失敗時は <code>EXIT_FAILURE</code> または <code>EXIT_USER</code>）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pset</code> 構造体が初期化されている必要があります。</li>
+<li><code>MainLoop</code> は再入可能であり、<code>\i</code> コマンド実行時には新しいコンテキストで呼び出されます。</li>
+<li>呼び出し時に <code>pset.cur_cmd_source</code> 等のグローバルな状態が保存され、終了時に復元されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 入力ソースを <code>pset</code> に設定し、字句解析器（<code>psql_scan</code>）および条件分岐スタック（<code>cond_stack</code>）を生成します。 2. **ループ処理**:</p>
+<ul>
+<li><code>sigsetjmp</code> を用いて Ctrl-C 割り込み時の復帰ポイントを設定します。</li>
+<li><code>gets_interactive</code> または <code>gets_fromFile</code> を介して入力を取得します。</li>
+<li>入力が <code>NULL</code>（EOF）の場合、対話モードであれば <code>ignoreeof</code> 設定に従い終了するか警告を表示します。</li>
+<li>入力行の先頭に UTF-8 BOM がある場合は除去します。</li>
+<li>取得した行を解析し、SQL 文であれば <code>SendQuery</code> を、バックスラッシュコマンドであれば <code>HandleSlashCmds</code> を呼び出して実行します。</li>
+<p>3. **終了処理**: EOF 到達時や終了コマンド時に、確保したバッファを解放し、保存していた元のコンテキストを復元して制御を戻します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/bin/psql/startup.c</code> (メイン起動時)</li>
+<li><code>src/bin/psql/command.c</code> (<code>\i</code> 等のコマンド実行時)</li>
+<li>**呼び出し先**:</li>
+<li><code>psql_scan_create</code>, <code>conditional_stack_create</code></li>
+<li><code>gets_interactive</code>, <code>gets_fromFile</code></li>
+<li><code>SendQuery</code> (直接の呼び出しは <code>command.c</code> 等を介する)</li>
+<li><code>HandleSlashCmds</code> (直接の呼び出しは <code>command.c</code> 等を介する)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PsqlScanState</code>: 字句解析の状態保持。</li>
+<li><code>ConditionalStack</code>: <code>\if</code> ブロックのネスト管理。</li>
+<li><code>PQExpBuffer</code>: クエリ蓄積用バッファ（<code>query_buf</code>, <code>previous_buf</code>, <code>history_buf</code>）。</li>
+<li><code>pset</code>: グローバルな設定構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>PQExpBuffer</code> の生成失敗時に <code>pg_fatal</code> を呼び出します。</li>
+<li>**Ctrl-C 割り込み**: <code>sigsetjmp</code> により捕捉され、解析状態とバッファをリセットします。対話モードでない場合は <code>EXIT_USER</code> で終了します。</li>
+<li>**EOF**: <code>count_eof</code> が <code>pset.ignoreeof</code> に達するまで終了を抑制します。</li>
+<li>**ファイル読み込みエラー**: <code>ferror</code> が真の場合、<code>EXIT_FAILURE</code> を返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>sigint_interrupt_jmp</code> はループの各イテレーションで再設定されるため、割り込みハンドラとの整合性に注意してください。</li>
+<li><code>query_buf</code> と <code>previous_buf</code> はポインタ交換により効率的に管理されており、<code>\e</code> コマンド等で直前のクエリを参照する際に利用されます。</li>
+<li><code>pset.stmt_lineno</code> はループ内でリセットされますが、<code>pset.lineno</code> は入力行ごとにインクリメントされます。</li>
+</ul></body></html>

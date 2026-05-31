@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/pg_subscription.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/pg_subscription.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける「サブスクリプション」および「サブスクリプションとテーブル間のマッピング」を管理するためのカタログ操作関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> モジュールの一部として、システムカタログ <code>pg_subscription</code> および <code>pg_subscription_rel</code> へのアクセスインターフェースを抽象化します。論理レプリケーションのワーカープロセスや DDL コマンドが、サブスクリプションの状態を読み書きする際の主要な窓口となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**サブスクリプション情報の取得と管理**: <code>pg_subscription</code> カタログからのデータ読み出し、および状態更新（有効化/無効化）。</li>
+<li>**テーブル同期状態の追跡**: <code>pg_subscription_rel</code> を介した、各テーブルの同期状態（初期同期中か、同期完了か等）の管理。</li>
+<li>**カタログ整合性の維持**: サブスクリプション削除時の関連マッピングのクリーンアップや、データベース削除時のサブスクリプション数確認。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GetSubscription</code>: <code>pg_subscription</code> から情報を読み取り、メモリ上の <code>Subscription</code> 構造体に変換します。</li>
+<li><code>DisableSubscription</code>: 指定されたサブスクリプションを無効化します。</li>
+<li><code>AddSubscriptionRelState</code> / <code>UpdateSubscriptionRelState</code>: テーブルとサブスクリプションの紐付け状態（<code>srsubstate</code>）を更新します。</li>
+<li><code>GetSubscriptionRelState</code>: 特定のテーブルの同期状態と LSN を取得します。</li>
+<li><code>RemoveSubscriptionRel</code>: サブスクリプションまたはテーブルに関連するマッピングを削除します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CountDBSubscriptions</code></li>
+<li><code>FreeSubscription</code></li>
+<li><code>GetPublicationsStr</code></li>
+<li><code>GetSubscriptionRelations</code></li>
+<li><code>HasSubscriptionRelations</code></li>
+<li><code>textarray_to_stringlist</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **読み取り**: <code>SearchSysCache</code> を使用してシステムキャッシュからカタログタプルを取得し、<code>GETSTRUCT</code> で構造体に展開します。 2. **更新**: <code>table_open</code> で対象リレーションをロックし、<code>heap_modify_tuple</code> でタプルを書き換えた後、<code>CatalogTupleUpdate</code> でカタログを更新します。 3. **状態管理**: <code>pg_subscription_rel</code> の操作では、<code>LockSharedObject</code> を用いてサブスクリプションに対する共有ロックを取得し、競合を防ぎます。 4. **メモリ管理**: <code>FreeSubscription</code> により、<code>GetSubscription</code> で確保された動的メモリ（文字列やリスト）を解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>heapam.h</code>, <code>tableam.h</code> 等による低レイヤーのタプル操作。</li>
+<li><code>catalog/</code>: <code>pg_subscription.h</code>, <code>pg_subscription_rel.h</code> 等のカタログ定義。</li>
+<li><code>utils/</code>: <code>syscache.h</code>（高速なカタログ検索）、<code>lsyscache.h</code>（型情報等）、<code>builtins.h</code>（文字列変換等）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><code>catalog/pg_subscription_rel.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/catalog/pg_subscription.h</code>: カタログのスキーマ定義と <code>Subscription</code> 構造体の定義。</li>
+<li><code>src/backend/replication/logical/</code>: 論理レプリケーションのワーカーやランチャーが、本ファイルの関数を呼び出してサブスクリプションの状態を監視・制御します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの利用**: 本ファイル内の関数の多くは <code>SysCache</code> を利用しています。カタログの直接的な変更が必要な場合を除き、可能な限りキャッシュ経由のアクセスが推奨されます。</li>
+<li>**ロックの重要性**: <code>AddSubscriptionRelState</code> 等で <code>LockSharedObject</code> を使用している点に注意してください。これはサブスクリプションの削除や変更との競合を防ぐための重要な排他制御です。</li>
+<li>**状態遷移**: <code>pg_subscription_rel</code> の <code>srsubstate</code> は、論理レプリケーションの初期同期プロセスにおいて非常に重要です。この状態値の変更は、レプリケーションの進行に直結します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__GetPublicationsStr.html" target="wiki-view"><code>GetPublicationsStr</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__GetSubscription.html" target="wiki-view"><code>GetSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__CountDBSubscriptions.html" target="wiki-view"><code>CountDBSubscriptions</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__FreeSubscription.html" target="wiki-view"><code>FreeSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__DisableSubscription.html" target="wiki-view"><code>DisableSubscription</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__textarray_to_stringlist.html" target="wiki-view"><code>textarray_to_stringlist</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__AddSubscriptionRelState.html" target="wiki-view"><code>AddSubscriptionRelState</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__UpdateSubscriptionRelState.html" target="wiki-view"><code>UpdateSubscriptionRelState</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__GetSubscriptionRelState.html" target="wiki-view"><code>GetSubscriptionRelState</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__RemoveSubscriptionRel.html" target="wiki-view"><code>RemoveSubscriptionRel</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__HasSubscriptionRelations.html" target="wiki-view"><code>HasSubscriptionRelations</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_subscription_c__GetSubscriptionRelations.html" target="wiki-view"><code>GetSubscriptionRelations</code></a></li>
+</ul></body></html>

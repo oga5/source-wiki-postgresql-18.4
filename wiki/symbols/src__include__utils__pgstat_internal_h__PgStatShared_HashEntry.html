@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__utils__pgstat_internal_h__PgStatShared_HashEntry.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PgStatShared_HashEntry</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/utils/pgstat_internal.h:65</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの累積統計システムにおいて、共有メモリ上の統計データエントリを管理するためのハッシュテーブルエントリ構造体です。統計データの生存期間管理と、バックエンド間での安全な共有アクセスを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct PgStatShared_HashEntry
+{
+    PgStat_HashKey key;             /* ハッシュキー */
+    bool           dropped;         /* 削除フラグ */
+    pg_atomic_uint32 refcount;      /* 参照カウンタ */
+    pg_atomic_uint32 generation;    /* 再利用カウンタ */
+    dsa_pointer    body;            /* 統計データ本体へのポインタ */
+} PgStatShared_HashEntry;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>dshash</code>（共有ハッシュテーブル）のキーとして <code>PgStat_HashKey</code> を保持します。</li>
+<li>**出力**: <code>body</code> フィールドを通じて、統計種別ごとの具体的なデータ構造（<code>PgStatShared_Common</code> を含む）を指し示します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>refcount</code> および <code>generation</code> はアトミック変数であり、操作には対象エントリを含む <code>dshash</code> パーティションの共有ロック以上が必要です。</li>
+<li><code>dropped</code> が <code>true</code> の場合、新たな参照を作成してはなりません。</li>
+<li><code>refcount</code> が 0 に達した時点で、エントリは解放対象となります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**生存期間管理**: 統計エントリの生存期間は、ハッシュテーブルエントリ自体の生存期間とは独立しています。バックエンドがハッシュテーブルロックを保持せずに統計エントリを参照できるよう、<code>refcount</code> による管理が行われます。</li>
+<li>**再利用**: <code>pgstat_reinit_entry()</code> が呼び出されるたびに <code>generation</code> がインクリメントされ、エントリの再利用回数が追跡されます。</li>
+<li>**削除**: <code>dropped</code> フラグが設定されると、各バックエンドは参照を解放し、最終的にメモリが解放されます。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/utils/activity/pgstat.c</code> および <code>pgstat_shmem.c</code> 内の統計管理関数群が、この構造体を操作します。</li>
+<li>**呼び出し先**: <code>dshash</code>（共有ハッシュテーブル）および <code>dsa</code>（動的共有メモリ）のインターフェースを利用してメモリ管理を行います。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PgStat_HashKey</code>: ハッシュテーブルの検索キー。</li>
+<li><code>PgStatShared_Common</code>: <code>body</code> が指す統計データの先頭に配置される共通構造体。</li>
+<li><code>dshash</code>: 本エントリを格納する共有ハッシュテーブル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>refcount</code> の不適切な管理（解放漏れ）は、共有メモリ上の統計エントリのリークを引き起こします。</li>
+<li><code>dropped</code> 状態のエントリに対して参照を維持し続けると、ガベージコレクションが阻害されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されるため、ポインタには <code>dsa_pointer</code> を使用してください。</li>
+<li><code>refcount</code> は複数のバックエンドから同時に操作される可能性があるため、必ずアトミック操作関数を使用してください。</li>
+</ul></body></html>

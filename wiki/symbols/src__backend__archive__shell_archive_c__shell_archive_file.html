@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__archive__shell_archive_c__shell_archive_file.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shell_archive_file</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/archive/shell_archive.c:56</code></li>
+</ul>
+<h2>目的</h2>
+<p>GUCパラメータ <code>archive_command</code> で指定されたシェルコマンドを実行し、WALファイルを外部ストレージへ転送する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool shell_archive_file(ArchiveModuleState *state, const char *file, const char *path);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>state</code>: アーカイブモジュールの状態（使用されず）。</li>
+<li><code>file</code>: アーカイブ対象のWALファイル名。</li>
+<li><code>path</code>: WALファイルのフルパス。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: コマンドが正常終了（終了コード0）した場合は <code>true</code>、それ以外は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogArchiveCommand</code> が設定されている必要がある。</li>
+<li><code>path</code> が提供される場合、<code>make_native_path</code> によりプラットフォーム固有の形式に変換される。</li>
+<li>コマンド実行中は <code>pgstat_report_wait_start</code> により <code>WAIT_EVENT_ARCHIVE_COMMAND</code> 待機イベントが記録される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>replace_percent_placeholders</code> を使用し、<code>XLogArchiveCommand</code> 内の <code>%f</code>（ファイル名）と <code>%p</code>（パス）を置換して実行コマンド文字列を生成する。 2. <code>fflush(NULL)</code> を呼び出し、バッファをフラッシュする。 3. <code>system()</code> を介してシェルコマンドを実行する。 4. 終了コードを解析する:</p>
+<ul>
+<li>正常終了（0）: <code>true</code> を返す。</li>
+<li>異常終了: <code>wait_result_is_any_signal</code> により、シグナルによる中断や致命的なエラーと判定された場合は <code>FATAL</code> レベルで報告し、それ以外は <code>LOG</code> レベルで報告して <code>false</code> を返す。</li>
+<p>5. 生成したコマンド文字列のメモリを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>shell_archive_callbacks</code> 構造体（<code>ArchiveModuleCallbacks</code>）の <code>.archive_file_cb</code> フィールドに登録され、アーカイブプロセスから間接的に呼び出される。</li>
+<li>**呼び出し先**: <code>pstrdup</code>, <code>make_native_path</code>, <code>replace_percent_placeholders</code>, <code>pgstat_report_wait_start</code>, <code>system</code>, <code>pgstat_report_wait_end</code>, <code>wait_result_is_any_signal</code>, <code>WIFEXITED</code>, <code>WEXITSTATUS</code>, <code>WIFSIGNALED</code>, <code>WTERMSIG</code>, <code>pg_strsignal</code>, <code>ereport</code>, <code>pfree</code>, <code>elog</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ArchiveModuleState</code>: アーカイブモジュールの状態管理用構造体。</li>
+<li><code>ArchiveModuleCallbacks</code>: アーカイブモジュールのコールバック関数を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>system()</code> がシグナルで中断された場合、アーカイブプロセスを終了させるために <code>FATAL</code> エラーを発生させる。</li>
+<li>コマンドが見つからない等のシェルエラーが発生した場合、<code>LOG</code> または <code>FATAL</code> レベルでエラーを報告し、アーカイブは失敗する。</li>
+<li><code>path</code> が NULL の場合、プレースホルダー置換時にパス部分は処理されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>system()</code> を使用しているため、<code>archive_command</code> に指定する文字列のセキュリティ（コマンドインジェクション等）に注意が必要。</li>
+<li>シグナルによる中断を <code>FATAL</code> として扱うことで、ポストマスターによるアーカイブプロセスの再起動を促す設計となっている。</li>
+</ul></body></html>

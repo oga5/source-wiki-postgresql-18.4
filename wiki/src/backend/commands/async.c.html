@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/async.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/async.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の非同期通知システム（<code>LISTEN</code>/<code>NOTIFY</code>/<code>UNLISTEN</code>）を実装するモジュールです。ディスクベースの SLRU（Simple Least Recently Used）キューを共有メモリ上にマッピングし、バックエンド間でのイベント伝達を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、SQL コマンドの実行とトランザクションライフサイクルに統合された非同期通信機能を提供します。他のバックエンドへの通知送信、および自身のリスニング状態の管理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**通知キューの管理**: SLRU を用いた共有メモリ上の通知キューの読み書きおよびディスクへの永続化（再起動時にクリアされる一時的なデータ）。</li>
+<li>**トランザクション統合**: <code>NOTIFY</code> はトランザクションコミット時にキューへ書き込まれ、<code>LISTEN</code> 状態の変更もコミット時に反映される。</li>
+<li>**リスナー管理**: 各バックエンドのリスニング状態（PID、DB OID、読み取り位置）を共有メモリ上で追跡。</li>
+<li>**シグナル伝達**: <code>PROCSIG_NOTIFY_INTERRUPT</code> を使用して、通知が届いたことを他のバックエンドに通知。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キュー制御構造体</h3>
+<ul>
+<li><code>AsyncQueueControl</code>: 共有メモリ上のメイン制御構造体。キューのヘッド/テール位置、リスナーリストの先頭などを保持。</li>
+<li><code>QueueBackendStatus</code>: 各バックエンドのリスニング状態を保持する配列要素。</li>
+<li><code>AsyncQueueEntry</code>: キュー内の個々の通知メッセージ。</li>
+</ul>
+<h3>トランザクション状態管理</h3>
+<ul>
+<li><code>pendingNotifies</code>: 現在のトランザクションで発行された通知のリスト。コミット時にキューへフラッシュされる。</li>
+<li><code>pendingActions</code>: 現在のトランザクションで発行された <code>LISTEN</code>/<code>UNLISTEN</code> アクションのリスト。</li>
+<li><code>listenChannels</code>: 現在のバックエンドがリスニング中のチャネル名リスト。</li>
+</ul>
+<h3>主要なインターフェース</h3>
+<ul>
+<li><code>Async_Notify</code>, <code>Async_Listen</code>, <code>Async_Unlisten</code>: SQL コマンドのバックエンド実装。</li>
+<li><code>PreCommit_Notify</code>, <code>AtCommit_Notify</code>: トランザクションコミット時のフック。</li>
+<li><code>HandleNotifyInterrupt</code>, <code>ProcessNotifyInterrupt</code>: 非同期シグナル受信時の処理フロー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ActionList</code></li>
+<li><code>AsyncNotifyFreezeXids</code></li>
+<li><code>AsyncQueueControl</code></li>
+<li><code>AsyncQueueEntry</code></li>
+<li><code>AsyncShmemInit</code></li>
+<li><code>ListenAction</code></li>
+<li><code>ListenActionKind</code></li>
+<li><code>Notification</code></li>
+<li><code>NotificationHash</code></li>
+<li><code>NotificationList</code></li>
+<li><code>QueueBackendStatus</code></li>
+<li><code>QueuePosition</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **NOTIFY 発行**: <code>Async_Notify</code> が <code>pendingNotifies</code> にイベントを蓄積。 2. **コミット時**: <code>PreCommit_Notify</code> が <code>NotifyQueueLock</code> を取得し、<code>pendingNotifies</code> を SLRU キューへ書き込む。 3. **通知送信**: <code>AtCommit_Notify</code> が <code>SignalBackends</code> を呼び出し、リスナーに対して <code>PROCSIG_NOTIFY_INTERRUPT</code> を送信。 4. **受信処理**: シグナルハンドラ <code>HandleNotifyInterrupt</code> がラッチを設定。<code>ProcessNotifyInterrupt</code> が <code>asyncQueueReadAllNotifications</code> を呼び出し、キューから自身の DB OID に一致するメッセージを読み取り、フロントエンドへ送信。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/slru.h</code>: 通知キューの物理ストレージ管理。</li>
+<li><code>storage/lmgr.h</code>: <code>NotifyQueueLock</code> 等のロック管理。</li>
+<li><code>storage/procsignal.h</code>: バックエンド間シグナル送信。</li>
+<li><code>utils/memutils.h</code>: トランザクションコンテキスト管理。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/async.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/slru.c</code>: SLRU の基盤実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリとライフサイクル**: <code>pendingNotifies</code> 等のリストは <code>TopTransactionContext</code> に割り当てられ、サブトランザクションのコミット/アボート時に適切にマージまたは破棄されます。</li>
+<li>**ロック順序**: デッドロック回避のため、<code>NotifyQueueTailLock</code> → <code>NotifyQueueLock</code> → <code>SLRU bank lock</code> の順序で取得する必要があります。</li>
+<li>**制約**: <code>NOTIFY</code> ペイロードは <code>BLCKSZ</code>（通常 8KB）の SLRU ページ内に収まる必要があります。</li>
+<li>**未実装/浅い部分**: <code>pg_listening_channels</code> 等の関数は、現在のトランザクション内で <code>listenChannels</code> が不変であることを前提としています。また、<code>AsyncNotifyFreezeXids</code> は VACUUM による CLOG メンテナンス時に古い XID を凍結するために使用されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__async_c__AsyncQueueEntry.html" target="wiki-view"><code>AsyncQueueEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__QueuePosition.html" target="wiki-view"><code>QueuePosition</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__QueueBackendStatus.html" target="wiki-view"><code>QueueBackendStatus</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__AsyncQueueControl.html" target="wiki-view"><code>AsyncQueueControl</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__ListenActionKind.html" target="wiki-view"><code>ListenActionKind</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__ListenAction.html" target="wiki-view"><code>ListenAction</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__ActionList.html" target="wiki-view"><code>ActionList</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__Notification.html" target="wiki-view"><code>Notification</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__NotificationList.html" target="wiki-view"><code>NotificationList</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__NotificationHash.html" target="wiki-view"><code>NotificationHash</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__AsyncShmemInit.html" target="wiki-view"><code>AsyncShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__async_c__AsyncNotifyFreezeXids.html" target="wiki-view"><code>AsyncNotifyFreezeXids</code></a></li>
+</ul></body></html>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__pl__plpython__plpy_spi_c__PLy_spi_prepare.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PLy_spi_prepare</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/pl/plpython/plpy_spi.c:35</code></li>
+</ul>
+<h2>目的</h2>
+<p>Python から呼び出された SQL クエリを解析・コンパイルし、実行可能な <code>PLyPlanObject</code> を生成する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>PyObject *PLy_spi_prepare(PyObject *self, PyObject *args)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>self</code>: Python モジュールまたはオブジェクトインスタンス。</li>
+<li><code>args</code>: Python タプル。第1引数にクエリ文字列（<code>s</code>）、第2引数（オプション）に引数型のリスト（<code>O</code>）を受け取る。</li>
+<li>**出力**: 成功時は生成された <code>PLyPlanObject</code>（<code>PyObject*</code>）、失敗時は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>list</code> 引数が指定された場合、それは Python のシーケンス型でなければならない。</li>
+<li><code>PLyPlanObject</code> のメモリコンテキスト（<code>mcxt</code>）は <code>TopMemoryContext</code> を親として作成される。</li>
+<li>SPI 操作はサブトランザクション内で実行される必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 引数を解析し、クエリ文字列と型リストを取得する。 2. <code>PLy_plan_new()</code> で新しいプランオブジェクトを確保し、専用のメモリコンテキストを作成する。 3. <code>PLy_spi_subtransaction_begin()</code> を呼び出し、SPI 操作のためのサブトランザクションを開始する。 4. <code>PG_TRY()</code> ブロック内で以下を実行する:</p>
+<ul>
+<li>型リストの各要素を <code>parseTypeString</code> で解決し、型情報を <code>plan-&gt;types</code> に格納する。</li>
+<li><code>PLy_output_setup_func</code> を用いて、各引数の型変換関数をセットアップする。</li>
+<li><code>SPI_prepare()</code> を呼び出し、クエリをプリペアドステートメントに変換する。</li>
+<li><code>SPI_keepplan()</code> でプランを保持し、<code>PLy_spi_subtransaction_commit()</code> でサブトランザクションをコミットする。</li>
+<p>5. <code>PG_CATCH()</code> ブロックでは、エラー発生時に <code>PLy_spi_subtransaction_abort()</code> を呼び出し、プランオブジェクトを解放して <code>NULL</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/pl/plpython/plpy_plpymodule.c</code> 内のメソッド定義テーブルから <code>plpy.prepare</code> として呼び出される。</li>
+<li>**呼び出し先**: <code>PLy_plan_new</code>, <code>PLy_spi_subtransaction_begin/commit/abort</code>, <code>parseTypeString</code>, <code>SPI_prepare</code>, <code>SPI_keepplan</code>, <code>PLy_output_setup_func</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PLyPlanObject</code>: プリペアドステートメントと関連する型情報、メモリコンテキストを保持する構造体。</li>
+<li><code>PLyExecutionContext</code>: 現在の実行コンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>引数が不正な型の場合、<code>TypeError</code> を発生させる。</li>
+<li>型名が文字列でない場合、<code>ereport(ERROR, ...)</code> により PostgreSQL エラーを発生させる。</li>
+<li><code>SPI_prepare</code> が失敗した場合、<code>elog(ERROR, ...)</code> によりエラーを報告する。</li>
+<li>メモリ不足やサブトランザクションの失敗時は <code>PG_CATCH</code> を経由して Python 例外として処理される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>PG_TRY</code> ブロック内でのメモリ管理（<code>MemoryContextSwitchTo</code>）が重要である。<code>optr</code> 等の Python オブジェクトはエラー時に適切に <code>Py_XDECREF</code> されるよう注意が必要。</li>
+<li><code>SPI_prepare</code> の結果は <code>TopMemoryContext</code> に保持されるため、プランの寿命管理には注意を払うこと。</li>
+</ul></body></html>

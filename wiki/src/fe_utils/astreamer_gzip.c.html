@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/fe_utils/astreamer_gzip.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/fe_utils/astreamer_gzip.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのバックアップ処理等で使用される <code>astreamer</code> インターフェースを介して、gzip形式の圧縮および解凍を行う機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/fe_utils</code> 内のストリーミング処理パイプラインの一部です。他の圧縮形式（LZ4, Zstd）が「圧縮器（Compressor）」と「解凍器（Decompressor）」のペアで構成されるのに対し、本モジュールは歴史的経緯から「書き込み器（Writer）」と「解凍器」という非対称な構成をとっています。</p>
+<h2>責務</h2>
+<ul>
+<li>**gzip圧縮書き込み**: 入力データをgzip圧縮し、指定されたファイルパスまたはファイルハンドルへ書き出す。</li>
+<li>**gzip解凍**: 入力ストリームを解凍し、後続の <code>astreamer</code> へデータを転送する。</li>
+<li>**リソース管理**: <code>zlib</code> の初期化、メモリ確保（<code>palloc</code>）、およびファイルハンドルの安全なクローズ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>astreamer_gzip_writer</code>: 圧縮書き込み用の構造体。<code>gzFile</code> を保持する。</li>
+<li><code>astreamer_gzip_decompressor</code>: 解凍用の構造体。<code>z_stream</code> を保持する。</li>
+<li><code>astreamer_gzip_writer_new</code>: 圧縮書き込み器のコンストラクタ。ファイルハンドルを <code>dup()</code> して <code>gzopen</code> する。</li>
+<li><code>astreamer_gzip_decompressor_new</code>: 解凍器のコンストラクタ。<code>inflateInit2</code> で解凍状態を初期化する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>astreamer_gzip_decompressor_content</code></li>
+<li><code>astreamer_gzip_decompressor_finalize</code></li>
+<li><code>astreamer_gzip_decompressor_free</code></li>
+<li><code>astreamer_gzip_writer_content</code></li>
+<li><code>astreamer_gzip_writer_finalize</code></li>
+<li><code>astreamer_gzip_writer_free</code></li>
+<li><code>get_gz_error</code></li>
+<li><code>gzip_palloc</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **Writer**: <code>content</code> メソッドが呼ばれると、<code>gzwrite</code> を介してデータを圧縮し、ファイルへ出力します。<code>finalize</code> で <code>gzclose</code> を呼び出し、リソースを解放します。 2. **Decompressor**: <code>content</code> メソッドが呼ばれると、<code>inflate</code> を使用して入力データを解凍します。解凍後のデータは <code>bbs_buffer</code> に蓄積され、バッファが満杯になるたびに後続の <code>astreamer</code> へ <code>astreamer_content</code> を通じて渡されます。 3. **終了処理**: <code>finalize</code> 時にバッファに残ったデータをフラッシュし、後続のストリーマーの <code>finalize</code> を呼び出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
+<li><code>zlib.h</code>: gzip圧縮・解凍のコアライブラリ。</li>
+<li><code>fe_utils/astreamer.h</code>: ストリーミング処理の基底インターフェース。</li>
+<li><code>unistd.h</code>: <code>dup()</code> 等のシステムコール用。</li>
+<li><code>common/logging.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/fe_utils/astreamer.h</code>: <code>astreamer</code> インターフェースの定義。</li>
+<li><code>src/fe_utils/astreamer_lz4.c</code> / <code>astreamer_zstd.c</code>: 他の圧縮アルゴリズムの実装。これらはより柔軟なパイプライン構成をサポートしています。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**非対称性**: 本モジュールは <code>gzFile</code> を直接扱うため、他の圧縮モジュールと異なり、圧縮結果を別の <code>astreamer</code> に渡すことができません。ファイルへの書き込み専用である点に注意してください。</li>
+<li>**ファイルハンドル**: <code>astreamer_gzip_writer_new</code> では、呼び出し元の <code>FILE</code> を閉じないよう <code>dup()</code> を使用しています。これは <code>gzclose</code> が内部で <code>close()</code> を実行してしまう仕様を回避するための措置です。</li>
+<li>**ビルド依存**: <code>HAVE_LIBZ</code> が定義されていない環境では、これらの関数はエラーを発生させるか、利用できません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_writer.html" target="wiki-view"><code>astreamer_gzip_writer</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_decompressor.html" target="wiki-view"><code>astreamer_gzip_decompressor</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_writer_new.html" target="wiki-view"><code>astreamer_gzip_writer_new</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_writer_content.html" target="wiki-view"><code>astreamer_gzip_writer_content</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_writer_finalize.html" target="wiki-view"><code>astreamer_gzip_writer_finalize</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_writer_free.html" target="wiki-view"><code>astreamer_gzip_writer_free</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__get_gz_error.html" target="wiki-view"><code>get_gz_error</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_decompressor_new.html" target="wiki-view"><code>astreamer_gzip_decompressor_new</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_decompressor_content.html" target="wiki-view"><code>astreamer_gzip_decompressor_content</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_decompressor_finalize.html" target="wiki-view"><code>astreamer_gzip_decompressor_finalize</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__astreamer_gzip_decompressor_free.html" target="wiki-view"><code>astreamer_gzip_decompressor_free</code></a></li>
+<li><a href="../../symbols/src__fe_utils__astreamer_gzip_c__gzip_palloc.html" target="wiki-view"><code>gzip_palloc</code></a></li>
+</ul></body></html>

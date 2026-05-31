@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execProcnode_c__ExecSetTupleBound.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecSetTupleBound</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/executor/execProcnode.c:847</code></li>
+</ul>
+<h2>目的</h2>
+<p>プランツリーの実行ノードに対し、後続の処理で必要となるタプル数の上限（Tuple Bound）を伝播・設定する。これにより、ソート処理などのメモリ使用量を最適化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ExecSetTupleBound(int64 tuples_needed, PlanState *child_node)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>tuples_needed</code>: 必要なタプル数（負の値は制限なしを意味する）。</li>
+<li><code>child_node</code>: 設定対象となる <code>PlanState</code> ツリーのノード。</li>
+<li>**出力**: なし（副作用として <code>child_node</code> 以下の状態を更新する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>child_node</code> は有効な <code>PlanState</code> であること。</li>
+<li>再帰的に呼び出されるため、スタック深さの制限に注意が必要だが、本関数自体での明示的なチェックは行われていない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>指定された <code>child_node</code> の型に応じて以下の処理を行う：</p>
+<ul>
+<li>**SortState / IncrementalSortState**: <code>bounded</code> フラグを立て、<code>bound</code> に <code>tuples_needed</code> を設定する。<code>tuples_needed &lt; 0</code> の場合は <code>bounded</code> を <code>false</code> にリセットする。</li>
+<li>**AppendState / MergeAppendState**: 子ノード（<code>appendplans</code> / <code>mergeplans</code>）に対して再帰的に本関数を呼び出す。</li>
+<li>**ResultState**: 子ノード（<code>outerPlanState</code>）に対して再帰的に呼び出す。</li>
+<li>**SubqueryScanState**: <code>qual</code> が存在しない場合に限り、サブプランに対して再帰的に呼び出す。</li>
+<li>**GatherState / GatherMergeState**: 自身の <code>tuples_needed</code> を更新し、さらに子ノード（<code>outerPlanState</code>）に対して再帰的に呼び出す。</li>
+<li>**その他**: 行を破棄または結合する可能性があるノードに到達した場合、伝播は停止する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/executor/execParallel.c</code>: <code>ExecSetTupleBound</code> を呼び出し、並列クエリのタプル制限を設定。</li>
+<li><code>src/backend/executor/nodeLimit.c</code>: <code>Limit</code> ノードの処理において、必要なタプル数を計算し本関数を呼び出す。</li>
+<li>**呼び出し先**:</li>
+<li><code>ExecSetTupleBound</code>（再帰呼び出し）</li>
+<li>各ノードの <code>PlanState</code> 構造体への直接アクセス</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PlanState</code>: 実行ノードの共通基底構造体。</li>
+<li><code>SortState</code>, <code>IncrementalSortState</code>, <code>AppendState</code>, <code>MergeAppendState</code>, <code>ResultState</code>, <code>SubqueryScanState</code>, <code>GatherState</code>, <code>GatherMergeState</code>: 各種実行ノードの状態構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>tuples_needed &lt; 0</code> の場合、制限は解除される。</li>
+<li><code>SubqueryScanState</code> のように <code>qual</code> を持つノードでは、行が破棄される可能性があるため、制限の伝播は安全のために停止される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は再帰的に動作する。新しいノードタイプを追加し、タプル制限の伝播をサポートする必要がある場合は、本関数の <code>switch</code>（または <code>if-else</code>）構造にケースを追加すること。</li>
+<li><code>Sort</code> や <code>Gather</code> ノード側で、設定された <code>bound</code> を適切に利用する実装が別途必要である。</li>
+</ul></body></html>

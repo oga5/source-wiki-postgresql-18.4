@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/portalcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/portalcmds.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける「ポータル（Portal）」に対するSQLコマンド（<code>DECLARE CURSOR</code>, <code>FETCH</code>, <code>MOVE</code>, <code>CLOSE</code>）の実行ロジックを実装しています。ポータルは、クエリの実行状態を保持し、クライアントに対して結果を段階的に提供するための抽象化レイヤーです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、SQLレベルのカーソル操作を処理します。低レベルなポータルメモリ管理（<code>portalmem.c</code>）や、FE/BEプロトコルレベルのポータル操作（<code>pquery.c</code>）と連携し、クエリ実行エンジンとクライアント間の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**カーソルの定義と初期化**: <code>DECLARE CURSOR</code> を受け取り、クエリの解析・書き換え・プラン作成を経てポータルオブジェクトを生成する。</li>
+<li>**カーソルの操作**: <code>FETCH</code> や <code>MOVE</code> コマンドに基づき、ポータル内のクエリ実行を進め、結果を適切な宛先（<code>DestReceiver</code>）へ転送する。</li>
+<li>**ライフサイクル管理**: カーソルのクローズ処理および、トランザクション終了後も保持される「ホールド可能カーソル（Holdable Portal）」の永続化処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PerformCursorOpen</code>: <code>DECLARE CURSOR</code> を実行し、プラン作成とポータルの初期化を行う。</li>
+<li><code>PerformPortalFetch</code>: <code>FETCH</code> / <code>MOVE</code> コマンドを処理し、ポータルからタプルを取得する。</li>
+<li><code>PerformPortalClose</code>: 指定されたポータルを破棄する。</li>
+<li><code>PortalCleanup</code>: ポータル破棄時に実行されるクリーンアップフック。実行中のエグゼキュータを安全に停止する。</li>
+<li><code>PersistHoldablePortal</code>: トランザクション終了時に、結果セットを <code>Tuplestore</code> に移してカーソルを永続化する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **カーソルオープン**: <code>PerformCursorOpen</code> が <code>pg_plan_query</code> を呼び出し、プランを生成。<code>CreatePortal</code> でメモリを確保し、<code>PortalStart</code> で実行準備を完了させる。 2. **データ取得**: <code>PerformPortalFetch</code> が <code>PortalRunFetch</code> を経由してエグゼキュータを駆動。結果は <code>DestReceiver</code> を通じてクライアントへ送られる。 3. **永続化**: <code>PersistHoldablePortal</code> が呼び出されると、エグゼキュータの出力を <code>Tuplestore</code> に切り替え、全結果をメモリ/ディスクに書き出す。その後、エグゼキュータを終了させ、以降のアクセスは <code>Tuplestore</code> から行われるようにする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>commands/portalcmds.h</code>: インターフェース定義。</li>
+<li><code>executor/executor.h</code>: クエリ実行エンジンの制御。</li>
+<li><code>tcop/pquery.h</code>: ポータル操作の基盤機能。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>utils/snapmgr.h</code>: スナップショット管理。</li>
+<li><code>access/xact.h</code></li>
+<li><code>executor/tstoreReceiver.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/queryjumble.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/portalmem.c</code>: ポータル構造体のメモリ管理の実体。</li>
+<li><code>src/backend/tcop/pquery.c</code>: プロトコル層からのポータル操作の呼び出し元。</li>
+<li><code>src/backend/executor/execMain.c</code>: エグゼキュータの実行制御。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>ポータルは「名前付き」と「名前なし（<code>&quot;&quot;</code>）」が存在しますが、本ファイル内の関数は空文字列のカーソル名を明示的に拒否します。</li>
+<li><code>PersistHoldablePortal</code> は非常に重要な関数です。トランザクション終了時にクエリ結果を <code>Tuplestore</code> へ退避させるため、メモリ消費量やディスクI/Oに影響を与える可能性があります。</li>
+<li><code>PortalCleanup</code> はエラー発生時にも呼ばれるため、<code>PORTAL_FAILED</code> 状態のチェックなど、二重エラーを防ぐための堅牢な実装になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__portalcmds_c__PerformCursorOpen.html" target="wiki-view"><code>PerformCursorOpen</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__portalcmds_c__PerformPortalFetch.html" target="wiki-view"><code>PerformPortalFetch</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__portalcmds_c__PerformPortalClose.html" target="wiki-view"><code>PerformPortalClose</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__portalcmds_c__PortalCleanup.html" target="wiki-view"><code>PortalCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__portalcmds_c__PersistHoldablePortal.html" target="wiki-view"><code>PersistHoldablePortal</code></a></li>
+</ul></body></html>

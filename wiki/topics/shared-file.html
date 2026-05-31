@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/shared-file.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Shared File</h1>
+<h2>概念</h2>
+<p><code>Shared File</code>（共有ファイル）は、PostgreSQLにおいて複数のバックエンドプロセス間で共有される一時ファイル群を管理するための仕組みです。プロセス間での協調的なアクセスを可能にし、不要になった一時ファイルの自動的なライフサイクル管理（クリーンアップ）を提供します。</p>
+<h2>なぜ重要か</h2>
+<p>並列クエリ（並列ハッシュジョインや並列ソートなど）を実行する際、複数のバックエンドプロセスが協調して一時データを読み書きする必要があります。<code>Shared File</code> は、これらのプロセス間で一時ファイルを安全に共有し、すべてのプロセスが処理を終えた（またはデタッチした）段階で、関連する一時ファイルを自動的かつ確実に物理削除するために不可欠な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>struct:src/include/storage/sharedfileset.h#SharedFileSet</code>**: 共有ファイルセットを管理する中心的な構造体。内部にローカルな一時ファイル管理用の <code>FileSet</code>、スピンロック（<code>slock_t mutex</code>）、および参照カウンタ（<code>int refcnt</code>）を保持します。</li>
+<li>**<code>symbol:src/backend/storage/file/sharedfileset.c#SharedFileSetInit</code>**: 共有ファイルセットの初期化を行う関数。参照カウンタの初期化や、DSM（動的共有メモリ）デタッチ時の自動クリーンアップ処理の登録を行います。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報に基づく、共有ファイルセットのライフサイクルおよび処理の流れは以下の通りです。</p>
+<p>1. **初期化**: <code>src/backend/executor/nodeHashjoin.c</code> や <code>src/backend/utils/sort/tuplesort.c</code> などの呼び出し元が <code>SharedFileSetInit</code> を呼び出します。これにより、<code>SharedFileSet</code> 内の <code>mutex</code> がスピンロックとして初期化され、参照カウンタ（<code>refcnt</code>）が <code>1</code> に設定されます。また、DSMセグメント（<code>dsm_segment</code>）が指定されている場合は、デタッチ時のコールバックとして <code>SharedFileSetOnDetach</code> が登録されます。 2. **アタッチ**: 他のバックエンドプロセスがアタッチする際、スピンロック（<code>mutex</code>）による保護のもとで <code>refcnt</code> がインクリメントされます。 3. **利用**: <code>src/backend/storage/file/buffile.c</code> や <code>src/backend/utils/sort/logtape.c</code> などを通じて、共有一時ファイルへのアクセスが実行されます。 4. **デタッチとクリーンアップ**: プロセス終了時やエラー発生時などに <code>SharedFileSetOnDetach</code> が呼び出され、<code>refcnt</code> がデクリメントされます。<code>refcnt</code> が <code>0</code> に達した時点で <code>FileSetDeleteAll</code> が呼び出され、関連するすべての一時ファイルが物理的に削除されます。</p>
+<p>*注意: <code>SharedFileSetAttach</code> や <code>SharedFileSetOnDetach</code>、<code>FileSetDeleteAll</code> の具体的なシグネチャや、これらを含む並列処理全体の詳細なエンドツーエンドフローは、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**参照カウンタの保護**: <code>SharedFileSet</code> 内の <code>refcnt</code> に対する操作は、必ず <code>mutex</code>（スピンロック）によって保護されていなければなりません。</li>
+<li>**共有メモリへの配置**: 複数プロセスからアクセスされるため、<code>SharedFileSet</code> 構造体は必ず共有メモリ（DSM）セグメント上に配置される必要があります。</li>
+<li>**初期参照カウント**: <code>SharedFileSetInit</code> による初期化直後の <code>refcnt</code> は必ず <code>1</code> となります。</li>
+<li>**自動削除のトリガー**: 参照カウント <code>refcnt</code> が <code>0</code> に達したとき、保持しているすべての一時ファイルが物理的に削除されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**自動クリーンアップの欠落**: </li>
+<p><code>SharedFileSetInit</code> の呼び出し時に <code>dsm_segment</code>（<code>seg</code>）に <code>NULL</code> を指定した場合、DSMデタッチ時の自動クリーンアップコールバックが登録されません。この場合、呼び出し元が手動でクリーンアップを管理する必要があり、管理を怠ると一時ファイルが残留する原因になります。</p>
+<li>**エラーハンドリング時の再入**: </li>
+<p><code>SharedFileSetOnDetach</code> はエラー発生時のクリーンアップパスからも呼び出されるため、このコールバック内でさらにエラーを発生させないように堅牢に実装する必要があります。</p>
+<li>**参照カウントの不整合**: </li>
+<p>スピンロックの競合やデタッチ処理の欠落が発生すると、参照カウント（<code>refcnt</code>）に不整合が生じ、ファイルが早期に削除されたり、逆に削除されずに残ったりする可能性があります。また、既に破棄された <code>SharedFileSet</code> に対してアタッチを試みた場合はエラーが発生します。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/file/sharedfileset.c</code> （実装の詳細）</li>
+<li><code>src/include/storage/sharedfileset.h</code> （構造体定義とAPI定義）</li>
+<li><code>src/include/storage/fileset.h</code> （内包される <code>FileSet</code> の詳細なファイル操作仕様）</li>
+</ul></body></html>

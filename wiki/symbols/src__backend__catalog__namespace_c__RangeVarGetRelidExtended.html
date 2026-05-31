@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__namespace_c__RangeVarGetRelidExtended.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RangeVarGetRelidExtended</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/namespace.c:440</code></li>
+</ul>
+<h2>目的</h2>
+<p>リレーション名（<code>RangeVar</code>）からその OID を解決し、必要に応じてロックを取得する。DDL 操作による名前解決結果の変更を考慮し、整合性を保つための再試行ロジックを備えた主要なエントリーポイント。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Oid RangeVarGetRelidExtended(const RangeVar *relation, LOCKMODE lockmode, uint32 flags, RangeVarGetRelidCallback callback, void *callback_arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relation</code>: 解決対象のリレーション名（スキーマ名、カタログ名を含む）。</li>
+<li><code>lockmode</code>: 取得するロックモード（<code>NoLock</code> の場合はロックを取得しない）。</li>
+<li><code>flags</code>: 動作フラグ（<code>RVR_MISSING_OK</code>, <code>RVR_NOWAIT</code>, <code>RVR_SKIP_LOCKED</code> 等）。</li>
+<li><code>callback</code>: 解決後に呼び出されるオプションのコールバック関数。</li>
+<li><code>callback_arg</code>: コールバックに渡す引数。</li>
+<li>**出力**:</li>
+<li>解決されたリレーションの <code>Oid</code>。見つからない場合は <code>InvalidOid</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>relation-&gt;catalogname</code> が指定されている場合、現在のデータベース名と一致しなければならない。</li>
+<li><code>RVR_NOWAIT</code> と <code>RVR_SKIP_LOCKED</code> フラグを同時に指定することはできない（<code>Assert</code> で検証）。</li>
+<li><code>lockmode</code> が <code>NoLock</code> でない場合、DDL による無効化メッセージを監視し、必要に応じて再試行を行う。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>SharedInvalidMessageCounter</code> を記録し、無効化メッセージの発生を追跡する。 2. **名前解決**:</p>
+<ul>
+<li><code>RELPERSISTENCE_TEMP</code> の場合: 一時名前空間を優先して検索。</li>
+<li>スキーマ名が指定されている場合: 指定されたスキーマ内を検索。</li>
+<li>それ以外: <code>search_path</code> に基づき検索。</li>
+<p>3. **コールバック**: 解決した OID に対して <code>callback</code> を実行。 4. **ロック取得**: <code>lockmode</code> が <code>NoLock</code> でない場合、<code>LockRelationOid</code> を実行。ロック取得時に無効化メッセージを処理する。 5. **整合性チェック**: ロック取得後に <code>SharedInvalidMessageCounter</code> を確認し、値が変化していれば名前解決から再試行する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/cluster.c</code>, <code>indexcmds.c</code>, <code>lockcmds.c</code>, <code>matview.c</code>, <code>policy.c</code> 等のコマンド実行モジュール。</li>
+<li>**呼び出し先**: <code>get_database_name</code>, <code>LookupExplicitNamespace</code>, <code>get_relname_relid</code>, <code>RelnameGetRelid</code>, <code>AcceptInvalidationMessages</code>, <code>LockRelationOid</code>, <code>UnlockRelationOid</code>, <code>ConditionalLockRelationOid</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RangeVar</code>: 解決対象のリレーション情報を保持する構造体。</li>
+<li><code>LOCKMODE</code>: ロックの強度を定義する列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**データベース不一致**: <code>catalogname</code> が現在の DB と異なる場合、<code>ERRCODE_FEATURE_NOT_SUPPORTED</code> でエラー。</li>
+<li>**スキーマ不一致**: 一時テーブルでスキーマ名が指定された場合、<code>ERRCODE_INVALID_TABLE_DEFINITION</code> でエラー。</li>
+<li>**ロック競合**: <code>RVR_NOWAIT</code> 指定時にロックが取得できない場合、<code>ERRCODE_LOCK_NOT_AVAILABLE</code> でエラー（<code>RVR_SKIP_LOCKED</code> の場合は <code>DEBUG1</code> メッセージのみ）。</li>
+<li>**未検出**: <code>missing_ok</code> が指定されていない場合、リレーションが見つからなければエラーが発生する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は DDL 実行中の名前解決の揺らぎを吸収する設計である。コールバック内でロックを取得するような実装は避けること（デッドロックのリスク）。</li>
+<li><code>lockmode == NoLock</code> の場合、無効化メッセージのチェックを行わないため、呼び出し側で適切なロックを保持している必要がある。</li>
+</ul></body></html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginbulk.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginbulk.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）のインデックス構築を高速化するための補助モジュールです。インデックス作成時にメモリ上でキーとTID（タプル識別子）のペアを効率的に集約し、ソート済みの状態で出力するためのデータ構造とアルゴリズムを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>gininsert.c</code> などから呼び出され、インデックス構築時の「バルク挿入」フェーズを担います。<code>BuildAccumulator</code> 構造体を介して、メモリ消費量を抑えつつ、大量のキーを平衡二分探索木（Red-Black Tree）に蓄積する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ集約**: <code>BuildAccumulator</code> を用いて、複数のTIDを同一キーに紐付けて管理する。</li>
+<li>**メモリ管理**: <code>maintenance_work_mem</code> の範囲内でメモリを効率的に割り当て、巨大なポスティングリストの構築を制御する。</li>
+<li>**平衡性の維持**: 挿入順序を工夫することで、RBTの再平衡化コストを最小化する。</li>
+<li>**ソート済み出力**: 最終的にTIDリストをソートし、インデックスページへの書き込みに適した形式で提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BuildAccumulator</code>: 構築中の状態を保持するメイン構造体。RBTとメモリ使用量管理を含む。</li>
+<li><code>GinEntryAccumulator</code>: RBTの各ノード。キーと、それに関連するTIDの配列を保持する。</li>
+<li><code>ginInsertBAEntries</code>: 外部から呼び出されるメインの挿入関数。入力順序を最適化してRBTに挿入する。</li>
+<li><code>ginGetBAEntry</code>: 構築完了後に、RBTからキーとソート済みTIDリストを順次取り出すためのイテレータ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cmpEntryAccumulator</code></li>
+<li><code>getDatumCopy</code></li>
+<li><code>ginAllocEntryAccumulator</code></li>
+<li><code>ginBeginBAScan</code></li>
+<li><code>ginCombineData</code></li>
+<li><code>ginInitBA</code></li>
+<li><code>ginInsertBAEntry</code></li>
+<li><code>qsortCompareItemPointers</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ginInitBA</code> で <code>BuildAccumulator</code> を作成し、RBTを初期化する。 2. **挿入**: <code>ginInsertBAEntries</code> が入力を受け取り、二分探索木のバランスを保つために「中央値から挿入する」順序で <code>ginInsertBAEntry</code> を呼び出す。 3. **集約**: <code>ginCombineData</code> が既存のキーと新しいTIDをマージし、必要に応じてTID配列を拡張する。 4. **スキャン**: <code>ginBeginBAScan</code> と <code>ginGetBAEntry</code> を使用して、RBTを走査する。この際、<code>shouldSort</code> フラグが立っていれば <code>qsort</code> でTIDリストをソートして返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>access/gin_private.h</code>: GINインデックスの内部構造体定義。</li>
+<li><code>utils/datum.h</code>: Datum操作用。</li>
+<li><code>utils/memutils.h</code>: メモリ割り当て管理用。</li>
+<li><code>limits.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/lib/rbt.h</code>: 本ファイルで使用している赤黒木（Red-Black Tree）の実装。</li>
+<li><code>src/backend/access/gin/gininsert.c</code>: 本モジュールの主要なクライアント。</li>
+<li><code>src/backend/access/gin/ginpostinglist.c</code>: 本モジュールで集約されたTIDリストを物理ページへ書き込む際の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**挿入順序の最適化**: <code>ginInsertBAEntries</code> 内のビット演算によるステップ計算は、入力データが既にソートされている場合にRBTの再平衡化を避けるための工夫です。</li>
+<li>**メモリ制限**: <code>maintenance_work_mem</code> を超える可能性がある場合、<code>ereport(ERROR)</code> で停止します。大規模なインデックス作成時にはこの設定値が重要となります。</li>
+<li>**RBTの活用**: 個別のノードを <code>palloc</code> するのではなく、<code>ginAllocEntryAccumulator</code> で大きなチャンクを確保することで、メモリ断片化を防いでいます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginCombineData.html" target="wiki-view"><code>ginCombineData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__cmpEntryAccumulator.html" target="wiki-view"><code>cmpEntryAccumulator</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginAllocEntryAccumulator.html" target="wiki-view"><code>ginAllocEntryAccumulator</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginInitBA.html" target="wiki-view"><code>ginInitBA</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__getDatumCopy.html" target="wiki-view"><code>getDatumCopy</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginInsertBAEntry.html" target="wiki-view"><code>ginInsertBAEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginInsertBAEntries.html" target="wiki-view"><code>ginInsertBAEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__qsortCompareItemPointers.html" target="wiki-view"><code>qsortCompareItemPointers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginBeginBAScan.html" target="wiki-view"><code>ginBeginBAScan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginbulk_c__ginGetBAEntry.html" target="wiki-view"><code>ginGetBAEntry</code></a></li>
+</ul></body></html>

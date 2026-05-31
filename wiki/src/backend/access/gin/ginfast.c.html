@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginfast.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginfast.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスにおける「高速挿入（Fast Insert）」メカニズムを実装するファイルです。インデックスへの直接的な挿入負荷を軽減するため、挿入データを一時的な「ペンディングリスト（Pending List）」に蓄積し、後続の処理（VACUUMやリスト上限到達時）でまとめてメインのインデックス構造へ転送する仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>GINインデックスの挿入処理におけるバッファリング層です。<code>gininsert.c</code> が呼び出す高レベルな挿入インターフェースと、インデックスの物理構造を管理する低レベルなページ操作の中間に位置します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ペンディングリストの管理**: 挿入されたタプルを一時的なページリストに順次追加する。</li>
+<li>**リストのフラッシュ**: <code>ginInsertCleanup</code> を通じて、蓄積されたデータをメインのB-tree構造へ再挿入し、ペンディングリストを解放する。</li>
+<li>**メタページ更新**: ペンディングリストのヘッド/テール情報や空き容量をメタページで追跡する。</li>
+<li>**WAL記録**: リスト操作およびメタページ更新の整合性を保つためのWALログ生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ginHeapTupleFastInsert</code>: ペンディングリストへの挿入を行うメイン関数。</li>
+<li><code>ginInsertCleanup</code>: ペンディングリストをスキャンし、データをメインインデックスへ移動させる関数。</li>
+<li><code>gin_pending_list_limit</code>: ペンディングリストのサイズ上限を制御するGUCパラメータ。</li>
+<li><code>GinMetaPageData</code>: GINメタページ内のペンディングリスト管理用構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>KeyArray</code></li>
+<li><code>addDatum</code></li>
+<li><code>ginHeapTupleFastCollect</code></li>
+<li><code>gin_clean_pending_list</code></li>
+<li><code>initKeyArray</code></li>
+<li><code>makeSublist</code></li>
+<li><code>processPendingPage</code></li>
+<li><code>shiftList</code></li>
+<li><code>writeListPage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入時**: <code>ginHeapTupleFastInsert</code> が呼ばれると、現在のテールページに空きがあるか確認し、あれば追記、なければ新しいサブリストを作成してリストを連結します。 2. **クリーンアップ時**: <code>ginInsertCleanup</code> が起動すると、ペンディングリストをページ単位で読み込み、<code>BuildAccumulator</code> を用いてデータを集約します。 3. **転送**: 集約されたデータは <code>ginEntryInsert</code> を経由してメインのインデックス構造へ挿入されます。 4. **解放**: 転送完了後、<code>shiftList</code> を呼び出し、処理済みのペンディングページを削除（<code>GIN_DELETED</code>フラグ付与）し、FSM（Free Space Map）へ返却します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GINの内部構造体定義。</li>
+<li><code>access/ginxlog.h</code>: GIN専用のWALレコード定義。</li>
+<li><code>storage/indexfsm.h</code>: 削除されたページの再利用管理。</li>
+<li><code>storage/lmgr.h</code>: メタページ等のロック制御。</li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gin/gininsert.c</code>: GINの標準的な挿入ロジック。</li>
+<li><code>src/backend/access/gin/ginbtree.c</code>: メインインデックス構造の操作。</li>
+<li><code>src/backend/access/gin/ginbulk.c</code>: 大量挿入時のデータ集約ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**クラッシュ安全性**: ペンディングリストからメインインデックスへの転送は、途中でクラッシュしても再実行可能な設計になっています。</li>
+<li>**ロックの粒度**: <code>ginInsertCleanup</code> はメタページを排他ロックしますが、リストの各ページ処理中は共有ロックに留めることで、挿入処理との並行性を確保しています。</li>
+<li>**パフォーマンス**: ペンディングリストが大きくなりすぎるとクリーンアップに時間がかかるため、<code>gin_pending_list_limit</code> の適切な設定が重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__KeyArray.html" target="wiki-view"><code>KeyArray</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__writeListPage.html" target="wiki-view"><code>writeListPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__makeSublist.html" target="wiki-view"><code>makeSublist</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__ginHeapTupleFastInsert.html" target="wiki-view"><code>ginHeapTupleFastInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__ginHeapTupleFastCollect.html" target="wiki-view"><code>ginHeapTupleFastCollect</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__shiftList.html" target="wiki-view"><code>shiftList</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__initKeyArray.html" target="wiki-view"><code>initKeyArray</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__addDatum.html" target="wiki-view"><code>addDatum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__processPendingPage.html" target="wiki-view"><code>processPendingPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__ginInsertCleanup.html" target="wiki-view"><code>ginInsertCleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginfast_c__gin_clean_pending_list.html" target="wiki-view"><code>gin_clean_pending_list</code></a></li>
+</ul></body></html>

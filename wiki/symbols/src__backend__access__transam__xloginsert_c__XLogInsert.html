@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xloginsert_c__XLogInsert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogInsert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/xloginsert.c:473</code></li>
+</ul>
+<h2>目的</h2>
+<p>構築済みの WAL レコードを WAL バッファへ書き込み、そのレコードの終了位置（LSN）を返します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>XLogRecPtr XLogInsert(RmgrId rmid, uint8 info)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rmid</code>: リソースマネージャ ID。</li>
+<li><code>info</code>: レコードの種類を示すフラグ（<code>XLR_RMGR_INFO_MASK</code> 等の制約あり）。</li>
+<li>**出力**:</li>
+<li>戻り値: 書き込まれた WAL レコードの終了位置を示す <code>XLogRecPtr</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>XLogBeginInsert()</code> が事前に呼び出されている必要があります。</li>
+<li><code>XLogRegisterBuffer()</code> 等でレコードの内容が作業領域に登録されている必要があります。</li>
+<li>呼び出し元は、対象となるバッファに対して適切なロックを保持している必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>begininsert_called</code> フラグを確認し、未初期化であればエラーを発生させます。 2. <code>info</code> 引数のマスクチェックを行い、不正なフラグが含まれていれば <code>PANIC</code> を発生させます。 3. ブートストラップモードの場合、<code>RM_XLOG_ID</code> 以外はログを書き込まず、ダミーの <code>EndPos</code> を返して終了します。 4. <code>do-while</code> ループ内で以下を実行します：</p>
+<ul>
+<li><code>GetFullPageWriteInfo()</code> でフルページ書き込みの要否を判定。</li>
+<li><code>XLogRecordAssemble()</code> を呼び出し、登録されたデータから WAL レコードを組み立てます。</li>
+<li><code>XLogInsertRecord()</code> を呼び出し、組み立てたレコードを WAL バッファへ書き込みます。</li>
+<li>書き込みが競合等で失敗した場合（<code>InvalidXLogRecPtr</code> が返された場合）、ループを継続して再試行します。</li>
+<p>5. 最後に <code>XLogResetInsertion()</code> を呼び出し、作業領域をクリアして終了します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>contrib/pg_visibility/pg_visibility.c</code></li>
+<li><code>src/backend/access/brin/brin.c</code></li>
+<li><code>src/backend/access/brin/brin_pageops.c</code></li>
+<li><code>src/backend/access/brin/brin_revmap.c</code></li>
+<li><code>src/backend/access/gin/ginbtree.c</code></li>
+<li><code>src/backend/access/gin/gindatapage.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>XLogRecordAssemble()</code></li>
+<li><code>XLogInsertRecord()</code></li>
+<li><code>XLogResetInsertion()</code></li>
+<li><code>GetFullPageWriteInfo()</code></li>
+<li><code>IsBootstrapProcessingMode()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogRecData</code>: 組み立てられたレコードのデータチェーン。</li>
+<li><code>XLogRecPtr</code>: WAL 上の論理位置を示すポインタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogBeginInsert</code> が未実行の場合: <code>ERROR</code> をスロー。</li>
+<li><code>info</code> 引数に予約済みフラグが含まれる場合: <code>PANIC</code> をスロー。</li>
+<li>WAL 書き込み時に競合が発生した場合: <code>XLogInsertRecord</code> が <code>InvalidXLogRecPtr</code> を返し、ループ内で再試行されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>START_CRIT_SECTION()</code> 内で呼び出されることが想定されています。</li>
+<li><code>XLogInsertRecord</code> が内部でロックを取得するため、本関数の実行中にフルページ書き込みの要否判定条件が変化する可能性がありますが、<code>XLogInsertRecord</code> 側で再チェックが行われます。</li>
+</ul></body></html>

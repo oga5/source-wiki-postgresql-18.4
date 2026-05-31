@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/brinrevmap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BrinRevmap</h1>
+<h2>概念</h2>
+<p><code>BrinRevmap</code> は、PostgreSQLの BRIN（Block Range Index）において、ヒープのページ範囲と、その範囲を要約したインデックス内のタプル（<code>BrinTuple</code>）を対応付けるための翻訳テーブル（リバースレンジマップ）へのアクセス状態を保持・キャッシュする構造体です。</p>
+<p>ヘッダーファイル（<code>src/include/access/brin_revmap.h</code>）側では不透明なポインタ（不完全構造体）として宣言されており、具体的な構造体の定義は <code>src/backend/access/brin/brin_revmap.c</code> 内に隠蔽されています。</p>
+<h2>なぜ重要か</h2>
+<p>BRIN インデックスにおいて、特定のヒープブロック番号から対応する要約タプルの物理位置（<code>ItemPointer</code>）を高速に逆引きするために不可欠です。メタページや現在アクセス中の revmap ページのバッファをキャッシュすることで、インデックスの検索や挿入、更新時のアクセス効率を向上させます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/access/brin</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/access/brin/brin_revmap.c#BrinRevmap</code>**: 構造体の実体定義。インデックスリレーション情報（<code>rm_irel</code>）、範囲ごとのブロック数（<code>rm_pagesPerRange</code>）、キャッシュされた最終 revmap ページ番号（<code>rm_lastRevmapPage</code>）、およびメタページ（<code>rm_metaBuf</code>）と現在処理中の revmap ページ（<code>rm_currBuf</code>）のバッファを保持します。</li>
+<li>**<code>symbol:src/include/access/brin_revmap.h#BrinRevmap</code>**: 外部モジュール向けに公開されている不透明ポインタとしての <code>typedef</code> 定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>brinRevmapInitialize()</code> を呼び出してインデックスリレーションから <code>BrinRevmap</code> を初期化し、メタページを読み込んでページ範囲設定をキャッシュします。 2. **検索・取得**: ヒープブロック番号から <code>HEAPBLK_TO_REVMAP_BLK</code> などのロジックを用いてリバースマップ上の位置を特定し、<code>brinGetTupleForHeapBlock()</code> 等を介して要約タプルやその位置情報を取得します。 3. **更新・拡張**: 必要に応じて <code>brinRevmapExtend()</code> でリバースマップを拡張し、<code>brinLockRevmapPageForUpdate()</code> でページをロックした上で <code>brinSetHeapBlockItemptr()</code> によりポインタを更新します。 4. **終了処理**: 使用後は必ず <code>brinRevmapTerminate()</code> を呼び出して、保持しているバッファの解放などの終了処理を行います。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**非共有・非スレッドセーフ**: <code>BrinRevmap</code> は単一のバックエンド内でのキャッシュ用であり、共有メモリ上には存在しません。</li>
+<li>**バッファ解放の義務**: 使用後はバッファリークを防止するため、必ず <code>brinRevmapTerminate()</code> を呼び出して終了処理を行う必要があります。</li>
+<li>**メタページとの整合性**: キャッシュされた最終 revmap ページ番号（<code>rm_lastRevmapPage</code>）は、メタページの内容と常に整合している必要があります。</li>
+<li>**対応関係の整合性**: リバースマップは常にヒープブロックの範囲と要約タプルを正しく指し示す必要があり、この対応関係の不整合はインデックス破損とみなされます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バッファリーク**: <code>brinRevmapTerminate()</code> の呼び出しを忘れると、保持しているバッファ（<code>rm_metaBuf</code> や <code>rm_currBuf</code>）が解放されずリークします。</li>
+<li>**排他ロックの競合**: リバースマップの拡張時（<code>brinRevmapExtend</code>）にメタページを排他ロックするため、他のインデックス操作と競合する可能性があります。</li>
+<li>**拡張漏れ**: 物理的な拡張が必要な場合に適切に <code>brinRevmapExtend</code> が呼び出されないと、インデックスの整合性が損なわれる原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/access/brin/brin_revmap.c</code>**: 構造体の詳細な定義と、<code>revmap_get_blkno</code> などの内部関数の実装。</li>
+<li>**<code>src/include/access/brin_revmap.h</code>**: 外部に公開されている API の宣言。</li>
+<li>**<code>src/backend/access/brin/brin.c</code>**: <code>initialize_brin_buildstate</code> など、<code>BrinRevmap</code> を利用する主要なインデックス操作の実装。</li>
+<li>**<code>src/backend/access/brin/brin_pageops.c</code>**: ページ退避（<code>brin_evacuate_page</code>）や更新処理における <code>BrinRevmap</code> の利用箇所。</li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/foreignserver.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ForeignServer</h1>
+<h2>概念</h2>
+<p><code>ForeignServer</code> は、PostgreSQLにおいて外部データソース（外部サーバー）の定義情報を表すデータ構造および概念です。SQLの <code>CREATE SERVER</code> コマンドによって定義され、システムカタログ <code>pg_foreign_server</code> に登録されます。外部データラッパー（FDW）が外部リソースへ接続・操作する際に必要となるメタデータ（接続オプション、FDWのOID、所有者など）を管理します。</p>
+<h2>なぜ重要か</h2>
+<p>外部データラッパー（FDW）を介して外部のデータソース（他のPostgreSQLインスタンス、ファイル、その他のデータベースなど）にアクセスする際、接続先サーバーの定義やオプション情報を一元管理するために不可欠です。これにより、SQL実行時や接続確立時に、適切な接続パラメータや認証情報をFDWが参照できるようになります。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報に基づくと、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/commands</code>: SQLコマンド（<code>CREATE SERVER</code> など）の実行処理を担当します。</li>
+<li><code>module:src/backend/foreign</code>: 外部サーバーなどの外部データ関連オブジェクトの取得やユーティリティ処理を担当します。</li>
+<li><code>module:src/include/foreign</code>: <code>ForeignServer</code> 構造体などのデータ定義を提供します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/foreign/foreign.h#ForeignServer</code>: 外部サーバーのメタデータ（サーバーID、FDWのID、所有者、サーバー名、オプションなど）を保持するC言語の構造体です。</li>
+<li><code>symbol:src/backend/commands/foreigncmds.c#CreateForeignServer</code>: <code>CREATE SERVER</code> コマンドを処理し、新規の外部サーバー定義を <code>pg_foreign_server</code> カタログに登録する関数です。</li>
+<li><code>symbol:src/backend/foreign/foreign.c#GetForeignServer</code>: 指定された OID に対応する外部サーバーの定義情報（<code>ForeignServer</code> 構造体）をシステムカタログから取得する関数です。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報からは、完全なエンドツーエンドの実行時フロー（クエリ実行時にどのように <code>ForeignServer</code> が参照され、接続が確立されるかなど）の全容は完全には明らかになっていません。現時点で判明している部分的な流れは以下の通りです。</p>
+<p>1. **定義フェーズ (DDLの実行)**:</p>
+<ul>
+<li>ユーザーが <code>CREATE SERVER</code> コマンドを実行すると、<code>src/backend/tcop/utility.c</code> などのユーティリティコマンド実行フローから <code>CreateForeignServer</code> が呼び出されます。</li>
+<li><code>CreateForeignServer</code> は、指定されたFDWの存在と権限を検証し、オプションをFDWのバリデーター関数で検証（<code>transformGenericOptions</code>）した上で、システムカタログ <code>pg_foreign_server</code> にタプルを挿入します。また、依存関係を <code>pg_depend</code> に記録します。</li>
+</ul>
+<p>2. **参照フェーズ (DML実行や接続時)**:</p>
+<ul>
+<li>FDW（例: <code>postgres_fdw</code> や <code>file_fdw</code>）やシステム内部の処理において、特定の外部サーバー情報が必要になると、サーバーの OID を用いて <code>GetForeignServer</code> が呼び出されます。</li>
+<li><code>GetForeignServer</code> は内部的に <code>GetForeignServerExtended</code> を呼び出し、システムカタログから取得した情報を <code>ForeignServer</code> 構造体にマッピングして呼び出し元に返します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**一意性と存在**: <code>CreateForeignServer</code> で作成される外部サーバーは、同名のサーバーが既に存在する場合、<code>IF NOT EXISTS</code> が指定されていない限りエラー（<code>ERRCODE_DUPLICATE_OBJECT</code>）となります。また、<code>GetForeignServer</code> で取得する際は、指定された OID がシステムカタログ <code>pg_foreign_server</code> に存在しなければなりません（存在しない場合はエラーが発生します）。</li>
+<li>**権限と依存関係**: 外部サーバーを作成するには、指定されたFDWに対する <code>USAGE</code> 権限が必要です。また、作成されたサーバーは、そのFDWや所有者、および作成時の拡張機能に対する依存関係（<code>pg_depend</code>）を持ちます。</li>
+<li>**メモリ管理**: <code>GetForeignServer</code> などによってシステムキャッシュから生成された <code>ForeignServer</code> 構造体は、使用後に適切なメモリ管理（<code>pfree</code> など）が必要となります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**エラー制御の欠如**: <code>GetForeignServer</code> は <code>GetForeignServerExtended</code> のラッパーであり、対象のサーバーが存在しない場合は強制的にエラーを発生させます。サーバーの存在が不確実で、エラーにせず <code>NULL</code> を返したい場合は、直接 <code>GetForeignServerExtended</code> を <code>MISSING_OK</code> フラグ付きで呼び出す必要があります。</li>
+<li>**オプションの解釈**: <code>ForeignServer</code> 構造体の <code>options</code> フィールドは単なる <code>DefElem</code> のリスト（汎用的なオプション表現）として保持されるため、FDWの実装側で適切に解析・検証を行う必要があります。</li>
+<li>**オプション値のNULL可能性**: <code>servertype</code> や <code>serverversion</code> はオプション属性であるため、NULLになる可能性があります。FDW側でこれらを参照する際はNULLチェックが必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/foreign/foreign.h</code>: <code>ForeignServer</code> 構造体の定義とフィールドの詳細。</li>
+<li><code>src/backend/commands/foreigncmds.c</code>: <code>CreateForeignServer</code> による外部サーバーの作成処理とバリデーションロジック。</li>
+<li><code>src/backend/foreign/foreign.c</code>: <code>GetForeignServer</code> および <code>GetForeignServerExtended</code> によるシステムカタログからの情報取得処理。</li>
+</ul></body></html>

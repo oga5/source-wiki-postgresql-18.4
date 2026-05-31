@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/fmgr/fmgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/fmgr/fmgr.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの関数管理（Function Manager）の心臓部です。SQLレベルの関数呼び出しを、実際のC言語関数ポインタやPLハンドラへディスパッチする役割を担います。関数メタデータのキャッシュ、動的ライブラリのロード管理、およびセキュリティコンテキストの切り替えを統合的に処理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>fmgr.h</code> で定義されたインターフェースの実装を提供し、クエリ実行エンジンと関数実装の間の仲介を行います。<code>dfmgr.c</code>（動的ロード）や <code>funcapi.c</code>（SRF/多相型）と連携し、実行時の関数解決を最適化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数解決とキャッシュ**: OIDから関数ポインタを特定し、<code>FmgrInfo</code> 構造体にキャッシュして以降の呼び出しを高速化。</li>
+<li>**ディスパッチ**: 組み込み関数、C言語関数、SQL関数、およびPLハンドラへの呼び出しを抽象化。</li>
+<li>**セキュリティと環境制御**: <code>SECURITY DEFINER</code> 関数や <code>proconfig</code>（関数固有のGUC設定）の適用。</li>
+<li>**データ型I/O**: 型変換関数（Input/Output/Receive/Send）の呼び出しと、エラーハンドリングの抽象化。</li>
+<li>**メモリ管理**: 関数呼び出しに伴う一時的なメモリコンテキストの管理と、<code>fn_extra</code> を用いた関数固有の永続化データの保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>関数解決・管理</h3>
+<ul>
+<li><code>fmgr_info()</code>: OIDから関数情報を取得し、<code>FmgrInfo</code> を初期化する主要エントリーポイント。</li>
+<li><code>fmgr_info_cxt_security()</code>: セキュリティ定義やGUC設定を考慮した関数解決の内部ロジック。</li>
+<li><code>fmgr_isbuiltin()</code>: 組み込み関数テーブルの高速検索。</li>
+<li><code>fmgr_symbol()</code>: 関数実装のシンボル名とライブラリパスを解決。</li>
+</ul>
+<h3>実行ハンドラ</h3>
+<ul>
+<li><code>fmgr_security_definer()</code>: <code>SECURITY DEFINER</code> や <code>proconfig</code> を持つ関数の実行をラップするハンドラ。GUCのネストレベル管理とユーザーIDの切り替えを行う。</li>
+</ul>
+<h3>呼び出しインターフェース</h3>
+<ul>
+<li><code>DirectFunctionCallNColl()</code>: <code>FmgrInfo</code> を介さず、関数ポインタを直接呼び出すための高速なヘルパー群。</li>
+<li><code>FunctionCallNColl()</code>: <code>FmgrInfo</code> を使用した標準的な呼び出しインターフェース。</li>
+<li><code>InputFunctionCallSafe()</code>: エラー発生時に例外を投げず、<code>ErrorSaveContext</code> を通じてソフトエラーを報告するI/O関数呼び出し。</li>
+</ul>
+<h3>キャッシュ構造</h3>
+<ul>
+<li><code>CFuncHash</code>: 外部C言語関数のロード済みアドレスを保持するハッシュテーブル。</li>
+<li><code>CFuncHashTabEntry</code>: キャッシュエントリ。OIDとトランザクションID（<code>fn_xmin</code>）を保持し、キャッシュの有効性を検証。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CFuncHashTabEntry</code></li>
+<li><code>CallerFInfoFunctionCall1</code></li>
+<li><code>DirectFunctionCall1Coll</code></li>
+<li><code>DirectFunctionCall2Coll</code></li>
+<li><code>DirectFunctionCall3Coll</code></li>
+<li><code>DirectFunctionCall4Coll</code></li>
+<li><code>DirectFunctionCall5Coll</code></li>
+<li><code>DirectFunctionCall6Coll</code></li>
+<li><code>DirectFunctionCall7Coll</code></li>
+<li><code>DirectFunctionCall8Coll</code></li>
+<li><code>DirectFunctionCall9Coll</code></li>
+<li><code>fmgr_security_definer_cache</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>fmgr_info</code> が呼び出されると、まず <code>fmgr_isbuiltin</code> で組み込みテーブルを検索。見つからない場合は <code>pg_proc</code> を検索。 2. **解決**: <code>prolang</code> に応じて適切なハンドラ（<code>fmgr_info_C_lang</code> 等）を呼び出し、関数ポインタを確定。 3. **実行**: <code>FunctionCallInvoke</code> を通じて関数ポインタへディスパッチ。 4. **セキュリティ**: <code>fmgr_security_definer</code> が介在する場合、<code>fn_extra</code> にキャッシュされた <code>fmgr_security_definer_cache</code> を使用し、GUC設定とユーザーIDを一時的に変更してからターゲット関数を呼び出す。 5. **エラー**: <code>PG_TRY/PG_CATCH</code> ブロックにより、関数実行中のエラー発生時でもセキュリティコンテキストやGUC設定が確実に復元される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: 関数および型のメタデータ定義。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュ検索。</li>
+<li><code>utils/fmgrtab.h</code>: 組み込み関数テーブルの定義。</li>
+<li><code>executor/functions.h</code>: SQL言語関数の実行サポート。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/fmgr.h</code>: <code>FmgrInfo</code> および <code>FunctionCallInfo</code> の構造体定義。</li>
+<li><code>src/backend/utils/fmgr/dfmgr.c</code>: 共有ライブラリのロードとシンボル検索の低レベル実装。</li>
+<li><code>src/backend/utils/fmgr/funcapi.c</code>: SRF（集合を返す関数）のサポート。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>FmgrInfo</code> 内の <code>fn_extra</code> は、<code>fn_mcxt</code> で指定されたコンテキストに割り当てられます。永続的なキャッシュが必要な場合は、適切なライフタイムを持つコンテキストを指定してください。</li>
+<li>**不変性**: <code>FmgrInfo</code> は一度初期化された後は読み取り専用として扱うのが原則です。</li>
+<li>**エッジケース**: <code>fmgr_security_definer</code> は再入可能ではありません。また、<code>DirectFunctionCall</code> 系はNULL入力を許容しないため、NULLが発生しうる場合は <code>FunctionCall</code> 系を使用してください。</li>
+<li>**省略された詳細**: 集合を返す関数（SRF）の具体的な実装ロジックは <code>funcapi.c</code> に委譲されており、本ファイルでは主にディスパッチとメタデータ解決に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__CFuncHashTabEntry.html" target="wiki-view"><code>CFuncHashTabEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__fmgr_security_definer_cache.html" target="wiki-view"><code>fmgr_security_definer_cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall1Coll.html" target="wiki-view"><code>DirectFunctionCall1Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall2Coll.html" target="wiki-view"><code>DirectFunctionCall2Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall3Coll.html" target="wiki-view"><code>DirectFunctionCall3Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall4Coll.html" target="wiki-view"><code>DirectFunctionCall4Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall5Coll.html" target="wiki-view"><code>DirectFunctionCall5Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall6Coll.html" target="wiki-view"><code>DirectFunctionCall6Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall7Coll.html" target="wiki-view"><code>DirectFunctionCall7Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall8Coll.html" target="wiki-view"><code>DirectFunctionCall8Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__DirectFunctionCall9Coll.html" target="wiki-view"><code>DirectFunctionCall9Coll</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__fmgr_c__CallerFInfoFunctionCall1.html" target="wiki-view"><code>CallerFInfoFunctionCall1</code></a></li>
+</ul></body></html>

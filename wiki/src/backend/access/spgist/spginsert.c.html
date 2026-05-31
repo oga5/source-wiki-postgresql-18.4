@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spginsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spginsert.c</h1>
+<h2>概要</h2>
+<p>SP-GiST（Space-Partitioned GiST）インデックスの構築および単一タプルの挿入を行うための外部インターフェースを提供します。インデックスの初期化、一括構築、および個別の挿入処理の入り口となる関数群を定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>spgist</code> モジュールにおける「インデックス作成・更新」の最上位層です。実際の複雑なツリー操作や挿入ロジックは <code>spgdoinsert.c</code> に委譲されており、本ファイルは主にメモリ管理、リトライ制御、およびインデックスのメタデータ管理を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス構築**: <code>spgbuild</code> を通じて、ヒープスキャンからインデックスを新規作成する。</li>
+<li>**単一挿入**: <code>spginsert</code> を通じて、既存のインデックスへタプルを追加する。</li>
+<li>**メモリ管理**: 挿入処理に伴う一時的なメモリ消費を抑制するため、専用のメモリコンテキスト（<code>insertCtx</code>）を管理する。</li>
+<li>**リトライ制御**: 並行処理による競合発生時に、挿入処理を再試行するループを制御する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>spgbuild</code>: インデックス構築のメイン関数。メタページとルートページの初期化を行い、<code>table_index_build_scan</code> を呼び出す。</li>
+<li><code>spginsert</code>: インデックスへの単一タプル挿入関数。<code>spgdoinsert</code> を呼び出し、成功するまでリトライを行う。</li>
+<li><code>SpGistBuildState</code>: インデックス構築中に使用される状態保持構造体。タプル数や一時メモリコンテキストを管理する。</li>
+<li><code>spgistBuildCallback</code>: <code>table_index_build_scan</code> から呼び出されるコールバック関数。各タプルに対して <code>spgdoinsert</code> を実行する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>spgbuildempty</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **構築時**: <code>spgbuild</code> がメタページとルートページを初期化し、<code>spgistBuildCallback</code> を介してヒープ内の全タプルを <code>spgdoinsert</code> に渡す。最後にメタページを更新し、必要に応じて WAL を書き出す。 2.  **挿入時**: <code>spginsert</code> が一時メモリコンテキストを作成し、<code>spgdoinsert</code> が成功を返すまでループする。競合が発生した場合はコンテキストをリセットし、状態を再初期化して再試行する。 3.  **データフロー**: ヒープタプル（<code>Datum</code>）→ <code>spgistBuildCallback</code> / <code>spginsert</code> → <code>spgdoinsert</code>（内部ロジック）→ インデックスページへの書き込み。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/spgist_private.h</code>: SP-GiST 内部のデータ構造と関数定義。</li>
+<li><code>access/tableam.h</code>: テーブルアクセスメソッド（ヒープスキャン用）。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>storage/bulk_write.h</code>: 一括書き込み用ユーティリティ。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/spgist/spgdoinsert.c</code>: 本ファイルが依存する、実際の挿入ロジック（ツリーのトラバースや分割処理）が記述されたファイル。</li>
+<li><code>src/backend/access/spgist/spgutils.c</code>: <code>SpGistState</code> の初期化やメタページ操作などの共通ユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**リトライの仕組み**: <code>spgdoinsert</code> は並行挿入による競合時に <code>false</code> を返すことがあります。このファイル内の <code>while</code> ループは、その競合を解決するための重要なガードです。</li>
+<li>**メモリ管理**: 挿入処理はメモリを消費しやすいため、<code>MemoryContext</code> のリセットが頻繁に行われます。デバッグ時にメモリリークを追う際は、このコンテキストのライフサイクルに注意してください。</li>
+<li>**WAL ログ**: <code>spgbuild</code> では構築中の WAL 書き込みを省略し、最後に <code>log_newpage_range</code> で一括書き込みを行う最適化が行われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__spgist__spginsert_c__SpGistBuildState.html" target="wiki-view"><code>SpGistBuildState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spginsert_c__spgistBuildCallback.html" target="wiki-view"><code>spgistBuildCallback</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spginsert_c__spgbuild.html" target="wiki-view"><code>spgbuild</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spginsert_c__spgbuildempty.html" target="wiki-view"><code>spgbuildempty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spginsert_c__spginsert.html" target="wiki-view"><code>spginsert</code></a></li>
+</ul></body></html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgxlog_c__spgRedoPickSplit.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgRedoPickSplit</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgxlog.c:528</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスの分割操作（PickSplit）に関連する WAL レコードをリプレイし、ソースページ、デスティネーションページ、および内部ノードの物理的な状態を復元します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgRedoPickSplit(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象の WAL レコード）。</li>
+<li>**出力**: なし（副作用としてバッファの内容を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>WAL レコード内のタプルはアライメントされていないため、アクセス時に <code>memcpy</code> を用いてヘッダーをコピーする必要があります。</li>
+<li>ホットスタンバイ環境では、リーフタプルや新しい内部タプルの挿入が完了するまで、ソースページ等のロックを保持し、リダイレクトタプルによるリンク切れを防ぐ必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>fillFakeState</code> を用いてリプレイに必要な <code>SpGistState</code> を構築します。 2. **ソースページ処理**: <code>isRootSplit</code> でない場合、<code>XLogReadBufferForRedo</code> または <code>XLogInitBufferForRedo</code> を使用してソースページを取得し、<code>spgPageIndexMultiDelete</code> で不要なタプルを削除（リダイレクトまたはプレースホルダー化）します。 3. **デスティネーションページ処理**: <code>XLogRecHasBlockRef</code> で存在を確認し、必要に応じて初期化または読み込みを行います。 4. **タプル復元**: <code>leafPageSelect</code> に基づき、各リーフタプルをソースまたはデスティネーションページへ <code>addOrReplaceTuple</code> で書き込みます。 5. **LSN 更新**: 変更されたソースおよびデスティネーションページの LSN を更新し、<code>MarkBufferDirty</code> を呼び出します。 6. **内部ノード処理**: 新しい内部タプルを対象ページに書き込みます。<code>innerIsParent</code> が真の場合は、<code>spgUpdateNodeLink</code> を用いて親ノードのリンクを更新します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/spgist/spgxlog.c</code> 内の <code>spg_redo</code> 関数（レコードタイプに応じたディスパッチ）。</li>
+<li>**呼び出し先**: <code>fillFakeState</code>, <code>XLogRecGetData</code>, <code>XLogRecGetBlockTag</code>, <code>XLogInitBufferForRedo</code>, <code>XLogReadBufferForRedo</code>, <code>spgPageIndexMultiDelete</code>, <code>addOrReplaceTuple</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>spgUpdateNodeLink</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgxlogPickSplit</code>: WAL レコードのデータ構造。</li>
+<li><code>SpGistState</code>: インデックス操作の状態管理構造体。</li>
+<li><code>SpGistInnerTupleData</code>, <code>SpGistLeafTupleData</code>: タプルヘッダー情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>XLogReadBufferForRedo</code> が <code>BLK_NEEDS_REDO</code> を返さない場合、ページ更新はスキップされます。</li>
+<li><code>isRootSplit</code> の場合、ソースページは操作対象外となります。</li>
+<li><code>initSrc</code> や <code>initDest</code> が指定されている場合、ページは再初期化されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>リプレイ関数内では、親ノードの更新よりも子ページ（リーフや新しいノード）の更新を優先して処理し、スタンバイ側での読み取り整合性を確保しています。</li>
+<li>ページ更新の順序とロックの保持期間は、スタンバイ時の競合回避において重要です。</li>
+</ul></body></html>

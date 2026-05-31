@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__predicate_internals_h__SERIALIZABLEXACT.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SERIALIZABLEXACT</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/predicate_internals.h:58</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのSSI（Serializable Snapshot Isolation）において、直列化可能トランザクションの状態を共有メモリ上で管理するための構造体です。トランザクション間の依存関係（読み書き競合）やコミット順序を追跡し、直列化失敗の判定を可能にします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct SERIALIZABLEXACT {
+    VirtualTransactionId vxid;
+    SerCommitSeqNo prepareSeqNo;
+    SerCommitSeqNo commitSeqNo;
+    union {
+        SerCommitSeqNo earliestOutConflictCommit;
+        SerCommitSeqNo lastCommitBeforeSnapshot;
+    } SeqNo;
+    dlist_head outConflicts;
+    dlist_head inConflicts;
+    dlist_head predicateLocks;
+    dlist_node finishedLink;
+    dlist_node xactLink;
+    LWLock perXactPredicateListLock;
+    dlist_head possibleUnsafeConflicts;
+    TransactionId topXid;
+    TransactionId finishedBefore;
+    TransactionId xmin;
+    uint32 flags;
+    int pid;
+    int pgprocno;
+} SERIALIZABLEXACT;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: トランザクション開始時に割り当てられ、実行中のプロセス情報（<code>vxid</code>, <code>pid</code>, <code>pgprocno</code>）やスナップショット情報（<code>xmin</code>）を保持します。</li>
+<li>出力: トランザクション終了時に <code>finishedLink</code> を通じて <code>FinishedSerializableTransactions</code> リストへ移動し、クリーンアップされます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>perXactPredicateListLock</code> は、並列クエリ実行時に同一セッション内のワーカー間での <code>predicateLocks</code> リストへのアクセスを保護します。</li>
+<li><code>flags</code>（<code>SXACT_FLAG_*</code>）は、トランザクションのコミット可否や読み取り専用トランザクションの安全性判定に不可欠な状態を保持します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **コミット順序の追跡**: <code>prepareSeqNo</code> と <code>commitSeqNo</code> を使用してコミット順序を記録します。厳密な順序が不明な場合は、安全側に倒して競合とみなす設計です。 2. **競合管理**: <code>outConflicts</code>（読み取り競合）および <code>inConflicts</code>（書き込み競合）リストにより、トランザクション間の依存関係をグラフとして保持します。 3. **ライフサイクル**: トランザクション開始時に生成され、終了時に <code>ReleasePredXact</code> を介して関連するロックや競合リストと共に解放・再利用されます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/storage/lmgr/predicate.c</code> 内の <code>CreatePredXact</code> 等で生成・管理されます。</li>
+<li>呼び出し先: <code>RWConflictExists</code>, <code>SetRWConflict</code>, <code>FlagSxactUnsafe</code> などの関数が本構造体を引数として操作します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PREDICATELOCK</code>: <code>predicateLocks</code> リストに格納される述語ロック。</li>
+<li><code>RWConflictData</code>: <code>outConflicts</code> / <code>inConflicts</code> リストを構成する競合情報。</li>
+<li><code>SerCommitSeqNo</code>: コミット順序を追跡する単調増加シーケンス番号。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>finishedBefore</code> が <code>invalid</code> の場合はトランザクションが実行中であることを示します。</li>
+<li>共有メモリ上の構造体であるため、アクセスには適切なロック（<code>perXactPredicateListLock</code> 等）が必要です。</li>
+<li><code>LOCALPREDICATELOCK</code>（ローカルキャッシュ）との同期不整合が発生する可能性がある点に注意してください。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>PREDICATELOCKTARGETTAG</code> の変更時は、ハッシュ計算時のパディングやアライメントに注意が必要です。</li>
+<li><code>flags</code> フィールドはSSIの挙動を左右するため、変更時は関連するフラグ定義との整合性を確認してください。</li>
+</ul></body></html>

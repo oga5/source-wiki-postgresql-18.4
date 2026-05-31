@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeAppend.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeAppend.c</h1>
+<h2>概要</h2>
+<p><code>nodeAppend.c</code> は、PostgreSQL の実行エンジンにおいて複数の子プラン（サブプラン）を順次または並列に実行し、結果を統合する <code>Append</code> ノードを実装するファイルです。主に継承テーブルのクエリや <code>UNION ALL</code> 句の処理に使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールの一部として、クエリ実行ツリーのノード処理を担います。他のスキャンノードと同様に <code>ExecProcNode</code> インターフェースを実装し、上位ノードに対して透過的にタプルを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**サブプランの反復処理**: 複数の子プランを順番にスキャンし、終了したプランから次のプランへ切り替える。</li>
+<li>**並列実行のサポート**: 共有メモリ（DSM）を利用したワーカー間でのサブプランの動的割り当て。</li>
+<li>**非同期実行の管理**: <code>postgres_fdw</code> 等と連携し、複数の外部ソースから非同期にタプルを取得する。</li>
+<li>**実行時パーティションプルーニング**: クエリ実行中に不要なサブプランを動的に除外する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>AppendState</code>: <code>Append</code> ノードの実行時状態を保持する構造体。</li>
+<li><code>ExecInitAppend</code>: ノードの初期化と子プランの準備を行う。</li>
+<li><code>ExecAppend</code>: 子プランからタプルを取得するメインループ。</li>
+<li><code>ParallelAppendState</code>: 並列実行時にワーカー間で共有される状態（ロックや進捗管理）。</li>
+<li><code>choose_next_subplan_*</code>: 実行モード（ローカル、リーダー、ワーカー）に応じた次のサブプラン選択ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecAppendAsyncBegin</code></li>
+<li><code>ExecAppendAsyncGetNext</code></li>
+<li><code>ExecAppendAsyncRequest</code></li>
+<li><code>ExecAppendEstimate</code></li>
+<li><code>ExecAppendInitializeDSM</code></li>
+<li><code>ExecAppendInitializeWorker</code></li>
+<li><code>ExecAppendReInitializeDSM</code></li>
+<li><code>ExecEndAppend</code></li>
+<li><code>ExecReScanAppend</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitAppend</code> が各子プランを初期化し、パーティションプルーニングが必要な場合は <code>as_valid_subplans</code> を設定します。 2. **タプル取得**: <code>ExecAppend</code> が呼び出されると、現在のサブプランから <code>ExecProcNode</code> を通じてタプルを取得します。 3. **プラン切り替え**: 現在のサブプランが空（<code>TupIsNull</code>）を返すと、<code>choose_next_subplan</code> 関数を呼び出し、次の有効なサブプランへ移行します。 4. **非同期処理**: 非同期サブプランが存在する場合、<code>ExecAppendAsyncEventWait</code> を介してイベントループを回し、準備ができたタプルを順次返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execAsync.h</code>: 非同期実行の制御。</li>
+<li><code>executor/execPartition.h</code>: パーティションプルーニングのサポート。</li>
+<li><code>storage/latch.h</code>: 並列処理における待機イベント管理。</li>
+<li><code>pgstat.h</code>: 実行統計情報の記録。</li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeAppend.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeAppend.h</code>: <code>AppendState</code> 構造体の定義と公開インターフェース。</li>
+<li><code>src/backend/executor/execParallel.c</code>: 並列クエリ実行の基盤。</li>
+<li><code>src/backend/executor/execPartition.c</code>: パーティションプルーニングのロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**並列実行の複雑さ**: 並列実行時は <code>choose_next_subplan_for_worker</code> が重要です。ワーカーは共有メモリ上の <code>pa_next_plan</code> を更新しながら、負荷分散を図ります。</li>
+<li>**非同期実行の注意点**: 非同期処理は <code>WaitEventSet</code> を使用して実装されています。<code>postgres_fdw</code> 等の外部データラッパーが非同期対応している場合にのみ有効化されます。</li>
+<li>**メモリ管理**: <code>ExecInitAppend</code> で全ての子プランを初期化するため、プラン数が多い場合はメモリ消費量に注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ParallelAppendState.html" target="wiki-view"><code>ParallelAppendState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecInitAppend.html" target="wiki-view"><code>ExecInitAppend</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppend.html" target="wiki-view"><code>ExecAppend</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecEndAppend.html" target="wiki-view"><code>ExecEndAppend</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecReScanAppend.html" target="wiki-view"><code>ExecReScanAppend</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendEstimate.html" target="wiki-view"><code>ExecAppendEstimate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendInitializeDSM.html" target="wiki-view"><code>ExecAppendInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendReInitializeDSM.html" target="wiki-view"><code>ExecAppendReInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendInitializeWorker.html" target="wiki-view"><code>ExecAppendInitializeWorker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendAsyncBegin.html" target="wiki-view"><code>ExecAppendAsyncBegin</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendAsyncGetNext.html" target="wiki-view"><code>ExecAppendAsyncGetNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAppend_c__ExecAppendAsyncRequest.html" target="wiki-view"><code>ExecAppendAsyncRequest</code></a></li>
+</ul></body></html>

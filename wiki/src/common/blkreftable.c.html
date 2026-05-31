@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/blkreftable.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/blkreftable.c</h1>
+<h2>概要</h2>
+<p><code>blkreftable.c</code> は、特定の LSN 範囲内で変更されたブロックを追跡するための「ブロック参照テーブル」を実装するモジュールです。WAL レコードの解析結果を効率的に保持し、ディスクへのシリアライズおよびデシリアライズをサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> 内で、主に WAL 処理やバックアップ、リカバリ関連のツールが使用するデータ構造を提供します。メモリ上のハッシュテーブルによる高速なアクセスと、ディスク上のコンパクトなバイナリ形式の両方をサポートするブリッジ的な役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**変更ブロックの追跡**: リレーションフォークごとの変更済みブロックを管理。</li>
+<li>**効率的なメモリ表現**: 変更密度に応じて「オフセット配列」と「ビットマップ」を動的に切り替え、メモリ消費を最適化。</li>
+<li>**シリアライズ/デシリアライズ**: 外部ストレージへの書き出しと、ストリーミング読み込み（<code>Reader</code>/<code>Writer</code> パターン）の提供。</li>
+<li>**整合性管理**: <code>limit_block</code> を用いたリレーションの切り詰めや再拡張への対応。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BlockRefTable</code>: メモリ上のメイン構造体。<code>simplehash</code> を使用。</li>
+<li><code>BlockRefTableEntry</code>: 特定のリレーションフォークの変更状態を保持する構造体。</li>
+<li><code>BlockRefTableReader</code> / <code>Writer</code>: ディスク I/O を抽象化し、増分処理を行うための状態保持構造体。</li>
+<li><code>BlockRefTableMarkBlockModified</code>: 特定のブロックを変更済みとしてマークする主要関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BlockRefTableBuffer</code></li>
+<li><code>BlockRefTableChunk</code></li>
+<li><code>BlockRefTableKey</code></li>
+<li><code>BlockRefTableSerializedEntry</code></li>
+<li><code>BlockRefTableWriter</code></li>
+<li><code>CreateBlockRefTableEntry</code></li>
+<li><code>CreateBlockRefTableReader</code></li>
+<li><code>CreateBlockRefTableWriter</code></li>
+<li><code>CreateEmptyBlockRefTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **更新**: <code>BlockRefTableMarkBlockModified</code> が呼ばれると、対応する <code>BlockRefTableEntry</code> を取得し、<code>chunk</code> を更新します。変更が少ない場合はオフセット配列、多い場合はビットマップへ自動変換されます。 2. **シリアライズ**: <code>WriteBlockRefTable</code> はハッシュテーブル内の全エントリをソートし、マジックナンバー、エントリ本体、チャンクデータの順でバイナリ出力します。 3. **読み込み**: <code>BlockRefTableReader</code> はコールバック経由でデータを読み込み、CRC チェックを行いながら、<code>BlockRefTableReaderNextRelation</code> を通じてリレーション単位でデータを復元します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/simplehash.h</code>: ハッシュテーブルの実装。</li>
+<li><code>port/pg_crc32c.h</code>: ファイルの整合性チェック用。</li>
+<li><code>common/blkreftable.h</code>: 公開インターフェース定義。</li>
+<li><code>postgres.h</code> / <code>postgres_fe.h</code>: フロントエンド・バックエンド両対応のための条件付きインクルード。</li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/logging.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/common/blkreftable.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/common/hashfn.h</code>: ハッシュ計算に使用。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ効率**: <code>BLOCKS_PER_CHUNK</code> (64KB) 単位で管理されます。ビットマップへの切り替えは <code>MAX_ENTRIES_PER_CHUNK</code> に達した際に行われ、一度ビットマップになると戻りません。</li>
+<li>**I/O 抽象化**: <code>io_callback_fn</code> を介して I/O を行うため、ファイルだけでなくメモリバッファやネットワークストリームへの適用も可能です。</li>
+<li>**ソート順**: シリアライズ時は <code>tablespace</code> -&gt; <code>database</code> -&gt; <code>relfilenumber</code> -&gt; <code>forknumber</code> の順でソートされる必要があります。これは <code>BlockRefTableComparator</code> で定義されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableKey.html" target="wiki-view"><code>BlockRefTableKey</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableChunk.html" target="wiki-view"><code>BlockRefTableChunk</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableEntry.html" target="wiki-view"><code>BlockRefTableEntry</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTable.html" target="wiki-view"><code>BlockRefTable</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableSerializedEntry.html" target="wiki-view"><code>BlockRefTableSerializedEntry</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableBuffer.html" target="wiki-view"><code>BlockRefTableBuffer</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableReader.html" target="wiki-view"><code>BlockRefTableReader</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__BlockRefTableWriter.html" target="wiki-view"><code>BlockRefTableWriter</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__CreateEmptyBlockRefTable.html" target="wiki-view"><code>CreateEmptyBlockRefTable</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__CreateBlockRefTableReader.html" target="wiki-view"><code>CreateBlockRefTableReader</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__CreateBlockRefTableWriter.html" target="wiki-view"><code>CreateBlockRefTableWriter</code></a></li>
+<li><a href="../../symbols/src__common__blkreftable_c__CreateBlockRefTableEntry.html" target="wiki-view"><code>CreateBlockRefTableEntry</code></a></li>
+</ul></body></html>

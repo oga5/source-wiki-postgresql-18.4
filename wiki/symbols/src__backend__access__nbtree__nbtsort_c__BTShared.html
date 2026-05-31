@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__nbtree__nbtsort_c__BTShared.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BTShared</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/access/nbtree/nbtsort.c:93</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列インデックス構築時において、リーダープロセスとワーカープロセス間で共有される状態を保持するための構造体です。インデックス構築のメタ情報および、ワーカーによるスキャン結果の集約に使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct BTShared {
+    Oid         heaprelid;
+    Oid         indexrelid;
+    bool        isunique;
+    bool        nulls_not_distinct;
+    bool        isconcurrent;
+    int         scantuplesortstates;
+    int64       queryid;
+    ConditionVariable workersdonecv;
+    slock_t     mutex;
+    int         nparticipantsdone;
+    double      reltuples;
+    bool        havedead;
+    double      indtuples;
+    bool        brokenhotchain;
+} BTShared;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 並列構築の初期化時にリーダーが共有メモリ上に割り当て、各ワーカーが参照します。</li>
+<li>**出力**: 構築終了時に、ワーカーが収集した統計情報（<code>reltuples</code>, <code>indtuples</code> 等）がリーダーへ報告されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>mutex</code> フィールドは、<code>heapdesc</code> 以降の可変状態（<code>nparticipantsdone</code> 等）へのアクセスを保護します。</li>
+<li><code>workersdonecv</code> は、すべてのワーカーがスキャンを完了したことをリーダーが確認するために使用されます。</li>
+<li>ソート開始前には、すべての並列参加者が完了通知を行う必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: リーダーが共有メモリを確保し、インデックスの基本属性を格納します。 2. **同期**: ワーカーは自身の作業状況を <code>mutex</code> で保護されたフィールドに書き込みます。 3. **集約**: リーダーは <code>workersdonecv</code> を通じてワーカーの終了を待機し、<code>nparticipantsdone</code> 等の統計情報を集計して最終的なインデックス構築に反映させます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/nbtree/nbtsort.c</code> 内の並列構築関連関数（<code>_bt_parallel_build_main</code> 等）から参照されます。</li>
+<li>**呼び出し先**: 直接的な関数呼び出しは行いませんが、共有メモリ上のデータ構造として <code>shm_toc_allocate</code> 等を介して管理されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BTLeader</code>: 並列構築のリーダー側の状態を管理する構造体。</li>
+<li><code>ParallelTableScanDescData</code>: 本構造体の直後に配置される並列スキャン記述子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリの割り当て失敗時に構築が中断される可能性があります。</li>
+<li>複数のワーカーが同時に統計情報を更新する際、<code>mutex</code> による排他制御が正しく行われない場合、統計情報の不整合が発生します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されるため、ポインタを含めることはできません。</li>
+<li><code>ParallelTableScanDescData</code> が直後に続くため、メモリレイアウトの計算には <code>BUFFERALIGN</code> を使用する必要があります。</li>
+</ul></body></html>

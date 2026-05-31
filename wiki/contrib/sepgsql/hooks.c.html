@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/hooks.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/hooks.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のコア機能と SE-PostgreSQL セキュリティモジュールを接続するためのメインエントリーポイントです。PostgreSQL のフック機構を利用し、DDL、DML、およびユーティリティコマンド実行時のアクセス制御をインターセプトします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> の中核となるゲートウェイです。コアシステムから呼び出されるフック関数を実装し、適切な内部処理（<code>dml.c</code>, <code>relation.c</code> 等）へ処理を委譲します。また、モジュールの初期化と設定（GUC）を管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**フックの登録と連鎖**: <code>object_access_hook</code>、<code>ExecutorCheckPerms_hook</code>、<code>ProcessUtility_hook</code> を上書きし、既存のフックがあればそれを呼び出す（スタックする）ことで、他のセキュリティモジュールとの共存を可能にします。</li>
+<li>**アクセス制御のディスパッチ**: <code>sepgsql_object_access</code> を通じて、オブジェクトの作成、削除、変更、検索、関数実行などのイベントを適切なハンドラへ振り分けます。</li>
+<li>**DDL コンテキストの管理**: <code>sepgsql_context_info</code> を保持し、コマンド実行中のメタデータ（<code>CREATE DATABASE</code> のテンプレート名など）を追跡します。</li>
+<li>**モジュール初期化**: <code>_PG_init</code> にて SELinux の有効性確認、GUC 変数の定義、AVC（Access Vector Cache）の初期化を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_object_access</code>: オブジェクトアクセスフックのメインディスパッチャ。</li>
+<li><code>sepgsql_exec_check_perms</code>: DML 操作（SELECT/INSERT 等）の権限チェック用フック。</li>
+<li><code>sepgsql_utility_command</code>: <code>LOAD</code> コマンドの制限や DDL コンテキストの保存を行うユーティリティフック。</li>
+<li><code>_PG_init</code>: モジュールロード時に実行される初期化関数。</li>
+<li><code>sepgsql_permissive</code> / <code>sepgsql_debug_audit</code>: 動作モードを制御する GUC 変数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>sepgsql_context_info_t</code></li>
+<li><code>sepgsql_get_debug_audit</code></li>
+<li><code>sepgsql_get_permissive</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> がフック関数ポインタを自身の関数で置き換え、元のポインタを <code>next_...</code> 変数に保存します。 2. **実行時**:</p>
+<ul>
+<li>コアシステムがフックを呼び出すと、まず <code>next_...</code> があれば実行し、その後に SE-PostgreSQL のロジックが実行されます。</li>
+<li><code>sepgsql_object_access</code> は <code>ObjectAccessType</code> に基づき、<code>sepgsql_database_...</code> や <code>sepgsql_relation_...</code> などの各ソースファイル内の関数を呼び出します。</li>
+<p>3. **終了**: <code>PG_TRY/PG_FINALLY</code> ブロックにより、エラー発生時でも <code>sepgsql_context_info</code> が適切に復元されるよう保証されています。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>catalog/</code>: <code>pg_class.h</code>, <code>pg_database.h</code> 等のシステムカタログ定義。</li>
+<li><code>sepgsql.h</code>: モジュール内共通定義。</li>
+<li><code>commands/seclabel.h</code>, <code>executor/executor.h</code>, <code>tcop/utility.h</code>: PostgreSQL コアのフック対象インターフェース。</li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>fmgr.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/queryenvironment.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>sepgsql.h</code>: モジュール全体で使用される構造体や関数プロトタイプ。</li>
+<li><code>uavc.c</code>: アクセスベクタキャッシュの管理。</li>
+<li><code>dml.c</code>, <code>relation.c</code>, <code>schema.c</code>: <code>hooks.c</code> から呼び出される具体的な権限チェックロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**フックの連鎖**: <code>next_...</code> 変数によるフックの連鎖は、他のセキュリティ拡張機能との互換性を保つために不可欠です。</li>
+<li>**内部フラグ**: <code>is_internal</code> フラグは、システム内部的な処理（TOASTテーブル作成など）を権限チェックから除外するために重要です。</li>
+<li>**LOADコマンドの制限**: <code>sepgsql_utility_command</code> 内で <code>LOAD</code> を禁止しているのは、バイナリモジュールによるフックの不正な上書きを防ぐためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_context_info_t.html" target="wiki-view"><code>sepgsql_context_info_t</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_get_permissive.html" target="wiki-view"><code>sepgsql_get_permissive</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_get_debug_audit.html" target="wiki-view"><code>sepgsql_get_debug_audit</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_object_access.html" target="wiki-view"><code>sepgsql_object_access</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_exec_check_perms.html" target="wiki-view"><code>sepgsql_exec_check_perms</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__hooks_c__sepgsql_utility_command.html" target="wiki-view"><code>sepgsql_utility_command</code></a></li>
+</ul></body></html>

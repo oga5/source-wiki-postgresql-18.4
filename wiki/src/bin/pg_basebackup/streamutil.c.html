@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_basebackup/streamutil.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_basebackup/streamutil.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバックアップおよびストリーミングツール（<code>pg_basebackup</code>, <code>pg_receivewal</code>, <code>pg_recvlogical</code>）で共通して利用される、サーバー接続管理およびレプリケーションプロトコル用のユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_basebackup</code> サブシステムにおける「共通基盤」です。libpqをラップし、レプリケーション専用の接続確立、レプリケーションスロットの操作、およびサーバー設定の取得を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: レプリケーション専用の接続確立と、接続時の環境設定（<code>search_path</code>のクリアや<code>integer_datetimes</code>の検証）。</li>
+<li>**レプリケーションコマンドの実行**: <code>IDENTIFY_SYSTEM</code> や <code>CREATE_REPLICATION_SLOT</code> などのレプリケーションプロトコルコマンドの構築と実行。</li>
+<li>**フロントエンド用ユーティリティ**: バックエンドとリンクできない環境でのタイムスタンプ計算や、ネットワークバイトオーダーへの変換処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GetConnection()</code>: 接続情報を解析し、レプリケーションモードでサーバーに接続するメイン関数。</li>
+<li><code>RunIdentifySystem()</code>: サーバーのシステム識別子やタイムライン、LSNを取得する。</li>
+<li><code>CreateReplicationSlot()</code> / <code>DropReplicationSlot()</code>: レプリケーションスロットのライフサイクルを管理する。</li>
+<li><code>WalSegSz</code>: サーバーから取得したWALセグメントサイズを保持するグローバル変数。</li>
+<li><code>AppendPlainCommandOption()</code> 等: レプリケーションコマンドの構文（旧形式と新形式）を吸収して文字列を構築するヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AppendIntegerCommandOption</code></li>
+<li><code>AppendPlainCommandOption</code></li>
+<li><code>AppendStringCommandOption</code></li>
+<li><code>CreateReplicationSlot</code></li>
+<li><code>DropReplicationSlot</code></li>
+<li><code>GetConnection</code></li>
+<li><code>GetSlotInformation</code></li>
+<li><code>RetrieveDataDirCreatePerm</code></li>
+<li><code>RetrieveWalSegSize</code></li>
+<li><code>RunIdentifySystem</code></li>
+<li><code>fe_recvint64</code></li>
+<li><code>fe_sendint64</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続**: <code>GetConnection</code> が呼び出されると、コマンドライン引数や接続文字列を解析し、<code>PQconnectdbParams</code> で接続を試みます。成功後、サーバーのバージョンを確認し、必要に応じて <code>RetrieveWalSegSize</code> や <code>RetrieveDataDirCreatePerm</code> を実行して環境を初期化します。 2. **コマンド構築**: レプリケーションコマンド（<code>CREATE_REPLICATION_SLOT</code>等）は <code>PQExpBuffer</code> を用いて動的に構築されます。PostgreSQL 15以降で導入された新しいオプション構文（括弧付き）と、それ以前の構文を <code>use_new_option_syntax</code> フラグで切り替えます。 3. **実行**: <code>PQexec</code> を通じてサーバーに送信し、結果を <code>PGresult</code> から解析して呼び出し元に返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code> (接続およびクエリ実行)</li>
+<li><code>pqexpbuffer.h</code> (コマンド文字列の動的構築)</li>
+<li><code>common/connect.h</code>, <code>common/logging.h</code> (接続解析とログ出力)</li>
+<li><code>access/xlog_internal.h</code> (WAL関連の定数)</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>streamutil.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>streamutil.h</code>: 本ファイルの公開インターフェース定義。</li>
+<li><code>receivelog.c</code>: 本ファイルで確立した接続を利用して、実際にWALストリーミングを行うモジュール。</li>
+<li><code>walmethods.c</code>: 本ファイルで取得した <code>WalSegSz</code> を利用して、WALファイルの書き込み制御を行うモジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「フロントエンド」コードであるため、バックエンドの関数（<code>GetCurrentTimestamp</code>等）を直接呼べません。そのため、<code>fe</code> プレフィックスが付いた代替関数が実装されています。</li>
+<li>レプリケーションコマンドの構文はサーバーバージョンによって変化するため、<code>PQserverVersion(conn)</code> を用いた条件分岐が随所に存在します。新しいコマンドを追加する際は、古いバージョンとの互換性に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__GetConnection.html" target="wiki-view"><code>GetConnection</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__RetrieveWalSegSize.html" target="wiki-view"><code>RetrieveWalSegSize</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__RetrieveDataDirCreatePerm.html" target="wiki-view"><code>RetrieveDataDirCreatePerm</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__RunIdentifySystem.html" target="wiki-view"><code>RunIdentifySystem</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__GetSlotInformation.html" target="wiki-view"><code>GetSlotInformation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__CreateReplicationSlot.html" target="wiki-view"><code>CreateReplicationSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__DropReplicationSlot.html" target="wiki-view"><code>DropReplicationSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__AppendPlainCommandOption.html" target="wiki-view"><code>AppendPlainCommandOption</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__AppendStringCommandOption.html" target="wiki-view"><code>AppendStringCommandOption</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__AppendIntegerCommandOption.html" target="wiki-view"><code>AppendIntegerCommandOption</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__fe_sendint64.html" target="wiki-view"><code>fe_sendint64</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__streamutil_c__fe_recvint64.html" target="wiki-view"><code>fe_recvint64</code></a></li>
+</ul></body></html>

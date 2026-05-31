@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/bloom/blutils.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/bloom/blutils.c</h1>
+<h2>概要</h2>
+<p><code>blutils.c</code> は、PostgreSQL の Bloom フィルタインデックス（<code>contrib/bloom</code>）における共通ユーティリティおよびインデックスのライフサイクル管理機能を提供します。インデックスの初期化、メタページの管理、および Bloom 署名のビット操作を担う中心的なファイルです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/bloom</code> モジュールの基盤として、他のファイル（<code>blinsert.c</code>, <code>blscan.c</code> 等）が共通して利用するデータ構造の初期化や、インデックスのメタデータへのアクセスを提供します。また、PostgreSQL のインデックスアクセスメソッド（AM）としてのインターフェース（<code>blhandler</code>）を定義しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**AM インターフェースの提供**: <code>blhandler</code> を通じて、PostgreSQL が Bloom インデックスを認識・操作するための関数ポインタ群を登録します。</li>
+<li>**メタデータ管理**: インデックスのメタページ（<code>BLOOM_METAPAGE_BLKNO</code>）の初期化および読み込みを行い、インデックス固有の設定（<code>BloomOptions</code>）を管理します。</li>
+<li>**署名生成**: <code>signValue</code> および <code>BloomFormTuple</code> を通じて、入力データをハッシュ化し、Bloom フィルタのビット列へ変換します。</li>
+<li>**ページ管理**: インデックスページの新規割り当て（FSM 利用またはファイル拡張）と初期化を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>blhandler</code>: インデックス AM のエントリポイント。各操作関数を登録します。</li>
+<li><code>initBloomState</code>: インデックスの実行時状態（ハッシュ関数やオプション）を初期化します。</li>
+<li><code>signValue</code>: 特定の属性値をハッシュ化し、署名ビット列に反映させます。</li>
+<li><code>BloomPageAddItem</code>: ページ内に新しい Bloom タプルを格納します。</li>
+<li><code>GETBIT</code>, <code>SETBIT</code>: 署名ワード配列に対するビット操作マクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BloomFillMetapage</code></li>
+<li><code>BloomFormTuple</code></li>
+<li><code>BloomInitMetapage</code></li>
+<li><code>BloomInitPage</code></li>
+<li><code>BloomNewBuffer</code></li>
+<li><code>makeDefaultBloomOptions</code></li>
+<li><code>myRand</code></li>
+<li><code>mySrand</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>_PG_init</code> がインデックスのオプション定義（<code>length</code>, <code>colN</code>）を登録します。 2.  **構築**: <code>blbuild</code> 等から呼び出される <code>BloomFormTuple</code> が、入力値を <code>signValue</code> に渡し、擬似乱数生成器（<code>myRand</code>）を用いてビット位置を決定し、署名を生成します。 3.  **ページ操作**: <code>BloomNewBuffer</code> が FSM から空きページを探すか、ファイルを拡張して新しいバッファを確保し、<code>BloomInitPage</code> でメタデータを設定します。 4.  **メタデータ**: <code>initBloomState</code> は、インデックスのメタページから <code>BloomOptions</code> を読み込み、<code>rd_amcache</code> にキャッシュして以降のアクセスを高速化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>access/amapi.h</code>: AM インターフェース定義。</li>
+<li><code>bloom.h</code>: Bloom インデックス固有のデータ構造定義。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/indexfsm.h</code>: バッファ管理および空き領域管理。</li>
+<li><code>access/generic_xlog.h</code>: WAL ログ書き込み用。</li>
+<li><code>access/reloptions.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>bloom.h</code>: このファイルで使用される <code>BloomState</code>, <code>BloomOptions</code>, <code>BloomTuple</code> 等の定義元。</li>
+<li><code>blinsert.c</code>: <code>BloomFormTuple</code> や <code>BloomPageAddItem</code> を利用してインデックス構築を行う実装。</li>
+<li><code>blscan.c</code>: <code>initBloomState</code> を利用してスキャン時の状態を構築する実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**擬似乱数生成**: <code>myRand</code> は PostgreSQL 標準の乱数生成器とは独立しています。これは、インデックスのオンディスク構造が PostgreSQL のバージョンアップや設定変更によって影響を受けないようにするためです。</li>
+<li>**ビット操作**: <code>GETWORD</code> マクロは <code>BloomSignatureWord</code> 単位でのアクセスを前提としています。ビット位置の計算は <code>SIGNWORDBITS</code> に依存しているため、構造変更時は注意が必要です。</li>
+<li>**メタページ**: インデックス作成時に一度だけ書き込まれるメタページには、そのインデックスの署名長やビットサイズが固定値として保存されます。これらは <code>rd_amcache</code> を通じて効率的に参照されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__bloom__blutils_c__makeDefaultBloomOptions.html" target="wiki-view"><code>makeDefaultBloomOptions</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__blhandler.html" target="wiki-view"><code>blhandler</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__initBloomState.html" target="wiki-view"><code>initBloomState</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__myRand.html" target="wiki-view"><code>myRand</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__mySrand.html" target="wiki-view"><code>mySrand</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__signValue.html" target="wiki-view"><code>signValue</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomFormTuple.html" target="wiki-view"><code>BloomFormTuple</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomPageAddItem.html" target="wiki-view"><code>BloomPageAddItem</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomNewBuffer.html" target="wiki-view"><code>BloomNewBuffer</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomInitPage.html" target="wiki-view"><code>BloomInitPage</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomFillMetapage.html" target="wiki-view"><code>BloomFillMetapage</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blutils_c__BloomInitMetapage.html" target="wiki-view"><code>BloomInitMetapage</code></a></li>
+</ul></body></html>

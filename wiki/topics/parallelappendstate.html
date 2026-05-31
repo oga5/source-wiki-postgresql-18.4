@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/parallelappendstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelAppendState</h1>
+<h2>概念</h2>
+<p><code>ParallelAppendState</code> は、PostgreSQL の並列クエリ実行において、複数のワーカープロセス間で <code>Append</code> ノードのサブプラン実行状況を共有・管理するための構造体です。共有メモリ（DSM）上に配置され、各ワーカーが協調してサブプランを動的に選択・実行できるようにします。</p>
+<h2>なぜ重要か</h2>
+<p>並列 <code>Append</code> を実行する際、複数のワーカーが重複して同じ非部分（non-partial）プランを実行することを防ぎ、かつ部分（partial）プランを効率的に共同実行する必要があります。<code>ParallelAppendState</code> は、ワーカー間でのサブプランの動的割り当てと実行状態の同期を可能にするため、並列クエリの正しいスケジューリングにおいて重要な役割を果たします。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/executor</code></li>
+<li><code>module:src/include/nodes</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/executor/nodeAppend.c#ParallelAppendState</code>**</li>
+<p>並列実行状態を管理する構造体の実体定義です。以下のフィールドを持ちます。</p>
+<li><code>pa_lock</code> (<code>LWLock</code>): サブプラン選択時の排他制御用ロック。</li>
+<li><code>pa_next_plan</code> (<code>int</code>): 次に選択すべきサブプランのインデックス。</li>
+<li><code>pa_finished</code> (<code>bool[]</code>): 各サブプランの完了状態を示す可変長配列。</li>
+<li>**<code>symbol:src/include/nodes/execnodes.h#ParallelAppendState</code>**</li>
+<p><code>Append</code> ノードの実行時状態を保持する <code>AppendState</code> 構造体の中で、<code>as_pstate</code> フィールドとして本構造体への参照が保持されます。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化と事前処理**: 共有メモリ上に <code>ParallelAppendState</code> が配置されます。パーティションプルーニング等によって実行不要（無効）と判断されたサブプランについては、事前に <code>pa_finished</code> が <code>true</code> に設定され、ワーカーによる選択を回避します。 2. **サブプランの選択**: 各ワーカーは <code>pa_lock</code> を取得し、<code>pa_next_plan</code> を参照して次に実行すべきサブプランを決定します。 3. **状態の更新と同期**: 選択したプランの特性（部分プランか非部分プランか）に応じて <code>pa_finished</code> を更新し、他のワーカーと実行状況を同期します。 4. **実行**: ワーカーは選択したサブプランを実行します。</p>
+<p>※ クエリ全体のライフサイクルにおける詳細な初期化関数や、クエリ終了時のクリーンアップなど、完全なエンドツーエンドのフローは提供されたコンテキストからは未詳です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**排他制御**: <code>pa_next_plan</code> を参照・更新する際は、必ず <code>pa_lock</code> による排他制御を行わなければなりません。</li>
+<li>**<code>pa_finished[i]</code> の更新ルール**:</li>
+<li>**非部分（non-partial）プランの場合**: ワーカーがプランを選択した時点で <code>true</code> に設定されます（他のワーカーが選択するのを防ぐため）。</li>
+<li>**部分（partial）プランの場合**: 複数のワーカーが共同で実行できるため、ワーカーがプランを完了するまで <code>false</code> を維持します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ポインタの禁止**: 本構造体は共有メモリ上に配置されるため、構造体内部に直接ポインタを含めることはできません。</li>
+<li>**メモリ確保のサイズ**: <code>pa_finished</code> は <code>FLEXIBLE_ARRAY_MEMBER</code>（可変長配列）として定義されているため、サブプランの数に応じた適切なメモリサイズを動的に計算して確保する必要があります。</li>
+<li>**同期タイミングの不整合**: <code>pa_finished</code> の更新タイミングは、プランが「部分」か「非部分」かによって厳密に区別されています。この制御ロジック（<code>nodeAppend.c</code> 内）を変更する際は、ワーカー間での二重実行や実行漏れを引き起こさないよう注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/executor/nodeAppend.c</code></li>
+<p><code>ParallelAppendState</code> の定義、および <code>ExecAppend</code> などの並列実行・サブプラン選択ロジックが実装されています。</p>
+<li><code>src/include/nodes/execnodes.h</code></li>
+<p><code>AppendState</code> 構造体における <code>as_pstate</code> フィールドの定義と、関連する実行ノードの状態管理について記述されています。</p>
+</ul></body></html>

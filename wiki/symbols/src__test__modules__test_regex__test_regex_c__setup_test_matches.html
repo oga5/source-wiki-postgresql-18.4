@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__test__modules__test_regex__test_regex_c__setup_test_matches.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>setup_test_matches</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/test/modules/test_regex/test_regex.c:434</code></li>
+</ul>
+<h2>目的</h2>
+<p>正規表現のコンパイル済みパターンを対象文字列に対して実行し、マッチング結果（位置情報など）を保持するコンテキスト構造体 <code>test_regex_ctx</code> を初期化・構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static test_regex_ctx *setup_test_matches(text *orig_str,
+                                          regex_t *cpattern,
+                                          test_re_flags *re_flags,
+                                          Oid collation,
+                                          bool use_subpatterns)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>orig_str</code>: 対象となる入力文字列。</li>
+<li><code>cpattern</code>: コンパイル済みの正規表現パターン。</li>
+<li><code>re_flags</code>: テスト用の実行オプション（<code>glob</code> フラグ等を含む）。</li>
+<li><code>collation</code>: 照合順序。</li>
+<li><code>use_subpatterns</code>: サブパターンを記録するかどうかのフラグ。</li>
+<li>**出力**:</li>
+<li>マッチング結果と状態を格納した <code>test_regex_ctx</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>orig_str</code> は PostgreSQL の <code>text</code> 型であること。</li>
+<li><code>cpattern</code> は有効な <code>regex_t</code> オブジェクトであること。</li>
+<li><code>re_flags-&gt;glob</code> が真の場合、文字列全体に対して繰り返しマッチングを行う。</li>
+<li><code>array_idx</code> は常に <code>array_len</code> 以下であること（<code>Assert</code> による検証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 入力文字列を <code>pg_wchar</code> 形式に変換し、マッチング用バッファを準備する。 2. <code>use_subpatterns</code> に応じて <code>pmatch</code>（マッチング結果格納用）のサイズを決定する。 3. <code>test_re_execute</code> を呼び出し、パターンマッチングを実行する。</p>
+<ul>
+<li><code>glob</code> フラグが有効な場合、マッチングが成功する限り <code>start_search</code> を更新して繰り返し実行する。</li>
+<li>マッチング位置（<code>rm_so</code>, <code>rm_eo</code>）を <code>matchctx-&gt;match_locs</code> に記録し、必要に応じて動的に領域を拡張する。</li>
+<p>4. マッチングが一つも得られず、かつ <code>partial</code> および <code>indices</code> フラグが有効な場合は、<code>details.rm_extend</code> から部分マッチ情報を取得する。 5. マルチバイト文字環境（<code>eml &gt; 1</code>）の場合、変換用バッファ <code>conv_buf</code> を確保し、ワイド文字列を保持する。シングルバイト環境ではメモリを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/test/modules/test_regex/test_regex.c</code> 内の <code>test_regex</code> 関数（<code>SRF_IS_FIRSTCALL</code> 時）。</li>
+<li>**呼び出し先**: <code>test_re_execute</code>（マッチング実行）、<code>palloc</code>/<code>repalloc</code>（メモリ確保）、<code>pg_mb2wchar_with_len</code>（文字変換）、<code>ereport</code>（エラー報告）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>test_regex_ctx</code>: マッチング結果と実行状態を保持するメイン構造体。</li>
+<li><code>test_re_flags</code>: 実行オプションを格納。</li>
+<li><code>regmatch_t</code>: 正規表現エンジンが返すマッチング位置情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>array_len</code> が <code>MaxAllocSize</code> を超える場合、<code>ERRCODE_PROGRAM_LIMIT_EXCEEDED</code> でエラー終了する。</li>
+<li>**マッチングなし**: <code>nmatches</code> が 0 の場合、<code>partial</code> フラグの有無により挙動が分岐する。</li>
+<li>**ゼロ長マッチ**: マッチングが空（<code>rm_so == rm_eo</code>）の場合、無限ループを避けるために検索開始位置を 1 文字進める。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SRF</code> の初回呼び出し時に一度だけ実行されることを前提としている。</li>
+<li><code>match_locs</code> の動的拡張ロジックは、2^n-1 のサイズ増加ルールを採用しており、メモリ効率と上限チェックを考慮している。</li>
+<li>マルチバイト文字の変換バッファ確保ロジックは、<code>eml</code>（最大文字長）に基づいた安全なサイズ計算を行っている。</li>
+</ul></body></html>

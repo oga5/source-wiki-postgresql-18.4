@@ -1,0 +1,157 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlog.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのWrite-Ahead Log (WAL) 管理の中核となるファイルです。データベースの起動、チェックポイントの実行、WALバッファの管理、およびクラッシュリカバリの調整を担います。WALの物理的な書き込み、同期、およびアーカイブ・リカバリの制御フローを統括する巨大なモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおける「WALの司令塔」です。</p>
+<ul>
+<li><code>xloginsert.c</code>: WALレコードの構築（高レベルAPI）</li>
+<li><code>xlogrecovery.c</code>: リカバリ・スタンバイ時のWAL適用</li>
+<li><code>xlogreader.c</code>: WALの読み込みと解析</li>
+<li><code>xlogutils.c</code>: リカバリ用ヘルパー</li>
+<p>これらと連携し、共有メモリ上のWALバッファ管理とディスクI/Oの調停を行います。</p>
+</ul>
+<h2>責務</h2>
+<ul>
+<li>**WALバッファ管理**: 共有メモリ上のWALバッファの初期化、ページ置換、ディスクへのフラッシュ。</li>
+<li>**チェックポイント制御**: チェックポイントの開始・終了、統計情報の収集、およびリカバリ時の再開ポイント（RestartPoint）の管理。</li>
+<li>**WAL挿入の調停**: 複数のバックエンドによる並列WAL挿入の同期（WAL挿入ロック）。</li>
+<li>**リカバリ・スタンバイ制御**: 起動時のリカバリ状態の判定、タイムラインの切り替え、およびリカバリ終了処理。</li>
+<li>**アーカイブ管理**: WALセグメントの作成、リサイクル、削除、およびアーカイブ通知。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有状態管理</h3>
+<ul>
+<li><code>XLogCtl</code>: WAL管理の全状態を保持する共有メモリ上のグローバル構造体。</li>
+<li><code>WALInsertLock</code>: WAL挿入を並列化するためのロック配列。<code>insertingAt</code> で挿入進捗を追跡し、フラッシュ時のデッドロックを防止。</li>
+<li><code>ControlFile</code>: <code>pg_control</code> の共有メモリ上のイメージ。</li>
+</ul>
+<h3>WAL挿入・フラッシュ</h3>
+<ul>
+<li><code>XLogInsertRecord()</code>: WALレコードを共有バッファに挿入するメインエントリーポイント。</li>
+<li><code>XLogFlush()</code>: 指定したLSNまでWALをディスクにフラッシュする。</li>
+<li><code>XLogWrite()</code>: 実際にファイルシステムへWALを書き出す低レベル関数。</li>
+</ul>
+<h3>リカバリ・状態判定</h3>
+<ul>
+<li><code>StartupXLOG()</code>: データベース起動時のリカバリプロセスを統括するメイン関数。</li>
+<li><code>RecoveryInProgress()</code>: 現在リカバリ中かどうかを判定。</li>
+<li><code>XLogInsertAllowed()</code>: 現在のプロセスがWAL挿入可能か判定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InitControlFile</code></li>
+<li><code>InitializeWalConsistencyChecking</code></li>
+<li><code>WALInsertLock</code></li>
+<li><code>WALInsertLockPadded</code></li>
+<li><code>WalInsertClass</code></li>
+<li><code>XLOGShmemInit</code></li>
+<li><code>XLogCtlData</code></li>
+<li><code>XLogCtlInsert</code></li>
+<li><code>XLogFileInit</code></li>
+<li><code>XLogInitNewTimeline</code></li>
+<li><code>XLogwrtResult</code></li>
+<li><code>XLogwrtRqst</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **WAL挿入**: <code>XLogInsertRecord</code> が <code>WALInsertLock</code> を取得し、<code>ReserveXLogInsertLocation</code> でWAL領域を予約。その後、<code>CopyXLogRecordToWAL</code> でバッファへコピー。 2. **バッファ管理**: バッファが不足すると <code>AdvanceXLInsertBuffer</code> が呼ばれ、古いページをディスクへフラッシュ（<code>XLogWrite</code>）して再利用する。 3. **フラッシュ**: <code>XLogFlush</code> は <code>WaitXLogInsertionsToFinish</code> で挿入完了を待ち、<code>WALWriteLock</code> を取得してディスクへ書き出す。 4. **チェックポイント**: <code>CreateCheckPoint</code> が <code>CheckPointGuts</code> を呼び出し、全バッファをフラッシュ。その後、<code>XLOG_CHECKPOINT_SHUTDOWN</code> などのレコードを書き込む。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/</code>: <code>bufmgr.h</code> (バッファ管理), <code>lwlock.h</code> (ロック), <code>fd.h</code> (ファイルI/O)</li>
+<li><code>access/</code>: <code>xloginsert.h</code>, <code>xlogreader.h</code>, <code>xlogrecovery.h</code></li>
+<li><code>catalog/</code>: <code>pg_control.h</code> (制御ファイル定義)</li>
+<li><code>access/clog.h</code></li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/rewriteheap.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogarchive.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogreader.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>catalog/catversion.h</code></li>
+<li><code>catalog/pg_control.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>common/controldata_utils.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/atomics.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/startup.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>postmaster/walwriter.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/large_object.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/reinit.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>storage/sync.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/guc_tables.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pgstat_internal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/xlog.h</code>: WAL関連の定数、GUC変数、構造体定義。</li>
+<li><code>src/backend/postmaster/walwriter.c</code>: WALのバックグラウンドフラッシュをトリガーするプロセス。</li>
+<li><code>src/backend/postmaster/checkpointer.c</code>: チェックポイントを定期実行するプロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>XLogCtl</code> は共有メモリ上にあり、全バックエンドからアクセスされます。<code>info_lck</code>（スピンロック）や <code>LWLock</code> による厳密な同期が必要です。</li>
+<li>**レイアウト**: <code>WALInsertLockPadded</code> はキャッシュライン境界を意識してパディングされており、CPUキャッシュの競合を最小化しています。</li>
+<li>**注意点**: <code>XLogInsertRecord</code> は非常にクリティカルなパスです。ロックの保持時間を最小化するため、複雑な計算はロック外で行う設計になっています。</li>
+<li>**省略**: 本ファイルは非常に巨大なため、アーカイブコマンドの実行詳細や、特定のリカバリ時のエッジケース（特定のレコードタイプごとのredoロジック）は詳細を省略しています。これらは <code>xlogrecovery.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogwrtRqst.html" target="wiki-view"><code>XLogwrtRqst</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogwrtResult.html" target="wiki-view"><code>XLogwrtResult</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WALInsertLock.html" target="wiki-view"><code>WALInsertLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WALInsertLockPadded.html" target="wiki-view"><code>WALInsertLockPadded</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogCtlInsert.html" target="wiki-view"><code>XLogCtlInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogCtlData.html" target="wiki-view"><code>XLogCtlData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WalInsertClass.html" target="wiki-view"><code>WalInsertClass</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogFileInit.html" target="wiki-view"><code>XLogFileInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__InitControlFile.html" target="wiki-view"><code>InitControlFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__InitializeWalConsistencyChecking.html" target="wiki-view"><code>InitializeWalConsistencyChecking</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLOGShmemInit.html" target="wiki-view"><code>XLOGShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogInitNewTimeline.html" target="wiki-view"><code>XLogInitNewTimeline</code></a></li>
+</ul></body></html>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/create-logical-replication-slot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>create_logical_replication_slot</h1>
+<h2>概念</h2>
+<p><code>create_logical_replication_slot</code> は、PostgreSQLにおいて論理レプリケーションスロットを作成・初期化し、指定された出力プラグインの検証を行うための処理（およびそれを担う関数）です。バックエンドのレプリケーション管理機能に実装されており、SQLインターフェースや外部ツールから呼び出されます。</p>
+<h2>なぜ重要か</h2>
+<p>論理レプリケーションを開始するためには、WAL（Write-Ahead Log）のデコーディング開始位置や、使用する出力プラグインを定義した「論理レプリケーションスロット」が不可欠です。この処理は、スロットを安全に作成し、プラグインの検証やデコーディング開始位置（LSN）の特定を確実に行うための基盤を提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/replication</code>: バックエンド側でのスロット作成の実体（<code>slotfuncs.c</code>）を保持します。</li>
+<li><code>module:src/bin/pg_basebackup</code>: サブスクライバ作成ツール（<code>pg_createsubscriber.c</code>）からこの処理を呼び出します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/replication/slotfuncs.c#create_logical_replication_slot</code>: 論理レプリケーションスロットの作成、初期化、プラグイン検証を実際に行うバックエンドの静的（<code>static</code>）関数。</li>
+<li><code>symbol:src/bin/pg_basebackup/pg_createsubscriber.c#create_logical_replication_slot</code>: 上記バックエンド関数を呼び出す、または関連する処理を行うクライアント側のエンティティ（詳細な内部実装は提供されたコンテキストからは未詳）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>クライアント（<code>pg_createsubscriber</code>）からバックエンド（<code>slotfuncs.c</code>）への通信や、SQLインターフェース（<code>pg_create_logical_replication_slot</code>）を経由した呼び出しの完全なエンドツーエンドのフローは、提供されたコンテキストからは完全には明らかになっていません。</p>
+<p>バックエンド内部（<code>slotfuncs.c</code>）における処理の流れは以下の通りです： 1. **スロット作成**: <code>ReplicationSlotCreate</code> を呼び出し、共有メモリ上にスロットを確保します。エラー時の自動クリーンアップを容易にするため、初期状態は <code>RS_EPHEMERAL</code>（一時的）として作成されます。 2. **デコーディングコンテキスト作成**: <code>CreateInitDecodingContext</code> を呼び出し、出力プラグインの検証、および <code>restart_lsn</code> と <code>xmin</code> の更新を行います。 3. **開始位置検索**: <code>find_startpoint</code> が真の場合、<code>DecodingContextFindStartpoint</code> を呼び出してデコーディング開始位置を特定します。 4. **クリーンアップ**: <code>FreeDecodingContext</code> を呼び出してコンテキストを解放します。</p>
+<p>※スロットの永続化（<code>RS_PERSISTENT</code> への昇格）は、本関数を呼び出した上位の関数で行われます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**呼び出し時の状態**: 関数呼び出し時に <code>MyReplicationSlot</code> が <code>NULL</code> である必要があります（Assertにより検証されます）。</li>
+<li>**権限**: 呼び出し元で適切な権限チェックが完了している必要があります。</li>
+<li>**初期状態の安全性**: 作成直後のスロットは <code>RS_EPHEMERAL</code>（一時的）として作成され、処理が正常に完了して上位の呼び出し元に制御が戻るまでは永続化（<code>RS_PERSISTENT</code> への昇格）されません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前の競合**: 既存のスロット名と競合する場合、<code>ReplicationSlotCreate</code> 内でエラーが発生します。</li>
+<li>**プラグインの検証失敗**: 指定された論理デコーディングプラグインが読み込めない、または初期化できない場合、<code>CreateInitDecodingContext</code> でエラーが発生します。</li>
+<li>**トランザクションのロールバック**: 本関数の実行中にトランザクションが失敗またはロールバックされた場合、作成中のスロットは自動的に破棄されます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/replication/slotfuncs.c</code>: バックエンドにおける <code>create_logical_replication_slot</code> の具体的な実装と、<code>pg_create_logical_replication_slot</code> などのSQLインターフェース関数の定義。</li>
+<li><code>src/bin/pg_basebackup/pg_createsubscriber.c</code>: クライアントツールから論理レプリケーションスロットの作成がどのように呼び出され、利用されているかの実装。</li>
+</ul></body></html>

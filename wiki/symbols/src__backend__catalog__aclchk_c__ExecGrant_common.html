@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__aclchk_c__ExecGrant_common.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecGrant_common</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/aclchk.c:2115</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQLの <code>GRANT</code> / <code>REVOKE</code> 文の実行に伴い、指定されたオブジェクト群のアクセス制御リスト（ACL）を更新し、関連するカタログ情報および依存関係を同期する汎用的な処理を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void ExecGrant_common(
+    InternalGrant *istmt, 
+    Oid classid, 
+    AclMode default_privs,
+    void (*object_check) (InternalGrant *istmt, HeapTuple tuple)
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>istmt</code>: 実行対象の権限操作情報（対象オブジェクト、権限、付与者など）。</li>
+<li><code>classid</code>: 対象オブジェクトが属するシステムカタログのOID。</li>
+<li><code>default_privs</code>: ACLが未設定の場合に使用されるデフォルト権限。</li>
+<li><code>object_check</code>: オブジェクト型固有の検証を行うコールバック関数（任意）。</li>
+<li>**出力**: なし（副作用としてシステムカタログを更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>istmt</code> が指すオブジェクトリストは有効であること。</li>
+<li><code>classid</code> に対応するシステムカタログが <code>table_open</code> 可能であること。</li>
+<li>処理対象のオブジェクトがシステムカタログ上に存在すること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>istmt-&gt;privileges</code> が未設定の場合、<code>default_privs</code> で初期化する。 2. 対象カタログを <code>RowExclusiveLock</code> でオープンする。 3. <code>istmt-&gt;objects</code> 内の各オブジェクトについて以下を繰り返す：</p>
+<ul>
+<li>システムキャッシュから対象タプルを検索し、存在しない場合はエラーを投げる。</li>
+<li><code>object_check</code> が提供されていれば実行する。</li>
+<li>現在のACLを取得し、存在しない場合は <code>acldefault</code> を適用する。</li>
+<li><code>select_best_grantor</code> で適切な付与者と権限オプションを決定する。</li>
+<li><code>restrict_and_check_grant</code> で権限の妥当性を検証し、警告やエラーを生成する。</li>
+<li><code>merge_acl_with_grant</code> で新しいACLを生成する。</li>
+<li><code>CatalogTupleUpdate</code> でカタログを更新し、<code>updateAclDependencies</code> で共有依存関係を同期する。</li>
+<li><code>recordExtensionInitPriv</code> で拡張機能の初期権限を記録する。</li>
+<li><code>CommandCounterIncrement</code> を呼び出し、重複オブジェクト処理時のエラーを回避する。</li>
+<p>4. 最後にカタログをクローズする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/catalog/aclchk.c</code> 内の各オブジェクト型専用の権限更新関数（データベース、型、外部データラッパー、外部サーバー、関数、言語、スキーマ、テーブルスペースの各操作）。</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>SearchSysCacheLocked1</code>, <code>select_best_grantor</code>, <code>restrict_and_check_grant</code>, <code>merge_acl_with_grant</code>, <code>CatalogTupleUpdate</code>, <code>updateAclDependencies</code>, <code>recordExtensionInitPriv</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>InternalGrant</code>: 権限操作のパラメータを保持する構造体。</li>
+<li><code>Acl</code>: アクセス制御リストの構造体。</li>
+<li><code>HeapTuple</code>: システムカタログの行データ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>対象オブジェクトがシステムカタログに見つからない場合、<code>elog(ERROR)</code> によりトランザクションが中断される。</li>
+<li>権限付与の妥当性チェック（<code>restrict_and_check_grant</code>）に失敗した場合、エラーが発生する。</li>
+<li><code>RowExclusiveLock</code> の競合により待機が発生する場合がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、オブジェクト型に依存しない共通ロジックをカプセル化している。型固有のロジックが必要な場合は <code>object_check</code> コールバックを活用すること。</li>
+<li><code>CommandCounterIncrement</code> は、同一トランザクション内で同じオブジェクトが複数回指定された場合の整合性を保つために必須である。</li>
+</ul></body></html>

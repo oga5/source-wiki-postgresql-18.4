@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/cachesign.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CACHESIGN</h1>
+<h2>概念</h2>
+<p><code>CACHESIGN</code> は、PostgreSQL の GiST インデックス操作において、インデックスキーのシグネチャ（ビットベクトル）をメモリ上にキャッシュし、繰り返し発生するビット演算や距離計算のコストを削減するために使用されるデータ構造です。</p>
+<p>構造体は以下の形状で定義されています。</p>
+<pre><code>typedef struct
+{
+	bool		allistrue;
+	BITVECP		sign;
+} CACHESIGN;</code></pre>
+<ul>
+<li><code>allistrue</code>: すべてのビットがセットされている状態（全包含）を示すフラグ。</li>
+<li><code>sign</code>: シグネチャを保持するビットベクトル（<code>BITVECP</code>）へのポインタ。</li>
+</ul>
+<h2>なぜ重要か</h2>
+<p>GiST インデックスの検索やページ分割（<code>picksplit</code>）の処理では、多数のエントリ間でシグネチャの比較やハミング距離の計算が頻繁に行われます。これらの処理のたびにシグネチャを再計算したり、複雑なビット演算を愚直に実行すると、CPU オーバーヘッドが非常に大きくなります。</p>
+<p><code>CACHESIGN</code> を用いてシグネチャ情報を事前にキャッシュしておくことで、計算コストを大幅に削減し、インデックス操作を高速化できます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/pg_trgm</code> (3連文字（trigram）インデックスの GiST サポート)</li>
+<li><code>module:src/backend/utils/adt</code> (テキスト検索（tsvector）の GiST サポート)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/pg_trgm/trgm_gist.c#CACHESIGN</code>: <code>pg_trgm</code> における GiST 検索や距離計算のキャッシュ用構造体。</li>
+<li><code>symbol:src/backend/utils/adt/tsgistidx.c#CACHESIGN</code>: <code>tsvector</code> の GiST ページ分割（<code>picksplit</code>）におけるハミング距離計算のキャッシュ用構造体。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおいて、<code>CACHESIGN</code> は以下のような流れで利用されます。</p>
+<p>1. **キャッシュの構築 (<code>fillcache</code>)**: インデックスキー（または <code>SignTSVector</code>）からシグネチャ情報を抽出し、<code>CACHESIGN</code> 構造体にコピーしてキャッシュを構築します。 2. **距離計算・比較 (<code>hemdistcache</code>)**: 構築された <code>CACHESIGN</code> キャッシュのペアを用いて、ハミング距離を計算します。 3. **上位処理での利用**:</p>
+<ul>
+<li>**<code>contrib/pg_trgm</code>**: GiST 検索時に <code>gtrgm_consistent_cache</code> などの上位キャッシュ構造体と連携し、ノードごとのシグネチャを保持して検索時の一貫性判定や距離計算のオーバーヘッドを抑制します。</li>
+<li>**<code>src/backend/utils/adt</code>**: <code>gtsvector_picksplit</code> 関数によるページ分割処理において、エントリ間のオーバーラップを最小化するためのハミング距離計算に利用されます。</li>
+</ul>
+<p>*注意: キャッシュ配列全体の割り当てから解放に至るメモリコンテキストの厳密なライフサイクルなど、詳細なエンドツーエンドのフローの全容は完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li><code>sign</code> メンバは、常に有効なビットベクトル（<code>BITVECP</code>）を指していなければなりません。</li>
+<li><code>allistrue</code> が <code>true</code> の場合、<code>sign</code> の内容はすべてのビットがセットされているもの（全包含）として扱われます。</li>
+<li>キャッシュ操作関数（<code>fillcache</code> や <code>hemdistcache</code>）に渡されるシグネチャ長（<code>siglen</code>）は、実際の <code>sign</code> のサイズと厳密に一致していなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**定義の重複と非共通化**:</li>
+<p><code>CACHESIGN</code> 構造体は <code>contrib/pg_trgm/trgm_gist.c</code> と <code>src/backend/utils/adt/tsgistidx.c</code> の両方で全く同じ形状で独立して定義されています。片方を修正する際は、もう一方の実装にも影響がないか確認する必要があります。</p>
+<li>**シグネチャ長（<code>siglen</code>）の不整合**:</li>
+<p><code>siglen</code> が実際のビットベクトルサイズと一致しない場合、<code>hemdistcache</code> での距離計算結果が不正になったり、メモリ破壊を引き起こす可能性があります。</p>
+<li>**メモリ管理の依存性**:</li>
+<p><code>sign</code> フィールドが指すメモリのライフサイクルは呼び出し元に依存するため、キャッシュ配列の生存期間と <code>palloc</code> によるメモリ割り当てのライフサイクル管理に注意が必要です。</p>
+<li>**ロジックへの影響**:</li>
+<p><code>allistrue</code> フラグの扱いを変更すると、検索時の適合性判定ロジック（<code>gtsvector_consistent</code> など）に影響を及ぼす可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/pg_trgm/trgm_gist.c</code> (特に <code>fillcache</code>, <code>hemdistcache</code>, <code>gtrgm_consistent_cache</code> 関連の処理)</li>
+<li><code>src/backend/utils/adt/tsgistidx.c</code> (特に <code>gtsvector_picksplit</code>, <code>fillcache</code>, <code>hemdistcache</code> 関連の処理)</li>
+</ul></body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-base64-decode.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_base64_decode</h1>
+<h2>概念</h2>
+<p><code>pg_base64_decode</code> は、PostgreSQLのソースコード内でBase64エンコードされた文字列をデコードしてバイナリデータに復元するために使用される関数です。この名前を持つ関数は、コアのユーティリティモジュール（<code>src/backend/utils/adt</code>）と、拡張モジュール（<code>contrib/pgcrypto</code>）の2箇所に独立して実装されています。</p>
+<h2>なぜ重要か</h2>
+<p>Base64デコードは、暗号化データの処理（PGPアーマーのデコードなど）や、データベース内外でのバイナリデータの安全な転送・表現において不可欠な処理です。PostgreSQLでは、用途やエラーハンドリングの要件（トランザクションを中断するか、特定のエラーコードを返すか）に応じて、異なるモジュールで同名の関数が重複して実装されています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/pgcrypto</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/pgcrypto/pgp-armor.c#pg_base64_decode</code></li>
+<li>PGPアーマー（ASCII Armor）のデコード処理の一部として使用される、<code>contrib/pgcrypto</code> 固有のBase64デコード関数。</li>
+<li><code>symbol:src/backend/utils/adt/encode.c#pg_base64_decode</code></li>
+<li>PostgreSQLのコア機能（<code>pg_encoding</code> インターフェースなど）で利用される、<code>static</code> 定義のBase64デコード関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>具体的なエンドツーエンドの呼び出しフローの全容（特に外部からの入力がどのようにこれらの関数に到達し、最終的にどのように処理されるか）は、提供されたコンテキストからは完全には明らかになっていません。</p>
+<p>判明している部分的な流れは以下の通りです：</p>
+<p>1. **pgcrypto側**:</p>
+<ul>
+<li><code>pgp_armor_decode</code> 等の呼び出し元から、Base64エンコードされたASCII文字列（<code>uint8 *</code>）が <code>contrib/pgcrypto/pgp-armor.c</code> の <code>pg_base64_decode</code> に渡されます。</li>
+<li>4文字ずつ24ビットバッファに蓄積され、3バイトのバイナリデータとして <code>dst</code> に書き出されます。</li>
+<li>成功するとデコードされたバイト数を返し、失敗するとエラーコード <code>PXE_PGP_CORRUPT_ARMOR</code> を返します。</li>
+<p>2. **コア側（encode.c）**:</p>
+<li>エンコーディング管理テーブル等から、<code>src/backend/utils/adt/encode.c</code> の <code>pg_base64_decode</code> が呼び出されます。</li>
+<li><code>b64lookup</code> テーブルを用いて文字を6ビット値に変換し、4文字（24ビット）蓄積されるごとに3バイトのバイナリデータとして <code>dst</code> に書き出します。</li>
+<li>成功するとデコードされたバイト数を返し、不正な文字が検出された場合は <code>ereport(ERROR, ...)</code> を発行してトランザクションを中断します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バッファサイズ**: いずれの実装でも、デコード結果を格納する <code>dst</code> バッファには、デコード後のデータサイズを保持するのに十分な領域が事前に確保されている必要があります。</li>
+<li>**無視される文字**: 入力文字列に含まれる空白文字（スペース、タブ、改行、復帰）は無視されます。</li>
+<li>**パディングの整合性**: パディング文字 <code>=</code> は、Base64ブロックの終端として正しく配置されている必要があります。</li>
+<li>**文字セット**: 入力文字列には、有効なBase64文字（<code>A-Z</code>, <code>a-z</code>, <code>0-9</code>, <code>+</code>, <code>/</code>）およびパディング文字、無視対象の空白文字のみが含まれている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**コードの重複**: <code>contrib/pgcrypto</code> と <code>src/backend/utils/adt</code> に同名の関数が独立して実装されています。一方の挙動を修正・変更する際には、もう一方の実装との乖離や重複に注意する必要があります。</li>
+<li>**エラーハンドリングの違い**:</li>
+<li><code>contrib/pgcrypto</code> 版は、エラー時に <code>PXE_PGP_CORRUPT_ARMOR</code> というエラーコードを返します。</li>
+<li><code>src/backend/utils/adt</code> 版は、エラー時に <code>ereport(ERROR, ...)</code> を直接呼び出してトランザクションを中断します。呼び出し元でエラーをトラップする方法が異なるため、混同しないよう注意が必要です。</li>
+<li>**型キャスト**: <code>contrib/pgcrypto</code> から <code>src/backend/utils/adt</code> の機能を呼び出す際（またはその逆）、引数の型（<code>uint8 *</code> と <code>char *</code>）のキャストが発生する場合があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/pgcrypto/pgp-armor.c</code> (<code>symbol:contrib/pgcrypto/pgp-armor.c#pg_base64_decode</code>)</li>
+<li><code>src/backend/utils/adt/encode.c</code> (<code>symbol:src/backend/utils/adt/encode.c#pg_base64_decode</code>)</li>
+</ul></body></html>

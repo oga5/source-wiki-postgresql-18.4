@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/pqformat.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/pqformat.c</h1>
+<h2>概要</h2>
+<p><code>pqformat.c</code> は、PostgreSQLのフロントエンド・バックエンド間通信プロトコルにおけるメッセージの構築（シリアライズ）および解析（デシリアライズ）を行うためのユーティリティ群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> サブシステムにおいて、ネットワーク層（<code>pqcomm.c</code>）と上位のビジネスロジックの中間に位置します。生のバイト列をプロトコル仕様に準拠した形式へ変換し、エンコーディング変換やバイトオーダーの調整を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージ構築**: <code>StringInfo</code> バッファを用いたメッセージの組み立てと、<code>pq_putmessage</code> を介した送信。</li>
+<li>**データ変換**: サーバー・クライアント間の文字エンコーディング変換の自動適用。</li>
+<li>**バイナリ形式の正規化**: ネットワークバイトオーダー（ビッグエンディアン）への変換と、浮動小数点数の移植性ある表現の維持。</li>
+<li>**メッセージ解析**: 受信した <code>StringInfo</code> から型付きデータを取り出し、プロトコル違反の検証を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pq_beginmessage</code> / <code>pq_endmessage</code>: メッセージ構築の開始と終了（送信）を管理。</li>
+<li><code>pq_sendint</code> / <code>pq_getmsgint</code>: 整数値のエンディアン変換を伴う読み書き。</li>
+<li><code>pq_sendcountedtext</code> / <code>pq_getmsgtext</code>: 長さ指定付きテキストのエンコーディング変換を伴う処理。</li>
+<li><code>pq_begintypsend</code> / <code>pq_endtypsend</code>: <code>typsend</code>（外部バイナリ形式）構築用の専用インターフェース。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pq_beginmessage_reuse</code></li>
+<li><code>pq_endmessage_reuse</code></li>
+<li><code>pq_send_ascii_string</code></li>
+<li><code>pq_sendbytes</code></li>
+<li><code>pq_sendfloat4</code></li>
+<li><code>pq_sendfloat8</code></li>
+<li><code>pq_sendstring</code></li>
+<li><code>pq_sendtext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **送信時**: <code>pq_beginmessage</code> でバッファを初期化し、<code>pq_send*</code> 系関数でデータを順次追加します。最後に <code>pq_endmessage</code> が <code>pq_putmessage</code> を呼び出し、バッファの内容をネットワークへ送出します。 2.  **受信時**: <code>pq_getmessage</code>（外部）で読み込まれたバッファに対し、<code>pq_getmsg*</code> 系関数を使用して <code>cursor</code> を進めながらデータを抽出します。 3.  **変換**: 文字列操作関数は内部で <code>pg_server_to_client</code> や <code>pg_client_to_server</code> を呼び出し、必要に応じて動的にメモリを確保してエンコーディング変換を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq/libpq.h</code>: 通信の基本定義。</li>
+<li><code>libpq/pqformat.h</code>: インターフェース定義。</li>
+<li><code>mb/pg_wchar.h</code>: 文字エンコーディング変換機能。</li>
+<li><code>port/pg_bswap.h</code>: バイトオーダー変換（<code>hton</code>/<code>ntoh</code>）。</li>
+<li><code>varatt.h</code>: 可変長データ型の処理。</li>
+<li><code>postgres.h</code></li>
+<li><code>sys/param.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/libpq/pqcomm.c</code>: 実際のソケットI/Oを担当する下位層。</li>
+<li><code>src/lib/stringinfo.c</code>: メッセージ構築の基盤となる動的バッファ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**エンコーディング**: <code>pq_sendstring</code> 等の関数は自動的にエンコーディング変換を行います。変換が不要な場合は <code>pq_send_ascii_string</code> や <code>pq_sendbytes</code> を使用してください。</li>
+<li>**メモリ管理**: <code>pq_endmessage</code> はバッファを <code>pfree</code> しますが、<code>pq_endmessage_reuse</code> はバッファを保持します。呼び出し元のメモリコンテキストに注意してください。</li>
+<li>**プロトコル違反**: <code>pq_getmsg*</code> 系関数は、データが不足している場合や不正な形式の場合に <code>ereport(ERROR, ...)</code> を発行して処理を中断します。これはプロトコルレベルの整合性を保証するためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_beginmessage.html" target="wiki-view"><code>pq_beginmessage</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_beginmessage_reuse.html" target="wiki-view"><code>pq_beginmessage_reuse</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendbytes.html" target="wiki-view"><code>pq_sendbytes</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendcountedtext.html" target="wiki-view"><code>pq_sendcountedtext</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendtext.html" target="wiki-view"><code>pq_sendtext</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendstring.html" target="wiki-view"><code>pq_sendstring</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_send_ascii_string.html" target="wiki-view"><code>pq_send_ascii_string</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendfloat4.html" target="wiki-view"><code>pq_sendfloat4</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_sendfloat8.html" target="wiki-view"><code>pq_sendfloat8</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_endmessage.html" target="wiki-view"><code>pq_endmessage</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_endmessage_reuse.html" target="wiki-view"><code>pq_endmessage_reuse</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__pqformat_c__pq_begintypsend.html" target="wiki-view"><code>pq_begintypsend</code></a></li>
+</ul></body></html>

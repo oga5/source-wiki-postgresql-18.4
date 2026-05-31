@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__nodes__tidbitmap_c__TIDBitmap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TIDBitmap</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/nodes/tidbitmap.c:140</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのクエリ実行エンジンにおいて、タプル識別子（TID）の集合をメモリ効率よく管理するためのデータ構造です。ビットマップスキャンにおいて、ヒープアクセスを最適化するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct TIDBitmap {
+    NodeTag type;
+    MemoryContext mcxt;
+    TBMStatus status;
+    struct pagetable_hash *pagetable;
+    int nentries;
+    int maxentries;
+    int npages;
+    int nchunks;
+    TBMIteratingState iterating;
+    uint32 lossify_start;
+    PagetableEntry entry1;
+    PagetableEntry **spages;
+    PagetableEntry **schunks;
+    dsa_pointer dsapagetable;
+    dsa_pointer dsapagetableold;
+    dsa_pointer ptpages;
+    dsa_pointer ptchunks;
+    dsa_area *dsa;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>tbm_add_tuples</code> 等の関数を通じて TID が追加されます。</li>
+<li>**出力**: <code>tbm_iterate</code> を通じて、ソートされたページ単位またはタプル単位の反復結果が提供されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>status</code> が <code>TBM_ONE_PAGE</code> の場合、<code>entry1</code> フィールドが使用されます。</li>
+<li><code>iterating</code> が真の場合、<code>spages</code> および <code>schunks</code> が有効なソート済みリストとして保持されます。</li>
+<li>メモリ制限（<code>maxentries</code>）を超過した場合、正確なページ情報は損失あり（lossy）チャンクへ変換されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>TBM_ONE_PAGE</code> モードで開始し、単一ページを効率的に保持します。 2. **蓄積**: 複数のページが追加されるとハッシュテーブル（<code>pagetable</code>）へ移行します。 3. **損失化（Lossify）**: メモリ制限に達すると、正確なタプル情報をページ単位の存在フラグへ変換し、メモリ消費を抑制します。 4. **反復**: <code>tbm_begin_iterate</code> 呼び出しにより読み取り専用モードへ移行し、ページ番号順にソートされた結果を生成します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>blgetbitmap</code> (bloom), <code>bringetbitmap</code> (brin), <code>gingetbitmap</code> (gin), <code>gistgetbitmap</code> (gist), <code>hashgetbitmap</code> (hash) 等のインデックススキャン関数。</li>
+<li>**呼び出し先**: 内部的に <code>pagetable_hash</code>（ハッシュテーブル）や <code>dsa_area</code>（共有メモリ）を操作します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PagetableEntry</code>: ハッシュテーブルの各エントリ。</li>
+<li><code>TBMStatus</code>: ビットマップの状態（<code>TBM_ONE_PAGE</code> 等）。</li>
+<li><code>TBMIteratingState</code>: 反復処理の状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ不足時: <code>tbm_lossify</code> が実行され、正確な情報が失われる（損失あり状態への移行）。</li>
+<li>並列クエリ時: <code>dsa_area</code> を介した共有メモリ管理が必須となり、正しく初期化されていない場合はエラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>Node</code> として定義されており、PostgreSQL のノードコピーや出力関数と互換性があります。</li>
+<li><code>dsa_pointer</code> を含むフィールドは、並列クエリ実行時のワーカー間共有を目的としています。</li>
+<li>損失あり（lossy）状態への変換ロジックは、メモリ消費量とスキャン精度のトレードオフを制御する重要な箇所です。</li>
+</ul></body></html>

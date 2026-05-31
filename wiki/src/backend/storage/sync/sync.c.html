@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/sync/sync.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/sync/sync.c</h1>
+<h2>概要</h2>
+<p><code>sync.c</code> は、PostgreSQL におけるファイル同期（fsync）および削除（unlink）要求の管理を行うモジュールです。チェックポイント処理の一環として、データファイルやログファイルが確実にディスクへ書き込まれたことを保証し、不要になったファイルの安全な削除をスケジューリングします。</p>
+<h2>モジュール内での役割</h2>
+<p>本モジュールは、ストレージサブシステムとチェックポインタプロセスの仲介役です。バックエンドプロセスから送られてくる同期要求を蓄積・整理し、チェックポイントのタイミングで効率的に実行します。</p>
+<h2>責務</h2>
+<ul>
+<li>**同期要求の集約**: 重複する fsync 要求をハッシュテーブルでマージし、I/O 負荷を低減する。</li>
+<li>**削除要求の管理**: チェックポイント完了後に安全に削除できるよう、unlink 要求をリストで保持する。</li>
+<li>**ライフサイクル管理**: <code>CycleCtr</code> を用いて、チェックポイントの境界を跨いだ要求の処理順序を制御する。</li>
+<li>**エラーハンドリング**: ファイル削除や同期失敗時のリトライ処理および競合解決。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pendingOps</code>: fsync 要求を管理するハッシュテーブル。</li>
+<li><code>pendingUnlinks</code>: 削除待ちのファイルリスト。</li>
+<li><code>SyncOps</code>: 各種ハンドラ（MD, CLOG 等）の同期・削除関数を抽象化したテーブル。</li>
+<li><code>ProcessSyncRequests()</code>: 蓄積された fsync 要求を実際に実行するメイン関数。</li>
+<li><code>RememberSyncRequest()</code>: 要求をキューに追加またはキャンセルするエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CycleCtr</code></li>
+<li><code>InitSync</code></li>
+<li><code>PendingFsyncEntry</code></li>
+<li><code>PendingUnlinkEntry</code></li>
+<li><code>ProcessSyncRequests</code></li>
+<li><code>RegisterSyncRequest</code></li>
+<li><code>RememberSyncRequest</code></li>
+<li><code>SyncPostCheckpoint</code></li>
+<li><code>SyncPreCheckpoint</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **要求の登録**: <code>RegisterSyncRequest</code> が呼び出されると、チェックポインタであれば <code>RememberSyncRequest</code> でローカルキューへ、それ以外であれば <code>ForwardSyncRequest</code> でチェックポインタへ転送します。 2. **チェックポイント前処理**: <code>SyncPreCheckpoint</code> が呼ばれ、現在の要求を確定させ、サイクルカウンタを更新します。 3. **同期実行**: <code>ProcessSyncRequests</code> がハッシュテーブルを走査し、<code>syncsw</code> を通じて各ハンドラの同期関数を呼び出します。 4. **事後処理**: <code>SyncPostCheckpoint</code> が <code>pendingUnlinks</code> を走査し、不要なファイルを物理的に削除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>, <code>storage/md.h</code>: 低レベルファイル操作。</li>
+<li><code>utils/hsearch.h</code>: 要求管理用のハッシュテーブル実装。</li>
+<li><code>access/</code> 系ヘッダ: CLOG, XLOG 等の同期対象モジュールの定義。</li>
+<li><code>postmaster/bgwriter.h</code>: チェックポインタとの連携。</li>
+<li><code>access/clog.h</code></li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>portability/instr_time.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/sync.h</code>: 公開インターフェースと <code>SyncRequestType</code> 等の定義。</li>
+<li><code>src/backend/storage/smgr/md.c</code>: 磁気ディスク（MD）ハンドラの具体的な実装。</li>
+<li><code>src/backend/postmaster/checkpointer.c</code>: 本モジュールの関数を呼び出すチェックポインタのメインループ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**サイクルカウンタ**: <code>sync_cycle_ctr</code> は、チェックポイントの実行中に新しく追加された要求と、以前から存在していた要求を区別するために使用されます。これにより、チェックポイントの無限ループを防いでいます。</li>
+<li>**メモリ管理**: <code>pendingOpsCxt</code> は、チェックポイント処理中にメモリ不足でパニックしないよう、クリティカルセクション内でのメモリ確保を許可する設定になっています。</li>
+<li>**競合**: ファイルが削除された後に fsync が走るような競合が発生した場合、<code>errno</code> を確認して適切に無視またはリトライする設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__CycleCtr.html" target="wiki-view"><code>CycleCtr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__PendingFsyncEntry.html" target="wiki-view"><code>PendingFsyncEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__PendingUnlinkEntry.html" target="wiki-view"><code>PendingUnlinkEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__SyncOps.html" target="wiki-view"><code>SyncOps</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__InitSync.html" target="wiki-view"><code>InitSync</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__SyncPreCheckpoint.html" target="wiki-view"><code>SyncPreCheckpoint</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__SyncPostCheckpoint.html" target="wiki-view"><code>SyncPostCheckpoint</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__ProcessSyncRequests.html" target="wiki-view"><code>ProcessSyncRequests</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__RememberSyncRequest.html" target="wiki-view"><code>RememberSyncRequest</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__sync__sync_c__RegisterSyncRequest.html" target="wiki-view"><code>RegisterSyncRequest</code></a></li>
+</ul></body></html>

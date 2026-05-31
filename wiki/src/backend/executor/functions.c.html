@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/functions.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/functions.c</h1>
+<h2>概要</h2>
+<p>SQL 言語で記述された関数（SQL-language functions）の実行を担うモジュールです。プランナが生成したクエリ計画を順次実行し、結果を収集・変換して呼び出し元へ返します。単一の関数内に複数の SQL 文が含まれる場合や、集合を返す関数（SRF）の実行制御を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、<code>fmgr</code>（関数マネージャ）から呼び出される SQL 関数の実行エンジンとして機能します。<code>plancache.c</code> を利用してクエリ計画をキャッシュし、<code>executor</code> の各ノードを再利用することで、SQL 関数のオーバーヘッドを最小化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数実行のライフサイクル管理**: <code>SQLFunctionCache</code> を用いた実行状態の保持と、関数呼び出しごとのコンテキスト管理。</li>
+<li>**クエリのコンパイルと実行**: SQL 文の解析・書き換え・計画作成、および <code>ExecutorStart/Run/End</code> を用いた実行制御。</li>
+<li>**結果の収集と変換**: <code>DestReceiver</code>（<code>DR_sqlfunction</code>）を介した結果タプルの収集と、関数定義の戻り値型への適合（<code>JunkFilter</code> による型変換）。</li>
+<li>**パラメータ解決**: SQL 関数内のパラメータ（<code>$1</code> 等）を、呼び出し時の引数で置換する仕組みの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行状態管理</h3>
+<ul>
+<li><code>SQLFunctionCache</code>: 関数実行ごとの状態（キャッシュされた計画、パラメータ、タプルストア、メモリコンテキスト）を保持する構造体。</li>
+<li><code>execution_state</code>: 関数内の各クエリの実行状態（開始前、実行中、完了）を管理する構造体。</li>
+<li><code>ExecStatus</code>: <code>F_EXEC_START</code>, <code>F_EXEC_RUN</code>, <code>F_EXEC_DONE</code> の状態遷移を定義。</li>
+</ul>
+<h3>キャッシュとコンパイル</h3>
+<ul>
+<li><code>SQLFunctionHashEntry</code>: 関数定義（<code>pg_proc</code>）から生成される長寿命なキャッシュ構造体。<code>CachedPlanSource</code> を保持。</li>
+<li><code>sql_compile_callback</code>: 関数定義が変更された際にキャッシュを再構築するためのコールバック。</li>
+</ul>
+<h3>実行制御・受信</h3>
+<ul>
+<li><code>fmgr_sql</code>: SQL 関数のエントリポイント。<code>FmgrInfo</code> からキャッシュを取得し、クエリ実行ループを駆動する。</li>
+<li><code>DR_sqlfunction</code>: クエリ結果を収集するための専用 <code>DestReceiver</code>。<code>Tuplestore</code> への格納や <code>JunkFilter</code> によるフィルタリングを行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateSQLFunctionDestReceiver</code></li>
+<li><code>DR_sqlfunction</code></li>
+<li><code>ExecStatus</code></li>
+<li><code>RemoveSQLFunctionCache</code></li>
+<li><code>SQLFunctionCache</code></li>
+<li><code>SQLFunctionCachePtr</code></li>
+<li><code>SQLFunctionHashEntry</code></li>
+<li><code>ShutdownSQLFunction</code></li>
+<li><code>execution_state</code></li>
+<li><code>prepare_sql_fn_parse_info</code></li>
+<li><code>sql_delete_callback</code></li>
+<li><code>sql_fn_parser_setup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>fmgr_sql</code> が <code>init_sql_fcache</code> を呼び出し、<code>SQLFunctionCache</code> を準備。 2. **クエリ準備**: <code>init_execution_state</code> が <code>CachedPlan</code> を取得し、<code>execution_state</code> リストを構築。 3. **実行ループ**: <code>postquel_start</code> で <code>ExecutorStart</code> を呼び出し、<code>postquel_getnext</code> で <code>ExecutorRun</code> を実行。 4. **結果収集**: <code>DR_sqlfunction</code> が <code>sqlfunction_receive</code> を通じて結果を <code>Tuplestore</code> または <code>JunkFilter</code> のスロットに格納。 5. **終了処理**: <code>postquel_end</code> で <code>ExecutorFinish/End</code> を呼び出し、リソースを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/functions.h</code>: 公開インターフェースと <code>SQLFunctionParseInfo</code> の定義。</li>
+<li><code>utils/funccache.c</code>: 関数キャッシュの管理基盤。</li>
+<li><code>utils/plancache.c</code>: クエリ計画のキャッシュと再利用。</li>
+<li><code>nodes/nodeFuncs.h</code>, <code>parser/</code>: SQL 文の解析と書き換え。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/funccache.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/plancache.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: 実行エンジンのメインループ。</li>
+<li><code>src/backend/utils/cache/plancache.c</code>: 計画キャッシュの管理。</li>
+<li><code>src/backend/executor/spi.c</code>: 内部クエリ実行の別手法（SPI）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>SQLFunctionCache</code> は <code>FmgrInfo</code> の <code>fn_mcxt</code> に配置され、関数実行の寿命を超えて保持されます。一方、実行中のクエリは <code>subcontext</code> を使用して適宜解放されます。</li>
+<li>**エラーハンドリング**: <code>error_context_stack</code> を利用して、SQL 関数内のどの文でエラーが発生したかをトレースバックに含める工夫がなされています。</li>
+<li>**制約**: SQL 関数内ではトランザクション制御文（<code>COMMIT</code> 等）や一部のユーティリティコマンドは禁止されています。</li>
+<li>**未実装/浅い部分**: <code>SQLFunctionHashEntry</code> のチェーン構造は現在ほとんど使われておらず、将来的なリファクタリングの余地があります。また、<code>lazyEval</code>（遅延評価）は SRF（集合を返す関数）の最適化として重要ですが、複雑な状態遷移を伴うため注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__functions_c__DR_sqlfunction.html" target="wiki-view"><code>DR_sqlfunction</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__ExecStatus.html" target="wiki-view"><code>ExecStatus</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__execution_state.html" target="wiki-view"><code>execution_state</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__SQLFunctionHashEntry.html" target="wiki-view"><code>SQLFunctionHashEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__SQLFunctionCache.html" target="wiki-view"><code>SQLFunctionCache</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__SQLFunctionCachePtr.html" target="wiki-view"><code>SQLFunctionCachePtr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__prepare_sql_fn_parse_info.html" target="wiki-view"><code>prepare_sql_fn_parse_info</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__sql_fn_parser_setup.html" target="wiki-view"><code>sql_fn_parser_setup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__sql_delete_callback.html" target="wiki-view"><code>sql_delete_callback</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__ShutdownSQLFunction.html" target="wiki-view"><code>ShutdownSQLFunction</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__RemoveSQLFunctionCache.html" target="wiki-view"><code>RemoveSQLFunctionCache</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__functions_c__CreateSQLFunctionDestReceiver.html" target="wiki-view"><code>CreateSQLFunctionDestReceiver</code></a></li>
+</ul></body></html>

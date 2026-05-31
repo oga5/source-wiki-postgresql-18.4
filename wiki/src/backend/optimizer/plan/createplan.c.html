@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/createplan.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/createplan.c</h1>
+<h2>概要</h2>
+<p><code>createplan.c</code> は、PostgreSQL のプランナにおいて、コストベースの最適化によって選択された <code>Path</code> ツリーを、実行エンジン（Executor）が処理可能な <code>Plan</code> ノードツリーへ変換する役割を担います。プランニングプロセスの最終段階を統括する中心的なファイルです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムにおいて、論理的なパス探索（<code>planmain.c</code> 等）と、最終的な変数参照解決（<code>setrefs.c</code>）の間に位置します。<code>Path</code> 構造体に含まれるメタデータを物理的な実行ノードの属性にマッピングし、再帰的にツリーを構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**再帰的変換**: <code>create_plan_recurse</code> を中心に、<code>Path</code> ツリーを <code>Plan</code> ツリーへ再帰的に変換する。</li>
+<li>**ターゲットリスト（tlist）の構築**: 各プランノードが返す列を決定し、必要に応じて射影（Projection）ノードを挿入する。</li>
+<li>**制約の物理化**: <code>RestrictInfo</code> を実行可能なクエリ条件（<code>qual</code>）へ変換し、適切なプランノードへ配置する。</li>
+<li>**特殊ノードの生成**: 結合（Join）、集約（Agg）、ソート（Sort）、スキャン（Scan）など、各物理操作に対応するノードを生成する。</li>
+<li>**パラメータの解決**: 相関サブクエリやネストループ結合で使用されるパラメータ（<code>NestLoopParam</code>）の割り当てと解決。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>エントリーポイント</h3>
+<ul>
+<li><code>create_plan</code>: プランニングの物理変換フェーズのメインエントリーポイント。</li>
+</ul>
+<h3>再帰変換エンジン</h3>
+<ul>
+<li><code>create_plan_recurse</code>: <code>Path</code> のノードタイプに応じて適切な <code>create_xxx_plan</code> 関数へディスパッチする。</li>
+</ul>
+<h3>プランノード生成ファミリ</h3>
+<ul>
+<li><code>create_scan_plan</code>: 各種スキャン（Seq, Index, Bitmap 等）の生成を統括。</li>
+<li><code>create_join_plan</code>: 結合（NestLoop, MergeJoin, HashJoin）の生成を統括。</li>
+<li><code>create_append_plan</code> / <code>create_merge_append_plan</code>: 集合操作やパーティションスキャンのためのノード生成。</li>
+<li><code>make_xxx</code> (多数): 各物理プランノード（<code>SeqScan</code>, <code>HashJoin</code>, <code>Sort</code> 等）の構造体を初期化する低レベル関数群。</li>
+</ul>
+<h3>ユーティリティ</h3>
+<ul>
+<li><code>build_path_tlist</code>: <code>PathTarget</code> から実行用のターゲットリストを構築する。</li>
+<li><code>replace_nestloop_params</code>: 式に含まれる <code>Var</code> をネストループ結合用の <code>Param</code> に置換する。</li>
+<li><code>order_qual_clauses</code>: クエリ条件をコスト順に並び替え、実行効率を最適化する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>QualItem</code></li>
+<li><code>build_path_tlist</code></li>
+<li><code>create_append_plan</code></li>
+<li><code>create_gating_plan</code></li>
+<li><code>create_join_plan</code></li>
+<li><code>create_merge_append_plan</code></li>
+<li><code>create_plan</code></li>
+<li><code>create_plan_recurse</code></li>
+<li><code>create_scan_plan</code></li>
+<li><code>get_gating_quals</code></li>
+<li><code>mark_async_capable_plan</code></li>
+<li><code>use_physical_tlist</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>create_plan</code> が <code>PlannerInfo</code> を初期化し、再帰を開始する。 2. **ディスパッチ**: <code>create_plan_recurse</code> が <code>Path</code> の <code>pathtype</code> を見て、対応する <code>create_xxx_plan</code> を呼び出す。 3. **射影とtlist**: 各ノード生成関数は <code>build_path_tlist</code> を呼び出し、必要な列を特定する。必要に応じて <code>inject_projection_plan</code> で <code>Result</code> ノードを挿入し、射影を行う。 4. **制約の適用**: <code>order_qual_clauses</code> で条件を並び替え、<code>extract_actual_clauses</code> で <code>RestrictInfo</code> を実行可能な式リストに変換する。 5. **パラメータ置換**: <code>replace_nestloop_params</code> がツリーを走査し、外側のクエリレベルから渡されるパラメータを解決する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: ノード定義および <code>makeNode</code> 等の操作関数。</li>
+<li><code>optimizer/</code>: <code>cost.h</code> (コスト計算), <code>pathnode.h</code> (Path構造体), <code>clauses.h</code> (条件式操作)。</li>
+<li><code>catalog/</code>: システムカタログ情報へのアクセス。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/extensible.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paramassign.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>partitioning/partprune.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>setrefs.c</code>: 本ファイルで生成された <code>Plan</code> ツリーの変数参照（<code>Var</code>）を、実行時に有効なインデックスへ最終変換する。</li>
+<li><code>planmain.c</code>: <code>Path</code> ツリーを生成する前段のモジュール。</li>
+<li><code>subselect.c</code>: サブクエリのプランニング。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: プランニング中に生成されるノードは <code>PlannerInfo</code> の <code>planner_cxt</code> メモリコンテキストに割り当てられます。</li>
+<li>**不変条件**: <code>create_plan</code> 完了後、<code>setrefs.c</code> が呼ばれるまでは、<code>Plan</code> ノード内の <code>Var</code> はパーサーレベルのインデックスを保持しています。</li>
+<li>**射影の最適化**: <code>use_physical_tlist</code> は、不要な射影ノードを避けるための重要な最適化です。特定の条件下で、物理的なテーブル構造と一致するターゲットリストを直接使用します。</li>
+<li>**未実装/浅い部分**: <code>NOT_USED</code> マクロで囲まれた古いコードや、特定の拡張機能（FDW/CustomScan）のプラン生成は、各プラグインの責務に依存します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_plan.html" target="wiki-view"><code>create_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_plan_recurse.html" target="wiki-view"><code>create_plan_recurse</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_scan_plan.html" target="wiki-view"><code>create_scan_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__build_path_tlist.html" target="wiki-view"><code>build_path_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__use_physical_tlist.html" target="wiki-view"><code>use_physical_tlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__get_gating_quals.html" target="wiki-view"><code>get_gating_quals</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_gating_plan.html" target="wiki-view"><code>create_gating_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_join_plan.html" target="wiki-view"><code>create_join_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__mark_async_capable_plan.html" target="wiki-view"><code>mark_async_capable_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_append_plan.html" target="wiki-view"><code>create_append_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__create_merge_append_plan.html" target="wiki-view"><code>create_merge_append_plan</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__createplan_c__QualItem.html" target="wiki-view"><code>QualItem</code></a></li>
+</ul></body></html>

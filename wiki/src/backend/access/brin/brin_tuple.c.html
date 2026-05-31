@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_tuple.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_tuple.c</h1>
+<h2>概要</h2>
+<p>BRIN（Block Range Index）インデックスにおける、オンディスク形式とメモリ内形式のタプル変換および管理を行うモジュールです。BRINインデックスはページ範囲ごとの要約情報を保持しますが、本ファイルはその要約データを物理的なタプルとしてシリアライズ・デシリアライズする責務を負います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/brin</code> サブシステムにおいて、データ変換の境界線として機能します。外部モジュールは主に <code>BrinMemTuple</code> を扱い、ディスクへの書き込みや読み込みの直前・直後に本ファイルの関数を介して変換を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプル変換**: メモリ上の <code>BrinMemTuple</code> をオンディスク形式の <code>BrinTuple</code> へ変換（<code>brin_form_tuple</code>）。</li>
+<li>**デシリアライズ**: ディスク上の <code>BrinTuple</code> をメモリ上の構造体へ展開（<code>brin_deform_tuple</code>）。</li>
+<li>**メモリ管理**: BRINタプル専用のメモリコンテキスト管理および、不要になったタプルの解放。</li>
+<li>**TOAST処理**: インデックスエントリのTOAST（圧縮・外部化）処理の制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BrinTuple</code>: オンディスク上のBRINタプル構造体。ヘッダーと可変長のデータ領域から成る。</li>
+<li><code>BrinMemTuple</code>: メモリ上で操作するための構造体。<code>BrinValues</code> の配列を保持する。</li>
+<li><code>brin_form_tuple</code>: <code>BrinMemTuple</code> からディスク書き込み用の <code>BrinTuple</code> を生成する。</li>
+<li><code>brin_deform_tuple</code>: ディスクから読み込んだ <code>BrinTuple</code> を <code>BrinMemTuple</code> に復元する。</li>
+<li><code>TOAST_INDEX_HACK</code>: インデックスエントリのTOAST処理を有効化するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>brin_copy_tuple</code></li>
+<li><code>brin_deconstruct_tuple</code></li>
+<li><code>brin_form_placeholder_tuple</code></li>
+<li><code>brin_free_tuple</code></li>
+<li><code>brin_memtuple_initialize</code></li>
+<li><code>brin_new_memtuple</code></li>
+<li><code>brin_tuples_equal</code></li>
+<li><code>brtuple_disk_tupdesc</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み時**: <code>brin_form_tuple</code> が呼び出されると、<code>BrinMemTuple</code> 内の各カラムの値を走査し、必要に応じてシリアライズやTOAST圧縮を行います。その後、<code>heap_fill_tuple</code> を利用してデータ領域を構築し、最後に <code>bt_info</code> フラグ（nullビットマップやプレースホルダー情報）を付与します。 2. **読み込み時**: <code>brin_deform_tuple</code> がディスク上の <code>BrinTuple</code> を受け取り、<code>bt_info</code> からメタデータを抽出します。その後、<code>brin_deconstruct_tuple</code> が内部で呼び出され、ビットマップを解析して各カラムの値を <code>BrinMemTuple</code> のデータ領域へコピーします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/brin_tuple.h</code>: 本モジュールの公開インターフェース。</li>
+<li><code>access/htup_details.h</code> / <code>access/tupmacs.h</code>: タプル操作の低レベルユーティリティ。</li>
+<li><code>access/toast_internals.h</code>: TOAST圧縮・伸長処理。</li>
+<li><code>utils/datum.h</code> / <code>utils/memutils.h</code>: Datum操作およびメモリコンテキスト管理。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/tupdesc.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/brin/brin_pageops.c</code>: ページレベルでのBRINタプルの挿入・更新操作。</li>
+<li><code>src/backend/access/brin/brin.c</code>: インデックスアクセスメソッドのメインロジック。</li>
+<li><code>src/include/access/brin_internal.h</code>: BRIN内部で共有されるデータ構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**nullビットマップの特殊性**: 本モジュールでは、<code>allnulls</code>（全値がNULL）と <code>hasnulls</code>（一部がNULL）の2種類のビットマップを保持します。また、一般的なPostgreSQLの慣習とは異なり、NULLを <code>1</code> として表現するため、ビット操作時には注意が必要です。</li>
+<li>**TOASTの扱い**: インデックスエントリのTOASTは、VACUUMによるインデックス再構築が完全に最適化されるまでの暫定的な実装（<code>TOAST_INDEX_HACK</code>）が含まれています。</li>
+<li>**メモリ効率**: <code>brin_copy_tuple</code> や <code>brin_deform_tuple</code> は、ループ内でのメモリ割り当てを避けるために既存のバッファを再利用する設計になっています。パフォーマンスが重要なパスではこのパターンを意識してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brtuple_disk_tupdesc.html" target="wiki-view"><code>brtuple_disk_tupdesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_form_tuple.html" target="wiki-view"><code>brin_form_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_form_placeholder_tuple.html" target="wiki-view"><code>brin_form_placeholder_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_free_tuple.html" target="wiki-view"><code>brin_free_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_copy_tuple.html" target="wiki-view"><code>brin_copy_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_tuples_equal.html" target="wiki-view"><code>brin_tuples_equal</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_new_memtuple.html" target="wiki-view"><code>brin_new_memtuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_memtuple_initialize.html" target="wiki-view"><code>brin_memtuple_initialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_deform_tuple.html" target="wiki-view"><code>brin_deform_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_tuple_c__brin_deconstruct_tuple.html" target="wiki-view"><code>brin_deconstruct_tuple</code></a></li>
+</ul></body></html>

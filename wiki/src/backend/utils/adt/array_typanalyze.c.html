@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/array_typanalyze.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/array_typanalyze.c</h1>
+<h2>概要</h2>
+<p>配列型のカラムに対する統計情報収集（ANALYZE）を拡張するためのモジュールです。標準的なスカラー統計に加え、配列特有の演算子（<code>&amp;&amp;</code>, <code>&lt;@</code>, <code>@&gt;</code>）の選択率推定に必要な情報を収集します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、配列型の統計解析ロジックをカプセル化しています。<code>analyze.c</code> が提供する標準的な統計解析フックを利用し、配列要素の頻度や分布を算出します。</p>
+<h2>責務</h2>
+<ul>
+<li>**配列要素の頻度算出**: Lossy Counting アルゴリズムを用いて、配列内に頻出する要素を特定します。</li>
+<li>**要素数ヒストグラムの作成**: 配列に含まれる「一意な要素数」の分布を記録し、選択率推定の精度を向上させます。</li>
+<li>**統計情報の格納**: <code>pg_statistic</code> の <code>MCELEM</code>（最頻要素）および <code>DECHIST</code>（要素数ヒストグラム）スロットを生成します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>array_typanalyze</code>: <code>ANALYZE</code> 実行時に呼び出されるエントリポイント。</li>
+<li><code>compute_array_stats</code>: 配列専用の統計計算を行うメイン関数。</li>
+<li><code>ArrayAnalyzeExtraData</code>: 要素型の型情報や比較・ハッシュ関数を保持する構造体。</li>
+<li><code>TrackItem</code>: Lossy Counting アルゴリズムで使用されるハッシュテーブルエントリ。</li>
+<li><code>ARRAY_WIDTH_THRESHOLD</code>: 解析対象とする配列サイズの最大値（これを超える配列は解析から除外）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DECountItem</code></li>
+<li><code>countitem_compare_count</code></li>
+<li><code>element_compare</code></li>
+<li><code>element_hash</code></li>
+<li><code>element_match</code></li>
+<li><code>prune_element_hashtable</code></li>
+<li><code>trackitem_compare_element</code></li>
+<li><code>trackitem_compare_frequencies_desc</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>array_typanalyze</code> が標準の <code>std_typanalyze</code> を呼び出し、続いて配列要素型の型キャッシュ情報を取得して <code>ArrayAnalyzeExtraData</code> を構築します。 2. **統計収集**: <code>compute_array_stats</code> が <code>ANALYZE</code> のサンプリングループ内で実行されます。</p>
+<ul>
+<li>各配列をデコードし、要素をハッシュテーブルに登録します。</li>
+<li>**Lossy Counting**: バケット単位でハッシュテーブルを <code>prune_element_hashtable</code> で剪定し、メモリ使用量を抑えつつ頻出要素を追跡します。</li>
+<li>**ヒストグラム**: 配列ごとの一意な要素数をカウントし、その分布を <code>count_tab</code> に蓄積します。</li>
+<p>3. **結果出力**: 収集したデータをソートし、<code>pg_statistic</code> の各スロットへ書き込みます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/array.h</code>: 配列のデコード（<code>deconstruct_array</code>）および構造操作。</li>
+<li><code>utils/typcache.h</code>: 要素型の比較・ハッシュ関数の取得。</li>
+<li><code>commands/vacuum.h</code>: <code>ANALYZE</code> 処理に必要な統計構造体定義。</li>
+<li><code>access/detoast.h</code>: 配列のデトースト処理。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/analyze.c</code>: <code>ANALYZE</code> のメイン処理。本ファイルのフックが呼び出される場所。</li>
+<li><code>src/backend/utils/adt/array_selfuncs.c</code>: ここで収集された統計情報を利用して、配列演算子の選択率を計算する関数群。</li>
+<li><code>src/backend/utils/adt/rangetypes_typanalyze.c</code>: 範囲型に対する同様の統計解析実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Lossy Counting**: 本実装は Manku &amp; Motwani の論文に基づいています。メモリ効率を優先するため、厳密な頻度ではなく近似値が計算される点に注意してください。</li>
+<li>**メモリ管理**: <code>elements_tab</code> や <code>count_tab</code> は <code>CurrentMemoryContext</code> を使用して作成されます。<code>ANALYZE</code> 終了時に自動的に解放されるため、明示的なメモリ解放は不要です。</li>
+<li>**デバッグ**: <code>DEBUG3</code> レベルでハッシュテーブルのサイズや使用可能エントリ数がログ出力されます。統計情報の精度が低い場合はこのログを確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__ArrayAnalyzeExtraData.html" target="wiki-view"><code>ArrayAnalyzeExtraData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__TrackItem.html" target="wiki-view"><code>TrackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__DECountItem.html" target="wiki-view"><code>DECountItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__array_typanalyze.html" target="wiki-view"><code>array_typanalyze</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__compute_array_stats.html" target="wiki-view"><code>compute_array_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__prune_element_hashtable.html" target="wiki-view"><code>prune_element_hashtable</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__element_hash.html" target="wiki-view"><code>element_hash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__element_match.html" target="wiki-view"><code>element_match</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__element_compare.html" target="wiki-view"><code>element_compare</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__trackitem_compare_frequencies_desc.html" target="wiki-view"><code>trackitem_compare_frequencies_desc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__trackitem_compare_element.html" target="wiki-view"><code>trackitem_compare_element</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_typanalyze_c__countitem_compare_count.html" target="wiki-view"><code>countitem_compare_count</code></a></li>
+</ul></body></html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dir.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DIR</h1>
+<h2>概念</h2>
+<p><code>DIR</code> は、Windows環境（MSVC）においてPOSIX準拠のディレクトリ走査（<code>opendir</code>, <code>readdir</code>, <code>closedir</code>）を行うための状態保持用構造体です。WindowsのネイティブAPIである <code>FindFirstFile</code> および <code>FindNextFile</code> による検索ハンドルと、現在のディレクトリ情報を管理します。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのバックエンドコード（例: <code>xlog.c</code> や <code>slru.c</code> など）は、プラットフォームに依存しない共通のコードベースとしてPOSIX標準のディレクトリ走査APIに依存しています。しかし、Windows環境はこれらをネイティブでサポートしていません。</p>
+<p><code>DIR</code> 構造体とその関連関数を提供することで、プラットフォーム間の差異を吸収し、バックエンドの共通コードをWindows上でもそのまま動作させることが可能になります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/port/win32_msvc</code></li>
+<li><code>module:src/port</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/port/win32_msvc/dirent.h#DIR</code>**</li>
+<p>ヘッダーファイルで定義される不透明な型定義（opaque structure）です。 ``<code>c typedef struct DIR DIR; </code>``</p>
+<li>**<code>symbol:src/port/dirent.c#DIR</code>**</li>
+<p>実際の構造体の定義です。以下のメンバを持ち、Windows APIの検索ハンドルと走査状態を保持します。 ``<code>c struct DIR { char       *dirname; struct dirent ret; HANDLE      handle; }; </code>``</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化 (<code>opendir</code>)**</p>
+<ul>
+<li>呼び出し元（<code>xlog.c</code> や <code>slru.c</code> など）がディレクトリパスを指定して <code>opendir</code> を呼び出します。</li>
+<li>内部でパスに <code>*</code> を付与して検索文字列を作成し、Windows APIの <code>FindFirstFile</code> を実行して検索ハンドル <code>handle</code> を取得します。</li>
+<p>2. **走査 (<code>readdir</code>)**</p>
+<li>呼び出し元が <code>readdir</code> を繰り返し呼び出します。</li>
+<li>内部で <code>FindNextFile</code> を呼び出し、取得したファイル属性やファイル名を <code>struct dirent</code> 型の <code>ret</code> メンバにマッピングして、そのポインタを返します。</li>
+<p>3. **終了 (<code>closedir</code>)**</p>
+<li>呼び出し元が <code>closedir</code> を呼び出します。</li>
+<li>内部で <code>FindClose</code> を呼び出して <code>handle</code> を解放し、割り当てられたメモリをクリーンアップします。</li>
+</ul>
+<p>*注意: 各バックエンド呼び出し元における具体的なエラーハンドリングや、すべての呼び出し元における詳細なエンドツーエンドの統合フローの全容は、提供されたコンテキストからは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**Windows環境専用**: 本構造体および関連APIは、Windows環境（MSVC）でのみ使用されます。</li>
+<li>**有効な検索ハンドル**: <code>opendir</code> で正常に初期化された後、<code>handle</code> は <code>FindFirstFile</code> によって取得された有効なWindows検索ハンドル（<code>INVALID_HANDLE_VALUE</code> 以外）でなければなりません。</li>
+<li>**固定値のフィールド**: Windows APIの制約により、<code>ret</code>（<code>struct dirent</code>）内の <code>d_ino</code>（iノード番号）および <code>d_reclen</code> は常に <code>0</code> に固定されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不透明型の不整合**: <code>DIR</code> 構造体の実体は <code>src/port/dirent.c</code> で定義され、ヘッダー <code>src/include/port/win32_msvc/dirent.h</code> では不透明な型として宣言されています。構造体のメンバを変更する場合は、必ず双方の整合性を保つ必要があります。</li>
+<li>**POSIXの完全な模倣ではない**: 本実装はPostgreSQLのビルドに必要な最小限の機能セットのみを提供しています。例えば、<code>d_ino</code> はサポートされておらず常に <code>0</code> が返されるため、iノード番号に依存するコードはWindows環境で正しく動作しません。</li>
+<li>**パス長制限**: Windowsの <code>MAX_PATH</code> 制限に依存します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/port/win32_msvc/dirent.h</code> (型宣言)</li>
+<li><code>src/port/dirent.c</code> (構造体の定義と <code>opendir</code>/<code>readdir</code>/<code>closedir</code> の実装)</li>
+</ul></body></html>

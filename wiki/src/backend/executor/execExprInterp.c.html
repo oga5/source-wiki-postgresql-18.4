@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execExprInterp.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execExprInterp.c</h1>
+<h2>概要</h2>
+<p><code>execExprInterp.c</code> は、PostgreSQL の式評価エンジンにおける「インタプリタ」実装です。プランナが生成した <code>ExprState</code>（評価ステップのリスト）を解釈し、CPU 上で直接実行します。パフォーマンスを最大化するため、コンパイラの機能（Computed Gotos）を活用したスレッド化コード（Threaded Code）技術を採用しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、式評価の実行フェーズを担います。<code>execExpr.c</code> が式ツリーを評価ステップのリストにコンパイルするのに対し、本ファイルはそのリストを高速に走査・実行します。JIT コンパイルが有効でない場合や、単純な式に対しては本ファイルが主役となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**命令ディスパッチ**: <code>ExprEvalStep</code> に格納されたオペコードに基づき、適切な評価ロジックへジャンプする。</li>
+<li>**高速パスの提供**: 頻出する単純な式（変数参照、定数など）に対して、インタプリタのオーバーヘッドを回避する <code>ExecJust*</code> 関数群を提供。</li>
+<li>**複雑な評価の委譲**: 複雑な関数呼び出しや集約処理など、インライン化に適さない処理を専用のヘルパー関数へルーティング。</li>
+<li>**実行時検証**: スキーマ変更等による実行計画の不整合を検出するための検証ロジックの実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ディスパッチ制御</h3>
+<ul>
+<li><code>EEO_USE_COMPUTED_GOTO</code>: コンパイラがサポートする場合、<code>goto</code> を用いた直接スレッド化（Direct Threading）を有効にするマクロ。</li>
+<li><code>ExecInterpExpr</code>: インタプリタのメインループ。<code>ExprEvalStep</code> を順次実行する。</li>
+<li><code>ExecReadyInterpretedExpr</code>: 式の初期化を行い、最適化された <code>evalfunc</code>（高速パスまたはインタプリタ）を割り当てる。</li>
+</ul>
+<h3>高速パス関数</h3>
+<ul>
+<li><code>ExecJustInnerVar</code>, <code>ExecJustOuterVar</code>, <code>ExecJustScanVar</code>: スロットからの変数抽出を最適化した関数。</li>
+<li><code>ExecJustConst</code>: 定数評価のショートカット。</li>
+<li><code>ExecJustHash*</code>: ハッシュ結合等で頻出するハッシュ計算の最適化版。</li>
+</ul>
+<h3>実行ヘルパー</h3>
+<ul>
+<li><code>ExecEvalArrayCompareInternal</code>: <code>ANY</code>/<code>ALL</code> 比較の共通ロジック。</li>
+<li><code>ExecAggPlainTransByVal</code> / <code>ExecAggPlainTransByRef</code>: 集約関数の遷移関数呼び出し（値渡し/参照渡し）。</li>
+<li><code>ExecEvalJsonExprPath</code>: SQL/JSON パス式の評価。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckExprStillValid</code></li>
+<li><code>CheckOpSlotCompatibility</code></li>
+<li><code>CheckVarSlotCompatibility</code></li>
+<li><code>EEO_CASE</code></li>
+<li><code>ExecAggInitGroup</code></li>
+<li><code>ExecInitInterpreter</code></li>
+<li><code>ExecInterpExpr</code></li>
+<li><code>ExecInterpExprStillValid</code></li>
+<li><code>ExecReadyInterpretedExpr</code></li>
+<li><code>ExprEvalOpLookup</code></li>
+<li><code>ScalarArrayOpExprHashEntry</code></li>
+<li><code>ScalarArrayOpExprHashTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecReadyInterpretedExpr</code> が式を解析し、単純なパターンであれば <code>ExecJust*</code> を <code>state-&gt;evalfunc_private</code> に設定。それ以外は <code>ExecInterpExpr</code> を設定し、<code>EEO_USE_COMPUTED_GOTO</code> が有効ならオペコードをジャンプ先アドレスに変換。 2. **実行**: <code>ExecInterpExpr</code> が呼び出されると、<code>op</code> ポインタが現在のステップを指し、<code>EEO_DISPATCH()</code> マクロで該当する <code>EEO_CASE</code> へジャンプ。 3. **ステップ実行**: 各 <code>EEO_CASE</code> は <code>ExprEvalStep</code> のデータ（<code>op-&gt;d</code>）を参照し、結果を <code>op-&gt;resvalue</code> / <code>op-&gt;resnull</code> に書き込む。 4. **遷移**: <code>EEO_NEXT()</code> で次のステップへ進むか、<code>EEO_JUMP()</code> で条件分岐やループを行う。 5. **終了**: <code>EEOP_DONE_RETURN</code> に到達すると評価結果を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execExpr.h</code>: 式評価のデータ構造定義。</li>
+<li><code>utils/</code>: メモリ管理 (<code>memutils.h</code>)、データ型 (<code>datum.h</code>)、キャッシュ (<code>lsyscache.h</code>, <code>typcache.h</code>) 等のユーティリティ。</li>
+<li><code>lib/simplehash.h</code>: <code>EEOP_HASHED_SCALARARRAYOP</code> 用のハッシュテーブル生成。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/expandedrecord.h</code></li>
+<li><code>utils/json.h</code></li>
+<li><code>utils/jsonfuncs.h</code></li>
+<li><code>utils/jsonpath.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>utils/xml.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execExpr.c</code>: 式のコンパイル（<code>ExprState</code> の構築）を担当。</li>
+<li><code>src/backend/executor/execMain.c</code>: 実行エンジンのエントリーポイント。</li>
+<li><code>src/backend/executor/nodeAgg.c</code>: 集約ノードの実行ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: 本ファイルは PostgreSQL のホットパスです。<code>ExecInterpExpr</code> 内の <code>switch</code> 文や <code>goto</code> は、コンパイラの最適化を強く意識して記述されています。</li>
+<li>**メモリ管理**: 遷移関数の結果などは <code>aggcontext</code> や <code>per-tuple</code> コンテキストを適切に切り替えて管理されます。<code>ExecAggCopyTransValue</code> 等のメモリ操作は、メモリリークや二重解放を防ぐための重要な箇所です。</li>
+<li>**制約**: <code>EEO_USE_COMPUTED_GOTO</code> が利用できない環境（一部のコンパイラ）では、標準的な <code>switch</code> 文によるディスパッチにフォールバックされます。</li>
+<li>**未実装/浅い部分**: 一部の複雑なノード（<code>XMLEXPR</code> や <code>JSON</code> 関連）は、コードサイズと複雑性の観点からインライン化されず、外部関数への呼び出しに留まっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExprEvalOpLookup.html" target="wiki-view"><code>ExprEvalOpLookup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__EEO_CASE.html" target="wiki-view"><code>EEO_CASE</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ScalarArrayOpExprHashEntry.html" target="wiki-view"><code>ScalarArrayOpExprHashEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ScalarArrayOpExprHashTable.html" target="wiki-view"><code>ScalarArrayOpExprHashTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecReadyInterpretedExpr.html" target="wiki-view"><code>ExecReadyInterpretedExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html" target="wiki-view"><code>ExecInterpExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInterpExprStillValid.html" target="wiki-view"><code>ExecInterpExprStillValid</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckExprStillValid.html" target="wiki-view"><code>CheckExprStillValid</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckVarSlotCompatibility.html" target="wiki-view"><code>CheckVarSlotCompatibility</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckOpSlotCompatibility.html" target="wiki-view"><code>CheckOpSlotCompatibility</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInitInterpreter.html" target="wiki-view"><code>ExecInitInterpreter</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecAggInitGroup.html" target="wiki-view"><code>ExecAggInitGroup</code></a></li>
+</ul></body></html>

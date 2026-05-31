@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__sysv_shmem_c__InternalIpcMemoryCreate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>InternalIpcMemoryCreate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/sysv_shmem.c:120</code></li>
+</ul>
+<h2>目的</h2>
+<p>System V 共有メモリセグメントを新規作成し、プロセスのアドレス空間にアタッチする。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>memKey</code>: 共有メモリセグメントを識別するためのキー。</li>
+<li><code>size</code>: 確保する共有メモリのサイズ（バイト単位）。</li>
+<li>**出力**:</li>
+<li>成功時: アタッチされた共有メモリ領域の先頭アドレス（<code>void *</code>）。</li>
+<li>失敗時: 既存セグメントとの衝突時は <code>NULL</code> を返し、それ以外の致命的なエラー時は <code>ereport(FATAL, ...)</code> によりプロセスを終了する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>IPC_CREAT | IPC_EXCL</code> フラグを使用してセグメントを作成するため、指定したキーで既にセグメントが存在する場合は衝突とみなされる。</li>
+<li><code>EXEC_BACKEND</code> ビルド環境では、環境変数 <code>PG_SHMEM_ADDR</code> を介してアタッチ先アドレスの指定が可能。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **アドレス決定**: <code>EXEC_BACKEND</code> 定義時は環境変数またはプラットフォーム固有のデフォルト値からアタッチ先アドレスを決定する。 2. **セグメント作成**: <code>shmget</code> を呼び出し、セグメントを生成する。</p>
+<ul>
+<li><code>EINVAL</code> が発生した場合、一部の BSD 系カーネルの挙動を考慮し、サイズ 0 で再試行して衝突の有無を確認する。</li>
+<li>衝突（<code>EEXIST</code>, <code>EACCES</code>, <code>EIDRM</code>）が確認された場合は <code>NULL</code> を返す。</li>
+<li>その他のエラーはカーネルパラメータ（<code>SHMMAX</code>, <code>SHMALL</code> 等）の制限とみなし、<code>FATAL</code> エラーとして報告する。</li>
+<p>3. **終了時処理の登録**: <code>on_shmem_exit</code> を使用し、プロセス終了時に <code>IpcMemoryDelete</code>（削除）および <code>IpcMemoryDetach</code>（デタッチ）が実行されるよう登録する。 4. **アタッチ**: <code>shmat</code> を呼び出し、メモリをプロセス空間にマッピングする。失敗時は <code>FATAL</code> エラーとする。 5. **メタデータ記録**: 作成したキーと ID をデータディレクトリのロックファイルに書き込む。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/port/sysv_shmem.c</code> 内の <code>PGSharedMemoryCreate</code> から呼び出される。</li>
+<li>**呼び出し先**: <code>shmget</code>, <code>shmctl</code>, <code>shmat</code>, <code>on_shmem_exit</code>, <code>AddToDataDirLockFile</code> 等のシステムコールおよび内部関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IpcMemoryKey</code>: 共有メモリの識別キー。</li>
+<li><code>IpcMemoryId</code>: <code>shmget</code> が返す共有メモリ識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**衝突**: 既に同名のセグメントが存在する場合、<code>NULL</code> を返して呼び出し元に制御を戻す。</li>
+<li>**リソース制限**: カーネルの <code>SHMMAX</code>, <code>SHMALL</code>, <code>SHMMNI</code> 制限を超過した場合、<code>FATAL</code> エラーで停止する。</li>
+<li>**アタッチ失敗**: <code>shmat</code> が失敗した場合、<code>FATAL</code> エラーで停止する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>shmget</code> のエラーコードを詳細に解析し、プラットフォームごとの差異（特に BSD 系）を吸収するロジックを含んでいる。</li>
+<li><code>EXEC_BACKEND</code> 環境におけるアドレス指定はデバッグ目的の回避策であるため、将来的な GUC 等への移行が望ましい。</li>
+</ul></body></html>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/label.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/label.c</h1>
+<h2>概要</h2>
+<p>SELinux セキュリティコンテキスト（ラベル）の管理および、データベースオブジェクトへのラベル割り当てを担う中核ファイルです。クライアントプロセスのセキュリティラベルの追跡、トランザクションと連動したラベル変更、および初期ラベル設定（restorecon）機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> モジュールにおいて、セキュリティポリシーの適用対象となる「主体（クライアント）」と「客体（DBオブジェクト）」のラベル状態を管理します。<code>hooks.c</code> で定義されるフックと連携し、SQL実行時の権限チェックに必要なコンテキスト情報を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**クライアントラベル管理**: セッションの現在のセキュリティコンテキストを保持し、信頼されたプロシージャ実行時のラベル一時変更を制御する。</li>
+<li>**トランザクション整合性**: <code>sepgsql_setcon()</code> によるラベル変更をトランザクションと同期させ、ロールバック時に正しく復元する。</li>
+<li>**オブジェクトラベル操作**: <code>SECURITY LABEL</code> 文によるオブジェクトの再ラベル付けと、初期ラベル設定（<code>restorecon</code>）の実行。</li>
+<li>**翻訳機能**: MLS/MCS ラベルの内部形式と外部形式の相互変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_get_client_label()</code>: 現在のクライアントラベルを取得する標準的な手段。</li>
+<li><code>sepgsql_set_client_label()</code>: クライアントラベルを変更し、権限チェックを行う。</li>
+<li><code>sepgsql_fmgr_hook()</code>: 信頼されたプロシージャ実行時にラベルを動的に切り替えるフック。</li>
+<li><code>sepgsql_object_relabel()</code>: <code>SECURITY LABEL</code> 文の実行エントリポイント。</li>
+<li><code>sepgsql_restorecon()</code>: DBオブジェクトの初期ラベルを一括設定する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Datum</code></li>
+<li><code>pending_label</code></li>
+<li><code>sepgsql_client_auth</code></li>
+<li><code>sepgsql_fmgr_hook</code></li>
+<li><code>sepgsql_get_client_label</code></li>
+<li><code>sepgsql_get_label</code></li>
+<li><code>sepgsql_init_client_label</code></li>
+<li><code>sepgsql_needs_fmgr_hook</code></li>
+<li><code>sepgsql_object_relabel</code></li>
+<li><code>sepgsql_set_client_label</code></li>
+<li><code>sepgsql_subxact_callback</code></li>
+<li><code>sepgsql_xact_callback</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>sepgsql_init_client_label()</code> が <code>ClientAuthentication_hook</code> 等をフックし、セッション開始時に <code>getpeercon_raw()</code> で初期ラベルを取得。 2. **ラベル変更**: <code>sepgsql_set_client_label()</code> は <code>pending_label</code> リストに新しいラベルを蓄積。トランザクションコミット時に <code>sepgsql_xact_callback()</code> がこれを確定させ、アボート時に破棄する。 3. **プロシージャ実行**: <code>sepgsql_fmgr_hook()</code> が <code>FHET_START</code> イベントでラベルをスタックに退避し、新しいラベルへ切り替え。<code>FHET_END/ABORT</code> で元のラベルへ復元する。 4. **ラベル取得**: <code>sepgsql_get_client_label()</code> は、関数による一時的な上書き、未コミットの変更、コミット済みの値、初期値の順で優先度を判定して返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>selinux/label.h</code>: SELinux のラベル操作 API。</li>
+<li><code>catalog/</code>: 各種システムカタログ（<code>pg_class</code>, <code>pg_proc</code> 等）の定義。</li>
+<li><code>access/</code>: トランザクション管理およびテーブルスキャン用 API。</li>
+<li><code>sepgsql.h</code>: モジュール共通の定義と AVC（Access Vector Cache）インターフェース。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/pg_attribute.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>libpq/auth.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/sepgsql/hooks.c</code>: 本ファイルで設定したフックが実際に呼び出される場所。</li>
+<li><code>contrib/sepgsql/uavc.c</code>: ラベルに基づいた権限チェック（AVC）の実装。</li>
+<li><code>commands/seclabel.c</code>: PostgreSQL コアのセキュリティラベル機能。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクション意識**: ラベル変更は <code>CurTransactionContext</code> 上で管理されるため、サブトランザクションのロールバックが正しく処理されるよう設計されています。</li>
+<li>**メモリ管理**: <code>pending_label</code> のメモリ割り当てと解放には注意が必要です。特に <code>sepgsql_xact_callback</code> 内での <code>TopMemoryContext</code> へのコピー処理が重要です。</li>
+<li>**信頼されたプロシージャ**: <code>sepgsql_fmgr_hook</code> は、特定の関数が実行される際にセキュリティドメインを遷移させるための重要な仕組みです。デバッグ時はこのフックの <code>FHET_START</code> / <code>FHET_END</code> の遷移を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__label_c__pending_label.html" target="wiki-view"><code>pending_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_get_client_label.html" target="wiki-view"><code>sepgsql_get_client_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_set_client_label.html" target="wiki-view"><code>sepgsql_set_client_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_xact_callback.html" target="wiki-view"><code>sepgsql_xact_callback</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_subxact_callback.html" target="wiki-view"><code>sepgsql_subxact_callback</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_client_auth.html" target="wiki-view"><code>sepgsql_client_auth</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_needs_fmgr_hook.html" target="wiki-view"><code>sepgsql_needs_fmgr_hook</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_fmgr_hook.html" target="wiki-view"><code>sepgsql_fmgr_hook</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_init_client_label.html" target="wiki-view"><code>sepgsql_init_client_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_get_label.html" target="wiki-view"><code>sepgsql_get_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__label_c__sepgsql_object_relabel.html" target="wiki-view"><code>sepgsql_object_relabel</code></a></li>
+</ul></body></html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/backup/basebackup_copy.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/backup/basebackup_copy.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのベースバックアップデータをクライアントへ転送するための「COPY OUT」プロトコル実装を提供します。単一のCOPYストリーム内で複数のアーカイブファイルとバックアップマニフェストを多重化して送信する仕組みを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>basebackup</code> サブシステムにおける「シンク（Sink）」の一種です。<code>bbsink</code> インターフェースを実装しており、バックアップの各フェーズ（アーカイブ開始、データ転送、マニフェスト生成など）のイベントを、ネットワーク経由のCOPYプロトコルメッセージに変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**COPYストリームの管理**: 単一のCOPY OUT操作を開始し、その中でアーカイブデータやマニフェストを順次送信する。</li>
+<li>**プロトコル多重化**: <code>CopyData</code> メッセージの先頭にタイプバイト（&#x27;n&#x27;: 新規アーカイブ, &#x27;m&#x27;: マニフェスト, &#x27;d&#x27;: データ, &#x27;p&#x27;: 進捗）を付与し、クライアントがストリームを解釈できるようにする。</li>
+<li>**進捗報告**: 定期的な間隔（バイト数および時間閾値）で進捗状況をクライアントに通知する。</li>
+<li>**メタデータ送信**: バックアップ開始時のXLog位置やテーブルスペースリストを、標準的な結果セットとしてクライアントへ送信する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>bbsink_copystream</code>: 本モジュールのメイン構造体。<code>bbsink</code> を継承し、ストリーム状態や進捗報告用のタイマーを保持する。</li>
+<li><code>bbsink_copystream_ops</code>: <code>bbsink</code> インターフェースの関数ポインタテーブル。</li>
+<li><code>bbsink_copystream_new()</code>: 新しいコピーシンクを生成するコンストラクタ。</li>
+<li><code>PROGRESS_REPORT_BYTE_INTERVAL</code>: 進捗チェックを行う最小バイト間隔（64KB）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>SendCopyDone</code></li>
+<li><code>SendCopyOutResponse</code></li>
+<li><code>SendTablespaceList</code></li>
+<li><code>SendXlogRecPtrResult</code></li>
+<li><code>bbsink_copystream_archive_contents</code></li>
+<li><code>bbsink_copystream_begin_archive</code></li>
+<li><code>bbsink_copystream_begin_backup</code></li>
+<li><code>bbsink_copystream_begin_manifest</code></li>
+<li><code>bbsink_copystream_end_archive</code></li>
+<li><code>bbsink_copystream_manifest_contents</code></li>
+<li><code>bbsink_copystream_new</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>bbsink_copystream_new</code> でインスタンス化。<code>begin_backup</code> で <code>CopyOutResponse</code> を送信し、COPYモードへ移行。 2. **データ転送**: <code>archive_contents</code> または <code>manifest_contents</code> が呼ばれると、<code>msgbuffer</code> にタイプバイトを付与し、<code>pq_putmessage</code> でクライアントへ送信。 3. **進捗管理**: <code>archive_contents</code> 内で、前回の報告から一定量（64KB以上）のデータが流れた場合にのみ時刻を確認し、閾値を超えていれば進捗メッセージ（&#x27;p&#x27;）を送信する。 4. **終了**: <code>end_backup</code> で <code>CopyDone</code> メッセージを送信し、COPYストリームを閉じる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq/libpq.h</code>, <code>libpq/pqformat.h</code>: COPYプロトコルメッセージの構築と送信。</li>
+<li><code>backup/basebackup_sink.h</code>: <code>bbsink</code> インターフェース定義。</li>
+<li><code>access/tupdesc.h</code>, <code>executor/executor.h</code>: テーブルスペースリスト等の結果セット構築用。</li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>catalog/pg_type_d.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/dest.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/backup/basebackup_sink.c</code>: <code>bbsink</code> インターフェースの基盤となる共通ロジック。</li>
+<li><code>src/backend/backup/basebackup.c</code>: バックアップ処理のメインループ。ここで各シンクのメソッドが呼び出される。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本実装は、古い「アーカイブごとにCOPY OUTを繰り返す」方式を置き換えるものです。</li>
+<li><code>msgbuffer</code> の先頭にタイプバイトを埋め込む際、アライメントを考慮して <code>MAXIMUM_ALIGNOF</code> 分のパディングを確保する工夫がなされています。これにより、データコピーのオーバーヘッドを最小限に抑えています。</li>
+<li>進捗報告の頻度制御は、システムコールのコストを避けるため、バイト数チェックを先行させるヒューリスティックな設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream.html" target="wiki-view"><code>bbsink_copystream</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_new.html" target="wiki-view"><code>bbsink_copystream_new</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_begin_backup.html" target="wiki-view"><code>bbsink_copystream_begin_backup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_begin_archive.html" target="wiki-view"><code>bbsink_copystream_begin_archive</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_archive_contents.html" target="wiki-view"><code>bbsink_copystream_archive_contents</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_end_archive.html" target="wiki-view"><code>bbsink_copystream_end_archive</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_begin_manifest.html" target="wiki-view"><code>bbsink_copystream_begin_manifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__bbsink_copystream_manifest_contents.html" target="wiki-view"><code>bbsink_copystream_manifest_contents</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__SendCopyOutResponse.html" target="wiki-view"><code>SendCopyOutResponse</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__SendCopyDone.html" target="wiki-view"><code>SendCopyDone</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__SendXlogRecPtrResult.html" target="wiki-view"><code>SendXlogRecPtrResult</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_copy_c__SendTablespaceList.html" target="wiki-view"><code>SendTablespaceList</code></a></li>
+</ul></body></html>

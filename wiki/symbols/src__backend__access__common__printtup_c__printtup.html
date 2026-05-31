@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__common__printtup_c__printtup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>printtup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/common/printtup.c:303</code></li>
+</ul>
+<h2>目的</h2>
+<p>クエリ結果のタプルをフロントエンド（クライアント）へ送信するために、PostgreSQL の <code>DataRow</code> メッセージ形式へ変換・シリアライズする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool printtup(TupleTableSlot *slot, DestReceiver *self);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>slot</code>: 送信対象のタプルを含む <code>TupleTableSlot</code>。</li>
+<li><code>self</code>: <code>DestReceiver</code> インターフェースを実装した <code>DR_printtup</code> 構造体。</li>
+<li>**出力**:</li>
+<li>常に <code>true</code> を返す。</li>
+<li>副作用として、フロントエンドへ <code>DataRow</code> メッセージが送信される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>self</code> は <code>DR_printtup</code> 型としてキャスト可能であること。</li>
+<li><code>slot</code> には有効な <code>TupleDesc</code> が設定されていること。</li>
+<li><code>myState-&gt;tmpcontext</code> が初期化されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **準備**: <code>myState-&gt;attrinfo</code> が現在のタプル記述子と一致しない場合、<code>printtup_prepare_info</code> を呼び出し、各属性の出力関数をキャッシュする。 2. **デコード**: <code>slot_getallattrs(slot)</code> を呼び出し、タプル内の全属性を展開する。 3. **メモリ管理**: 行ごとの処理用メモリコンテキスト (<code>tmpcontext</code>) に切り替え、処理後にリセットすることでメモリリークを防ぐ。 4. **メッセージ構築**:</p>
+<ul>
+<li><code>pq_beginmessage_reuse</code> で <code>DataRow</code> メッセージを開始。</li>
+<li>各属性をループ処理し、NULL 値であれば <code>-1</code> を送信。</li>
+<li>非 NULL 値の場合、キャッシュされた関数（テキスト形式なら <code>typoutput</code>、バイナリ形式なら <code>typsend</code>）を用いて変換し、バッファへ書き込む。</li>
+<p>5. **送信**: <code>pq_endmessage_reuse</code> でメッセージを確定・送信し、メモリコンテキストをリセットする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 実行エンジン（<code>DestReceiver</code> インターフェース経由で呼び出される）。</li>
+<li>**呼び出し先**:</li>
+<li><code>printtup_prepare_info</code></li>
+<li><code>slot_getallattrs</code></li>
+<li><code>MemoryContextSwitchTo</code> / <code>MemoryContextReset</code></li>
+<li><code>pq_beginmessage_reuse</code> / <code>pq_endmessage_reuse</code></li>
+<li><code>OutputFunctionCall</code> / <code>SendFunctionCall</code></li>
+<li><code>VALGRIND_CHECK_MEM_IS_DEFINED</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>DR_printtup</code>: <code>printtup</code> の状態を保持する構造体。</li>
+<li><code>TupleTableSlot</code>: 送信対象のタプルデータ。</li>
+<li><code>PrinttupAttrInfo</code>: 各カラムの型情報や出力関数を保持するキャッシュ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**NULL 値**: <code>tts_isnull</code> が真の場合、値の代わりに <code>-1</code> を送信する。</li>
+<li>**可変長データ**: <code>typisvarlena</code> が真の場合、Valgrind を用いてメモリ定義チェックを行う。</li>
+<li>**メモリ**: <code>tmpcontext</code> を使用することで、大量のタプル処理時もメモリ消費を一定に保つ。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>DestReceiver</code> の <code>receiveSlot</code> に登録される。</li>
+<li>パフォーマンス向上のため、行ごとのメモリ確保を避けて <code>tmpcontext</code> のリセットを行っている点に注意すること。</li>
+<li><code>format</code> フィールドが <code>0</code> の場合はテキスト出力、それ以外はバイナリ出力として扱われる。</li>
+</ul></body></html>

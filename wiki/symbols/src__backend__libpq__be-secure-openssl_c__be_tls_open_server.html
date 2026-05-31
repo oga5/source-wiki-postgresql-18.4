@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__libpq__be-secure-openssl_c__be_tls_open_server.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>be_tls_open_server</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/libpq/be-secure-openssl.c:438</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL サーバーにおいて、クライアントとの TLS ハンドシェイクを実行し、セキュアな通信チャネルを確立する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int be_tls_open_server(Port *port)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>Port *port</code> (接続中のソケット情報を含む構造体)</li>
+<li>**出力**: 成功時は <code>0</code>、失敗時は <code>-1</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>SSL_context</code> が初期化済みであること。</li>
+<li><code>port-&gt;ssl</code> および <code>port-&gt;peer</code> が <code>NULL</code> であること。</li>
+<li>呼び出し元は、PostgreSQL の通信プロトコル層であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期設定**: <code>SSL_CTX</code> にデバッグ用コールバックと ALPN ネゴシエーション用コールバックを設定する。 2. **SSL オブジェクト生成**: <code>SSL_new</code> で新しい SSL オブジェクトを作成し、<code>ssl_set_port_bio</code> を用いて PostgreSQL のソケットと紐付ける。 3. **ハンドシェイク**: <code>SSL_accept</code> をループ内で実行する。</p>
+<ul>
+<li><code>SSL_ERROR_WANT_READ</code> または <code>SSL_ERROR_WANT_WRITE</code> が発生した場合、<code>WaitLatchOrSocket</code> を使用して I/O 準備ができるまで待機し、再試行する。</li>
+<li><code>SSL_ERROR_SYSCALL</code> や <code>SSL_ERROR_SSL</code> などのエラーが発生した場合は、適切なエラーメッセージをログ出力して終了する。</li>
+<p>4. **ALPN 確認**: ハンドシェイク完了後、<code>SSL_get0_alpn_selected</code> を呼び出し、ネゴシエーションされたプロトコルが <code>PG_ALPN_PROTOCOL</code> と一致するか検証する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/libpq/be-secure.c</code></li>
+<li>**呼び出し先**: <code>SSL_CTX_set_info_callback</code>, <code>SSL_CTX_set_alpn_select_cb</code>, <code>SSL_new</code>, <code>ssl_set_port_bio</code>, <code>SSL_accept</code>, <code>SSL_get_error</code>, <code>ERR_clear_error</code>, <code>ERR_get_error</code>, <code>WaitLatchOrSocket</code>, <code>SSL_get0_alpn_selected</code> 等の OpenSSL API および PostgreSQL 内部関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Port</code>: 通信状態を保持する構造体。</li>
+<li><code>SSL_context</code>: サーバー全体で共有される SSL 設定状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**SSL コンテキスト未設定**: <code>SSL_context</code> が <code>NULL</code> の場合、エラーを報告して <code>-1</code> を返す。</li>
+<li>**ハンドシェイク失敗**: プロトコル不一致や証明書エラーなど、OpenSSL がエラーを返した場合は <code>COMMERROR</code> としてログ出力し、<code>-1</code> を返す。</li>
+<li>**EOF 検出**: <code>SSL_ERROR_ZERO_RETURN</code> または <code>SSL_ERROR_SYSCALL</code> で EOF が検出された場合、エラーとして処理される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>SSL_get_error()</code> を呼び出す前に <code>ERR_clear_error()</code> を実行し、スレッドローカルなエラーキューをクリアすることが必須である。</li>
+<li><code>WaitLatchOrSocket</code> を使用する際、<code>authentication_timeout</code> が有効であることを前提としている。</li>
+<li>ALPN の検証ロジックは、ハンドシェイク直後の <code>SSL_get0_alpn_selected</code> の結果に依存している。</li>
+</ul></body></html>

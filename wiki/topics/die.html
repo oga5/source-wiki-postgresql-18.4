@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/die.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>die</h1>
+<h2>概念</h2>
+<p><code>die</code> は、PostgreSQLのコードベースにおいて、シグナル（特に <code>SIGTERM</code> や <code>SIGINT</code> などの終了要求シグナル）を受信した際にプロセスを安全に終了させるために定義されているシグナルハンドラ関数です。</p>
+<p>この関数は、サーバーのメインプロセス（バックエンド）と、スタンドアロンのテストツールの両方で、それぞれのコンテキストに応じた終了処理を行うために独立して実装されています。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**バックエンドプロセス (<code>postgres.c</code>)**: 管理者やポストマスターからの停止要求（<code>SIGTERM</code>）を検知し、実行中のクエリを安全に中断して、データベースの整合性を保ちながらプロセスを終了させるために不可欠です。</li>
+<li>**クライアントツール (<code>pg_test_fsync.c</code>)**: ユーザーによる中断操作（Ctrl+Cなどによる <code>SIGINT</code>）を適切に捕捉し、実行中のベンチマークテストをクリーンに中断・終了するために重要です。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/tcop</code>: バックエンドのメイン処理ループ（Traffic Cop）およびシグナルハンドリングを管理します。</li>
+<li><code>module:src/bin/pg_test_fsync</code>: <code>fsync</code> のパフォーマンスを測定するスタンドアロンツールの実行を管理します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/tcop/postgres.c#die</code>: バックエンドプロセス用の <code>SIGTERM</code> シグナルハンドラ。</li>
+<li><code>symbol:src/bin/pg_test_fsync/pg_test_fsync.c#die</code>: <code>pg_test_fsync</code> ツール用のシグナルハンドラ。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>それぞれのコンテキストにおける具体的な制御フローは以下の通りですが、詳細なエンドツーエンドの遷移やシグナルマスクの挙動は、提供されたソースコードの範囲内では完全には特定されていません。</p>
+<h3>バックエンドプロセスにおける流れ</h3>
+<p>1. **シグナル受信**: オペレーティングシステムまたはポストマスターから <code>SIGTERM</code> が送信される。 2. **ハンドラ起動**: <code>src/backend/tcop/postgres.c</code> の <code>die</code> が起動する。 3. **フラグ設定**: ハンドラ内で割り込み要求フラグ（<code>InterruptPending</code> や <code>ProcDiePending</code> など）をセットする。 4. **安全な中断**: メインループやクエリ実行中の適切なタイミング（<code>CHECK_FOR_INTERRUPTS()</code> の評価時）でフラグが検知され、トランザクションのロールバックおよびプロセスの終了処理が実行される。</p>
+<h3>テストツールにおける流れ</h3>
+<p>1. **シグナル受信**: ユーザーから <code>SIGINT</code> などの割り込みシグナルが送信される。 2. **ハンドラ起動**: <code>src/bin/pg_test_fsync/pg_test_fsync.c</code> の <code>die</code> が起動し、テストの実行を中断して安全にプロセスを終了する。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**非同期シグナル安全性 (Async-Signal Safety)**: シグナルハンドラである <code>die</code> の内部では、リエントラント（再入可能）な操作のみを行う必要があります。</li>
+<li>**遅延処理の原則 (postgres.c)**: バックエンドの <code>die</code> は、ハンドラ内で直接複雑なクリーンアップやI/Oを行わず、グローバルフラグの更新のみを行い、実際の終了処理はメインスレッドの安全なチェックポイントに委ねる必要があります。</li>
+</ul>
+<p>*注意: これらの不変条件がどのように厳密に保証されているか、また例外的な状況での挙動については、提供されたコンテキストからは未検証です。*</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**シグナルハンドラ内でのブロック**: <code>die</code> ハンドラ内で非同期シグナル安全でない関数（例: <code>malloc</code> や標準入出力関数）を呼び出すと、デッドロックやメモリ破損を引き起こす可能性があります。</li>
+<li>**割り込みチェックの欠落**: バックエンドのコード内で <code>CHECK_FOR_INTERRUPTS()</code> の呼び出しを怠ると、無限ループなどの処理中に <code>die</code> による終了要求が無視され、プロセスが停止しなくなる「ゾンビ状態」に陥るリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/tcop/postgres.c</code>: バックエンドプロセスにおけるシグナルハンドリングと割り込み処理の具体的な実装。</li>
+<li><code>src/bin/pg_test_fsync/pg_test_fsync.c</code>: スタンドアロンツールにおけるシグナルハンドラの実装例。</li>
+</ul></body></html>

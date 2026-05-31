@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/foreigncmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/foreigncmds.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の外部データラッパー（FDW）、外部サーバー、ユーザーマッピング、および外部テーブルの定義・変更・削除を行う DDL コマンドの実行エンジンです。SQL 構文解析後の処理を担い、システムカタログ（<code>pg_foreign_data_wrapper</code> 等）の更新と依存関係の管理を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、外部データ連携機能のメタデータ管理を担当します。<code>foreign/</code> ディレクトリ配下の API と連携し、FDW のハンドラやバリデータ関数を呼び出すことで、外部データソースとの接続設定を検証・永続化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 実行**: <code>CREATE/ALTER/DROP</code> コマンドの処理およびシステムカタログの更新。</li>
+<li>**オプション管理**: <code>DefElem</code> リストのテキスト配列形式への変換とバリデーション。</li>
+<li>**権限管理**: FDW/サーバーに対する <code>USAGE</code> 権限や所有者変更時の特権チェック。</li>
+<li>**依存関係管理**: <code>pg_depend</code> を介した、関数（ハンドラ/バリデータ）や拡張機能との依存関係の記録。</li>
+<li>**スキーマインポート**: FDW の <code>ImportForeignSchema</code> API を呼び出し、生成された SQL を実行して外部テーブルを一括定義。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>オプション処理</h3>
+<ul>
+<li><code>transformGenericOptions</code>: <code>DefElem</code> リストを <code>text[]</code> に変換し、バリデータ関数を呼び出して検証する中心的な関数。</li>
+<li><code>optionListToArray</code>: オプションリストを <code>key=value</code> 形式のテキスト配列に変換する低レベル関数。</li>
+</ul>
+<h3>FDW/サーバー管理</h3>
+<ul>
+<li><code>CreateForeignDataWrapper</code> / <code>AlterForeignDataWrapper</code>: FDW の作成・変更。ハンドラとバリデータの OID を管理。</li>
+<li><code>CreateForeignServer</code> / <code>AlterForeignServer</code>: 外部サーバーの作成・変更。FDW との紐付けと権限チェックを行う。</li>
+</ul>
+<h3>ユーザーマッピング管理</h3>
+<ul>
+<li><code>CreateUserMapping</code> / <code>AlterUserMapping</code> / <code>RemoveUserMapping</code>: ユーザーと外部サーバー間のマッピング管理。<code>user_mapping_ddl_aclcheck</code> で所有者権限を検証。</li>
+</ul>
+<h3>外部テーブル管理</h3>
+<ul>
+<li><code>CreateForeignTable</code>: <code>DefineRelation</code> の後に呼び出され、<code>pg_foreign_table</code> カタログにエントリを追加。</li>
+<li><code>ImportForeignSchema</code>: FDW の API を利用して外部スキーマをローカルにインポートする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterForeignDataWrapper</code></li>
+<li><code>AlterForeignDataWrapperOwner</code></li>
+<li><code>AlterForeignDataWrapperOwner_internal</code></li>
+<li><code>AlterForeignDataWrapperOwner_oid</code></li>
+<li><code>AlterForeignServerOwner</code></li>
+<li><code>AlterForeignServerOwner_internal</code></li>
+<li><code>AlterForeignServerOwner_oid</code></li>
+<li><code>CreateForeignDataWrapper</code></li>
+<li><code>CreateForeignServer</code></li>
+<li><code>CreateForeignTable</code></li>
+<li><code>CreateUserMapping</code></li>
+<li><code>import_error_callback_arg</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **コマンド実行**: <code>ProcessUtility</code> から各 <code>Create/Alter</code> 関数が呼び出される。 2. **検証**: <code>SearchSysCache</code> を用いて既存オブジェクトを検索し、<code>superuser()</code> や <code>object_ownercheck</code> で権限を検証。 3. **オプション変換**: <code>transformGenericOptions</code> が呼び出され、バリデータ関数（FDW 固有）による検証を経て <code>text[]</code> が生成される。 4. **カタログ更新**: <code>heap_form_tuple</code> と <code>CatalogTupleUpdate</code> を使用してシステムカタログを更新。 5. **依存関係記録**: <code>recordDependencyOn</code> を使用して、作成したオブジェクトと関数や拡張機能とのリンクを <code>pg_depend</code> に書き込む。 6. **フック**: <code>InvokeObjectPostCreateHook</code> 等を呼び出し、イベントトリガーや他のサブシステムに通知。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_foreign_data_wrapper</code>, <code>pg_foreign_server</code>, <code>pg_foreign_table</code> 等のカタログ定義。</li>
+<li><code>foreign/</code>: <code>fdwapi.h</code>, <code>foreign.h</code> (FDW API 定義)。</li>
+<li><code>access/</code>: <code>htup_details.h</code>, <code>table.h</code> (カタログ操作)。</li>
+<li><code>utils/</code>: <code>syscache.h</code>, <code>acl.h</code> (キャッシュ検索と権限チェック)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_foreign_table.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>foreign/foreign.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/foreign/</code>: FDW の実行時 API（<code>fdwapi.c</code> 等）の実装。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: 外部テーブル以外のテーブル定義の基盤。</li>
+<li><code>src/include/catalog/</code>: 各種カタログのスキーマ定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>transformGenericOptions</code> 等で生成されるオプション配列は、現在のメモリコンテキストで割り当てられます。</li>
+<li>**エラーハンドリング**: <code>ImportForeignSchema</code> 内では、生成された SQL のエラーを適切に報告するために <code>ErrorContextCallback</code> を使用しています。</li>
+<li>**所有権**: FDW の作成はスーパーユーザーに限定されていますが、サーバーやユーザーマッピングは所有者権限で操作可能です。</li>
+<li>**省略箇所**: 本ファイルはメタデータ管理に特化しており、実際の外部データ取得（スキャンや結合）のロジックは含まれていません。これらは <code>src/backend/executor/</code> や各 FDW 実装側に存在します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__import_error_callback_arg.html" target="wiki-view"><code>import_error_callback_arg</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignDataWrapperOwner_internal.html" target="wiki-view"><code>AlterForeignDataWrapperOwner_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignDataWrapperOwner.html" target="wiki-view"><code>AlterForeignDataWrapperOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignDataWrapperOwner_oid.html" target="wiki-view"><code>AlterForeignDataWrapperOwner_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignServerOwner_internal.html" target="wiki-view"><code>AlterForeignServerOwner_internal</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignServerOwner.html" target="wiki-view"><code>AlterForeignServerOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignServerOwner_oid.html" target="wiki-view"><code>AlterForeignServerOwner_oid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__CreateForeignDataWrapper.html" target="wiki-view"><code>CreateForeignDataWrapper</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__AlterForeignDataWrapper.html" target="wiki-view"><code>AlterForeignDataWrapper</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__CreateForeignServer.html" target="wiki-view"><code>CreateForeignServer</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__CreateUserMapping.html" target="wiki-view"><code>CreateUserMapping</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__foreigncmds_c__CreateForeignTable.html" target="wiki-view"><code>CreateForeignTable</code></a></li>
+</ul></body></html>

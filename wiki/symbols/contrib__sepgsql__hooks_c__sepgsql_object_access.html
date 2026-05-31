@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__hooks_c__sepgsql_object_access.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>sepgsql_object_access</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/sepgsql/hooks.c:88</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のオブジェクトアクセスフックのメインディスパッチャとして機能し、DDL 操作（作成、削除、変更、切り詰め、名前空間検索）に対する SE-PostgreSQL のセキュリティ権限チェックを適切なハンドラへ振り分けます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void sepgsql_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>access</code>: <code>ObjectAccessType</code>（操作の種類）</li>
+<li><code>classId</code>: 操作対象のシステムカタログ OID</li>
+<li><code>objectId</code>: 操作対象オブジェクトの OID</li>
+<li><code>subId</code>: 属性 ID（列操作の場合に使用）</li>
+<li><code>arg</code>: 操作固有のデータ構造（<code>ObjectAccessPostCreate</code> 等）へのポインタ</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>他のセキュリティモジュールとの共存のため、<code>next_object_access_hook</code> が存在する場合は必ず先に実行します。</li>
+<li><code>is_internal</code> フラグが真の場合、システム内部的な操作（TOAST テーブル作成や一時的なクリーンアップ等）として権限チェックをスキップします。</li>
+<li><code>OAT_NAMESPACE_SEARCH</code> において、先行するフックが既にアクセスを拒否している場合（<code>ns_arg-&gt;result</code> が偽）は、処理を中断します。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **フック連鎖**: 登録済みの <code>next_object_access_hook</code> を呼び出します。 2. **ディスパッチ**: <code>access</code> 型に基づき分岐します。</p>
+<ul>
+<li><code>OAT_POST_CREATE</code>: <code>is_internal</code> を確認し、<code>sepgsql_database_post_create</code> 等の各オブジェクト用ハンドラを呼び出します。</li>
+<li><code>OAT_DROP</code>: <code>PERFORM_DELETION_INTERNAL</code> フラグを確認し、内部削除であればスキップ、それ以外は <code>sepgsql_database_drop</code> 等を呼び出します。</li>
+<li><code>OAT_TRUNCATE</code>: <code>sepgsql_relation_truncate</code> を呼び出します。</li>
+<li><code>OAT_POST_ALTER</code>: <code>is_internal</code> を確認し、<code>sepgsql_database_setattr</code> 等を呼び出します。</li>
+<li><code>OAT_NAMESPACE_SEARCH</code>: 名前空間の検索権限を検証します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: PostgreSQL コアの <code>object_access_hook</code>（<code>contrib/sepgsql/hooks.c:474</code> にて登録）。</li>
+<li>**呼び出し先**: <code>sepgsql_database_...</code>, <code>sepgsql_schema_...</code>, <code>sepgsql_relation_...</code>, <code>sepgsql_attribute_...</code>, <code>sepgsql_proc_...</code> 等の各モジュール関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ObjectAccessType</code> (PostgreSQL コア定義)</li>
+<li><code>ObjectAccessPostCreate</code>, <code>ObjectAccessDrop</code>, <code>ObjectAccessPostAlter</code>, <code>ObjectAccessNamespaceSearch</code> (PostgreSQL コア定義)</li>
+<li><code>sepgsql_context_info</code> (DDL コンテキスト管理用)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>未サポートの <code>classId</code> が渡された場合は、何も行わず無視します。</li>
+<li><code>is_internal</code> が真であるべき箇所で偽の場合、あるいはその逆の場合、<code>Assert</code> によりデバッグ時に停止します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>hooks.c</code> 内で <code>object_access_hook</code> に代入されることで機能します。</li>
+<li>新しいオブジェクトタイプや操作を追加する場合は、<code>switch</code> 文の <code>classId</code> 分岐にケースを追加してください。</li>
+<li>権限チェックをバイパスする内部処理の判定ロジック（<code>is_internal</code> や <code>dropflags</code>）は、セキュリティの根幹に関わるため慎重に変更してください。</li>
+</ul></body></html>

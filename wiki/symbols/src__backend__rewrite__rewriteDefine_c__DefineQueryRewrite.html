@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__rewrite__rewriteDefine_c__DefineQueryRewrite.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DefineQueryRewrite</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/rewrite/rewriteDefine.c:223</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLにおけるクエリ書き換えルール（Rewrite Rule）の定義および更新を行うメインエントリポイントです。指定されたリレーションに対してルールを適用し、システムカタログへの登録と整合性チェックを統括します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ObjectAddress DefineQueryRewrite(
+    const char *rulename,
+    Oid event_relid,
+    Node *event_qual,
+    CmdType event_type,
+    bool is_instead,
+    bool replace,
+    List *action
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: ルール名、対象リレーションのOID、イベント条件（<code>event_qual</code>）、コマンド種別、<code>INSTEAD</code>フラグ、置換フラグ、アクションリスト。</li>
+<li>**出力**: 作成または更新されたルールの <code>ObjectAddress</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象リレーションに対して <code>AccessExclusiveLock</code> を保持する必要があります。</li>
+<li>システムカタログへの変更権限が必要です。</li>
+<li><code>ON SELECT</code> ルールの場合、対象はビューまたはマテリアライズドビューである必要があります。</li>
+<li><code>ON SELECT</code> ルールは <code>_RETURN</code> という名前である必要があります（後方互換性のため一部例外あり）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロック取得**: <code>table_open</code> を呼び出し、対象リレーションに <code>AccessExclusiveLock</code> を取得します。 2. **妥当性検証**: リレーションの種類（テーブル、ビュー等）がルール適用可能か確認し、システムテーブルへの変更制限をチェックします。 3. **権限確認**: <code>object_ownercheck</code> により、呼び出し元が対象リレーションの所有者であることを確認します。 4. **アクション解析**: ルールアクション内に <code>OLD</code> や <code>NEW</code> を不正に参照するクエリが含まれていないか走査します。 5. **ON SELECT 特殊処理**: <code>ON SELECT</code> ルールの場合、単一の <code>SELECT</code> アクションであること、<code>INSTEAD</code> であること、ターゲットリストがリレーションと一致すること等を厳格に検証します。 6. **カタログ登録**: 妥当性確認後、内部的にカタログ更新処理へ移行します（ソースコードの続きで実行）。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/commands/view.c</code></li>
+<li><code>src/backend/parser/parse_utilcmd.c</code></li>
+<li><code>src/backend/rewrite/rewriteDefine.c</code>（<code>DefineRule</code>経由）</li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code></li>
+<li><code>object_ownercheck</code></li>
+<li><code>checkRuleResultList</code></li>
+<li><code>getInsertSelectQuery</code></li>
+<li><code>RelationGetRelationName</code> 等のアクセサ</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: 対象リレーションの定義情報。</li>
+<li><code>Query</code>: ルールアクションを構成するクエリツリー。</li>
+<li><code>RewriteRule</code>: ルール定義を保持する構造体。</li>
+<li><code>ObjectAddress</code>: 作成されたオブジェクトの識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**権限エラー**: 所有者でない場合、<code>ACLCHECK_NOT_OWNER</code> でエラー終了します。</li>
+<li>**型不一致**: ルール適用不可なリレーションや、<code>ON SELECT</code> ルールをテーブルに定義しようとした場合に <code>ERRCODE_WRONG_OBJECT_TYPE</code> でエラー終了します。</li>
+<li>**実装制限**: <code>OLD</code>/<code>NEW</code> への不正なアクセスや、<code>ON SELECT</code> ルールにおける複数アクション、<code>INSTEAD NOTHING</code> 等は <code>ERRCODE_FEATURE_NOT_SUPPORTED</code> で拒否されます。</li>
+<li>**重複定義**: <code>ON SELECT</code> ルールが既に存在する場合、<code>replace</code> が偽であればエラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はカタログを書き換えるため、ロックの取得順序とレベルが重要です。<code>DefineRule</code> との整合性を維持してください。</li>
+<li><code>ON SELECT</code> ルールはビューの定義そのものであるため、変更時にはキャッシュ無効化（<code>CacheInvalidateRelcache</code>）が必須です。</li>
+<li>ソースコードの後半（<code>_RETURN</code> 名のチェック以降）で、実際のカタログ挿入処理が続くため、修正時はカタログの依存関係管理に注意してください。</li>
+</ul></body></html>

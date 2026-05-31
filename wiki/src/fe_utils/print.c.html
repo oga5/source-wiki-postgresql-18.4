@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/fe_utils/print.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/fe_utils/print.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLフロントエンドツール（<code>psql</code>等）におけるクエリ結果の出力整形を担うモジュールです。多様なフォーマット（aligned, unaligned, CSV, HTML, LaTeX, Troff等）でのレンダリング、端末幅に応じた折り返し、ページャ制御、およびロケール対応の数値フォーマットを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/fe_utils</code> のプレゼンテーション層を構成します。<code>libpq</code> から取得した <code>PGresult</code> を、人間が読みやすい形式または機械可読な形式へ変換するパイプラインの終端として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**フォーマット変換**: 内部のテーブル構造（<code>printTableContent</code>）を各出力形式へシリアライズ。</li>
+<li>**端末表示最適化**: 端末幅の自動検出、カラムの折り返し、ページャ（<code>more</code>/<code>less</code>）の自動起動。</li>
+<li>**ロケール対応**: <code>LC_NUMERIC</code> に基づく数値の桁区切りや小数点変換。</li>
+<li>**シグナル管理**: <code>SIGPIPE</code> のトラップ制御および <code>cancel_pressed</code> フラグによる出力中断処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>printTableContent</code>: 出力対象のテーブルデータ（ヘッダー、セル、フッター、配置情報）を保持するメイン構造体。</li>
+<li><code>printTableOpt</code>: 出力形式、境界線、ページャ設定などのレンダリングオプション。</li>
+<li><code>printTextFormat</code>: 各フォーマットの罫線やマークアップ定義。</li>
+</ul>
+<h3>状態管理</h3>
+<ul>
+<li><code>cancel_pressed</code>: ユーザーによる割り込み（Ctrl+C）を検知するグローバル変数。</li>
+<li><code>always_ignore_sigpipe</code>: <code>SIGPIPE</code> を無視するかどうかの状態フラグ。</li>
+</ul>
+<h3>公開関数</h3>
+<ul>
+<li><code>printQuery</code>: <code>PGresult</code> を受け取り、<code>printTable</code> を呼び出して出力する高レベルAPI。</li>
+<li><code>printTableInit</code>/<code>printTableCleanup</code>: <code>printTableContent</code> のライフサイクル管理。</li>
+<li><code>printTableAddHeader</code>/<code>printTableAddCell</code>/<code>printTableAddFooter</code>: テーブル構築用API。</li>
+<li><code>PageOutput</code>/<code>ClosePager</code>: ページャのパイプ管理。</li>
+<li><code>setDecimalLocale</code>: ロケール設定の初期化。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ClosePager</code></li>
+<li><code>IsPagerNeeded</code></li>
+<li><code>PageOutput</code></li>
+<li><code>additional_numeric_locale_len</code></li>
+<li><code>format_numeric_locale</code></li>
+<li><code>integer_digits</code></li>
+<li><code>printTableInit</code></li>
+<li><code>print_separator</code></li>
+<li><code>unicodeStyleBorderFormat</code></li>
+<li><code>unicodeStyleColumnFormat</code></li>
+<li><code>unicodeStyleFormat</code></li>
+<li><code>unicodeStyleRowFormat</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>printQuery</code> が <code>printTableInit</code> でバッファを確保し、<code>PQgetvalue</code> 等でデータをセルに追加。 2. **フォーマット決定**: <code>printTable</code> が <code>opt-&gt;format</code> に基づき、<code>print_aligned_text</code> や <code>print_csv_text</code> 等の具体的なレンダラへディスパッチ。 3. **レンダリング**:</p>
+<ul>
+<li><code>print_aligned_text</code> は <code>pg_wcssize</code> で表示幅を計算し、必要に応じて <code>width_wrap</code> を調整。</li>
+<li><code>strlen_max_width</code> を用いてマルチバイト文字の表示幅を考慮した文字列切り出しを行う。</li>
+<p>4. **終了処理**: <code>printTableCleanup</code> で動的確保されたメモリ（セル、ヘッダー、フッター）を解放。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: <code>PGresult</code> および <code>PQ</code> 系関数へのアクセス。</li>
+<li><code>fe_utils/mbprint.h</code>: マルチバイト文字の表示幅計算（<code>pg_wcssize</code>, <code>pg_wcsformat</code>）。</li>
+<li><code>catalog/pg_type_d.h</code>: データ型判定（<code>column_type_alignment</code> 用）。</li>
+<li><code>fe_utils/print.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/ioctl.h</code></li>
+<li><code>termios.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/fe_utils/mbprint.c</code>: マルチバイト文字の表示幅計算ロジック。</li>
+<li><code>src/fe_utils/string_utils.c</code>: 文字列操作ユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>printTableContent</code> に追加されたセルやヘッダーは、<code>printTableCleanup</code> が呼ばれるまで呼び出し側が生存期間を保証する必要があります。<code>mustfree</code> フラグが <code>true</code> の場合のみ、<code>printTableCleanup</code> が <code>free()</code> を実行します。</li>
+<li>**ページャ**: <code>PageOutput</code> は <code>isatty()</code> を使用して端末かどうかを判定します。パイプ経由の出力や非TTY環境ではページャは起動しません。</li>
+<li>**未実装・浅い部分**: <code>latex_escaped_print</code> 等の各エスケープ関数は、基本的なASCII文字の変換に留まっており、複雑な非ASCII文字のLaTeX/Troff変換は限定的です。</li>
+<li>**注意点**: <code>cancel_pressed</code> は各行の出力完了時にチェックされます。長大な行の出力中には即座に中断されない場合があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__fe_utils__print_c__unicodeStyleRowFormat.html" target="wiki-view"><code>unicodeStyleRowFormat</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__unicodeStyleColumnFormat.html" target="wiki-view"><code>unicodeStyleColumnFormat</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__unicodeStyleBorderFormat.html" target="wiki-view"><code>unicodeStyleBorderFormat</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__unicodeStyleFormat.html" target="wiki-view"><code>unicodeStyleFormat</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__integer_digits.html" target="wiki-view"><code>integer_digits</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__additional_numeric_locale_len.html" target="wiki-view"><code>additional_numeric_locale_len</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__format_numeric_locale.html" target="wiki-view"><code>format_numeric_locale</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__print_separator.html" target="wiki-view"><code>print_separator</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__PageOutput.html" target="wiki-view"><code>PageOutput</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__ClosePager.html" target="wiki-view"><code>ClosePager</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__printTableInit.html" target="wiki-view"><code>printTableInit</code></a></li>
+<li><a href="../../symbols/src__fe_utils__print_c__IsPagerNeeded.html" target="wiki-view"><code>IsPagerNeeded</code></a></li>
+</ul></body></html>

@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistproc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistproc.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのGiST（Generalized Search Tree）インデックスにおける、幾何データ型（<code>box</code>, <code>polygon</code>, <code>circle</code>, <code>point</code>）のサポート関数を実装しています。R-treeの挙動を模倣し、Guttmanの多項式時間分割アルゴリズムに基づくインデックス構築と検索を支援します。</p>
+<h2>モジュール内での役割</h2>
+<p>GiSTアクセスメソッドの「演算子クラス（opclass）」層に位置します。インデックスのコアロジック（<code>gist.c</code>等）から呼び出される、データ型固有の「Consistent（一致判定）」「Union（結合）」「Penalty（ペナルティ計算）」「PickSplit（分割）」メソッドを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**幾何演算のインデックス化**: 複雑な幾何形状を境界ボックス（MBR: Minimum Bounding Box）に変換し、インデックスエントリとして管理。</li>
+<li>**検索の最適化**: 空間的な包含・交差・近接判定を効率化するためのConsistent関数群の提供。</li>
+<li>**インデックス構築の最適化**: Z-order（Morton Code）を用いたソートサポート関数を提供し、高速なインデックス構築を支援。</li>
+<li>**分割戦略の提供**: 空間的な重なりを最小化する「Double Sorting Split」アルゴリズムの実装。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>幾何サポートメソッド</h3>
+<ul>
+<li><code>gist_box_consistent</code>, <code>gist_poly_consistent</code>, <code>gist_circle_consistent</code>, <code>gist_point_consistent</code>: 検索条件とインデックスキーの一致判定。</li>
+<li><code>gist_box_union</code>: 複数のボックスを包含する最小のボックスを計算。</li>
+<li><code>gist_box_penalty</code>: インデックス挿入時のコスト（面積の増加分）を計算。</li>
+<li><code>gist_box_picksplit</code>: ページ分割時に、重なりを最小化するグループ分けを実行。</li>
+</ul>
+<h3>分割アルゴリズム関連</h3>
+<ul>
+<li><code>ConsiderSplitContext</code>: 分割時の状態管理（境界、次元、重なり具合）。</li>
+<li><code>CommonEntry</code>: 分割時にどちらのグループにも配置可能なエントリの管理構造体。</li>
+<li><code>g_box_consider_split</code>: 候補となる分割の品質を評価し、最適なものを選択。</li>
+</ul>
+<h3>Z-order（高速構築）関連</h3>
+<ul>
+<li><code>point_zorder_internal</code>: 2次元座標を1次元のZ-order値に変換。</li>
+<li><code>gist_point_sortsupport</code>: ソートによるインデックス構築のための比較関数を提供。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CommonEntry</code></li>
+<li><code>ConsiderSplitContext</code></li>
+<li><code>SplitInterval</code></li>
+<li><code>box_penalty</code></li>
+<li><code>gist_box_consistent</code></li>
+<li><code>gist_box_penalty</code></li>
+<li><code>gist_box_union</code></li>
+<li><code>interval_cmp_lower</code></li>
+<li><code>interval_cmp_upper</code></li>
+<li><code>non_negative</code></li>
+<li><code>rt_box_union</code></li>
+<li><code>size_box</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索時**: <code>gist_xxx_consistent</code> が呼び出され、内部ノードであれば <code>rtree_internal_consistent</code> を経由してMBRベースの判定を行い、リーフノードであれば各型固有の幾何判定を実行します。 2. **挿入時**: <code>gist_box_penalty</code> で挿入コストを計算し、最適なページを選択します。 3. **分割時**: <code>gist_box_picksplit</code> が以下のフローで動作します。</p>
+<ul>
+<li>各軸（X, Y）に対してエントリを投影し、ソート。</li>
+<li><code>g_box_consider_split</code> で重なりが最小となる分割点を探索。</li>
+<li>確定した分割に基づき、エントリを左・右・共通（Common）グループに分類。</li>
+<li>共通エントリをペナルティ最小化の観点で分配。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist.h</code>: GiSTの基本構造体定義。</li>
+<li><code>utils/geo_decls.h</code>: 幾何データ型（BOX, POINT等）の定義。</li>
+<li><code>utils/sortsupport.h</code>: ソート最適化のためのインターフェース。</li>
+<li><code>math.h</code>: 浮動小数点演算および <code>isnan</code> 等の判定。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gistutil.c</code>: GiST共通のユーティリティ関数。</li>
+<li><code>gistsplit.c</code>: 汎用的な分割アルゴリズムの基盤。</li>
+<li><code>gist.c</code>: インデックス挿入・更新のメインループ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>palloc</code> を多用しており、GiSTの各メソッド呼び出し時にメモリコンテキストが適切に管理されていることを前提としています。</li>
+<li>**浮動小数点**: 幾何計算には <code>float8</code> を使用しており、<code>isnan</code> や無限大の扱いには細心の注意が払われています。特に <code>size_box</code> 関数でのゼロ幅ボックスの扱いは、NaN生成を防ぐための重要なエッジケース処理です。</li>
+<li>**分割アルゴリズム**: <code>gist_box_picksplit</code> で実装されている「Double Sorting Split」は、R-treeの性能を左右する核心部分です。このアルゴリズムは、空間的な重なりを最小化するために、あえて「どちらのグループにも属せるエントリ（Common Entry）」を定義し、最後にペナルティに基づいて分配する手法をとっています。</li>
+<li>**省略された詳細**: 本ファイルは幾何データ型に特化しているため、他のデータ型（テキスト検索や配列など）のサポート関数は含まれていません。また、WAL（Write-Ahead Log）の生成ロジックは <code>gistxlog.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__rt_box_union.html" target="wiki-view"><code>rt_box_union</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__size_box.html" target="wiki-view"><code>size_box</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__box_penalty.html" target="wiki-view"><code>box_penalty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__gist_box_consistent.html" target="wiki-view"><code>gist_box_consistent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__gist_box_union.html" target="wiki-view"><code>gist_box_union</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__gist_box_penalty.html" target="wiki-view"><code>gist_box_penalty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__CommonEntry.html" target="wiki-view"><code>CommonEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__ConsiderSplitContext.html" target="wiki-view"><code>ConsiderSplitContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__SplitInterval.html" target="wiki-view"><code>SplitInterval</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__interval_cmp_lower.html" target="wiki-view"><code>interval_cmp_lower</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__interval_cmp_upper.html" target="wiki-view"><code>interval_cmp_upper</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistproc_c__non_negative.html" target="wiki-view"><code>non_negative</code></a></li>
+</ul></body></html>

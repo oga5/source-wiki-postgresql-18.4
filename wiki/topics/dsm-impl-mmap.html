@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dsm-impl-mmap.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>DSM_IMPL_MMAP</h1>
+<h2>概念</h2>
+<p><code>DSM_IMPL_MMAP</code> は、PostgreSQL の動的共有メモリ（DSM: Dynamic Shared Memory）フレームワークにおいて、<code>mmap</code> システムコールとファイルシステム上のファイルを利用して共有メモリセグメントを実装する手法、およびそれを指定するための定義です。</p>
+<h2>なぜ重要か</h2>
+<p>この実装は、OSが提供する標準的なファイルマッピング機構を介してプロセス間通信（IPC）用の共有メモリを確保します。System V や POSIX 共有メモリなどの他のDSM実装が利用できない、あるいは制限がある環境において、代替のポータブルなDSM手段を提供するために重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/storage/dsm_impl.h#DSM_IMPL_MMAP</code>: <code>mmap</code> によるDSM実装を識別・有効化するためのマクロ定義。</li>
+<li><code>symbol:src/backend/storage/ipc/dsm_impl.c#dsm_impl_mmap</code>: <code>mmap</code> を用いた実際のDSM操作（作成、アタッチ、デタッチ、破棄）をカプセル化した低レベル関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>DSM操作のディスパッチャ（<code>dsm_impl_op</code>）から、操作種別（<code>dsm_op</code>）を指定して <code>dsm_impl_mmap</code> が呼び出されます。</p>
+<p>1. **パス生成**: 与えられた <code>dsm_handle</code> に基づき、<code>PG_DYNSHMEM_DIR</code> ディレクトリ内に一意のファイルパスを生成します。 2. **操作に応じた処理**:</p>
+<ul>
+<li>**<code>DSM_OP_CREATE</code> (作成)**: <code>OpenTransientFile</code> でファイルを新規作成し、要求されたサイズ（<code>request_size</code>）までゼロ埋め（<code>write</code>）して領域を確保します。その後、<code>mmap</code>（<code>MAP_SHARED</code> 等のフラグを使用）でメモリ空間にマッピングします。</li>
+<li>**<code>DSM_OP_ATTACH</code> (アタッチ)**: 既存のファイルをオープンし、<code>fstat</code> でファイルサイズを取得後、<code>mmap</code> でメモリ空間にマッピングします。</li>
+<li>**<code>DSM_OP_DETACH</code> (デタッチ)**: <code>munmap</code> を実行してメモリマッピングを解除します。</li>
+<li>**<code>DSM_OP_DESTROY</code> (破棄)**: <code>munmap</code> を実行してマッピングを解除し、さらに <code>unlink</code> でファイルシステム上のファイルを削除します。</li>
+<p>3. **後処理**: ファイル記述子を閉じ（<code>CloseTransientFile</code>）、処理結果（成功時は <code>true</code>、失敗時は <code>false</code>）を返します。</p>
+</ul>
+<p>※ なお、DSM全体の初期化から破棄に至る上位レベルのライフサイクルフローや、ディスパッチャ自体の詳細な全体フローは、提供されたコンテキストからは完全には判明していません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ディレクトリの存在**: <code>PG_DYNSHMEM_DIR</code> ディレクトリがシステム上に存在し、PostgreSQLプロセスから利用可能でなければなりません。</li>
+<li>**ファイルサイズの一致**: <code>DSM_OP_ATTACH</code> 時には、既存のファイルサイズが自動的に取得され、そのサイズに基づいてマッピングが行われます。</li>
+<li>**作成時の領域確保**: <code>DSM_OP_CREATE</code> 時には、指定された <code>request_size</code> 分のディスク領域が実際に確保され、ゼロ埋めが完了していなければなりません。</li>
+</ul>
+<p>※ 上位のDSM管理機構における排他制御やセグメントの生存期間に関する不変条件は、提供されたコンテキストからは完全には判明していません。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ディスクI/Oとパフォーマンス**: 本実装はファイルシステム上の実ファイルを使用するため、ディスクI/Oが発生します。パフォーマンス要件が厳しい環境では、<code>PG_DYNSHMEM_DIR</code> をRAMディスク（tmpfsなど）上に配置しないと、ボトルネックになる可能性があります。</li>
+<li>**ディスク容量不足**: セグメント作成（<code>DSM_OP_CREATE</code>）時のゼロ埋め処理中にディスク容量が不足すると、作成に失敗し、作成途中のファイルが削除されます。</li>
+<li>**ゼロ埋めによる遅延**: 非常に大きなセグメントを作成する場合、<code>ZBUFFER_SIZE</code> 単位での書き込みループが発生するため、待機イベント <code>WAIT_EVENT_DSM_FILL_ZERO_WRITE</code> が発生し、処理に時間がかかることがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/dsm_impl.c</code></li>
+<li><code>src/include/storage/dsm_impl.h</code></li>
+</ul></body></html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-fsync-writethrough.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_fsync_writethrough</h1>
+<h2>概念</h2>
+<p><code>pg_fsync_writethrough</code> は、プラットフォーム固有の「ライトスルー（Write-through）」同期操作をファイル記述子に対して実行し、データの物理的なディスクへの書き込みを保証するための関数です。主に macOS などの <code>F_FULLFSYNC</code> マクロがサポートされている環境において、OSのキャッシュ層をバイパスして物理デバイスへの同期を強制するために使用されます。</p>
+<h2>なぜ重要か</h2>
+<p>データベースの信頼性を担保するためには、WAL（Write-Ahead Log）などの重要なデータがディスクに物理的に書き込まれたことを保証する必要があります。通常の <code>fsync</code> ではOSのキャッシュ層に留まる可能性があるプラットフォームにおいて、<code>pg_fsync_writethrough</code> は <code>F_FULLFSYNC</code> を用いて物理的なライトスルー同期を強制し、予期せぬ停電やシステムクラッシュ時におけるデータの永続性を高めます。また、<code>pg_test_fsync</code> ツールを通じて、この同期手法が現在のプラットフォームで利用可能かつ有効であるかを検証するためにも重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/bin/pg_test_fsync</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/storage/file/fd.c#pg_fsync_writethrough</code>: バックエンドのファイルストレージ管理においてライトスルー同期を提供する実装。</li>
+<li><code>symbol:src/bin/pg_test_fsync/pg_test_fsync.c#pg_fsync_writethrough</code>: <code>pg_test_fsync</code> ツール内で、ライトスルー同期の動作検証やパフォーマンス測定のために定義・使用される関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. 呼び出し元（<code>src/backend/access/transam/xlog.c</code>、<code>src/backend/storage/file/fd.c</code>、または <code>src/bin/pg_test_fsync/pg_test_fsync.c</code>）が、同期対象のファイル記述子 <code>fd</code> を指定して <code>pg_fsync_writethrough(fd)</code> を呼び出します。 2. プラットフォームで <code>F_FULLFSYNC</code> マクロが定義されている場合、システムコール <code>fcntl(fd, F_FULLFSYNC, 0)</code> が実行されます。 3. <code>fcntl</code> が成功した場合は <code>0</code> を返し、失敗した場合は <code>-1</code> を返します。 4. <code>F_FULLFSYNC</code> が定義されていないプラットフォームの場合、<code>errno</code> に <code>ENOSYS</code> を設定した上で、即座に <code>-1</code> を返します。</p>
+<p>※なお、バックエンド全体における具体的な呼び出しトリガーや、トランザクションコミット時などの詳細なエンドツーエンドの制御フローの全貌は、提供された情報からは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**プラットフォーム依存性**: <code>F_FULLFSYNC</code> マクロが定義されている環境（主に macOS 等）でのみ、実際の <code>fcntl</code> による物理同期操作が実行されます。</li>
+<li>**非サポート環境での挙動**: <code>F_FULLFSYNC</code> が定義されていない環境では、関数は常に <code>errno</code> を <code>ENOSYS</code> に設定し、<code>-1</code> を返さなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**非サポートプラットフォームでのエラー**: macOS 以外の多くのプラットフォーム（Linuxなど）では <code>F_FULLFSYNC</code> が定義されていないため、この関数を呼び出すと常に <code>ENOSYS</code> エラー（<code>-1</code>）が返されます。プラットフォームごとのサポート状況を考慮せずにこの関数に依存すると、同期処理が失敗する原因となります。</li>
+<li>**パフォーマンスへの影響**: <code>F_FULLFSYNC</code> によるライトスルー同期は、通常の <code>fsync</code> よりも物理ディスクへの書き込みを厳格に強制するため、I/O パフォーマンスに大きなオーバーヘッドを与える可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_test_fsync/pg_test_fsync.c</code>: <code>pg_fsync_writethrough</code> の具体的な実装と、テストツールでの使用例が記述されています。</li>
+<li><code>src/backend/storage/file/fd.c</code>: バックエンド側での <code>pg_fsync_writethrough</code> の実装およびファイル記述子制御との統合箇所です。</li>
+<li><code>src/include/storage/fd.h</code>: 本関数の外部宣言が存在するヘッダーファイルです。</li>
+</ul></body></html>

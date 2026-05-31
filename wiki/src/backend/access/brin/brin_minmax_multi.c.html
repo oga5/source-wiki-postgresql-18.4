@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_minmax_multi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_minmax_multi.c</h1>
+<h2>概要</h2>
+<p><code>brin_minmax_multi.c</code> は、PostgreSQL の BRIN (Block Range Index) インデックスにおける「Multi Min/Max」演算クラスの実装です。従来の単一範囲（Min/Max）では対応が困難だった、外れ値を含むデータ分布を効率的に扱うために設計されています。</p>
+<h2>モジュール内での役割</h2>
+<p>BRIN サブシステムの一部として、ページ範囲ごとの統計情報を管理します。単一の <code>[min, max]</code> ではなく、複数の間隔（Interval）を保持することで、データに大きなギャップや外れ値が存在する場合でも、インデックスによる不要なページ範囲のスキップを可能にします。</p>
+<h2>責務</h2>
+<ul>
+<li>**多重間隔の管理**: ページ範囲内の値を複数の間隔と単一ポイントの集合として保持・更新する。</li>
+<li>**動的な圧縮**: 保持する値の数が制限（<code>values_per_range</code>）を超えた際、最も近い間隔同士をマージしてサイズを縮小する。</li>
+<li>**シリアライズ/デシリアライズ**: インデックスの物理格納用に、メモリ上の構造体をコンパクトな <code>bytea</code> 形式へ変換する。</li>
+<li>**距離計算**: 間隔同士の「距離」を計算し、どの間隔をマージすべきかを決定するサポート関数の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>Ranges</code>: メモリ上で間隔とポイントを管理する主要構造体。</li>
+<li><code>SerializedRanges</code>: ディスク上の物理格納形式。</li>
+<li><code>ExpandedRange</code>: マージ処理のために間隔を正規化した一時的な表現。</li>
+<li><code>brin_minmax_multi_add_value</code>: 新しい値をインデックスに追加する際のメインエントリポイント。</li>
+<li><code>brin_minmax_multi_consistent</code>: スキャンキーとインデックスの整合性をチェックする関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AssertArrayOrder</code></li>
+<li><code>AssertCheckExpandedRanges</code></li>
+<li><code>AssertCheckRanges</code></li>
+<li><code>DistanceValue</code></li>
+<li><code>MinMaxMultiOptions</code></li>
+<li><code>MinmaxMultiOpaque</code></li>
+<li><code>compare_context</code></li>
+<li><code>minmax_multi_init</code></li>
+<li><code>range_deduplicate_values</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **値の追加**: <code>brin_minmax_multi_add_value</code> が呼ばれ、既存の <code>Ranges</code> に値が追加されます。 2. **バッファ管理**: 制限を超えると <code>ensure_free_space_in_buffer</code> が起動し、<code>ExpandedRange</code> への変換と距離計算が行われます。 3. **圧縮**: <code>reduce_expanded_ranges</code> が最も近い間隔をマージし、サイズを目標値以下に抑えます。 4. **永続化**: <code>brin_minmax_multi_serialize</code> により、最終的な <code>Ranges</code> が <code>SerializedRanges</code> へ変換され、インデックスページに書き込まれます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/brin.h</code>, <code>access/brin_internal.h</code>: BRIN インデックスの基本構造。</li>
+<li><code>utils/datum.h</code>, <code>utils/fmgr.h</code>: PostgreSQL のデータ型操作および関数呼び出し基盤。</li>
+<li><code>catalog/pg_am.h</code>, <code>catalog/pg_amop.h</code>: 演算クラスおよび演算子ファミリの定義。</li>
+<li><code>access/brin_tuple.h</code></li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/stratnum.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/inet.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/uuid.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/brin/brin_minmax.c</code>: 単一範囲の Min/Max 実装。比較対象として有用。</li>
+<li><code>src/backend/access/brin/brin_tuple.c</code>: BRIN インデックスのタプル操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**圧縮のコスト**: 圧縮（マージ）処理は距離計算やソートを伴うため比較的高コストです。そのため、インデックス構築時には <code>MINMAX_BUFFER_FACTOR</code> を用いて一時的に大きなバッファを確保し、頻繁な圧縮を避ける設計になっています。</li>
+<li>**距離計算の近似**: UUID や INET 型などの複雑な型については、距離計算が近似値で行われます。これはインデックスの正確性を損なうものではなく、マージの最適化効率にのみ影響します。</li>
+<li>**デバッグ**: <code>AssertCheckRanges</code> や <code>AssertCheckExpandedRanges</code> が随所に配置されており、データ構造の不変条件（ソート済みであること、重なりがないこと等）を検証しています。コードを読む際は、これらのアサーションが示す制約を理解することが近道です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__MinmaxMultiOpaque.html" target="wiki-view"><code>MinmaxMultiOpaque</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__MinMaxMultiOptions.html" target="wiki-view"><code>MinMaxMultiOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html" target="wiki-view"><code>Ranges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html" target="wiki-view"><code>SerializedRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__ExpandedRange.html" target="wiki-view"><code>ExpandedRange</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__DistanceValue.html" target="wiki-view"><code>DistanceValue</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__compare_context.html" target="wiki-view"><code>compare_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertArrayOrder.html" target="wiki-view"><code>AssertArrayOrder</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertCheckRanges.html" target="wiki-view"><code>AssertCheckRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertCheckExpandedRanges.html" target="wiki-view"><code>AssertCheckExpandedRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__minmax_multi_init.html" target="wiki-view"><code>minmax_multi_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__range_deduplicate_values.html" target="wiki-view"><code>range_deduplicate_values</code></a></li>
+</ul></body></html>

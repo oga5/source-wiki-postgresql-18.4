@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/foreigndatawrapper.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ForeignDataWrapper</h1>
+<h2>概念</h2>
+<p><code>ForeignDataWrapper</code>（外部データラッパー、FDW）は、PostgreSQLが外部のデータソース（他のデータベース、ファイルシステムなど）にアクセスするための定義情報を管理する仕組みです。システムカタログ <code>pg_foreign_data_wrapper</code> に登録されたメタデータを、メモリ上の構造体 <code>struct ForeignDataWrapper</code> として表現し、各種操作や外部データアクセス時に参照します。</p>
+<h2>なぜ重要か</h2>
+<p>FDWは、PostgreSQLの外部データ連携機能の基盤です。SQLコマンドによるFDWの新規登録（DDL処理）から、登録されたFDWの定義情報の取得、さらには各FDWモジュール（<code>file_fdw</code> や <code>dblink</code> など）での実行時参照に至るまで、共通のデータ構造とAPIを提供することで、一貫した外部データアクセスを実現します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/commands</code>: FDWの作成（<code>CREATE FOREIGN DATA WRAPPER</code>）などのDDLコマンド処理を担当します。</li>
+<li><code>module:src/backend/foreign</code>: システムカタログからのFDW定義情報の取得など、共通のユーティリティ処理を担当します。</li>
+<li><code>module:src/include/foreign</code>: FDWに関するデータ構造の定義を提供します。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/foreign/foreign.h#ForeignDataWrapper</code>** (struct)</li>
+<p>FDWの定義情報を保持する構造体。FDWのOID、所有者、名前、ハンドラ関数（<code>fdwhandler</code>）、バリデータ関数（<code>fdwvalidator</code>）、およびオプション設定のリスト（<code>options</code>）を格納します。</p>
+<li>**<code>symbol:src/backend/commands/foreigncmds.c#CreateForeignDataWrapper</code>** (function)</li>
+<p><code>CREATE FOREIGN DATA WRAPPER</code> コマンドを処理し、新しいFDWをシステムカタログ <code>pg_foreign_data_wrapper</code> に登録します。</p>
+<li>**<code>symbol:src/backend/foreign/foreign.c#GetForeignDataWrapper</code>** (function)</li>
+<p>指定されたOIDに対応するFDWの定義情報をシステムカタログから取得し、<code>ForeignDataWrapper</code> 構造体へのポインタとして返します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<h3>1. 登録フロー（DDL実行時）</h3>
+<p>1. ユーザーが <code>CREATE FOREIGN DATA WRAPPER</code> コマンドを実行すると、<code>src/backend/tcop/utility.c</code> を経由して <code>CreateForeignDataWrapper</code> が呼び出されます。 2. スーパーユーザー権限のチェックおよび同名FDWの重複確認が行われます。 3. <code>transformGenericOptions</code> を通じて、バリデーターによる検証済みのオプション配列が生成されます。 4. 新しいOIDが生成され、システムカタログ <code>pg_foreign_data_wrapper</code> に新しいタプルが挿入されます。 5. ハンドラ関数、バリデーター関数、所有者、および拡張機能に対する依存関係が <code>pg_depend</code> に記録されます。</p>
+<h3>2. 参照フロー（実行時・コマンド処理時）</h3>
+<p>1. <code>contrib/dblink</code> や <code>contrib/file_fdw</code> などの外部データラッパーの実装、またはテーブル操作コマンド（<code>tablecmds.c</code>）がFDWの情報を必要とするときに、<code>GetForeignDataWrapper</code> が呼び出されます。 2. <code>GetForeignDataWrapper</code> は内部的に <code>GetForeignDataWrapperExtended</code> を呼び出し、システムキャッシュから該当するタプルを取得します。 3. 取得したデータを <code>ForeignDataWrapper</code> 構造体にマッピングして呼び出し元に返します。</p>
+<p>※なお、FDWの実行時におけるクエリ実行やデータスキャンなどの詳細なエンドツーエンドの実行フロー（<code>fdwapi.c</code> 等の動作）は、提供された情報からは未だ不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**実行権限**: FDWの作成（<code>CreateForeignDataWrapper</code>）を実行できるのはスーパーユーザーのみです。</li>
+<li>**一意性**: 同一の名前を持つFDWがシステム内に既に存在してはなりません。</li>
+<li>**ハンドラとバリデータの省略**: ハンドラ関数（<code>fdwhandler</code>）およびバリデータ関数（<code>fdwvalidator</code>）が指定されていない場合、構造体内の対応するOIDフィールドは <code>0</code>（<code>InvalidOid</code>）となります。</li>
+<li>**メモリ管理**: <code>GetForeignDataWrapper</code> によってシステムキャッシュからコピーして作成された <code>ForeignDataWrapper</code> 構造体は、使用後に呼び出し元で適切なメモリ管理（<code>pfree</code> 等）を行う必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**存在しないOIDの指定**: <code>GetForeignDataWrapper</code> はエラー制御フラグ（<code>MISSING_OK</code>）を指定せずに内部関数を呼び出すため、存在しない無効なOIDを指定した場合はシステムエラーが発生します。</li>
+<li>**オプションの不整合**: オプションのバリデーションは <code>transformGenericOptions</code> および登録されたバリデーター関数に依存しています。各FDWの実装側で解析される設計となっているため、バリデーションロジックとFDW側の解析ロジックに不整合が生じないよう注意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/commands/foreigncmds.c</code>**: FDWの作成やオプション検証など、DDLに関連する具体的な処理フローを理解するために参照してください。</li>
+<li>**<code>src/backend/foreign/foreign.c</code>**: システムキャッシュからFDW情報を取得するユーティリティ関数の実装（<code>GetForeignDataWrapperExtended</code> など）を確認するために参照してください。</li>
+<li>**<code>src/include/foreign/foreign.h</code>**: <code>ForeignDataWrapper</code> 構造体の定義や、関連するデータ構造を確認するために参照してください。</li>
+</ul></body></html>

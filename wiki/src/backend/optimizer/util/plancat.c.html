@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/plancat.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/plancat.c</h1>
+<h2>概要</h2>
+<p><code>plancat.c</code> は、PostgreSQL のプランナがクエリ最適化を行うために必要な、システムカタログ（リレーション、インデックス、統計情報、制約など）の情報を取得・加工するためのユーティリティ関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、プランナが <code>RelOptInfo</code> 構造体を構築する際の「カタログアクセスの窓口」として機能します。リレーションの物理的な特性（サイズ、インデックス、制約）をプランナが理解できる形式に変換し、コスト見積もりやプラン作成の基礎データを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**カタログ情報の抽出**: <code>get_relation_info</code> を中心に、リレーションの属性、インデックス、統計情報、外部テーブル情報、パーティション情報を収集する。</li>
+<li>**コスト見積もりの支援**: リレーションのサイズ（ページ数、タプル数）やデータ幅の推定を行う。</li>
+<li>**制約排除（Constraint Exclusion）**: 制約情報に基づき、不要なスキャンを排除するための判定を行う。</li>
+<li>**選択率の計算**: 演算子や関数の選択率（Selectivity）を計算するためのフックやサポート関数を提供する。</li>
+<li>**インデックス推論**: <code>ON CONFLICT</code> 句などで使用される arbiter index（競合解決用インデックス）の特定を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>get_relation_info</code>: プランナがリレーションを扱う際に最初に呼び出す主要関数。<code>RelOptInfo</code> を初期化する。</li>
+<li><code>estimate_rel_size</code>: リレーションのページ数とタプル数を推定する。</li>
+<li><code>relation_excluded_by_constraints</code>: 制約に基づき、スキャンが不要かどうかを判定する。</li>
+<li><code>infer_arbiter_indexes</code>: <code>ON CONFLICT</code> 句で指定された条件に合致するユニークインデックスを特定する。</li>
+<li><code>get_relation_info_hook</code>: プラグインがカタログ情報取得プロセスに介入するためのフック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>build_physical_tlist</code></li>
+<li><code>get_rel_data_width</code></li>
+<li><code>get_relation_constraints</code></li>
+<li><code>get_relation_data_width</code></li>
+<li><code>get_relation_foreign_keys</code></li>
+<li><code>get_relation_statistics</code></li>
+<li><code>get_relation_statistics_worker</code></li>
+<li><code>infer_collation_opclass_match</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>get_relation_info</code> が呼び出されると、<code>table_open</code> でリレーションを開き、<code>RelOptInfo</code> の属性（<code>min_attr</code>, <code>max_attr</code> 等）を埋める。 2. **インデックス収集**: <code>RelationGetIndexList</code> を経由してインデックスを走査し、各インデックスの特性（AM情報、キー、述語）を <code>IndexOptInfo</code> として構築する。 3. **統計・制約**: <code>get_relation_statistics</code> や <code>get_relation_constraints</code> を呼び出し、プランナが利用可能なメタデータを収集する。 4. **フック**: 最後に <code>get_relation_info_hook</code> があれば実行し、外部プラグインによる情報の改変を許可する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: テーブルAM、インデックスAM、ヒープタプル操作など。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_am</code>, <code>pg_proc</code> 等）の定義。</li>
+<li><code>optimizer/</code>: <code>cost.h</code>, <code>pathnodes.h</code> 等のプランナ用データ構造。</li>
+<li><code>utils/</code>: <code>rel.h</code> (リレーションキャッシュ), <code>lsyscache.h</code> (システムキャッシュ), <code>syscache.h</code>。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_statistic_ext_data.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>statistics/statistics.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/optimizer/plancat.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/optimizer/util/pathnode.c</code>: <code>RelOptInfo</code> を利用する側のコード。</li>
+<li><code>src/backend/optimizer/path/indxpath.c</code>: インデックスの利用可能性を判断する際に本ファイルの情報を利用する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはカタログアクセスを抽象化していますが、ロック管理には注意が必要です。<code>get_relation_info</code> は既にロックが取得されている前提で動作します。</li>
+<li><code>ChangeVarNodes</code> を多用して、カタログから取得した式（インデックス述語など）の <code>varno</code> を現在のクエリの <code>varno</code> に書き換えています。この処理はプランナが式を正しく評価するために不可欠です。</li>
+<li><code>constraint_exclusion</code> GUC により、制約排除の挙動を制御可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_info.html" target="wiki-view"><code>get_relation_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_foreign_keys.html" target="wiki-view"><code>get_relation_foreign_keys</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__infer_arbiter_indexes.html" target="wiki-view"><code>infer_arbiter_indexes</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__infer_collation_opclass_match.html" target="wiki-view"><code>infer_collation_opclass_match</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__estimate_rel_size.html" target="wiki-view"><code>estimate_rel_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_rel_data_width.html" target="wiki-view"><code>get_rel_data_width</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_data_width.html" target="wiki-view"><code>get_relation_data_width</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_constraints.html" target="wiki-view"><code>get_relation_constraints</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_statistics_worker.html" target="wiki-view"><code>get_relation_statistics_worker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__get_relation_statistics.html" target="wiki-view"><code>get_relation_statistics</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__relation_excluded_by_constraints.html" target="wiki-view"><code>relation_excluded_by_constraints</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__plancat_c__build_physical_tlist.html" target="wiki-view"><code>build_physical_tlist</code></a></li>
+</ul></body></html>

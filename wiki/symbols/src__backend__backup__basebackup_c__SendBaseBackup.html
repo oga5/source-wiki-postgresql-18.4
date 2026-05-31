@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__backup__basebackup_c__SendBaseBackup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SendBaseBackup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/backup/basebackup.c:989</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLのベースバックアップ処理のメインエントリーポイントであり、クライアントからの <code>BASE_BACKUP</code> コマンドに基づき、データディレクトリおよびテーブルスペースのバックアップをストリーミング送信する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SendBaseBackup(BaseBackupCmd *cmd, IncrementalBackupInfo *ib)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>cmd</code>: バックアップコマンドのオプション情報を含む <code>BaseBackupCmd</code> 構造体。</li>
+<li><code>ib</code>: 増分バックアップ用の情報を含む <code>IncrementalBackupInfo</code> 構造体（フルバックアップ時は <code>NULL</code>）。</li>
+<li>**出力**: なし（バックアップデータを <code>bbsink</code> を通じて送信）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>セッション内で既にバックアップが実行中の場合、エラーが発生する。</li>
+<li>増分バックアップが要求されている場合、<code>ib</code> が <code>NULL</code> であってはならない。</li>
+<li><code>bbsink</code> インターフェースを介してデータが処理されるため、エラー発生時も <code>bbsink_cleanup</code> が確実に呼び出される必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>parse_basebackup_options</code> でコマンドオプションを解析し、プロセス状態を <code>WALSNDSTATE_BACKUP</code> に設定。 2. **パイプライン構築**: <code>bbsink</code> を使用して、転送先（クライアントまたは外部ターゲット）、スロットリング、圧縮（GZIP/LZ4/ZSTD）、進捗報告の各レイヤーを順次構築。 3. **実行**: <code>perform_base_backup</code> を呼び出し、バックアップのメインループを実行。 4. **クリーンアップ**: <code>PG_TRY</code> / <code>PG_FINALLY</code> ブロックにより、処理終了時またはエラー発生時に必ず <code>bbsink_cleanup</code> を実行してリソースを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walsender.c</code></li>
+<li>**呼び出し先**: </li>
+<li><code>parse_basebackup_options</code></li>
+<li><code>bbsink</code> 関連関数（<code>bbsink_copystream_new</code>, <code>BaseBackupGetSink</code>, <code>bbsink_throttle_new</code>, <code>bbsink_gzip_new</code> 等）</li>
+<li><code>perform_base_backup</code></li>
+<li><code>bbsink_cleanup</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>basebackup_options</code>: バックアップ設定を保持。</li>
+<li><code>bbsink</code>: データ送信パイプラインを抽象化する構造体。</li>
+<li><code>BaseBackupCmd</code>: コマンド引数。</li>
+<li><code>IncrementalBackupInfo</code>: 増分バックアップのメタデータ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**セッション状態**: <code>SESSION_BACKUP_RUNNING</code> の場合、<code>ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE</code> でエラー終了。</li>
+<li>**増分バックアップの不備**: 増分バックアップ指定時にマニフェストが提供されていない場合、エラー終了。</li>
+<li>**リソース解放**: エラー発生時も <code>PG_FINALLY</code> により <code>bbsink</code> のクリーンアップが保証される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はバックアップの「オーケストレーター」として機能する。個別の圧縮アルゴリズムや転送先の詳細は <code>bbsink</code> 実装に委譲されているため、新しい転送先や圧縮形式を追加する場合は <code>bbsink</code> の拡張を検討すること。</li>
+<li><code>perform_base_backup</code> への引数として渡される <code>ib</code> は、増分バックアップの要件に応じて適切にフィルタリングされる。</li>
+</ul></body></html>

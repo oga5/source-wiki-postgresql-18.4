@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/aio_callback.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/aio_callback.c</h1>
+<h2>概要</h2>
+<p>非同期I/O（AIO）操作に関連するコールバックの登録、管理、および実行を担うモジュールです。I/O操作の完了時に実行される一連の処理（ステージング、共有メモリの更新、ローカル処理）を抽象化し、<code>PgAioHandle</code> に紐付けられたコールバックを順次呼び出す仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/aio</code> サブシステムにおいて、I/O完了後の後処理を制御する中心的な役割を果たします。I/O操作の実行エンジン（<code>method_*.c</code>）と、I/Oの結果を必要とする上位層（バッファマネージャ等）の橋渡しを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**コールバックの登録**: <code>PgAioHandle</code> に対して最大 <code>PGAIO_HANDLE_MAX_CALLBACKS</code> までのコールバックを登録する。</li>
+<li>**データ管理**: I/Oに関連する補助データ（<code>handle_data</code>）の読み書きを管理する。</li>
+<li>**実行フローの制御**: I/Oのライフサイクル（ステージング、共有完了、ローカル完了）に応じたコールバックの連鎖実行。</li>
+<li>**結果の集約**: 複数のコールバックを介してI/O結果を加工・伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgAioHandleCallbacksEntry</code>: コールバック関数ポインタと識別子を保持する構造体。</li>
+<li><code>aio_handle_cbs</code>: 利用可能な全コールバックを定義する静的配列。</li>
+<li><code>pgaio_io_register_callbacks</code>: ハンドルにコールバックを登録する公開関数。</li>
+<li><code>pgaio_io_call_complete_shared</code> / <code>pgaio_io_call_complete_local</code>: 完了フェーズでコールバックを順次実行する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgaio_io_call_stage</code></li>
+<li><code>pgaio_io_get_handle_data</code></li>
+<li><code>pgaio_io_set_handle_data_32</code></li>
+<li><code>pgaio_io_set_handle_data_64</code></li>
+<li><code>pgaio_result_report</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <code>pgaio_io_register_callbacks</code> でコールバックIDと補助データがハンドルに保存されます。 2. **ステージング**: <code>pgaio_io_call_stage</code> がI/O開始前に呼ばれ、必要な準備を行います。 3. **完了処理**:</p>
+<ul>
+<li><code>pgaio_io_call_complete_shared</code> が共有リソース（バッファ等）の更新を行い、結果を <code>distilled_result</code> に集約します。</li>
+<li><code>pgaio_io_call_complete_local</code> がローカルバックエンド固有の処理を行い、最終的な結果を返します。</li>
+<li>いずれも、登録された順序の逆順（スタック的）にコールバックが実行されます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>miscadmin.h</code>: 基本的な型定義とエラー処理。</li>
+<li><code>storage/aio.h</code>, <code>storage/aio_internal.h</code>: AIOの主要構造体と内部インターフェース。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/md.h</code>: バッファ管理および物理ストレージ層の定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/aio.c</code>: AIOサブシステムの全体的な初期化と管理。</li>
+<li><code>src/backend/storage/aio/method_*.c</code>: 各種I/Oメソッド（io_uring, sync等）の実装。これらが本ファイルのコールバックをトリガーします。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**クリティカルセクション**: コールバックは <code>START_CRIT_SECTION()</code> 内で実行されます。これはWALログ書き込み等の重要な処理中にAIOが完了しても安全である必要があるためです。</li>
+<li>**実行順序**: コールバックは登録された順序の逆順で実行されます。これは、後から登録された（より具体的な）処理が先に結果を加工できるようにするためです。</li>
+<li>**データ共有**: <code>pgaio_io_set_handle_data_*</code> で設定されるデータは、共有メモリ上の <code>pgaio_ctl</code> を介して管理されます。メモリ消費を抑えるため、1つのI/Oにつき1回のみ設定可能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__PgAioHandleCallbacksEntry.html" target="wiki-view"><code>PgAioHandleCallbacksEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_register_callbacks.html" target="wiki-view"><code>pgaio_io_register_callbacks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_set_handle_data_64.html" target="wiki-view"><code>pgaio_io_set_handle_data_64</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_set_handle_data_32.html" target="wiki-view"><code>pgaio_io_set_handle_data_32</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_get_handle_data.html" target="wiki-view"><code>pgaio_io_get_handle_data</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_result_report.html" target="wiki-view"><code>pgaio_result_report</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_call_stage.html" target="wiki-view"><code>pgaio_io_call_stage</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_call_complete_shared.html" target="wiki-view"><code>pgaio_io_call_complete_shared</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_callback_c__pgaio_io_call_complete_local.html" target="wiki-view"><code>pgaio_io_call_complete_local</code></a></li>
+</ul></body></html>

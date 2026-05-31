@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/timestamp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/timestamp.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の日時データ型である <code>TIMESTAMP</code>（タイムスタンプ）および <code>INTERVAL</code>（期間）のバックエンド実装です。SQL レベルの型定義と内部表現（<code>int64</code> マイクロ秒単位）の相互変換、算術演算、比較、および型修飾子（<code>typmod</code>）の処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/datatype/timestamp.h</code> で定義されたデータ構造を操作する中心的な ADT（抽象データ型）実装です。<code>datetime.c</code> などの低レベルな日時計算ライブラリを呼び出し、PostgreSQL の実行エンジン（プランナ、エグゼキュータ）が利用可能な <code>Datum</code> インターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換とI/O**: SQL 文字列と内部表現の相互変換（<code>_in</code>, <code>_out</code>）、バイナリ転送（<code>_recv</code>, <code>_send</code>）。</li>
+<li>**算術演算**: 加減算、乗除算、および期間の正規化（<code>justify</code> 関数群）。</li>
+<li>**比較と集約**: B-Tree インデックス用比較関数、ハッシュ関数、および <code>SUM</code>/<code>AVG</code> 集約関数の状態管理。</li>
+<li>**プランナサポート**: <code>generate_series</code> 等の行数推定や、型修飾子（<code>typmod</code>）の最適化。</li>
+<li>**タイムゾーン処理**: <code>AT TIME ZONE</code> 構文の実装およびタイムゾーン変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>型定義と状態管理</h3>
+<ul>
+<li><code>Timestamp</code>, <code>TimestampTz</code>: <code>int64</code>（マイクロ秒単位）で表現される絶対時刻。</li>
+<li><code>Interval</code>: <code>time</code>（オフセット）、<code>day</code>、<code>month</code> の3フィールドで構成される期間構造体。</li>
+<li><code>IntervalAggState</code>: <code>SUM</code>/<code>AVG</code> 集約時に使用される中間状態構造体。</li>
+</ul>
+<h3>I/O および変換</h3>
+<ul>
+<li><code>timestamp_in</code>, <code>timestamp_out</code>: 文字列形式との変換。</li>
+<li><code>timestamp_recv</code>, <code>timestamp_send</code>: バイナリ形式との変換。</li>
+<li><code>timestamp2tm</code>, <code>tm2timestamp</code>: <code>struct pg_tm</code>（POSIX 形式）と内部表現の変換。</li>
+</ul>
+<h3>演算と調整</h3>
+<ul>
+<li><code>AdjustTimestampForTypmod</code>: <code>typmod</code> に基づく精度調整（丸め処理）。</li>
+<li><code>timestamp_pl_interval</code>, <code>timestamp_mi_interval</code>: 加減算。</li>
+<li><code>interval_justify_hours</code>, <code>interval_justify_days</code>: 期間の単位繰り上げ/繰り下げ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AdjustIntervalForTypmod</code></li>
+<li><code>AdjustTimestampForTypmod</code></li>
+<li><code>EncodeSpecialInterval</code></li>
+<li><code>EncodeSpecialTimestamp</code></li>
+<li><code>GetCurrentTimestamp</code></li>
+<li><code>GetSQLCurrentTimestamp</code></li>
+<li><code>GetSQLLocalTimestamp</code></li>
+<li><code>IntervalAggState</code></li>
+<li><code>TimestampDifference</code></li>
+<li><code>TimestampDifferenceMilliseconds</code></li>
+<li><code>generate_series_timestamp_fctx</code></li>
+<li><code>generate_series_timestamptz_fctx</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>_in</code> 関数が <code>ParseDateTime</code> を呼び出し、文字列を解析。<code>DecodeDateTime</code> で <code>struct pg_tm</code> に展開後、<code>tm2timestamp</code> で <code>int64</code> に変換。 2. **演算**: 演算子関数は <code>int64</code>（<code>Timestamp</code>）または <code>Interval</code> 構造体を直接操作。オーバーフローチェックには <code>pg_add_s64_overflow</code> 等の安全な算術関数を使用。 3. **出力**: <code>_out</code> 関数は <code>timestamp2tm</code> で <code>struct pg_tm</code> に戻し、<code>EncodeDateTime</code> で文字列化。 4. **集約**: <code>interval_avg_accum</code> が <code>IntervalAggState</code> を生成し、<code>do_interval_accum</code> で加算。最終的に <code>interval_avg</code> が <code>interval_div</code> を呼び出して平均を算出。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/datetime.h</code>: 日時解析・変換の低レベルルーチン。</li>
+<li><code>common/int128.h</code>: 期間比較時のオーバーフロー防止用。</li>
+<li><code>catalog/pg_type.h</code>: システムカタログ上の型定義。</li>
+<li><code>utils/fmgr.h</code>: 関数マネージャ（<code>PG_FUNCTION_ARGS</code> 等）。</li>
+<li><code>access/xact.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/numeric.h</code></li>
+<li><code>utils/skipsupport.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/datatype/timestamp.h</code>: データ構造の定義。</li>
+<li><code>src/backend/utils/adt/datetime.c</code>: 日時計算の基盤ロジック。</li>
+<li><code>src/backend/utils/adt/date.c</code>: <code>DATE</code> 型の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: <code>Timestamp</code> は <code>int64</code> ですが、<code>Interval</code> は構造体であり、<code>palloc</code> されたメモリ領域を指すポインタとして扱われます。</li>
+<li>**精度**: <code>MAX_TIMESTAMP_PRECISION</code>（6）を超えた精度は切り捨てられます。</li>
+<li>**無限大**: <code>TIMESTAMP_NOT_FINITE</code> マクロで判定される無限大（<code>+/-Infinity</code>）の扱いには注意が必要です。算術演算で無限大同士の計算が発生するとエラーになります。</li>
+<li>**浮動小数点**: <code>-ffast-math</code> コンパイルオプションは、日時計算の精度を損なうため禁止されています。</li>
+<li>**未実装**: <code>interval_abs()</code> は、期間の絶対値の定義が曖昧であるため意図的に実装されていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__generate_series_timestamp_fctx.html" target="wiki-view"><code>generate_series_timestamp_fctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__generate_series_timestamptz_fctx.html" target="wiki-view"><code>generate_series_timestamptz_fctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__IntervalAggState.html" target="wiki-view"><code>IntervalAggState</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__AdjustTimestampForTypmod.html" target="wiki-view"><code>AdjustTimestampForTypmod</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__AdjustIntervalForTypmod.html" target="wiki-view"><code>AdjustIntervalForTypmod</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__EncodeSpecialTimestamp.html" target="wiki-view"><code>EncodeSpecialTimestamp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__EncodeSpecialInterval.html" target="wiki-view"><code>EncodeSpecialInterval</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__GetCurrentTimestamp.html" target="wiki-view"><code>GetCurrentTimestamp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__GetSQLCurrentTimestamp.html" target="wiki-view"><code>GetSQLCurrentTimestamp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__GetSQLLocalTimestamp.html" target="wiki-view"><code>GetSQLLocalTimestamp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__TimestampDifference.html" target="wiki-view"><code>TimestampDifference</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__timestamp_c__TimestampDifferenceMilliseconds.html" target="wiki-view"><code>TimestampDifferenceMilliseconds</code></a></li>
+</ul></body></html>

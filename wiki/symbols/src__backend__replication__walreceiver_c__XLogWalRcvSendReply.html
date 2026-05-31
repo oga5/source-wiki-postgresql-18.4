@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walreceiver_c__XLogWalRcvSendReply.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogWalRcvSendReply</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walreceiver.c:1091</code></li>
+</ul>
+<h2>目的</h2>
+<p>スタンバイサーバーの WAL 受信状況（書き込み、フラッシュ、適用位置）をプライマリサーバーへ報告し、レプリケーションの進捗を同期させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void XLogWalRcvSendReply(bool force, bool requestReply)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>force</code> (bool): <code>true</code> の場合、ステータス間隔の制限を無視して強制的に送信する。</li>
+<li><code>requestReply</code> (bool): プライマリに対して応答を要求するかどうか。</li>
+<li>**出力**: なし（副作用としてプライマリへメッセージを送信）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>wal_receiver_status_interval</code> が 0 以下かつ <code>force</code> が <code>false</code> の場合、処理は即座に終了する。</li>
+<li><code>LogstreamResult</code> 構造体が最新の書き込み・フラッシュ位置を保持していること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ガードチェック**: <code>force</code> が偽かつステータス報告間隔内であれば早期リターンする。 2. **間隔チェック**: 前回の送信から <code>wal_receiver_status_interval</code> が経過していない場合、かつ書き込み/フラッシュ位置に変更がない場合はリターンする。 3. **更新予約**: <code>WalRcvComputeNextWakeup</code> を呼び出し、次回の報告タイミングをスケジュールする。 4. **メッセージ構築**:</p>
+<ul>
+<li>現在の <code>LogstreamResult</code> から <code>writePtr</code> と <code>flushPtr</code> を取得。</li>
+<li><code>GetXLogReplayRecPtr(NULL)</code> で現在の適用位置 (<code>applyPtr</code>) を取得。</li>
+<li><code>StringInfo</code> バッファにメッセージ種別 <code>&#x27;r&#x27;</code> と各 LSN、タイムスタンプ、<code>requestReply</code> フラグを書き込む。</li>
+<p>5. **送信**: <code>walrcv_send</code> を介してプライマリへメッセージを送信する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/walreceiver.c</code> 内の各所（<code>WalReceiverMain</code> ループ内やメッセージ処理プロセスなど、計7箇所で確認）。</li>
+<li>**呼び出し先**:</li>
+<li><code>GetCurrentTimestamp()</code></li>
+<li><code>WalRcvComputeNextWakeup()</code></li>
+<li><code>GetXLogReplayRecPtr()</code></li>
+<li><code>resetStringInfo()</code> / <code>pq_sendbyte()</code> / <code>pq_sendint64()</code></li>
+<li><code>elog()</code></li>
+<li><code>walrcv_send()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LogstreamResult</code>: WAL の書き込みおよびフラッシュ位置を保持するグローバル変数。</li>
+<li><code>reply_message</code>: 送信用の <code>StringInfo</code> バッファ。</li>
+<li><code>wrconn</code>: プライマリとの接続ハンドル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>walrcv_send</code> が失敗した場合、呼び出し元へエラーが伝播する可能性がある。</li>
+<li><code>applyPtr</code> の取得にはスピンロックが必要なため、負荷が高い環境では報告がわずかに遅延する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>libpqwalreceiver</code> を通じて通信を行うため、ネットワークの切断やタイムアウトは <code>walrcv_send</code> 側で処理される。</li>
+<li><code>force</code> 引数は、接続確立時やエラーリカバリ時など、即時同期が必要な場面で使用される。</li>
+</ul></body></html>

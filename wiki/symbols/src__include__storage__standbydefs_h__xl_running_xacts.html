@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__storage__standbydefs_h__xl_running_xacts.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>xl_running_xacts</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/storage/standbydefs.h:47</code></li>
+</ul>
+<h2>目的</h2>
+<p>ホットスタンバイモードにおいて、プライマリサーバー上の実行中トランザクション情報をスタンバイサーバーへ伝播し、スタンバイ側でスナップショットを構築・維持するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct xl_running_xacts
+{
+    int         xcnt;           /* xids[] 内のトランザクションID数 */
+    int         subxcnt;        /* xids[] 内のサブトランザクションID数 */
+    bool        subxid_overflow; /* スナップショット溢れ発生フラグ */
+    TransactionId nextXid;      /* 次のトランザクションID */
+    TransactionId oldestRunningXid; /* 最古の実行中トランザクションID */
+    TransactionId latestCompletedXid; /* 最新の完了済みトランザクションID */
+    TransactionId xids[FLEXIBLE_ARRAY_MEMBER]; /* 可変長配列 */
+} xl_running_xacts;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: プライマリ側で生成された実行中トランザクションの状態。</li>
+<li>**出力**: WAL レコードとして書き出され、スタンバイ側で読み込まれることで <code>ProcArray</code> の状態更新に使用されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>FLEXIBLE_ARRAY_MEMBER</code> を使用した可変長構造体であるため、メモリレイアウトを扱う際はオフセット計算用マクロ（<code>MinSizeOfInvalidations</code> 等）が必要です。</li>
+<li><code>oldestRunningXid</code> は <code>oldestXmin</code> とは異なります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **記録**: プライマリ側で定期的なチェックポイントやスタンバイ起動時に生成され、WAL レコードとして出力されます。 2. **再生**: スタンバイ側で <code>XLogReader</code> がレコードを読み込み、<code>standby_redo</code> 関数がこの構造体を参照してスタンバイ側の共有メモリ状態を更新します。 3. **整合性**: スタンバイ側の <code>ProcArray</code> に反映されることで、ホットスタンバイの整合性が維持されます。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元（生成・参照）**:</li>
+<li><code>src/backend/postmaster/bgwriter.c</code>: 定期的な WAL 記録。</li>
+<li><code>src/backend/replication/logical/snapbuild.c</code>: スナップショット構築および整合性確認。</li>
+<li>**呼び出し先（処理）**:</li>
+<li><code>src/backend/access/rmgrdesc/standbydesc.c</code>: <code>standby_desc_running_xacts</code> によるデバッグ出力。</li>
+<li><code>src/backend/replication/logical/snapbuild.c</code>: <code>SnapBuildFindSnapshot</code>, <code>SnapBuildWaitSnapshot</code>, <code>SnapBuildProcessRunningXacts</code> による状態遷移。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TransactionId</code>: トランザクション識別子。</li>
+<li><code>ProcArray</code>: スタンバイ側で更新されるトランザクション管理用共有メモリ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>subxid_overflow</code> が <code>true</code> の場合、サブトランザクション情報が欠落していることを示します。</li>
+<li>可変長配列 <code>xids</code> のサイズは <code>xcnt</code> および <code>subxcnt</code> に依存するため、メモリ確保およびアクセス時に境界チェックが必要です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体はホットスタンバイの整合性に直結します。変更時は <code>standby_redo</code> および <code>SnapBuild</code> 関連のロジックへの影響を考慮してください。</li>
+<li><code>FLEXIBLE_ARRAY_MEMBER</code> を含むため、構造体のサイズ計算には注意が必要です。</li>
+</ul></body></html>

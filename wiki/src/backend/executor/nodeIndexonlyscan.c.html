@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeIndexonlyscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeIndexonlyscan.c</h1>
+<h2>概要</h2>
+<p>インデックスのみスキャン（Index-Only Scan）を実行するための実行エンジンノードです。テーブルのヒープページにアクセスすることなく、インデックス内のデータのみを使用してクエリ結果を生成します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> におけるスキャンノードの一つです。通常の <code>nodeIndexscan.c</code> と異なり、ヒープへのアクセスを最小化（または回避）することに特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスからの直接抽出**: インデックスエントリからタプルを構築し、ヒープフェッチを回避する。</li>
+<li>**可視性判定**: 可視性マップ（Visibility Map）を用いて、インデックスエントリが全トランザクションから可視かどうかを判定する。</li>
+<li>**フォールバック処理**: 可視性が不明な場合、ヒープへアクセスして可視性を確認する。</li>
+<li>**並列スキャン対応**: パラレルクエリ実行時のDSM（動的共有メモリ）管理と統計情報の集約。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>IndexOnlyNext</code>: スキャンノードのメインループ。インデックスから次のタプルを取得し、可視性チェックを行う。</li>
+<li><code>StoreIndexTuple</code>: インデックスの内部形式から <code>TupleTableSlot</code> へデータを変換する。</li>
+<li><code>ExecInitIndexOnlyScan</code>: ノードの初期化、スキャンキーの構築、インデックスのオープンを行う。</li>
+<li><code>ExecReScanIndexOnlyScan</code>: ランタイムキーの再計算とインデックススキャンのリセットを行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndIndexOnlyScan</code></li>
+<li><code>ExecIndexOnlyMarkPos</code></li>
+<li><code>ExecIndexOnlyRestrPos</code></li>
+<li><code>ExecIndexOnlyScan</code></li>
+<li><code>ExecIndexOnlyScanInitializeDSM</code></li>
+<li><code>ExecIndexOnlyScanInitializeWorker</code></li>
+<li><code>ExecIndexOnlyScanReInitializeDSM</code></li>
+<li><code>IndexOnlyRecheck</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ExecInitIndexOnlyScan</code> がプランに基づいてスキャンキーと式コンテキストを準備します。 2.  **実行**: <code>IndexOnlyNext</code> が呼び出されるたびに、<code>index_getnext_tid</code> でTIDを取得します。 3.  **可視性チェック**: <code>VM_ALL_VISIBLE</code> を確認し、可視であればインデックスデータからスロットを埋めます。不可視であれば <code>index_fetch_heap</code> を経由してヒープからデータを取得します。 4.  **終了**: <code>ExecEndIndexOnlyScan</code> がリソース（バッファピンやインデックス記述子）を解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/genam.h</code>, <code>access/relscan.h</code>: インデックススキャン用API。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップの判定用。</li>
+<li><code>executor/nodeIndexscan.h</code>: インデックススキャン共通の定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/tupdesc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeIndexonlyscan.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeIndexonlyscan.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/executor/nodeIndexscan.c</code>: 通常のインデックススキャン実装。</li>
+<li><code>src/backend/access/nbtree/nbtsearch.c</code>: インデックス検索の低レイヤー実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**可視性マップの挙動**: 本ファイル内のコメントにある通り、<code>VM_ALL_VISIBLE</code> のチェックはロックを伴わないため、メモリバリアとインデックスのロック順序に依存した巧妙な同期が行われています。</li>
+<li>**CSTRINGの扱い**: <code>name</code> 型などの特定のデータ型は、インデックス上では <code>cstring</code> として格納されている場合があり、<code>StoreIndexTuple</code> 内で <code>NAMEDATALEN</code> に合わせた変換処理が行われています。</li>
+<li>**EPQの制限**: <code>IndexOnlyRecheck</code> はエラーを投げるように実装されています。これはインデックスのみスキャンがEvalPlanQual（行レベルロックの再チェック）をサポートしていないためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__IndexOnlyNext.html" target="wiki-view"><code>IndexOnlyNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__StoreIndexTuple.html" target="wiki-view"><code>StoreIndexTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__IndexOnlyRecheck.html" target="wiki-view"><code>IndexOnlyRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyScan.html" target="wiki-view"><code>ExecIndexOnlyScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecReScanIndexOnlyScan.html" target="wiki-view"><code>ExecReScanIndexOnlyScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecEndIndexOnlyScan.html" target="wiki-view"><code>ExecEndIndexOnlyScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyMarkPos.html" target="wiki-view"><code>ExecIndexOnlyMarkPos</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyRestrPos.html" target="wiki-view"><code>ExecIndexOnlyRestrPos</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecInitIndexOnlyScan.html" target="wiki-view"><code>ExecInitIndexOnlyScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyScanInitializeDSM.html" target="wiki-view"><code>ExecIndexOnlyScanInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyScanReInitializeDSM.html" target="wiki-view"><code>ExecIndexOnlyScanReInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIndexonlyscan_c__ExecIndexOnlyScanInitializeWorker.html" target="wiki-view"><code>ExecIndexOnlyScanInitializeWorker</code></a></li>
+</ul></body></html>

@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/jit/llvm/llvmjit_expr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/jit/llvm/llvmjit_expr.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のクエリ実行エンジンにおける「式評価（Expression Evaluation）」を LLVM IR に変換し、ネイティブコードとして実行するためのコンパイルロジックを担います。インタープリタ型の <code>ExecInterpExpr</code> を LLVM IR の制御フロー（基本ブロックとジャンプ）に置き換えることで、関数呼び出しのオーバーヘッドを劇的に削減します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>llvmjit</code> サブシステムの一部として、<code>ExprState</code>（式評価の状態）を LLVM の機械語関数へ変換する役割を持ちます。<code>llvmjit_expr.c</code> は、実行時の <code>ExprEvalStep</code> 配列を走査し、各ステップに対応する LLVM IR を生成して、最終的に実行可能な関数ポインタを生成します。</p>
+<h2>責務</h2>
+<ul>
+<li>**IR 生成**: <code>ExprEvalStep</code> の各オペコード（<code>EEOP_*</code>）を LLVM IR の基本ブロック（<code>BasicBlock</code>）と命令にマッピング。</li>
+<li>**実行コンテキストのブリッジ**: PostgreSQL の <code>ExprContext</code> や <code>TupleTableSlot</code> へのアクセスを LLVM IR 上で効率的に行うためのロード/ストア命令の生成。</li>
+<li>**JIT コンパイルの遅延評価**: コンパイル自体は <code>llvm_compile_expr</code> で行われますが、実際の機械語生成と最適化は <code>ExecRunCompiledExpr</code> が初めて呼ばれるまで遅延されます。</li>
+<li>**エラーハンドリング**: LLVM 内部のメモリ不足や致命的エラーを PostgreSQL のエラーシステムへ伝播させるブリッジ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンパイル管理</h3>
+<ul>
+<li><code>llvm_compile_expr</code>: 式評価のメインコンパイル関数。<code>ExprState</code> を受け取り、LLVM IR を生成して <code>CompiledExprState</code> を初期化します。</li>
+<li><code>ExecRunCompiledExpr</code>: コンパイル済み関数を初めて実行する際に呼び出されるラッパー。ここで初めて <code>llvm_get_function</code> を通じて機械語が生成されます。</li>
+</ul>
+<h3>IR 生成ヘルパー</h3>
+<ul>
+<li><code>BuildV1Call</code>: PostgreSQL の関数呼び出し（<code>FunctionCallInfo</code>）を LLVM IR 上で実行するためのヘルパー。</li>
+<li><code>build_EvalXFuncInt</code>: 汎用的な式評価関数（<code>ExecEval*</code>）を LLVM IR から呼び出すためのラッパー。</li>
+<li><code>create_LifetimeEnd</code>: LLVM のメモリ生存期間ヒント（<code>llvm.lifetime.end</code>）を生成し、最適化を促進します。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>CompiledExprState</code>: コンパイルされた関数名と JIT コンテキストを保持する構造体。<code>state-&gt;evalfunc_private</code> に格納されます。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BuildV1Call</code></li>
+<li><code>CompiledExprState</code></li>
+<li><code>ExecRunCompiledExpr</code></li>
+<li><code>build_EvalXFuncInt</code></li>
+<li><code>create_LifetimeEnd</code></li>
+<li><code>llvm_compile_expr</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>llvm_compile_expr</code> が <code>ExprState</code> の各ステップをループし、<code>opblocks</code> 配列を割り当てて基本ブロックを準備します。 2. **命令変換**: <code>switch (opcode)</code> 文により、各 <code>EEOP_*</code> に応じた IR を生成します。</p>
+<ul>
+<li>**データアクセス**: <code>l_load_struct_gep</code> 等を用いて、<code>ExprContext</code> や <code>TupleTableSlot</code> から値をロードします。</li>
+<li>**制御フロー**: <code>LLVMBuildBr</code> や <code>LLVMBuildCondBr</code> を使用して、ステップ間のジャンプを構築します。</li>
+<li>**関数呼び出し**: <code>BuildV1Call</code> を介して PostgreSQL の関数を呼び出します。</li>
+<p>3. **遅延実行**: <code>ExecRunCompiledExpr</code> が呼び出されると、<code>llvm_get_function</code> が実行され、LLVM の ORC JIT が IR を機械語に変換します。以降、<code>state-&gt;evalfunc</code> は直接機械語関数を指すようになります。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**LLVM C API**: <code>llvm-c/Core.h</code>, <code>llvm-c/Target.h</code> を通じて IR を操作します。</li>
+<li>**PostgreSQL Executor**: <code>executor/execExpr.h</code>（式評価の定義）、<code>executor/nodeAgg.h</code> 等の実行エンジン構造体。</li>
+<li>**JIT 基盤**: <code>jit/llvmjit.h</code>（コンテキスト管理）、<code>jit/llvmjit_emit.h</code>（IR 生成用ユーティリティ）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/execdebug.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/fmgrtab.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>utils/xml.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>llvmjit.c</code>: JIT コンテキストのライフサイクル管理。</li>
+<li><code>llvmjit_types.c</code>: PostgreSQL の構造体を LLVM IR 上で表現するための型定義。</li>
+<li><code>llvmjit_deform.c</code>: タプルデフォーム処理の JIT コンパイル。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: 生成された IR は <code>LLVMJitContext</code> が所有します。<code>CompiledExprState</code> は <code>palloc</code> で割り当てられ、<code>ExprState</code> のライフサイクルに依存します。</li>
+<li>**最適化**: <code>llvm_compile_expr</code> は、式評価の各ステップを個別の基本ブロックとして構築します。これにより、LLVM の最適化パス（インライン化やデッドコード削除）が非常に強力に機能します。</li>
+<li>**制約**: <code>LLVM_VERSION_MAJOR &lt; 22</code> の条件付きコンパイルが含まれており、古い LLVM バージョンとの互換性が維持されています。</li>
+<li>**省略された詳細**: <code>l_</code> で始まる関数群（<code>l_load</code>, <code>l_call</code> 等）は <code>llvmjit_emit.h</code> で定義されたラッパーであり、本ファイル内では詳細な IR 生成ロジックは省略されています。これらは PostgreSQL のデータ構造を LLVM IR にマッピングする定型処理を簡略化するものです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__CompiledExprState.html" target="wiki-view"><code>CompiledExprState</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__llvm_compile_expr.html" target="wiki-view"><code>llvm_compile_expr</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__ExecRunCompiledExpr.html" target="wiki-view"><code>ExecRunCompiledExpr</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__BuildV1Call.html" target="wiki-view"><code>BuildV1Call</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__build_EvalXFuncInt.html" target="wiki-view"><code>build_EvalXFuncInt</code></a></li>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_expr_c__create_LifetimeEnd.html" target="wiki-view"><code>create_LifetimeEnd</code></a></li>
+</ul></body></html>

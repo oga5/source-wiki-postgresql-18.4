@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__slru_c__SlruDeleteSegment.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SlruDeleteSegment</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/slru.c:1525</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたセグメント番号（<code>segno</code>）に対応する SLRU セグメントファイルを物理的に削除する。削除に先立ち、メモリ上のバッファキャッシュから当該セグメントに属するページを排除またはフラッシュする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SlruDeleteSegment(SlruCtl ctl, int64 segno)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>ctl</code>: 対象となる SLRU インスタンスの制御構造体。</li>
+<li><code>segno</code>: 削除対象のセグメント番号。</li>
+<li>戻り値: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、削除対象のセグメントが既に不要であることを保証しなければならない。</li>
+<li>処理中、対象セグメントに関連するバッファスロットのロック（銀行ロック）が排他的に取得される。</li>
+<li>処理の過程で I/O が発生する場合、銀行ロックは一時的に解放される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>shared-&gt;bank_locks</code> を用いて、全スロットを走査する。 2. 各スロットについて、対象セグメントに属するページを特定する。 3. ページが <code>SLRU_PAGE_VALID</code> かつダーティである場合は <code>SlruInternalWritePage</code> でディスクへ書き出し、クリーンな場合は単に <code>SLRU_PAGE_EMPTY</code> 状態へ遷移させる。 4. ページが I/O 中の場合は <code>SimpleLruWaitIO</code> で完了を待機する。 5. I/O 発生によりロックを解放した場合は、再走査（<code>restart</code>）を行い、競合により読み込まれた可能性のある対象セグメントのページを再度クリーンアップする。 6. 全スロットの確認完了後、<code>SlruInternalDeleteSegment</code> を呼び出して物理ファイルを削除する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/multixact.c</code></li>
+<li><code>src/test/modules/test_slru/test_slru.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>SlotGetBankNumber</code> (マクロ)</li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>SlruInternalWritePage</code></li>
+<li><code>SimpleLruWaitIO</code></li>
+<li><code>SlruInternalDeleteSegment</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SlruCtl</code>: SLRU インスタンスの制御構造体。</li>
+<li><code>SlruSharedData</code>: 共有メモリ上の状態管理構造体（<code>page_status</code>, <code>page_number</code>, <code>page_dirty</code>, <code>bank_locks</code> を含む）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>削除対象のセグメントが既に存在しない場合や、I/O エラーが発生した場合は <code>SlruInternalDeleteSegment</code> 内の挙動に依存する。</li>
+<li>処理中に新しいページが読み込まれた場合、<code>did_write</code> フラグによる再走査ループにより整合性が維持される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SimpleLruTruncate</code> と同様の排他制御ロジックを採用している。ロックの取得順序や解放タイミングを変更する際は、デッドロックの可能性に注意すること。</li>
+<li><code>SlruInternalDeleteSegment</code> は物理的なファイル削除を行うため、呼び出し前に必ず当該セグメントへの参照がキャッシュから完全に排除されている必要がある。</li>
+</ul></body></html>

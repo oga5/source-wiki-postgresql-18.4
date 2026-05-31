@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_revmap.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_revmap.c</h1>
+<h2>概要</h2>
+<p>BRIN（Block Range Index）インデックスにおける「リバースレンジマップ（revmap）」を管理するモジュールです。revmapは、ヒープのページ範囲と、その範囲を要約したBRINインデックス内のタプル（<code>BrinTuple</code>）を対応付けるための翻訳テーブルとして機能します。</p>
+<h2>モジュール内での役割</h2>
+<p>BRINインデックスの構造において、メタページの直後に配置される補助的なデータ構造です。インデックス検索時や挿入時に、特定のヒープブロックがどの要約タプルに対応するかを高速に特定するために使用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**マッピング管理**: ヒープのブロック番号から、対応するrevmapページおよびそのページ内のオフセットを算出する。</li>
+<li>**動的拡張**: インデックスの成長に合わせてrevmapページを物理的に追加し、メタページを更新する。</li>
+<li>**ページ退避**: revmapの拡張時に、対象ブロックが既に通常のBRINページとして使用されている場合、そのページを退避（evacuation）させる。</li>
+<li>**タプル検索**: 指定されたヒープブロックに対応する<code>BrinTuple</code>をインデックスから取得する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BrinRevmap</code>: revmapへのアクセス状態を保持する構造体。メタページや現在のrevmapバッファをキャッシュする。</li>
+<li><code>brinRevmapInitialize</code>/<code>brinRevmapTerminate</code>: アクセスオブジェクトのライフサイクル管理。</li>
+<li><code>brinGetTupleForHeapBlock</code>: 特定のヒープブロックに対応する要約タプルを検索する主要関数。</li>
+<li><code>brinSetHeapBlockItemptr</code>: revmapページ内の特定の項目を更新する（WAL記録を含む）。</li>
+<li><code>HEAPBLK_TO_REVMAP_BLK</code>/<code>INDEX</code>: ヒープブロック番号からrevmap上の物理位置を計算するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>brinLockRevmapPageForUpdate</code></li>
+<li><code>brinRevmapDesummarizeRange</code></li>
+<li><code>brinRevmapExtend</code></li>
+<li><code>revmap_extend_and_get_blkno</code></li>
+<li><code>revmap_get_blkno</code></li>
+<li><code>revmap_get_buffer</code></li>
+<li><code>revmap_physical_extend</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>brinRevmapInitialize</code>でメタページを読み込み、現在のrevmapの末尾ページ番号をキャッシュする。 2.  **検索**: <code>brinGetTupleForHeapBlock</code>がヒープブロック番号からrevmap上の位置を特定し、該当する<code>BrinTuple</code>を読み込む。 3.  **拡張**: <code>brinRevmapExtend</code>が呼ばれると、<code>revmap_physical_extend</code>が起動し、必要に応じてインデックス末尾を拡張する。この際、既存のページと競合する場合は<code>brin_evacuate_page</code>を呼び出してデータを移動させる。 4.  **更新**: <code>brinSetHeapBlockItemptr</code>により、特定のヒープ範囲に対する要約タプルの位置（TID）がrevmapに書き込まれる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/brin_page.h</code>, <code>access/brin_pageops.h</code>: BRINページ構造と操作用。</li>
+<li><code>access/brin_revmap.h</code>: 公開インターフェース定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>access/xloginsert.h</code>: WAL書き込み用。</li>
+<li><code>access/brin_tuple.h</code></li>
+<li><code>access/brin_xlog.h</code></li>
+<li><code>access/rmgr.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/brin_revmap.h</code>: 本ファイルのヘッダ。</li>
+<li><code>src/backend/access/brin/brin_pageops.c</code>: ページ退避や初期化などの低レベルなページ操作。</li>
+<li><code>src/backend/access/brin/brin_xlog.c</code>: revmap拡張やdesummarize操作のWALリプレイ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの性質**: <code>BrinRevmap</code>構造体はバッファをキャッシュしますが、これはスレッドセーフではなく、単一のバックエンド内での効率化を目的としています。</li>
+<li>**競合処理**: revmapの拡張はメタページを排他ロックしますが、インデックスの他の部分と競合する可能性があるため、<code>brin_evacuate_page</code>によるページ退避ロジックが含まれています。</li>
+<li>**整合性**: revmapは常にヒープブロックの範囲と要約タプルを正しく指し示す必要があります。不整合が発生した場合はインデックス破損としてエラーを報告する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__BrinRevmap.html" target="wiki-view"><code>BrinRevmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinRevmapInitialize.html" target="wiki-view"><code>brinRevmapInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinRevmapTerminate.html" target="wiki-view"><code>brinRevmapTerminate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinRevmapExtend.html" target="wiki-view"><code>brinRevmapExtend</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinLockRevmapPageForUpdate.html" target="wiki-view"><code>brinLockRevmapPageForUpdate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinSetHeapBlockItemptr.html" target="wiki-view"><code>brinSetHeapBlockItemptr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinGetTupleForHeapBlock.html" target="wiki-view"><code>brinGetTupleForHeapBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__brinRevmapDesummarizeRange.html" target="wiki-view"><code>brinRevmapDesummarizeRange</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__revmap_get_blkno.html" target="wiki-view"><code>revmap_get_blkno</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__revmap_get_buffer.html" target="wiki-view"><code>revmap_get_buffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__revmap_extend_and_get_blkno.html" target="wiki-view"><code>revmap_extend_and_get_blkno</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_revmap_c__revmap_physical_extend.html" target="wiki-view"><code>revmap_physical_extend</code></a></li>
+</ul></body></html>

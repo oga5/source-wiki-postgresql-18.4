@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__policy_c__RemoveRoleFromObjectPolicy.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RemoveRoleFromObjectPolicy</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/policy.c:415</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたポリシー定義から特定のロール（<code>roleid</code>）を削除し、ポリシーの依存関係を更新します。ロールが削除された結果、ポリシーに関連付けられたロールが一つも残らなくなる場合は、ポリシー自体を削除すべきであることを呼び出し元に通知します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>roleid</code>: 削除対象のロールOID。</li>
+<li><code>classid</code>: 対象オブジェクトのクラスOID（<code>PolicyRelationId</code> である必要がある）。</li>
+<li><code>policy_id</code>: 編集対象のポリシーOID。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: ポリシーを保持し続ける場合は <code>true</code>、ロールが残らずポリシーを削除すべき場合は <code>false</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>classid</code> は <code>PolicyRelationId</code> と一致しなければなりません（<code>Assert</code> で検証）。</li>
+<li>指定された <code>policy_id</code> に対応するポリシーが <code>pg_policy</code> カタログに存在する必要があります。存在しない場合はエラーをスローします。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_policy</code> テーブルを <code>RowExclusiveLock</code> で開きます。 2. <code>policy_id</code> をキーにシステムスキャンを行い、対象のポリシー行を取得します。 3. 現在の <code>polroles</code> 配列から <code>roleid</code> を除外した新しいロールリストを構築します。 4. ロールが残る場合:</p>
+<ul>
+<li><code>pg_policy</code> の該当行を更新し、新しいロール配列を格納します。</li>
+<li>既存の共有依存関係を削除し、残ったロールに対して新しい共有依存関係を登録します。</li>
+<li><code>InvokeObjectPostAlterHook</code> を呼び出し、キャッシュ無効化（<code>CacheInvalidateRelcacheByTuple</code>）を実行して変更を反映させます。</li>
+<li><code>true</code> を返します。</li>
+<p>5. ロールが一つも残らない場合:</p>
+<li><code>false</code> を返します（ポリシーの削除は呼び出し元に委ねられます）。</li>
+<p>6. 最後にスキャンを終了し、テーブルを閉じます。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/catalog/pg_shdepend.c:1421</code> からの呼び出しが確認されています。</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>systable_beginscan</code>, <code>heap_modify_tuple</code>, <code>CatalogTupleUpdate</code>, <code>deleteSharedDependencyRecordsFor</code>, <code>recordSharedDependencyOn</code>, <code>CacheInvalidateRelcacheByTuple</code> 等のカタログ操作関数群。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_policy</code>: ポリシー定義を保持するシステムカタログ。</li>
+<li><code>RowSecurityDesc</code>: RLS記述子（本関数は直接操作しませんが、キャッシュ無効化を通じて影響を与えます）。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>指定された <code>policy_id</code> が存在しない場合、<code>elog(ERROR)</code> によりトランザクションが中断されます。</li>
+<li>ロールが重複して登録されている場合、すべて削除されるまで処理が継続されます。</li>
+<li><code>public</code> ロール（<code>ACL_ID_PUBLIC</code>）に対する依存関係は登録されません。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はポリシーの「定義」を修正するものであり、ポリシー自体の削除（<code>DROP POLICY</code>）は呼び出し元が本関数の戻り値 <code>false</code> を受けて実行する必要があります。</li>
+<li><code>CommandCounterIncrement()</code> が呼び出されるため、本関数の実行後にカタログの変更が可視化されます。</li>
+</ul></body></html>

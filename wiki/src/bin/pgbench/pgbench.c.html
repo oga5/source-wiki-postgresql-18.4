@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pgbench/pgbench.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pgbench/pgbench.c</h1>
+<h2>概要</h2>
+<p><code>pgbench.c</code> は、PostgreSQL の負荷テストツール <code>pgbench</code> のメインプログラムです。マルチスレッドによる並行クライアントの実行、SQL スクリプトの解析・実行、統計情報の収集、およびデータベースの初期化を担います。非常に大規模なファイルであり、ステートマシンによる非同期 I/O 処理と、式評価エンジンが中心的な役割を果たします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgbench</code> モジュールの中核であり、<code>pgbench.h</code> で定義されたデータ構造と式評価エンジンを利用してベンチマークを実行します。<code>exprparse.y</code> および <code>exprscan.l</code> と連携してスクリプトを解釈し、<code>libpq</code> を介してデータベースと通信します。</p>
+<h2>責務</h2>
+<ul>
+<li>**実行制御**: スレッド管理、クライアントの並行実行、および <code>poll</code>/<code>select</code> を用いた非同期 I/O 多重化。</li>
+<li>**スクリプト実行**: SQL およびメタコマンド（<code>\set</code>, <code>\if</code> 等）の解釈と実行。</li>
+<li>**式評価**: スクリプト内の計算式を AST として評価。</li>
+<li>**統計収集**: トランザクションのレイテンシ、TPS、エラー発生率の計測とレポート出力。</li>
+<li>**データベース初期化**: ベンチマーク用スキーマの構築および高速なデータロード。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>CState</code>: 個々のクライアント接続のコンテキスト。状態遷移、変数、統計情報、接続ハンドルを保持。</li>
+<li><code>TState</code>: スレッドごとの実行コンテキスト。複数の <code>CState</code> を管理し、スレッド固有の乱数生成器や統計情報を保持。</li>
+<li><code>ConnectionStateEnum</code>: クライアントのライフサイクル状態（<code>CSTATE_START_TX</code>, <code>CSTATE_WAIT_RESULT</code> 等）。</li>
+</ul>
+<h3>実行・評価</h3>
+<ul>
+<li><code>advanceConnectionState()</code>: クライアントのステートマシンを駆動する中心関数。</li>
+<li><code>evaluateExpr()</code>: <code>PgBenchExpr</code> を再帰的に評価し、<code>PgBenchValue</code> を返す。</li>
+<li><code>executeMetaCommand()</code>: <code>\set</code> や <code>\sleep</code> などのメタコマンドを実行。</li>
+</ul>
+<h3>データ構造</h3>
+<ul>
+<li><code>PgBenchValue</code>: 式評価の結果を保持する共用体（<code>int64</code>, <code>double</code>, <code>bool</code>）。</li>
+<li><code>Command</code>: スクリプト内の個々のコマンド（SQL またはメタコマンド）の定義。</li>
+<li><code>StatsData</code>: トランザクションの成功・失敗・レイテンシなどの統計情報を集計する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CState</code></li>
+<li><code>ConnectionStateEnum</code></li>
+<li><code>EStatus</code></li>
+<li><code>SimpleStats</code></li>
+<li><code>StatsData</code></li>
+<li><code>TState</code></li>
+<li><code>TStatus</code></li>
+<li><code>Variable</code></li>
+<li><code>Variables</code></li>
+<li><code>partition_method_t</code></li>
+<li><code>pg_time_usec_t</code></li>
+<li><code>socket_set</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main()</code> で引数を解析し、スレッドとクライアントを初期化。 2. **スレッド実行**: <code>threadRun()</code> が各スレッドのメインループとなり、<code>poll</code>/<code>select</code> でソケットを監視。 3. **状態遷移**: イベント発生時に <code>advanceConnectionState()</code> が呼ばれ、<code>CState</code> の状態を更新。 4. **クエリ送信**: <code>sendCommand()</code> が <code>libpq</code> を介してクエリを送信。 5. **結果受信**: <code>readCommandResponse()</code> が結果を解析し、<code>\gset</code> 等の変数代入を行う。 6. **終了処理**: 全クライアント完了後、<code>printResults()</code> が統計情報を集計して出力。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: データベース接続およびクエリ実行。</li>
+<li><code>pgbench.h</code>: 共通データ構造および式評価エンジンの定義。</li>
+<li><code>fe_utils/</code>: PostgreSQL フロントエンド共通ユーティリティ（<code>cancel.h</code>, <code>string_utils.h</code> 等）。</li>
+<li><code>portability/</code>: <code>instr_time.h</code> による高精度タイマー。</li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>common/username.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fe_utils/cancel.h</code></li>
+<li><code>fe_utils/conditional.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>float.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>poll.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>port/pg_pthread.h</code></li>
+<li><code>portability/instr_time.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/resource.h</code></li>
+<li><code>sys/select.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+<li><code>windows.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pgbench/exprparse.y</code>: 式評価のパーサー定義。</li>
+<li><code>src/bin/pgbench/exprscan.l</code>: 式評価のレクサー定義。</li>
+<li><code>src/bin/pgbench/pgbench.h</code>: 共有データ構造の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>CState</code> や <code>TState</code> は動的に確保されます。<code>pg_malloc</code> 系関数が使用されており、エラー時は <code>pg_fatal</code> で終了します。</li>
+<li>**非同期 I/O**: <code>poll</code>/<code>select</code> の抽象化層（<code>socket_set</code>）が実装されており、プラットフォーム依存の I/O 多重化を吸収しています。</li>
+<li>**式評価**: <code>evaluateExpr</code> は再帰的です。複雑な式を評価する際はスタックオーバーフローに注意が必要ですが、実用上の制限は <code>MAX_FARGS</code> 等で管理されています。</li>
+<li>**未実装・浅い部分**: <code>pgbench.c</code> は非常に巨大であるため、機能ごとにファイルを分割するリファクタリングが推奨されます。特に式評価ロジックとステートマシンロジックの分離が課題です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__socket_set.html" target="wiki-view"><code>socket_set</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__partition_method_t.html" target="wiki-view"><code>partition_method_t</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__Variable.html" target="wiki-view"><code>Variable</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__Variables.html" target="wiki-view"><code>Variables</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__SimpleStats.html" target="wiki-view"><code>SimpleStats</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__pg_time_usec_t.html" target="wiki-view"><code>pg_time_usec_t</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__StatsData.html" target="wiki-view"><code>StatsData</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__EStatus.html" target="wiki-view"><code>EStatus</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__TStatus.html" target="wiki-view"><code>TStatus</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__ConnectionStateEnum.html" target="wiki-view"><code>ConnectionStateEnum</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__CState.html" target="wiki-view"><code>CState</code></a></li>
+<li><a href="../../../symbols/src__bin__pgbench__pgbench_c__TState.html" target="wiki-view"><code>TState</code></a></li>
+</ul></body></html>

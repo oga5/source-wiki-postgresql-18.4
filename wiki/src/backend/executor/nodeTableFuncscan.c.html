@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeTableFuncscan.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeTableFuncscan.c</h1>
+<h2>概要</h2>
+<p><code>nodeTableFuncscan.c</code> は、SQLの <code>XMLTABLE</code> や <code>JSON_TABLE</code> といった「テーブル関数（Table Functions）」を実行するためのスキャンノードを実装しています。これらは入力データ（XMLやJSON）を解析し、仮想的なリレーショナルテーブルとして出力する機能です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> におけるスキャンノードの一種です。他のスキャンノード（<code>nodeSeqscan.c</code> 等）と同様に、<code>ExecScan</code> インターフェースを介してプラン実行エンジンに統合されています。</p>
+<h2>責務</h2>
+<ul>
+<li>**初期化**: <code>TableFuncScanState</code> の構築、式評価コンテキストの準備、および入力データ型に応じた <code>FmgrInfo</code> の設定。</li>
+<li>**データ取得**: 入力ドキュメントを解析し、行を抽出して <code>tuplestore</code> に格納する。</li>
+<li>**行の生成**: 抽出されたデータに対して列フィルタやデフォルト値の適用を行い、最終的なタプルを生成する。</li>
+<li>**リソース管理**: 実行中に使用するメモリコンテキスト（<code>perTableCxt</code>）の管理と、<code>tuplestore</code> のクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecInitTableFuncScan</code>: ノードの初期化と式ツリーの準備を行う。</li>
+<li><code>TableFuncNext</code>: <code>ExecScan</code> から呼び出され、<code>tuplestore</code> から次のタプルを取得する。</li>
+<li><code>tfuncFetchRows</code>: 最初の呼び出し時にドキュメントを解析し、全行を <code>tuplestore</code> にロードする。</li>
+<li><code>tfuncLoadRows</code>: 行ごとの値抽出、デフォルト値の適用、NOT NULL 制約の検証を行う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndTableFuncScan</code></li>
+<li><code>ExecReScanTableFuncScan</code></li>
+<li><code>ExecTableFuncScan</code></li>
+<li><code>TableFuncRecheck</code></li>
+<li><code>tfuncInitialize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitTableFuncScan</code> がプランノードを解析し、XML/JSON 用のルーチン（<code>XmlTableRoutine</code> 等）をセットアップする。 2. **初回実行**: <code>TableFuncNext</code> が <code>tupstore</code> が空であることを検知し、<code>tfuncFetchRows</code> を呼び出す。 3. **解析**: <code>tfuncFetchRows</code> が <code>tfuncInitialize</code> を通じて名前空間やフィルタを設定し、<code>tfuncLoadRows</code> で行を反復処理する。 4. **タプル生成**: <code>tfuncLoadRows</code> が <code>routine-&gt;GetValue</code> で各列の値を取得し、<code>tuplestore_putvalues</code> で格納する。 5. **スキャン**: 以降の呼び出しでは、<code>tuplestore_gettupleslot</code> を使用してメモリ上の結果を順次返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/tablefunc.h</code>: テーブル関数固有のルーチン定義。</li>
+<li><code>nodes/execnodes.h</code>: <code>TableFuncScanState</code> 等の実行時ノード構造体。</li>
+<li><code>utils/xml.h</code>, <code>utils/jsonpath.h</code>: XML/JSON 解析のためのユーティリティ。</li>
+<li><code>executor/executor.h</code>: スキャン実行の共通基盤。</li>
+<li><code>executor/nodeTableFuncscan.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeTableFuncscan.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/executor/execScan.c</code>: <code>ExecScan</code> の共通実装。</li>
+<li><code>src/backend/utils/adt/xml.c</code> / <code>jsonpath_exec.c</code>: 実際の XML/JSON 解析ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ノードは、一度の実行で全行を <code>tuplestore</code> にロードする「マテリアライズ型」のスキャンです。そのため、入力ドキュメントが巨大な場合はメモリ消費に注意が必要です。</li>
+<li><code>opaque</code> ポインタは、XML や JSON の解析エンジンが実行状態を保持するために使用する動的な領域です。</li>
+<li><code>perTableCxt</code> は、1つのテーブル関数呼び出しのライフサイクルに紐づくメモリ管理用であり、クエリ全体よりも短く、タプル単位よりも長い生存期間を持ちます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__TableFuncNext.html" target="wiki-view"><code>TableFuncNext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__TableFuncRecheck.html" target="wiki-view"><code>TableFuncRecheck</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__ExecTableFuncScan.html" target="wiki-view"><code>ExecTableFuncScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__ExecInitTableFuncScan.html" target="wiki-view"><code>ExecInitTableFuncScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__ExecEndTableFuncScan.html" target="wiki-view"><code>ExecEndTableFuncScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__ExecReScanTableFuncScan.html" target="wiki-view"><code>ExecReScanTableFuncScan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__tfuncFetchRows.html" target="wiki-view"><code>tfuncFetchRows</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__tfuncInitialize.html" target="wiki-view"><code>tfuncInitialize</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeTableFuncscan_c__tfuncLoadRows.html" target="wiki-view"><code>tfuncLoadRows</code></a></li>
+</ul></body></html>

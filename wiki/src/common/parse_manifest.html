@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/parse_manifest.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/parse_manifest.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバックアップマニフェスト（JSON形式）を解析するためのモジュールです。バックアップに含まれるファイル一覧、WAL範囲、システム識別子、およびマニフェスト自体の整合性を検証する機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> 内のユーティリティとして、主にバックアップ・リカバリ関連のツール（<code>pg_basebackup</code> 等）が、バックアップディレクトリ内の <code>backup_manifest</code> ファイルを読み取り、内容を検証するために使用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**JSON解析**: <code>jsonapi.h</code> を利用したストリーミング/インクリメンタルなJSON解析。</li>
+<li>**データ抽出**: マニフェスト内の各フィールド（ファイルパス、サイズ、チェックサム、WAL範囲など）の抽出と型変換。</li>
+<li>**整合性検証**: マニフェスト末尾に記載されたSHA-256チェックサムを用いた、ファイル全体の改ざん検知。</li>
+<li>**コールバック駆動**: 解析結果を呼び出し元へ通知するためのコールバックインターフェースの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>JsonManifestParseContext</code>: 解析結果を受け取るためのコールバック関数群を保持する構造体。</li>
+<li><code>json_parse_manifest</code>: マニフェスト全体を一度に解析するメイン関数。</li>
+<li><code>json_parse_manifest_incremental_init/chunk/shutdown</code>: 大規模なマニフェストを分割して解析するためのインクリメンタルAPI。</li>
+<li><code>JsonManifestParseState</code>: 解析中の内部状態（現在の解析フェーズや抽出中のデータ）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>JsonManifestFileField</code></li>
+<li><code>JsonManifestParseIncrementalState</code></li>
+<li><code>JsonManifestSemanticState</code></li>
+<li><code>JsonManifestWALRangeField</code></li>
+<li><code>json_manifest_array_start</code></li>
+<li><code>json_manifest_object_end</code></li>
+<li><code>json_manifest_object_start</code></li>
+<li><code>json_parse_manifest_incremental_chunk</code></li>
+<li><code>json_parse_manifest_incremental_init</code></li>
+<li><code>json_parse_manifest_incremental_shutdown</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 呼び出し元が <code>JsonManifestParseContext</code> を設定し、解析を開始します。 2. **解析**: <code>pg_parse_json</code> (またはインクリメンタル版) がJSONを走査し、<code>json_manifest_object_field_start</code> や <code>json_manifest_scalar</code> などのハンドラを呼び出します。 3. **状態遷移**: <code>JsonManifestSemanticState</code> を用いて、現在どのJSONオブジェクト（ファイル、WAL範囲など）を処理中かを追跡します。 4. **確定**: オブジェクトの終了時に <code>json_manifest_finalize_file</code> 等が呼ばれ、蓄積された文字列データが適切な型（<code>uint64</code> や <code>XLogRecPtr</code>）に変換され、コールバック経由で呼び出し元に渡されます。 5. **検証**: 最後に <code>verify_manifest_checksum</code> が呼び出され、マニフェストの末尾を除く全内容のハッシュ値と、マニフェスト内のチェックサムを比較します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>common/jsonapi.h</code>: JSONストリーミング解析用API。</li>
+<li><code>common/parse_manifest.h</code>: 公開インターフェース定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/common/jsonapi.c</code>: JSON解析の基盤となるパーサー実装。</li>
+<li><code>src/common/cryptohash.c</code>: チェックサム計算（SHA-256）に使用。</li>
+<li><code>src/include/access/xlogdefs.h</code>: WAL関連の型定義（<code>XLogRecPtr</code> 等）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはフロントエンド（<code>postgres_fe.h</code>）向けに設計されています。</li>
+<li>インクリメンタル解析を行う場合、マニフェストの最後のチャンクには必ずチェックサムが含まれている必要があります。</li>
+<li>ファイルパスのエンコード（<code>Encoded-Path</code>）は16進数文字列として扱われるため、解析時に <code>hexdecode_string</code> でバイナリに戻す処理が行われます。</li>
+<li><code>json_manifest_parse_failure</code> は <code>pg_unreachable()</code> を呼び出すため、エラー発生時は呼び出し元のコールバックから復帰しません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__parse_manifest_c__JsonManifestSemanticState.html" target="wiki-view"><code>JsonManifestSemanticState</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__JsonManifestFileField.html" target="wiki-view"><code>JsonManifestFileField</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__JsonManifestWALRangeField.html" target="wiki-view"><code>JsonManifestWALRangeField</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__JsonManifestParseState.html" target="wiki-view"><code>JsonManifestParseState</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__JsonManifestParseIncrementalState.html" target="wiki-view"><code>JsonManifestParseIncrementalState</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_parse_manifest_incremental_init.html" target="wiki-view"><code>json_parse_manifest_incremental_init</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_parse_manifest_incremental_shutdown.html" target="wiki-view"><code>json_parse_manifest_incremental_shutdown</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_parse_manifest_incremental_chunk.html" target="wiki-view"><code>json_parse_manifest_incremental_chunk</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_parse_manifest.html" target="wiki-view"><code>json_parse_manifest</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_manifest_object_start.html" target="wiki-view"><code>json_manifest_object_start</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_manifest_object_end.html" target="wiki-view"><code>json_manifest_object_end</code></a></li>
+<li><a href="../../symbols/src__common__parse_manifest_c__json_manifest_array_start.html" target="wiki-view"><code>json_manifest_array_start</code></a></li>
+</ul></body></html>

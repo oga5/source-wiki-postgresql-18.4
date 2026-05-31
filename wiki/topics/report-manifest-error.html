@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/report-manifest-error.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>report_manifest_error</h1>
+<h2>概念</h2>
+<p><code>report_manifest_error</code> は、PostgreSQL のバックアップマニフェスト（<code>backup_manifest</code>）ファイルを解析（パース）する際に、致命的なエラーが発生したことを報告し、プログラムを即座に異常終了させるためのエラーハンドラ（コールバック関数）です。</p>
+<h2>なぜ重要か</h2>
+<p>バックアップマニフェストの解析中に不正な構文や致命的な問題が検出された場合、それ以上の処理（バックアップの結合や検証など）を安全に継続することはできません。<code>report_manifest_error</code> は、エラーメッセージを適切にログ出力した上で、プロセスを確実に <code>exit(1)</code> で終了させることで、不整合な状態での処理継続を防ぐ重要な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_combinebackup</code></li>
+<li><code>module:src/bin/pg_verifybackup</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/bin/pg_combinebackup/load_manifest.c#report_manifest_error</code>: <code>pg_combinebackup</code> ツールにおいて、マニフェスト読み込み時のエラーハンドラとして機能する static 関数。</li>
+<li><code>symbol:src/bin/pg_verifybackup/pg_verifybackup.c#report_manifest_error</code>: <code>pg_verifybackup</code> ツールにおいて、マニフェスト検証時のエラーハンドラとして機能する static 関数。</li>
+<li><code>JsonManifestParseContext</code>: マニフェスト解析の状態を管理する構造体。この構造体の <code>error_cb</code> フィールドに上記のエラーハンドラ関数が登録されます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **コンテキストの初期化と登録**: <code>pg_combinebackup</code> または <code>pg_verifybackup</code> の実行時、マニフェスト解析コンテキスト（<code>JsonManifestParseContext</code>）が作成され、その <code>error_cb</code> フィールドにそれぞれの <code>report_manifest_error</code> 関数が登録されます。 2. **パースエラーの発生**: マニフェストファイルの解析中に構文エラーなどの致命的な問題が検出されると、登録された <code>error_cb</code>（すなわち <code>report_manifest_error</code>）が呼び出されます。 3. **ログ出力と終了**:</p>
+<ul>
+<li><code>va_start</code> を用いて可変長引数リストを初期化します。</li>
+<li><code>pg_log_generic_v</code> を呼び出し、<code>PG_LOG_ERROR</code> レベルでエラーメッセージをログ（標準エラー出力など）に出力します。</li>
+<li><code>va_end</code> で引数リストをクリーンアップします。</li>
+<li><code>exit(1)</code> を実行し、プロセスを即座に異常終了させます。</li>
+</ul>
+<p>なお、マニフェスト解析の開始から終了に至る全体的な制御フローや、パース処理の具体的な内部アルゴリズムの全容（エンドツーエンドの完全な流れ）は、提供された情報からは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**非復帰性 (No-return)**: 本関数が呼び出された場合、呼び出し元へ制御が戻ることはなく、必ず <code>exit(1)</code> によりプロセスが終了します。</li>
+<li>**シグネチャの一致**: <code>pg_combinebackup</code> と <code>pg_verifybackup</code> の両モジュールにおいて、<code>JsonManifestParseContext</code> のエラーコールバックとして登録できるように、同一の関数シグネチャ（<code>static void (JsonManifestParseContext *, const char *, ...)</code>）を維持する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**リソースの解放漏れ**: 本関数は呼び出されると即座に <code>exit(1)</code> でプロセスを終了させるため、呼び出し元で確保されたメモリやファイル記述子などのリソースは明示的に解放されません（OSによるプロセス終了時の自動回収に依存します）。</li>
+<li>**定義の重複と属性の不一致**: 本関数は <code>pg_combinebackup</code> と <code>pg_verifybackup</code> の両方にほぼ同一のロジックで個別に定義されています。片方の挙動やシグネチャを変更する際は、もう片方にも同様の修正が必要になるため、同期漏れに注意する必要があります。また、<code>pg_combinebackup</code> 側では <code>pg_noreturn</code> 属性が宣言されている一方、<code>pg_verifybackup</code> 側では <code>static void</code> として定義されているという差異が存在します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_combinebackup/load_manifest.c</code></li>
+<li><code>src/bin/pg_verifybackup/pg_verifybackup.c</code></li>
+</ul></body></html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__test__isolation__isolationtester_c__try_complete_step.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>try_complete_step</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/test/isolation/isolationtester.c:817</code></li>
+</ul>
+<h2>目的</h2>
+<p>非同期に発行されたSQLステップの完了を待機、またはブロック条件（<code>PermutationStepBlocker</code>）が満たされるまでポーリングを行い、必要に応じてタイムアウト処理やクエリキャンセルを実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool try_complete_step(TestSpec *testspec, PermutationStep *pstep, int flags)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>testspec</code>: テスト仕様全体を保持する構造体。</li>
+<li><code>pstep</code>: 実行対象の順列ステップ。</li>
+<li><code>flags</code>: 動作制御フラグ（<code>STEP_RETRY</code>, <code>STEP_NONBLOCK</code> 等）。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: ステップがまだ進行中（待機中）であれば <code>true</code>、完了していれば <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conns</code> 配列が初期化されており、<code>pstep-&gt;step-&gt;session</code> に対応する接続が有効であること。</li>
+<li><code>flags</code> に <code>STEP_NONBLOCK</code> が含まれる場合、ロック待ち判定用のプリペアドステートメント <code>PREP_WAITING</code> が事前に準備されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期待機チェック**: <code>flags</code> に <code>STEP_RETRY</code> が含まれない場合、<code>PSB_ONCE</code> ブロッカーがあれば即座に待機状態として <code>true</code> を返す。 2. **ポーリングループ**: <code>PQisBusy</code> が真の間、<code>select()</code> を用いてソケットを監視する。</p>
+<ul>
+<li>**タイムアウト/ロック判定**: <code>select()</code> がタイムアウトした場合、<code>STEP_NONBLOCK</code> フラグがあれば <code>PREP_WAITING</code> を実行してロック待ち状態を判定する。</li>
+<li>**キャンセル処理**: 経過時間が <code>max_step_wait</code> を超えた場合、<code>PQcancelBlocking</code> でクエリをキャンセルする。さらに <code>2 * max_step_wait</code> を超えた場合はエラー終了する。</li>
+<p>3. **入力消費**: <code>PQconsumeInput</code> を呼び出し、通知（<code>NOTICE</code>）や結果データを取り込む。 4. **完了判定**: ループ終了後、<code>step_has_blocker</code> を確認し、ブロッカーが存在する場合は待機状態として <code>true</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>run_permutation</code> (推測: <code>run_permutation</code> 内のステップ実行ループから呼び出される)</li>
+<li><code>try_complete_steps</code></li>
+<li>**呼び出し先**:</li>
+<li><code>PQsocket</code>, <code>PQisBusy</code>, <code>PQconsumeInput</code>, <code>PQexecPrepared</code>, <code>PQcancelCreate</code>, <code>PQcancelBlocking</code>, <code>PQcancelFinish</code> (libpq関数)</li>
+<li><code>step_has_blocker</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TestSpec</code>: テスト全体の定義。</li>
+<li><code>PermutationStep</code>: 実行中のステップとブロッカー情報。</li>
+<li><code>IsoConnInfo</code>: セッションごとの接続状態とバックエンドPID。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ソケット異常**: <code>PQsocket</code> が無効な場合、エラーを出力して終了する。</li>
+<li>**ロック判定失敗**: <code>PREP_WAITING</code> クエリが失敗した場合、エラーを出力して終了する。</li>
+<li>**タイムアウト**: <code>2 * max_step_wait</code> を超過すると、テスト全体を異常終了させる。</li>
+<li>**キャンセル失敗**: <code>PQcancelBlocking</code> が失敗した場合、エラーメッセージを出力する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>select()</code> のタイムアウト値は 10ms に固定されており、ロック待ちの頻繁なチェックを意図している。</li>
+<li><code>STEP_NONBLOCK</code> フラグによるロック判定は、バックエンドの <code>pg_isolation_test_session_is_blocked</code> に依存している。</li>
+<li><code>step_has_blocker</code> による最終チェックは、クエリ自体は完了していても、テスト仕様上の依存関係で待機が必要なケースを処理している。</li>
+</ul></body></html>

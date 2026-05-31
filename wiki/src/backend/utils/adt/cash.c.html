@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/cash.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/cash.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの通貨型（<code>money</code>）の入出力、算術演算、および型変換を実装するソースファイルです。内部的には64ビット整数（<code>int64</code>）として値を保持し、ロケール設定に基づいて通貨記号や小数点、桁区切りを動的に処理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、データ型定義に基づいた演算子関数および変換関数を提供します。<code>cash.h</code> で定義された <code>Cash</code> 型（<code>int64</code>の別名）を操作する中心的な役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**入出力処理**: ロケール（<code>lc_monetary</code>）に応じた通貨文字列のパース（<code>cash_in</code>）およびフォーマット出力（<code>cash_out</code>）。</li>
+<li>**算術演算**: 通貨型同士の加減算、および数値型（<code>float8</code>, <code>int</code>系）との乗除算。</li>
+<li>**型変換**: <code>numeric</code> 型や整数型との相互変換。</li>
+<li>**比較演算**: 通貨値の大小比較および等価判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>Cash</code>: <code>int64</code> として定義された通貨の内部表現。</li>
+<li><code>cash_in</code> / <code>cash_out</code>: 通貨型の入出力関数。ロケール情報を取得してフォーマットを決定します。</li>
+<li><code>append_num_word</code>: <code>cash_words</code> 関数で使用される、数値を英語の単語に変換する補助関数。</li>
+<li><code>cash_pl_cash</code> / <code>cash_mi_cash</code>: オーバーフローチェック付きの加減算ラッパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cash_div_float8</code></li>
+<li><code>cash_div_int64</code></li>
+<li><code>cash_eq</code></li>
+<li><code>cash_mul_float8</code></li>
+<li><code>cash_mul_int64</code></li>
+<li><code>cash_recv</code></li>
+<li><code>cash_send</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<ul>
+<li>**入出力**: <code>PGLC_localeconv()</code> を呼び出し、現在のロケール設定（<code>frac_digits</code>, <code>mon_decimal_point</code> 等）を取得します。<code>cash_in</code> は文字列をパースして <code>int64</code> に変換し、<code>cash_out</code> は <code>int64</code> をロケールに従って文字列化します。</li>
+<li>**演算**: ほとんどの演算は <code>int64</code> の算術演算に帰着しますが、乗除算では <code>float8</code> へのキャストと <code>rint()</code> による丸め処理が行われます。すべての演算において、オーバーフローやゼロ除算のチェックが <code>ereport</code> を通じて行われます。</li>
+<li>**変換**: <code>numeric</code> 型との変換では、ロケールの小数桁数に合わせてスケーリング（10のべき乗の乗算）を行い、精度を維持します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とエラー報告機能。</li>
+<li><code>utils/cash.h</code>: <code>Cash</code> 型定義と <code>Datum</code> 変換マクロ。</li>
+<li><code>utils/pg_locale.h</code>: ロケール依存のフォーマット情報取得。</li>
+<li><code>common/int.h</code>: オーバーフローチェック付きの算術演算。</li>
+<li><code>utils/numeric.h</code>: <code>numeric</code> 型との相互変換用。</li>
+<li><code>ctype.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/float.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/cash.h</code>: <code>Cash</code> 型の定義とインターフェース。</li>
+<li><code>src/backend/utils/adt/numeric.c</code>: <code>numeric</code> 型の演算ロジック。</li>
+<li><code>src/backend/utils/adt/formatting.c</code>: ロケール関連の汎用的なフォーマット処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロケール依存**: <code>cash_in</code> と <code>cash_out</code> は <code>lc_monetary</code> に強く依存します。ロケールが変更されると、同じバイナリ値でも出力結果が変わる可能性がある点に注意してください。</li>
+<li>**オーバーフロー**: 内部表現が <code>int64</code> であるため、非常に大きな金額を扱う場合はオーバーフローのリスクがあります。演算関数には <code>pg_add_s64_overflow</code> 等のチェックが組み込まれています。</li>
+<li>**精度**: 小数点以下の扱いはロケールの <code>frac_digits</code> に依存します。デフォルトは2桁ですが、ロケール設定により変動します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__append_num_word.html" target="wiki-view"><code>append_num_word</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_pl_cash.html" target="wiki-view"><code>cash_pl_cash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_mi_cash.html" target="wiki-view"><code>cash_mi_cash</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_mul_float8.html" target="wiki-view"><code>cash_mul_float8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_div_float8.html" target="wiki-view"><code>cash_div_float8</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_mul_int64.html" target="wiki-view"><code>cash_mul_int64</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_div_int64.html" target="wiki-view"><code>cash_div_int64</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_in.html" target="wiki-view"><code>cash_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_out.html" target="wiki-view"><code>cash_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_recv.html" target="wiki-view"><code>cash_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_send.html" target="wiki-view"><code>cash_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__cash_c__cash_eq.html" target="wiki-view"><code>cash_eq</code></a></li>
+</ul></body></html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/auth-oauth.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/auth-oauth.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるSASL <code>OAUTHBEARER</code> 認証メカニズムのサーバー側実装です。RFC 7628 に準拠し、クライアントから提供されたベアラートークンを外部の検証モジュールを介して検証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/libpq</code> サブシステムの一部として、認証フローのプラグインとして機能します。<code>auth.c</code> が管理する認証メカニズムのリストに登録され、クライアントとのハンドシェイクおよびトークン検証を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SASLハンドシェイクの実行**: クライアントからの初期レスポンスの解析と、RFC 7628 に基づくステートマシン（INIT, ERROR, FINISHED）の管理。</li>
+<li>**外部検証モジュールのロード**: <code>oauth_validator_libraries</code> GUCで指定された動的ライブラリをロードし、検証コールバックを初期化する。</li>
+<li>**トークン検証**: クライアントから受け取ったベアラートークンの構文チェックおよび、外部モジュールによる認証・認可の実行。</li>
+<li>**エラー応答の生成**: 認証失敗時に、クライアントへ必要な設定情報（OpenID構成URIなど）を含むJSONレスポンスを生成する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_be_oauth_mech</code>: SASLメカニズムとして登録される構造体。<code>init</code> や <code>exchange</code> などの関数ポインタを保持。</li>
+<li><code>oauth_exchange()</code>: 認証プロトコルのメインループ。クライアントからの入力を解析し、状態を遷移させる。</li>
+<li><code>validate()</code>: トークン検証の核心。<code>validate_token_format()</code> で形式を確認後、外部モジュールの <code>validate_cb</code> を呼び出す。</li>
+<li><code>load_validator_library()</code>: 動的ライブラリをロードし、<code>ValidatorCallbacks</code> を設定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>generate_error_response</code></li>
+<li><code>load_validator_library</code></li>
+<li><code>oauth_ctx</code></li>
+<li><code>oauth_exchange</code></li>
+<li><code>oauth_get_mechanisms</code></li>
+<li><code>oauth_init</code></li>
+<li><code>oauth_state</code></li>
+<li><code>parse_kvpairs_for_auth</code></li>
+<li><code>sanitize_char</code></li>
+<li><code>shutdown_validator_library</code></li>
+<li><code>validate_kvpair</code></li>
+<li><code>validate_token_format</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>oauth_init</code> が呼ばれ、HBA設定から検証モジュール名を取得し、<code>load_validator_library</code> でロードする。 2. **交換**: <code>oauth_exchange</code> がクライアントからのメッセージを処理。</p>
+<ul>
+<li>メッセージが空の場合、空のチャレンジを返して継続。</li>
+<li>メッセージがある場合、<code>parse_kvpairs_for_auth</code> で <code>auth</code> キーを抽出。</li>
+<p>3. **検証**: <code>validate</code> が <code>validate_token_format</code> で <code>Bearer &lt;token&gt;</code> 形式を確認し、外部モジュールへトークンを渡す。 4. **結果**: 成功時は <code>PG_SASL_EXCHANGE_SUCCESS</code> を返し、失敗時は <code>generate_error_response</code> でエラー詳細を構築して <code>PG_SASL_EXCHANGE_CONTINUE</code> を返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>common/oauth-common.h</code>: 共通のOAuth定義。</li>
+<li><code>libpq/auth.h</code>, <code>libpq/sasl.h</code>: 認証フレームワークのインターフェース。</li>
+<li><code>utils/json.h</code>: エラー応答用JSON生成。</li>
+<li><code>storage/fd.h</code>, <code>fmgr.h</code>: 動的ライブラリロードおよびメモリ管理。</li>
+<li><code>fcntl.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>libpq/hba.h</code></li>
+<li><code>libpq/oauth.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/libpq/oauth.h</code>: 外部検証モジュールが実装すべきインターフェース定義。</li>
+<li><code>src/backend/libpq/auth.c</code>: 認証メカニズムの全体的なディスパッチ処理。</li>
+<li><code>src/backend/libpq/hba.c</code>: <code>check_oauth_validator</code> を呼び出し、設定ファイルの妥当性を検証する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**検証モジュールの動的ロード**: このファイルは検証ロジックを直接持たず、外部ライブラリに依存します。<code>_PG_oauth_validator_module_init</code> シンボルが必須です。</li>
+<li>**セキュリティ**: <code>validate_token_format</code> 内では、ログにトークンの一部が出力されないよう細心の注意が払われています。</li>
+<li>**状態管理**: <code>oauth_ctx</code> はセッションごとの状態を保持します。認証失敗時の再試行フロー（RFC 7628 Sec 3.2.3）をサポートするため、<code>OAUTH_STATE_ERROR</code> 状態が存在します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__oauth_state.html" target="wiki-view"><code>oauth_state</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__oauth_ctx.html" target="wiki-view"><code>oauth_ctx</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__oauth_get_mechanisms.html" target="wiki-view"><code>oauth_get_mechanisms</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__oauth_init.html" target="wiki-view"><code>oauth_init</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__oauth_exchange.html" target="wiki-view"><code>oauth_exchange</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__sanitize_char.html" target="wiki-view"><code>sanitize_char</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__validate_kvpair.html" target="wiki-view"><code>validate_kvpair</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__parse_kvpairs_for_auth.html" target="wiki-view"><code>parse_kvpairs_for_auth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__generate_error_response.html" target="wiki-view"><code>generate_error_response</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__validate_token_format.html" target="wiki-view"><code>validate_token_format</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__load_validator_library.html" target="wiki-view"><code>load_validator_library</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth-oauth_c__shutdown_validator_library.html" target="wiki-view"><code>shutdown_validator_library</code></a></li>
+</ul></body></html>

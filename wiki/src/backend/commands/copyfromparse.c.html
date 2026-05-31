@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/copyfromparse.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/copyfromparse.c</h1>
+<h2>概要</h2>
+<p><code>copyfromparse.c</code> は、PostgreSQL の <code>COPY FROM</code> コマンドにおける入力データの解析（パース）を担うモジュールです。テキスト、CSV、およびバイナリ形式の入力ストリームを読み込み、行単位で分解し、最終的にデータベースのデータ型（<code>Datum</code>）へ変換するまでの一連のパイプラインを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> サブシステムの一部として、<code>copyfrom.c</code>（コマンドの開始・終了管理）と密接に連携します。本ファイルは、低レベルな I/O バッファ管理から、文字エンコーディング変換、エスケープ処理、そして型固有の受信関数呼び出しまでをカプセル化する「データ解析エンジン」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ストリーム管理**: ファイル、フロントエンド（クライアント）、またはコールバック関数からのデータ読み込み。</li>
+<li>**バッファパイプライン**: <code>raw_buf</code> → <code>input_buf</code> → <code>line_buf</code> → <code>attribute_buf</code> という多段階のバッファリングによる効率的なデータ処理。</li>
+<li>**フォーマット解析**:</li>
+<li>**Text/CSV**: 行区切り、エスケープ、クォート、区切り文字の処理。</li>
+<li>**Binary**: ヘッダー検証、フィールド長指定によるバイナリデータの読み込み。</li>
+<li>**型変換**: 入力文字列またはバイナリデータを、各カラムの型に対応する <code>ReceiveFunctionCall</code> を用いて <code>Datum</code> に変換。</li>
+<li>**エラーハンドリング**: エンコーディングエラーの検出、不正なフォーマットの報告、および <code>ON_ERROR</code> オプションに基づくスキップ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>バッファ制御・通信</h3>
+<ul>
+<li><code>CopyGetData</code>: ソース（ファイル/FE）から raw データを読み込む低レベル関数。</li>
+<li><code>CopyLoadRawBuf</code> / <code>CopyLoadInputBuf</code>: バッファの充填と、必要に応じたエンコーディング変換のトリガー。</li>
+<li><code>CopyReadBinaryData</code>: バイナリモードで指定バイト数を確実に読み込むためのヘルパー。</li>
+</ul>
+<h3>解析・変換ロジック</h3>
+<ul>
+<li><code>NextCopyFrom</code>: 行単位でデータを取得し、デフォルト値の計算を行うメインエントリポイント。</li>
+<li><code>CopyReadLine</code>: 入力ストリームから 1 行分を <code>line_buf</code> に読み込む。</li>
+<li><code>CopyReadAttributesText</code> / <code>CopyReadAttributesCSV</code>: <code>line_buf</code> をフィールド単位に分割し、エスケープを解除する。</li>
+<li><code>CopyReadBinaryAttribute</code>: バイナリ形式のフィールドを読み込み、型変換関数を呼び出す。</li>
+</ul>
+<h3>内部状態管理</h3>
+<ul>
+<li><code>CopyConvertBuf</code>: クライアントエンコーディングからサーバーエンコーディングへの変換および検証。</li>
+<li><code>CopyFromTextLikeOneRow</code>: テキスト/CSV 形式における行解析の共通ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CopyConversionError</code></li>
+<li><code>CopyConvertBuf</code></li>
+<li><code>CopyGetData</code></li>
+<li><code>CopyGetInt16</code></li>
+<li><code>CopyGetInt32</code></li>
+<li><code>CopyLoadInputBuf</code></li>
+<li><code>CopyLoadRawBuf</code></li>
+<li><code>CopyReadBinaryData</code></li>
+<li><code>CopyReadLine</code></li>
+<li><code>CopyReadLineText</code></li>
+<li><code>ReceiveCopyBegin</code></li>
+<li><code>ReceiveCopyBinaryHeader</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **データロード**: <code>CopyLoadInputBuf</code> が <code>CopyGetData</code> を呼び出し、<code>raw_buf</code> にデータを蓄積。 2. **変換**: <code>CopyConvertBuf</code> がエンコーディング変換を行い、<code>input_buf</code> を準備。 3. **行抽出**: <code>CopyReadLine</code> が <code>input_buf</code> をスキャンし、改行コードやエスケープを考慮して 1 行を <code>line_buf</code> にコピー。 4. **フィールド分割**: <code>CopyReadAttributes...</code> が <code>line_buf</code> を解析し、<code>raw_fields</code> 配列に各フィールドのポインタを格納。 5. **型変換**: <code>NextCopyFrom</code> が <code>CopyFrom...OneRow</code> を呼び出し、<code>raw_fields</code> の文字列を <code>InputFunctionCallSafe</code> 等で <code>Datum</code> に変換。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>commands/copyfrom_internal.h</code>: <code>CopyFromState</code> 構造体定義。</li>
+<li><code>libpq/libpq.h</code> / <code>libpq/pqformat.h</code>: フロントエンド通信用。</li>
+<li><code>mb/pg_wchar.h</code>: エンコーディング変換用。</li>
+<li><code>executor/executor.h</code>: <code>ExecEvalExpr</code> によるデフォルト値評価用。</li>
+<li><code>commands/copyapi.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>copyto.c</code>: <code>COPY TO</code>（出力）側の実装。</li>
+<li><code>copyfrom.c</code>: <code>COPY FROM</code> のライフサイクル管理（<code>BeginCopyFrom</code>, <code>EndCopyFrom</code>）。</li>
+<li><code>src/backend/utils/fmgr/</code>: 型変換関数（<code>ReceiveFunctionCall</code>）の実行基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>line_buf</code> や <code>attribute_buf</code> は <code>StringInfo</code> を使用しており、必要に応じて自動拡張されます。<code>raw_fields</code> 配列は <code>CopyFromState</code> 内で管理され、行ごとに再利用されます。</li>
+<li>**パフォーマンス**: <code>IF_NEED_REFILL_...</code> マクロは、 tight loop 内での関数呼び出しオーバーヘッドを避けるために使用されています。</li>
+<li>**制約**: バイナリモードでは <code>line_buf</code> は使用されず、直接 <code>attribute_buf</code> に読み込まれます。</li>
+<li>**未実装/浅い部分**: 本ファイルは解析に特化しており、テーブルへの実際の挿入処理（<code>CopyFromInsert</code>）は <code>copyfrom.c</code> 側の責務です。また、<code>COPY</code> のプロトコル詳細（特に v2 以前）は省略されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__ReceiveCopyBegin.html" target="wiki-view"><code>ReceiveCopyBegin</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__ReceiveCopyBinaryHeader.html" target="wiki-view"><code>ReceiveCopyBinaryHeader</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyGetData.html" target="wiki-view"><code>CopyGetData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyGetInt32.html" target="wiki-view"><code>CopyGetInt32</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyGetInt16.html" target="wiki-view"><code>CopyGetInt16</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyConvertBuf.html" target="wiki-view"><code>CopyConvertBuf</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyConversionError.html" target="wiki-view"><code>CopyConversionError</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyLoadRawBuf.html" target="wiki-view"><code>CopyLoadRawBuf</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyLoadInputBuf.html" target="wiki-view"><code>CopyLoadInputBuf</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyReadBinaryData.html" target="wiki-view"><code>CopyReadBinaryData</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyReadLine.html" target="wiki-view"><code>CopyReadLine</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__copyfromparse_c__CopyReadLineText.html" target="wiki-view"><code>CopyReadLineText</code></a></li>
+</ul></body></html>

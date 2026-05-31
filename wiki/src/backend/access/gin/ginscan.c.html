@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginscan.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginscan.c</h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックススキャンにおけるスキャン状態の管理と、クエリ条件の解析・初期化を担うモジュールです。インデックススキャン開始時のメモリ確保から、クエリ条件の分解、スキャン終了時のリソース解放までを統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gin</code> サブシステムにおいて、<code>IndexScanDesc</code> の <code>opaque</code> 領域を管理するインターフェースを提供します。<code>ginget.c</code> がインデックスを走査する際に参照する <code>GinScanKey</code> 構造体を構築し、検索条件を GIN が処理可能な形式に変換する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン状態のライフサイクル管理**: <code>ginbeginscan</code> でのメモリコンテキスト作成、<code>ginendscan</code> でのクリーンアップ。</li>
+<li>**クエリの正規化**: <code>extractQueryFn</code> を呼び出し、ユーザーのクエリをインデックス検索可能なキー（<code>GinScanEntry</code>）に変換。</li>
+<li>**検索モードの最適化**: <code>GIN_SEARCH_MODE_ALL</code> や <code>EVERYTHING</code> などの特殊な検索モードを適切に配置し、インデックス全体のスキャンや NULL 検索をサポート。</li>
+<li>**重複排除**: 同一の検索キーに対する <code>GinScanEntry</code> の重複作成を抑制し、メモリ効率を向上。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ginbeginscan</code>: スキャン状態（<code>GinScanOpaque</code>）を初期化し、メモリコンテキストを準備する。</li>
+<li><code>ginNewScanKey</code>: ユーザーの <code>ScanKey</code> を解析し、GIN 内部の <code>GinScanKey</code> 構造体へ変換する主要関数。</li>
+<li><code>ginFillScanKey</code>: 個別のインデックス属性に対する検索キーを構築し、<code>GinScanEntry</code> を生成する。</li>
+<li><code>GinScanOpaqueData</code>: GIN スキャン中の状態を保持する構造体。キー配列やメモリコンテキストを格納。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ginFillScanEntry</code></li>
+<li><code>ginFreeScanKeys</code></li>
+<li><code>ginScanKeyAddHiddenEntry</code></li>
+<li><code>ginendscan</code></li>
+<li><code>ginrescan</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ginbeginscan</code> が呼ばれ、<code>GinScanOpaque</code> が生成される。 2. **解析**: <code>ginNewScanKey</code> が <code>extractQueryFn</code> を実行。得られた <code>Datum</code> を <code>ginFillScanKey</code> に渡し、<code>GinScanEntry</code> のリストを作成。 3. **最適化**: <code>GIN_SEARCH_MODE_ALL</code> 等の特殊モードに対し、必要に応じて「隠しエントリ（Hidden Entry）」を追加し、スキャン順序を調整。 4. **実行**: <code>ginget.c</code> がこの構造体を参照してインデックスを走査。 5. **終了**: <code>ginendscan</code> により、確保されたメモリコンテキストとバッファが解放される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GIN 内部構造体（<code>GinScanOpaque</code>, <code>GinScanKey</code> 等）の定義。</li>
+<li><code>access/relscan.h</code>: <code>IndexScanDesc</code> 等の標準的なインデックススキャン定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>pgstat.h</code>: インデックススキャン統計情報の更新。</li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gin/ginget.c</code>: 本ファイルで構築された <code>GinScanKey</code> を実際に使用してインデックスを走査する。</li>
+<li><code>src/backend/access/gin/ginutil.c</code>: <code>initGinState</code> や <code>ginCompareEntries</code> など、スキャン準備に必要なユーティリティ関数群。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>GinScanOpaque</code> 内には <code>tempCtx</code> と <code>keyCtx</code> の2つのメモリコンテキストが存在します。<code>keyCtx</code> はスキャンキーの生存期間を管理し、<code>rescan</code> 時にリセットされます。</li>
+<li>**重複排除の制限**: <code>ginFillScanEntry</code> にはパフォーマンス上の理由から、100個以上のエントリがある場合に重複排除を停止するロジックが含まれています。</li>
+<li>**古いインデックス**: GIN インデックスのバージョンが古い場合、<code>ginNewScanKey</code> 内で全インデックススキャンや NULL 検索が拒否される仕様になっています。<code>REINDEX</code> が推奨されるケースです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginbeginscan.html" target="wiki-view"><code>ginbeginscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginFillScanEntry.html" target="wiki-view"><code>ginFillScanEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginScanKeyAddHiddenEntry.html" target="wiki-view"><code>ginScanKeyAddHiddenEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginFillScanKey.html" target="wiki-view"><code>ginFillScanKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginFreeScanKeys.html" target="wiki-view"><code>ginFreeScanKeys</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginNewScanKey.html" target="wiki-view"><code>ginNewScanKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginrescan.html" target="wiki-view"><code>ginrescan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginscan_c__ginendscan.html" target="wiki-view"><code>ginendscan</code></a></li>
+</ul></body></html>

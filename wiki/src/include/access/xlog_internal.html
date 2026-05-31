@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/access/xlog_internal.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/access/xlog_internal.h</h1>
+<h2>概要</h2>
+<p>PostgreSQLの先行書き込みログ（WAL）の物理レイアウトおよび、WAL管理に必要な内部構造を定義するヘッダーファイルです。WALファイルそのものを直接操作するツール（<code>pg_receivewal</code> 等）と、バックエンドの両方から利用可能です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/access</code> モジュールにおいて、WALの低レベルなデータ構造（ページヘッダー、セグメント命名規則、リソースマネージャのインターフェース）を定義する基盤です。<code>xlog.h</code> が高レベルなWAL操作を提供するのに対し、本ファイルは物理的なファイルフォーマットの定義に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALページ構造の定義**: <code>XLogPageHeaderData</code> を用いたWALページのレイアウト定義。</li>
+<li>**ファイル命名規則の提供**: WALセグメント、タイムライン履歴、バックアップ履歴ファイルのパス生成および解析。</li>
+<li>**リソースマネージャ（Rmgr）の管理**: WALレコードを処理する各リソースマネージャのメソッドテーブル（<code>RmgrData</code>）の定義。</li>
+<li>**WALセグメントの検証**: セグメントサイズの妥当性チェックや、LSNからセグメント番号への変換マクロの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>XLogPageHeaderData</code>: WALファイルの各ページの先頭構造体。</li>
+<li><code>RmgrData</code>: WALレコードのRedo処理やデコードを行うためのメソッドテーブル。</li>
+<li><code>XLogFileName</code> / <code>XLogFilePath</code>: WALファイル名やパスを生成するインライン関数群。</li>
+<li><code>XLP_LONG_HEADER</code>: ページヘッダーが拡張形式（システムID等を含む）であることを示すフラグ。</li>
+<li><code>WalSegMinSize</code> / <code>WalSegMaxSize</code>: WALセグメントサイズの許容範囲。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RecoveryTargetAction</code></li>
+<li><code>XLogLongPageHeader</code></li>
+<li><code>XLogLongPageHeaderData</code></li>
+<li><code>XLogPageHeader</code></li>
+<li><code>XLogRecData</code></li>
+<li><code>xl_end_of_recovery</code></li>
+<li><code>xl_overwrite_contrecord</code></li>
+<li><code>xl_parameter_change</code></li>
+<li><code>xl_restore_point</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>本ファイルは主にデータ構造とマクロの定義であり、実行時のフローは持ちません。ただし、以下のデータフローを支えています。 1.  **WAL書き込み時**: <code>XLogPageHeaderSize</code> マクロ等を用いてページヘッダーを構築し、<code>XLogRecData</code> を介してレコードをチェーン状に構成します。 2.  **WAL読み込み時**: <code>XLogReaderState</code> が本ファイルの構造体定義を参照し、ページヘッダーのフラグ（<code>xlp_info</code>）を解析して、レコードの継続やロングヘッダーの有無を判定します。 3.  **リカバリ時**: <code>RmgrTable</code> を参照し、レコードの <code>RmgrId</code> に基づいて適切な <code>rm_redo</code> 関数を呼び出します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlogdefs.h</code>: 基本的なWAL型定義。</li>
+<li><code>access/xlogreader.h</code>: WAL読み込み用構造体。</li>
+<li><code>storage/block.h</code>: ブロック番号等の定義。</li>
+<li><code>storage/relfilelocator.h</code>: リレーション識別子。</li>
+<li><code>lib/stringinfo.h</code>: 文字列操作用ユーティリティ。</li>
+<li><code>datatype/timestamp.h</code></li>
+<li><code>pgtime.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xlog.c</code>: 本ファイルで定義された構造体を利用するWALのメイン実装。</li>
+<li><code>src/include/access/rmgrlist.h</code>: <code>RmgrTable</code> のインデックスとなるリソースマネージャIDのリスト。</li>
+<li><code>src/include/access/xlogrecord.h</code>: WALレコード自体の構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**フロントエンド互換性**: 本ファイルはフロントエンド（スタンドアロンツール）でもインクルードされるため、バックエンド専用のコードを含まないよう注意が必要です。</li>
+<li>**Rmgrの拡張**: 新しいリソースマネージャを追加する場合は、<code>RmgrData</code> 構造体の定義と <code>rmgrlist.h</code> の更新が必要です。</li>
+<li>**命名規則**: <code>XLogFileName</code> などの関数は、WALセグメントの計算に <code>wal_segsz_bytes</code> を引数として受け取ります。これは動的に変更可能なパラメータであるため、ハードコードせず必ず引数から渡す設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogPageHeaderData.html" target="wiki-view"><code>XLogPageHeaderData</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogPageHeader.html" target="wiki-view"><code>XLogPageHeader</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogLongPageHeaderData.html" target="wiki-view"><code>XLogLongPageHeaderData</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogLongPageHeader.html" target="wiki-view"><code>XLogLongPageHeader</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogFileName.html" target="wiki-view"><code>XLogFileName</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__xl_parameter_change.html" target="wiki-view"><code>xl_parameter_change</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__xl_restore_point.html" target="wiki-view"><code>xl_restore_point</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__xl_overwrite_contrecord.html" target="wiki-view"><code>xl_overwrite_contrecord</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__xl_end_of_recovery.html" target="wiki-view"><code>xl_end_of_recovery</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__XLogRecData.html" target="wiki-view"><code>XLogRecData</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__RecoveryTargetAction.html" target="wiki-view"><code>RecoveryTargetAction</code></a></li>
+<li><a href="../../../symbols/src__include__access__xlog_internal_h__RmgrData.html" target="wiki-view"><code>RmgrData</code></a></li>
+</ul></body></html>

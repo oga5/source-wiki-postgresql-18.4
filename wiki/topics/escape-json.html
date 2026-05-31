@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/escape-json.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>escape_json</h1>
+<h2>概念</h2>
+<p><code>escape_json</code> は、PostgreSQLの複数の独立したモジュール（フロントエンドツール、テストモジュール、バックエンドなど）において、与えられた文字列をJSON形式の文字列リテラルとして安全にエスケープするために定義されている関数群です。</p>
+<p>これらの関数は、入力されたヌル終端文字列を走査し、JSONの仕様で特別な意味を持つ文字（ダブルクォーテーション、バックスラッシュ、制御文字など）を適切なエスケープシーケンスに変換した上で、<code>StringInfo</code> バッファに追加する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>JSON形式のデータを構築する際、制御文字やダブルクォーテーションなどの特殊文字が適切にエスケープされていないと、生成されたJSONが不正な形式になり、パーサーによる解析失敗やセキュリティ上の問題を引き起こす可能性があります。</p>
+<p><code>escape_json</code> は、以下の用途において、出力されるJSONデータの整合性と仕様準拠性を保証するために重要です。</p>
+<ul>
+<li>**バックアップマニフェストの生成**: <code>pg_combinebackup</code> において、正しいJSONマニフェストを出力する。</li>
+<li>**パーサーのテスト**: <code>test_json_parser</code> において、インクリメンタルパーサーのテスト用データを正しく構築する。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<p>提供されたコンテキストに基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/bin/pg_combinebackup</code></li>
+<li><code>module:src/test/modules/test_json_parser</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_combinebackup/write_manifest.c#escape_json</code>**</li>
+<p><code>pg_combinebackup</code> ツール内でJSON形式のバックアップマニフェストを構築するために使用される静的（<code>static</code>）関数。</p>
+<li>**<code>symbol:src/test/modules/test_json_parser/test_json_parser_incremental.c#escape_json</code>**</li>
+<p>JSONパーサーのインクリメンタルテスト内で、テスト用JSON文字列を構築するために使用される静的（<code>static</code>）関数。</p>
+<li>**<code>symbol:src/backend/utils/adt/json.c#escape_json</code>**</li>
+<p>バックエンド側に存在する同名の関数（詳細なコンテキストは未提供）。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>システム全体を横断する統一された単一のエンドツーエンドの流れは存在せず、各モジュールが独立して <code>escape_json</code> を実装・利用しています。</p>
+<p>各関数内における処理の流れは以下の通りです： 1. 対象の <code>StringInfo</code> バッファに、開始のダブルクォーテーション（<code>&quot;</code>）を追加します。 2. 入力文字列（<code>str</code>）を1文字ずつ走査します。 3. 特殊文字を検出した場合、対応するエスケープシーケンスに変換してバッファに追加します。</p>
+<ul>
+<li><code>\b</code>, <code>\f</code>, <code>\n</code>, <code>\r</code>, <code>\t</code> はそれぞれ対応するシーケンスへ変換。</li>
+<li><code>&quot;</code> は <code>\&quot;</code> に、<code>\</code> は <code>\\</code> に変換。</li>
+<li>ASCII値が32未満（スペース未満）の制御文字は、<code>\u00xx</code> 形式のUnicodeエスケープに変換。</li>
+<p>4. 通常の文字はそのままバッファに追加します。 5. 最後に、終了のダブルクォーテーション（<code>&quot;</code>）を追加します。</p>
+</ul>
+<p>※ 各モジュールにおいて、このエスケープ処理を呼び出す具体的な上位の業務フローや、バックエンド側（<code>src/backend/utils/adt/json.c</code>）における具体的なエンドツーエンドの流れは、提供された情報からは未だ明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**二重引用符による囲み**: 出力されるエスケープ済みの文字列は、必ず開始と終了がダブルクォーテーション（<code>&quot;</code>）で囲まれます。</li>
+<li>**入力の前提条件**: 入力される <code>str</code> は有効なヌル終端文字列であり、出力先の <code>buf</code> は初期化済みの <code>StringInfo</code> バッファでなければなりません。</li>
+<li>**空文字列の処理**: 入力文字列が空（<code>&quot;&quot;</code>）の場合、バッファには <code>&quot;&quot;</code>（ダブルクォーテーション2つのみ）が追加されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**重複実装とスコープ**: <code>escape_json</code> はそれぞれのファイル内で <code>static</code> 関数として個別に定義されています。これらは非常に類似した振る舞いを持ちますが、共通ライブラリとして一元管理されているわけではありません。そのため、一方の実装に変更を加えても、他方のモジュールの挙動には反映されません。</li>
+<li>**メモリ不足時の挙動**: <code>StringInfo</code> バッファへの書き込み中にメモリ不足が発生した場合、<code>StringInfo</code> の内部マクロや関数（<code>appendStringInfoCharMacro</code> など）がエラーを発生させる可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/bin/pg_combinebackup/write_manifest.c</code>**</li>
+<p>フロントエンドツールにおけるJSONマニフェスト生成時のエスケープ処理の適用方法を確認できます。</p>
+<li>**<code>src/test/modules/test_json_parser/test_json_parser_incremental.c</code>**</li>
+<p>テストフレームワーク内でのJSON文字列構築におけるエスケープ処理の適用方法を確認できます。</p>
+<li>**<code>src/backend/utils/adt/json.c</code>**</li>
+<p>バックエンド側での <code>escape_json</code> の実装および、コア機能におけるJSONエスケープの標準的な取り扱いを確認できます。</p>
+</ul></body></html>

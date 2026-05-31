@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execReplication_c__RelationFindReplTupleSeq.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>RelationFindReplTupleSeq</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execReplication.c:354</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおいて、インデックスを使用せずにシーケンシャルスキャンを用いて対象のタプルを検索し、指定されたモードでロックを取得します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode, TupleTableSlot *searchslot, TupleTableSlot *outslot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 対象のリレーション。</li>
+<li><code>lockmode</code>: 取得するロックモード（<code>LockTupleMode</code>）。</li>
+<li><code>searchslot</code>: 検索条件となるタプルを保持するスロット。</li>
+<li><code>outslot</code>: 検索結果のタプルを格納するスロット。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: タプルが見つかり、ロックに成功した場合は <code>true</code>、それ以外は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>outslot</code> のタプル記述子（TupleDesc）は、対象リレーション <code>rel</code> の記述子と一致している必要があります。</li>
+<li>実行には適切なスナップショットが必要です。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **スキャン開始**: <code>table_beginscan</code> を用いてテーブル全体のシーケンシャルスキャンを開始します。 2. **検索ループ**: <code>table_scan_getnextslot</code> で全行を走査し、<code>tuples_equal</code> を用いて <code>searchslot</code> と一致するタプルを探します。 3. **ロック待機**: 該当タプルが他トランザクションによってロックされている場合、<code>XactLockTableWait</code> で待機し、再試行（<code>retry</code>）します。 4. **ロック取得**: タプルが見つかった場合、<code>table_tuple_lock</code> を呼び出して指定された <code>lockmode</code> でロックを試みます。 5. **再試行判定**: <code>should_refetch_tuple</code> が真を返す場合（同時実行による更新等）、再度検索処理からやり直します。 6. **終了処理**: スキャンを終了し、使用したリソースを解放します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/worker.c:2953</code> からの呼び出しが確認されています。</li>
+<li>**呼び出し先**: <code>table_beginscan</code>, <code>table_rescan</code>, <code>table_scan_getnextslot</code>, <code>table_tuple_lock</code>, <code>should_refetch_tuple</code>, <code>XactLockTableWait</code> 等のテーブルアクセス層（AM）関数を呼び出します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: 操作対象のテーブル情報。</li>
+<li><code>TupleTableSlot</code>: タプルデータの一時保持用構造体。</li>
+<li><code>TM_FailureData</code>: ロック失敗時の詳細情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>インデックスを使用しないため、テーブルサイズが大きい場合に非常に低速です。</li>
+<li>同時実行制御による競合が発生した場合、<code>goto retry</code> による再試行ループが発生します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はインデックスがない場合のフォールバックとして機能します。パフォーマンス上の理由から、実運用では適切なレプリカアイデンティティ（インデックス）の設定が強く推奨されます。</li>
+<li><code>retry</code> ラベルへのジャンプが多用されているため、状態遷移の整合性に注意してください。</li>
+</ul></body></html>

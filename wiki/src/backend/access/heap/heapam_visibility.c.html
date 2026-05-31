@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/heapam_visibility.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/heapam_visibility.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのヒープストレージにおけるタプルのMVCC（多版同時実行制御）可視性判定ロジックを実装するモジュールです。トランザクションID（XID）とスナップショット情報を照合し、特定のトランザクションからタプルが見えるかどうかを決定します。また、判定過程で得られたトランザクション状態を「ヒントビット」としてタプルヘッダーに書き込み、将来の判定コストを削減する役割も担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> サブシステムの一部として、アクセスメソッド（AM）層と物理ストレージ層の間に位置します。実行エンジンがタプルを読み取る際、このモジュールの関数群が「そのタプルが現在のトランザクションから有効か」を判定するゲートキーパーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**可視性判定**: スナップショットの種類（MVCC, Self, Dirty, Vacuum等）に応じた可視性ルールの適用。</li>
+<li>**ヒントビット管理**: トランザクションのコミット/アボート状態をタプルヘッダーに永続化し、CLOG（トランザクション状態ログ）へのアクセス頻度を低減。</li>
+<li>**メンテナンス支援**: VACUUM処理において、タプルが全トランザクションから不可視（削除可能）であるかを判定。</li>
+<li>**後方互換性維持**: 9.0以前のバイナリアップグレードで発生する <code>HEAP_MOVED_IN/OFF</code> フラグの処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>可視性判定（公開インターフェース）</h3>
+<ul>
+<li><code>HeapTupleSatisfiesVisibility</code>: スナップショットタイプに応じて適切な判定関数へディスパッチするメインエントリーポイント。</li>
+<li><code>HeapTupleSatisfiesUpdate</code>: UPDATE操作用。可視性だけでなく、競合状態（TM_Updated, TM_BeingModified等）を詳細に報告。</li>
+<li><code>HeapTupleSatisfiesVacuum</code>: VACUUM用。タプルが回収可能か（DEAD）を判定。</li>
+<li><code>HeapTupleIsSurelyDead</code>: 高速な判定用。ヒントビットが既に設定されている前提で、即座に削除可能かを確認。</li>
+</ul>
+<h3>ヒントビット操作</h3>
+<ul>
+<li><code>HeapTupleSetHintBits</code>: <code>SetHintBits</code> の公開ラッパー。タプルヘッダーの <code>t_infomask</code> を更新し、バッファをダーティとしてマークする。</li>
+</ul>
+<h3>内部判定ロジック</h3>
+<ul>
+<li><code>HeapTupleSatisfiesMVCC</code>: 標準的なMVCCスナップショット判定。</li>
+<li><code>HeapTupleSatisfiesSelf</code>: 現在のトランザクション自身の変更を反映した判定。</li>
+<li><code>HeapTupleSatisfiesDirty</code>: 進行中のトランザクションの影響を含めた判定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>HeapTupleIsSurelyDead</code></li>
+<li><code>HeapTupleSatisfiesAny</code></li>
+<li><code>HeapTupleSatisfiesDirty</code></li>
+<li><code>HeapTupleSatisfiesMVCC</code></li>
+<li><code>HeapTupleSatisfiesNonVacuumable</code></li>
+<li><code>HeapTupleSatisfiesSelf</code></li>
+<li><code>HeapTupleSatisfiesToast</code></li>
+<li><code>HeapTupleSatisfiesUpdate</code></li>
+<li><code>HeapTupleSatisfiesVacuum</code></li>
+<li><code>HeapTupleSatisfiesVacuumHorizon</code></li>
+<li><code>HeapTupleSetHintBits</code></li>
+<li><code>SetHintBits</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ディスパッチ**: <code>HeapTupleSatisfiesVisibility</code> が <code>snapshot-&gt;snapshot_type</code> を見て適切な <code>HeapTupleSatisfies...</code> 関数を呼び出します。 2. **XID検証**: 各判定関数は、タプルの <code>xmin</code> / <code>xmax</code> を取得し、<code>TransactionIdIsInProgress</code> や <code>TransactionIdDidCommit</code> を用いて状態を確認します。 3. **ヒントビット更新**: 状態が確定した場合、<code>SetHintBits</code> を呼び出し、バッファのダーティフラグを立てます。この際、WALフラッシュの順序を考慮し、安全な場合のみビットを更新します。 4. **結果返却**: 判定結果（bool または <code>TM_Result</code> / <code>HTSV_Result</code>）を呼び出し元へ返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/procarray.h</code>: 進行中のトランザクション状態の確認。</li>
+<li><code>access/transam.h</code>: トランザクションIDの管理とCLOGアクセス。</li>
+<li><code>access/htup_details.h</code>: タプルヘッダー構造とフラグ操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファのダーティマークとロック管理。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/heap/heapam.c</code>: このモジュールを呼び出すヒープAMのメインロジック。</li>
+<li><code>src/backend/access/transam/clog.c</code>: <code>TransactionIdDidCommit</code> 等の背後にある状態管理。</li>
+<li><code>src/backend/utils/time/snapmgr.c</code>: スナップショットの生成と管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリとロック**: このモジュールの関数を呼び出す際は、対象のバッファに対して少なくとも共有ロック（Shared Content Lock）を保持している必要があります。</li>
+<li>**ヒントビットの安全性**: ヒントビットの更新は、コミットログがディスクにフラッシュされていることが保証されるか、あるいは一時テーブルである場合にのみ行われます。</li>
+<li>**パフォーマンス**: <code>TransactionIdDidCommit</code> はCLOGへのアクセスを伴うため高コストです。ヒントビットが設定されている場合はこれを回避できるため、判定ロジックは常にヒントビットを優先的に参照します。</li>
+<li>**省略された詳細**: 本ファイルは可視性判定の「ルール」に特化しており、論理デコード（<code>HeapTupleSatisfiesHistoricMVCC</code>）に関連する複雑なCombo CIDの解決ロジックについては、詳細な実装を <code>ResolveCminCmaxDuringDecoding</code> 等の外部関数に委譲しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__SetHintBits.html" target="wiki-view"><code>SetHintBits</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSetHintBits.html" target="wiki-view"><code>HeapTupleSetHintBits</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesSelf.html" target="wiki-view"><code>HeapTupleSatisfiesSelf</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesAny.html" target="wiki-view"><code>HeapTupleSatisfiesAny</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesToast.html" target="wiki-view"><code>HeapTupleSatisfiesToast</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesUpdate.html" target="wiki-view"><code>HeapTupleSatisfiesUpdate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesDirty.html" target="wiki-view"><code>HeapTupleSatisfiesDirty</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesMVCC.html" target="wiki-view"><code>HeapTupleSatisfiesMVCC</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesVacuum.html" target="wiki-view"><code>HeapTupleSatisfiesVacuum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesVacuumHorizon.html" target="wiki-view"><code>HeapTupleSatisfiesVacuumHorizon</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesNonVacuumable.html" target="wiki-view"><code>HeapTupleSatisfiesNonVacuumable</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleIsSurelyDead.html" target="wiki-view"><code>HeapTupleIsSurelyDead</code></a></li>
+</ul></body></html>

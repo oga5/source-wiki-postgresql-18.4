@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__common__detoast_c__detoast_attr_slice.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>detoast_attr_slice</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/common/detoast.c:204</code></li>
+</ul>
+<h2>目的</h2>
+<p>TOASTされたデータ、圧縮データ、間接参照、または展開済みオブジェクトを含む可変長データ（<code>varlena</code>）から、指定されたオフセットと長さの範囲（スライス）を効率的に抽出して復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct varlena *detoast_attr_slice(struct varlena *attr, int32 sliceoffset, int32 slicelength)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>attr</code>: 処理対象の <code>varlena</code> 構造体ポインタ。</li>
+<li><code>sliceoffset</code>: 抽出を開始するオフセット（0以上）。</li>
+<li><code>slicelength</code>: 抽出する長さ（負の値は末尾までを意味する）。</li>
+<li>**出力**:</li>
+<li>抽出されたデータを含む、新しく <code>palloc</code> された <code>varlena</code> 構造体。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sliceoffset</code> が負の場合はエラーとなる。</li>
+<li>処理の過程で生成された一時的な中間データは、最終的に <code>pfree</code> される。</li>
+<li>外部データ（<code>VARATT_EXTERNAL</code>）が入力された場合、再帰的または段階的な解決を経て、最終的に非外部形式のデータに対してスライス処理が行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **スライス範囲の計算**: <code>slicelimit</code>（オフセット+長さ）を算出する。整数オーバーフロー時は全データを取得する。 2. **形式に応じた解決**:</p>
+<ul>
+<li>**外部データ**: <code>toast_fetch_datum_slice</code> を使用して必要な範囲を取得。圧縮されている場合は、解凍に必要な範囲を計算して取得する。</li>
+<li>**間接参照**: 参照先に対して再帰的に <code>detoast_attr_slice</code> を呼び出す。</li>
+<li>**展開済みデータ**: <code>detoast_external_attr</code> でフラット化する。</li>
+<p>3. **解凍**: 圧縮されている場合は <code>toast_decompress_datum_slice</code> または <code>toast_decompress_datum</code> で展開する。 4. **抽出**: 最終的なデータから <code>memcpy</code> を用いて指定範囲をコピーし、新しい <code>varlena</code> として返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/common/detoast.c</code>（再帰呼び出し）</li>
+<li><code>src/backend/utils/fmgr/fmgr.c:1860</code></li>
+<li>**呼び出し先**:</li>
+<li><code>toast_fetch_datum_slice</code>, <code>toast_fetch_datum</code></li>
+<li><code>detoast_external_attr</code></li>
+<li><code>toast_decompress_datum_slice</code>, <code>toast_decompress_datum</code></li>
+<li><code>pg_add_s32_overflow</code>, <code>pglz_maximum_compressed_size</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>struct varlena</code>: PostgreSQLの可変長データ型。</li>
+<li><code>struct varatt_external</code>: 外部TOASTデータのポインタ構造。</li>
+<li><code>struct varatt_indirect</code>: 間接参照データの構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>sliceoffset &lt; 0</code>: <code>elog(ERROR)</code> を発生させる。</li>
+<li><code>sliceoffset</code> がデータサイズを超える場合: 0バイトのデータを返す。</li>
+<li><code>slicelength</code> が大きすぎる場合: データの末尾までを抽出する。</li>
+<li>圧縮データ（特にLZ4）の場合、APIの制約により全データを取得する必要がある場合がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメモリを割り当てるため、呼び出し元での <code>pfree</code> が必須である。</li>
+<li><code>VARATT_EXTERNAL_GET_POINTER</code> マクロによるアライメント処理が重要である。</li>
+</ul></body></html>

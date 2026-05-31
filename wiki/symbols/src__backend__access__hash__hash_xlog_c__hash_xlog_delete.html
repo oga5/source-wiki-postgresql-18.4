@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__hash__hash_xlog_c__hash_xlog_delete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>hash_xlog_delete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/hash/hash_xlog.c:860</code></li>
+</ul>
+<h2>目的</h2>
+<p>ハッシュインデックスにおけるタプル削除操作のWAL（Write-Ahead Log）リプレイを実行し、バッファ上のページ状態を復元する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void hash_xlog_delete(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）。</li>
+<li>**出力**: なし（副作用としてバッファの状態を更新）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>リプレイ対象のページに対して、スキャンとの競合を防ぐためのクリーンアップロック（Cleanup Lock）を保持する必要がある。</li>
+<li><code>xldata-&gt;is_primary_bucket_page</code> が真の場合、対象ページ自体にクリーンアップロックをかける。偽の場合は、まずプライマリバケットページにクリーンアップロックを確保してから対象ページを読み込む。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>xl_hash_delete</code> 構造体を取得する。 2. <code>XLogReadBufferForRedoExtended</code> を使用して、必要なページ（プライマリバケットおよび対象ページ）をバッファに読み込み、クリーンアップロックを確保する。 3. <code>XLogRedoAction</code> が <code>BLK_NEEDS_REDO</code> の場合、以下の処理を行う：</p>
+<ul>
+<li><code>XLogRecGetBlockData</code> で削除対象のオフセット番号リストを取得する。</li>
+<li><code>PageIndexMultiDelete</code> を呼び出し、ページ上の該当タプルを削除する。</li>
+<li><code>xldata-&gt;clear_dead_marking</code> が真であれば、ページヘッダーの <code>hasho_flag</code> から <code>LH_PAGE_HAS_DEAD_TUPLES</code> フラグを解除する。</li>
+<li>ページのLSNを更新し、<code>MarkBufferDirty</code> を呼び出してバッファをダーティ状態にする。</li>
+<p>4. 最後に、取得したすべてのバッファのロックを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>hash_redo</code>（<code>src/backend/access/hash/hash_xlog.c</code> 内のディスパッチャ）。</li>
+<li>**呼び出し先**: </li>
+<li><code>XLogRecGetData</code>, <code>XLogRecGetBlockData</code></li>
+<li><code>XLogReadBufferForRedoExtended</code>, <code>XLogReadBufferForRedo</code></li>
+<li><code>BufferGetPage</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code></li>
+<li><code>PageIndexMultiDelete</code>, <code>HashPageGetOpaque</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_hash_delete</code>: 削除操作のメタデータ（プライマリページフラグ、デッドタプルクリアフラグ等）を保持する構造体。</li>
+<li><code>HashPageOpaque</code>: ハッシュインデックスページのメタデータ領域。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>action</code> が <code>BLK_NEEDS_REDO</code> 以外の場合、ページ更新はスキップされる。</li>
+<li>削除対象のオフセットリストが空（<code>len == 0</code>）の場合、<code>PageIndexMultiDelete</code> は実行されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は冪等（idempotent）である必要がある。</li>
+<li>クリーンアップロックの確保は、リプレイ中にスキャンが開始されたり、進行中のスキャンが不整合なデータを読み取ったりすることを防ぐために必須である。</li>
+</ul></body></html>

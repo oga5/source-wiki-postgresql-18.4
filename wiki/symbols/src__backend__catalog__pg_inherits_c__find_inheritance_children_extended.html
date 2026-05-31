@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__catalog__pg_inherits_c__find_inheritance_children_extended.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>find_inheritance_children_extended</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/catalog/pg_inherits.c:81</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定された親テーブル（<code>parentrelId</code>）の直系の子テーブルの OID リストを取得します。パーティションのデタッチ処理中（<code>inhdetachpending</code>）の除外制御や、並行処理を考慮したロック取得を伴う拡張的な探索を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>List *find_inheritance_children_extended(Oid parentrelId, bool omit_detached,
+                                         LOCKMODE lockmode, bool *detached_exist,
+                                         TransactionId *detached_xmin)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>parentrelId</code>: 親テーブルの OID。</li>
+<li><code>omit_detached</code>: <code>true</code> の場合、デタッチ処理中のパーティションを結果から除外する。</li>
+<li><code>lockmode</code>: 子テーブル取得時に適用するロックモード（<code>NoLock</code> 指定可）。</li>
+<li><code>detached_exist</code>: （出力用ポインタ）デタッチ処理中のパーティションが存在した場合に <code>true</code> が設定される。</li>
+<li><code>detached_xmin</code>: （出力用ポインタ）デタッチ処理中のパーティションの <code>xmin</code> を追跡する。</li>
+<li>**出力**: 子テーブルの OID を格納した <code>List</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>has_subclass(parentrelId)</code> が <code>false</code> の場合、即座に <code>NIL</code> を返す。</li>
+<li><code>lockmode</code> が <code>NoLock</code> でない場合、子テーブルのロック取得後に <code>pg_class</code> を再確認し、存在しない場合はリストから除外する。</li>
+<li>複数の子テーブルが見つかった場合、デッドロック防止のため OID 順にソートされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>has_subclass</code> で子が存在するか確認し、なければ終了。 2. <code>pg_inherits</code> カタログを <code>InheritsParentIndexId</code> でスキャンし、該当する子テーブルの OID を収集する。 3. <code>inhdetachpending</code> が設定されている場合、<code>omit_detached</code> とアクティブスナップショットの状態に基づき、除外判定を行う。 4. 収集した OID をソートし、指定された <code>lockmode</code> で各リレーションをロックする。 5. ロック取得後に <code>SearchSysCacheExists1</code> で存在確認を行い、生存しているリレーションのみをリストに追加する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/partitioning/partdesc.c</code></li>
+<li><code>src/backend/catalog/pg_inherits.c</code>（内部ラッパー関数）</li>
+<li>**呼び出し先**: </li>
+<li><code>has_subclass</code>, <code>table_open</code>, <code>systable_beginscan</code>, <code>systable_getnext</code>, <code>systable_endscan</code>, <code>table_close</code>, <code>qsort</code>, <code>LockRelationOid</code>, <code>UnlockRelationOid</code>, <code>SearchSysCacheExists1</code>, <code>lappend_oid</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_inherits</code>: 継承関係を保持するシステムカタログ。</li>
+<li><code>List</code>: PostgreSQL のリスト構造。</li>
+<li><code>ScanKeyData</code>: <code>pg_inherits</code> スキャン用のキー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>デタッチ処理中のパーティションが複数存在する場合、<code>elog(WARNING)</code> を発行し、より新しい <code>xmin</code> を <code>detached_xmin</code> に保持する。</li>
+<li>ロック待機中にテーブルが削除された場合、そのテーブルはリストから除外される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はパーティションのデタッチ処理という複雑な状態遷移を扱うため、<code>omit_detached</code> フラグの挙動を変更する際は、MVCC スナップショットとの整合性に注意すること。</li>
+<li><code>lockmode</code> に <code>NoLock</code> を使用する場合、並行的な <code>DROP</code> 操作によるレースコンディションが発生する可能性があるため、呼び出し側で適切な保護が必要である。</li>
+</ul></body></html>

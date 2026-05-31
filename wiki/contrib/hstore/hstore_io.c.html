@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/hstore/hstore_io.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/hstore/hstore_io.c</h1>
+<h2>概要</h2>
+<p><code>hstore_io.c</code> は、PostgreSQL の <code>hstore</code> 型に対する入出力処理および型変換を実装するファイルです。文字列形式（<code>key=&gt;value</code>）のパース、バイナリ形式の送受信、および他の型（JSON, Record, Array）との相互変換を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/hstore</code> モジュールにおけるデータ変換のハブです。外部からの入力を内部表現（<code>HStore</code> 構造体）に変換し、逆に内部表現を外部へ出力する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**パース**: <code>key=&gt;value</code> 形式の文字列を解析し、<code>Pairs</code> 配列へ変換する。</li>
+<li>**バリデーション**: キーと値の長さ制限（<code>HSTORE_MAX_KEY_LEN</code> 等）のチェック。</li>
+<li>**データ変換**: <code>hstore</code> と <code>json</code>/<code>jsonb</code>、<code>record</code>、<code>array</code> 間の変換。</li>
+<li>**シリアライズ**: <code>hstore_in</code>/<code>hstore_out</code> および <code>hstore_recv</code>/<code>hstore_send</code> によるデータ永続化と転送のサポート。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>HSParser</code>: パース中の状態を保持する構造体。</li>
+<li><code>parse_hstore()</code>: 文字列を解析して <code>Pairs</code> のリストを構築するメイン関数。</li>
+<li><code>hstoreUniquePairs()</code>: 重複キーを排除し、<code>HStore</code> 構築用にデータを整理する。</li>
+<li><code>hstorePairs()</code>: <code>Pairs</code> 配列から最終的な <code>HStore</code> 構造体を生成する。</li>
+<li><code>hstore_in</code>/<code>hstore_out</code>: SQL レベルの入出力関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ColumnIOData</code></li>
+<li><code>RecordIOData</code></li>
+<li><code>get_val</code></li>
+<li><code>hstore_from_array</code></li>
+<li><code>hstore_from_arrays</code></li>
+<li><code>hstore_from_record</code></li>
+<li><code>hstore_from_text</code></li>
+<li><code>hstore_populate_record</code></li>
+<li><code>hstore_recv</code></li>
+<li><code>parse_hstore</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>hstore_in</code> が文字列を受け取り、<code>HSParser</code> を初期化。 2. **解析**: <code>parse_hstore</code> が有限オートマトン（<code>get_val</code> 等）を用いて文字列をトークン化し、<code>Pairs</code> 配列に格納。 3. **正規化**: <code>hstoreUniquePairs</code> が <code>qsort</code> でキーをソートし、重複を削除。 4. **構築**: <code>hstorePairs</code> がメモリを確保し、<code>HEntry</code>（ヘッダー）とデータ本体を配置して <code>HStore</code> 構造体を完成させる。 5. **出力**: <code>hstore_out</code> が <code>HStore</code> 構造体を走査し、エスケープ処理（<code>cpw</code>）を行いながら文字列を再構築する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>hstore.h</code>: 基本定義とデータ構造。</li>
+<li><code>utils/json.h</code>, <code>utils/jsonb.h</code>: JSON 変換用。</li>
+<li><code>libpq/pqformat.h</code>: バイナリプロトコル用。</li>
+<li><code>funcapi.h</code>, <code>catalog/pg_type.h</code>: 型情報および関数インターフェース。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>common/jsonapi.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>hstore.h</code>: <code>HStore</code> 構造体や <code>HEntry</code> マクロの定義。</li>
+<li><code>hstore_op.c</code>: <code>hstore</code> 型に対する演算子や関数。</li>
+<li><code>hstore_gin.c</code> / <code>hstore_gist.c</code>: インデックスサポート。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>hstoreUniquePairs</code> は重複排除時に <code>pfree</code> を行うため、<code>needfree</code> フラグの管理が重要です。</li>
+<li>**エスケープ**: <code>hstore_out</code> におけるエスケープ処理は、文字列の長さを過大に見積もることでバッファオーバーフローを防いでいます。</li>
+<li>**JSON 変換**: <code>hstore_to_json_loose</code> はヒューリスティックな型推論（数値や真偽値の判定）を行いますが、厳密な変換が必要な場合は <code>hstore_to_json</code> を使用してください。</li>
+<li>**エラーハンドリング**: <code>HSParser</code> 内では <code>escontext</code> を使用したソフトエラー処理が実装されており、パース失敗時に即座に <code>elog(ERROR)</code> を投げない設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__HSParser.html" target="wiki-view"><code>HSParser</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__get_val.html" target="wiki-view"><code>get_val</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__parse_hstore.html" target="wiki-view"><code>parse_hstore</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_in.html" target="wiki-view"><code>hstore_in</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_recv.html" target="wiki-view"><code>hstore_recv</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_from_text.html" target="wiki-view"><code>hstore_from_text</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_from_arrays.html" target="wiki-view"><code>hstore_from_arrays</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_from_array.html" target="wiki-view"><code>hstore_from_array</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__ColumnIOData.html" target="wiki-view"><code>ColumnIOData</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__RecordIOData.html" target="wiki-view"><code>RecordIOData</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_from_record.html" target="wiki-view"><code>hstore_from_record</code></a></li>
+<li><a href="../../symbols/contrib__hstore__hstore_io_c__hstore_populate_record.html" target="wiki-view"><code>hstore_populate_record</code></a></li>
+</ul></body></html>

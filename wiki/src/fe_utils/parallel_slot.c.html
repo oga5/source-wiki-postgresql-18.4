@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/fe_utils/parallel_slot.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/fe_utils/parallel_slot.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのフロントエンドツール（<code>bin/scripts/</code> 等）において、複数のデータベース接続を並列に管理・再利用するためのインフラストラクチャを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/fe_utils</code> モジュールの一部として、非同期的なクエリ実行や、多数のデータベースに対する並列処理を効率化する抽象化レイヤーを担います。<code>parallel_slot.h</code> で定義された構造体を利用し、接続のプール、待機、および結果のハンドリングをカプセル化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続のライフサイクル管理**: 接続のオープン、クローズ、および再利用の制御。</li>
+<li>**並列実行の調整**: <code>select()</code> を用いたI/O多重化による、複数接続の効率的な待機と結果の消費。</li>
+<li>**エラーハンドリングの抽象化**: <code>ParallelSlotResultHandler</code> を通じた、クエリ結果に対する柔軟なエラー判定と処理の委譲。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ParallelSlotsGetIdle</code>: 利用可能なスロット（接続）を取得します。必要に応じて新規接続や再接続を行います。</li>
+<li><code>ParallelSlotsWaitCompletion</code>: 全ての接続の処理完了を待ち、エラーをチェックします。</li>
+<li><code>wait_on_slots</code>: <code>select()</code> を用いて、アクティブな接続からの入力を待機し、結果を消費する内部ループ。</li>
+<li><code>TableCommandResultHandler</code>: テーブル操作（VACUUM等）向けの標準的な結果ハンドラ。存在しないテーブル等の特定エラーを許容します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ParallelSlotsAdoptConn</code></li>
+<li><code>ParallelSlotsSetup</code></li>
+<li><code>ParallelSlotsTerminate</code></li>
+<li><code>connect_slot</code></li>
+<li><code>find_any_idle_slot</code></li>
+<li><code>find_matching_idle_slot</code></li>
+<li><code>find_unconnected_slot</code></li>
+<li><code>select_loop</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ParallelSlotsSetup</code> でスロット配列を確保します。 2. **スロット取得**: <code>ParallelSlotsGetIdle</code> が呼ばれると、以下の順序でスロットを探索します。</p>
+<ul>
+<li>既存のアイドル接続の再利用。</li>
+<li>未接続スロットの新規接続。</li>
+<li>接続済みスロットの切断・再接続。</li>
+<li>全てビジーな場合、<code>wait_on_slots</code> で <code>select()</code> を呼び出し、結果が返るまでブロックします。</li>
+<p>3. **結果処理**: <code>consumeQueryResult</code> が <code>PQgetResult</code> をループし、登録された <code>handler</code> を呼び出して結果を処理・解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
+<li><code>sys/select.h</code>: I/O多重化用。</li>
+<li><code>fe_utils/parallel_slot.h</code>: 公開インターフェース。</li>
+<li><code>fe_utils/cancel.h</code>: キャンセル処理の統合。</li>
+<li><code>fe_utils/query_utils.h</code>: 接続・コマンド実行の補助。</li>
+<li><code>common/logging.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/fe_utils/parallel_slot.h</code>: データ構造（<code>ParallelSlot</code>, <code>ParallelSlotArray</code>）の定義。</li>
+<li><code>src/fe_utils/connect_utils.c</code>: データベース接続の確立に使用される低レイヤー関数を提供。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**プラットフォーム制限**: <code>select()</code> の制限により、Windows環境では <code>FD_SETSIZE</code>（通常1024）を超えるファイルディスクリプタを扱うとエラー終了します。</li>
+<li>**ハンドラの役割**: <code>ParallelSlotResultHandler</code> は、<code>PQresult</code> の解放責任を負うか、あるいは <code>processQueryResult</code> が解放を行うかの契約を理解する必要があります。</li>
+<li>**スレッドセーフではない**: 本モジュールはシングルスレッドのフロントエンドツールでの使用を前提としています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__select_loop.html" target="wiki-view"><code>select_loop</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__find_matching_idle_slot.html" target="wiki-view"><code>find_matching_idle_slot</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__find_unconnected_slot.html" target="wiki-view"><code>find_unconnected_slot</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__find_any_idle_slot.html" target="wiki-view"><code>find_any_idle_slot</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__wait_on_slots.html" target="wiki-view"><code>wait_on_slots</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__connect_slot.html" target="wiki-view"><code>connect_slot</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__ParallelSlotsGetIdle.html" target="wiki-view"><code>ParallelSlotsGetIdle</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__ParallelSlotsSetup.html" target="wiki-view"><code>ParallelSlotsSetup</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__ParallelSlotsAdoptConn.html" target="wiki-view"><code>ParallelSlotsAdoptConn</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__ParallelSlotsTerminate.html" target="wiki-view"><code>ParallelSlotsTerminate</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__ParallelSlotsWaitCompletion.html" target="wiki-view"><code>ParallelSlotsWaitCompletion</code></a></li>
+<li><a href="../../symbols/src__fe_utils__parallel_slot_c__TableCommandResultHandler.html" target="wiki-view"><code>TableCommandResultHandler</code></a></li>
+</ul></body></html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__origin_c__ReplicationState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReplicationState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/replication/logical/origin.c:109</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおける各リモートノードの進捗状況を共有メモリ上で管理し、クラッシュリカバリ後の再開位置を特定するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ReplicationState
+{
+    RepOriginId roident;
+    XLogRecPtr  remote_lsn;
+    XLogRecPtr  local_lsn;
+    int         acquired_by;
+    ConditionVariable origin_cv;
+    LWLock      lock;
+} ReplicationState;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体は関数ではなくデータ構造であるため、直接的な入力・出力はありません。各フィールドは共有メモリ上で更新され、チェックポイント時にディスクへ永続化されます。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>remote_lsn</code> および <code>local_lsn</code> の読み書きには、必ず <code>lock</code> フィールド（<code>LWLock</code>）を取得する必要があります。</li>
+<li><code>acquired_by</code> が変更された際は、<code>origin_cv</code>（<code>ConditionVariable</code>）を介して通知が行われます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**進捗追跡**: リモートノードからのコミット位置（<code>remote_lsn</code>）と、それに対応するローカルのコミットレコード位置（<code>local_lsn</code>）を保持します。</li>
+<li>**永続化支援**: チェックポイント実行時、<code>local_lsn</code> を参照して <code>XLogFlush()</code> を行うことで、コミットレコードがディスク上に安全に書き込まれたことを保証します。</li>
+<li>**排他制御**: <code>acquired_by</code> フィールドにより、どのバックエンドがこのスロットを占有しているかを管理します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/origin.c</code> 内の各関数（<code>replorigin_create</code>, <code>replorigin_advance</code>, <code>CheckPointReplicationOrigin</code> 等）がこの構造体のインスタンスを操作します。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、直接的な関数呼び出しは行いません。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationStateOnDisk</code>: チェックポイント時にディスクへ書き出される際の形式。</li>
+<li><code>ReplicationStateCtl</code>: 共有メモリ上の状態全体を制御する構造体。</li>
+<li><code>RepOriginId</code>: 起点を識別するための型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**最大ノード数**: 内部ID（<code>RepOriginId</code>）が2バイトに制限されているため、最大ノード数は65kに制限されます。</li>
+<li>**メモリ制約**: 共有メモリ上の確保サイズは <code>max_active_replication_origins</code> GUCパラメータに依存します。</li>
+<li>**アトミック性**: LSNの読み書きはアトミックではない可能性があるため、必ず <code>lock</code> を介した排他制御が必須です。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は共有メモリ上に配置されるため、フィールドの追加や変更を行う際は、<code>ReplicationOriginShmemSize</code> および関連する初期化処理との整合性に注意してください。</li>
+<li><code>lock</code> は <code>remote_lsn</code> と <code>local_lsn</code> の保護を目的としています。これ以外のフィールドへのアクセスが必要な場合は、適切なロック戦略を再検討してください。</li>
+</ul></body></html>

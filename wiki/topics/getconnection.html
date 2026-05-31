@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/getconnection.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GetConnection</h1>
+<h2>概念</h2>
+<p><code>GetConnection</code> は、PostgreSQLのソースコード内の異なるモジュールにおいて、データベース接続（<code>PGconn</code>）を取得または確立するために定義されている同名の関数群です。これらは共通の親クラスやインターフェースを持つものではなく、それぞれのコンテキスト（外部データラッパ、ベースバックアップ、ダンプツール）において独立して実装されています。</p>
+<h2>なぜ重要か</h2>
+<p>それぞれのモジュールにおいて、接続のライフサイクル管理、キャッシュ、セキュリティ設定、または接続オブジェクトへのアクセスをカプセル化するために重要です。</p>
+<ul>
+<li>**<code>postgres_fdw</code>**: リモートサーバーへの接続オーバーヘッドを削減するためのキャッシュ管理、トランザクション同期、エラー回復を担います。</li>
+<li>**<code>pg_basebackup</code>**: レプリケーション専用接続の確立、対話的パスワード要求、およびセキュリティ向上のための環境初期化（<code>search_path</code> のクリア）をカプセル化します。</li>
+<li>**<code>pg_dump</code>**: アーカイブ処理中に保持されている接続オブジェクトへの安全なアクセス（ゲッター）を提供します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/postgres_fdw</code></li>
+<li><code>module:src/bin/pg_basebackup</code></li>
+<li><code>module:src/bin/pg_dump</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/postgres_fdw/connection.c#GetConnection</code>: リモートPostgreSQLサーバーへの接続を取得・キャッシュ管理する関数。</li>
+<li><code>symbol:src/bin/pg_basebackup/streamutil.c#GetConnection</code>: レプリケーション専用接続を確立し初期設定を行う関数。</li>
+<li><code>symbol:src/bin/pg_dump/pg_backup_db.c#GetConnection</code>: アーカイブハンドルから保持している接続を取得するゲッター関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>これらは独立したモジュールで定義された関数であるため、**システム全体を横断する単一のエンドツーエンドの流れは存在しません**。それぞれの関数における処理の流れは以下の通りです。</p>
+<h3><code>postgres_fdw</code> における流れ</h3>
+<p>1. **キャッシュ検索**: <code>UserMapping</code> の OID をキーに <code>ConnectionHash</code> を検索します。 2. **接続確立**: キャッシュにない、または無効化されている場合は <code>make_new_connection</code> で新規接続を確立します。 3. **トランザクション同期**: <code>begin_remote_xact</code> を呼び出し、ローカルのトランザクション深度に合わせてリモート側でトランザクションまたはセーブポイントを開始します。 4. **エラー回復**: 接続失敗時は <code>PG_CATCH</code> ブロックで接続を破棄し、再接続を試行します。</p>
+<h3><code>pg_basebackup</code> における流れ</h3>
+<p>1. **接続情報の構築**: コマンドライン引数や接続文字列からパラメータを生成し、レプリケーションモードを有効化します。 2. **接続試行**: <code>PQconnectdbParams</code> を使用して接続します。パスワードが必要な場合は <code>simple_prompt</code> で対話的に取得し再試行します。 3. **環境初期化**: PostgreSQL 10以降の場合、セキュリティ向上のため <code>search_path</code> をクリアします。</p>
+<h3><code>pg_dump</code> における流れ</h3>
+<p>1. **キャスト**: 引数 <code>Archive *AHX</code> を内部構造体 <code>ArchiveHandle *</code> にキャストします。 2. **取得**: 構造体内の <code>connection</code> メンバを直接参照して返します。</p>
+<h2>重要な不変条件</h2>
+<p>モジュール間で共通する不変条件はありませんが、それぞれの関数において以下の不変条件が課されています。</p>
+<ul>
+<li>**<code>postgres_fdw</code>**:</li>
+<li>接続は <code>UserMapping</code> 単位でキャッシュされ、ユーザーごとに認証情報が分離されます。</li>
+<li>接続が「汚染」されている（<code>pgfdw_reject_incomplete_xact_state_change</code> で判定）場合、その接続は再利用されません。</li>
+<li>**<code>pg_basebackup</code>**:</li>
+<li><code>dbname</code> と <code>connection_string</code> が同時に非NULLであってはなりません（<code>Assert</code> による検証）。</li>
+<li>**<code>pg_dump</code>**:</li>
+<li>入力される <code>AHX</code> は、有効な <code>ArchiveHandle</code> 構造体へのポインタである必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**<code>postgres_fdw</code>**: リモート側でのトランザクション開始失敗時、再接続後も失敗が続く場合は例外が再スローされるため、エラーハンドリングの挙動に注意が必要です。また、無効化された接続はトランザクション深度が 0 になるまで破棄されません。</li>
+<li>**<code>pg_basebackup</code>**: PostgreSQL 10未満のサーバーと接続する場合、<code>search_path</code> のクリア処理がスキップされるため、バージョン互換性の分岐ロジックに注意する必要があります。</li>
+<li>**<code>pg_dump</code>**: 本関数は単なるゲッターであり、接続の確立や再接続は行いません。また、<code>AHX</code> が <code>NULL</code> の場合は構造体のメンバアクセスによりセグメンテーション違反が発生する可能性があります。</li>
+<li>**呼び出し元の混同**: 提供された情報において、<code>pg_dump</code> の <code>GetConnection</code> の呼び出し元として <code>postgres_fdw</code> の記述が一部見られますが、これらはシグネチャや目的が異なるため、モジュールをまたいだ誤用や混同に注意してください。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/postgres_fdw/connection.c</code> (接続キャッシュとトランザクション同期の実装)</li>
+<li><code>src/bin/pg_basebackup/streamutil.c</code> (フロントエンドにおけるレプリケーション接続確立の実装)</li>
+<li><code>src/bin/pg_dump/pg_backup_db.c</code> (アーカイブハンドルからの接続取得の実装)</li>
+</ul></body></html>

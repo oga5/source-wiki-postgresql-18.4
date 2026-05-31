@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pmsignaldata.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PMSignalData</h1>
+<h2>概念</h2>
+<p><code>PMSignalData</code> は、Postmaster（親プロセス）とバックエンドプロセス（子プロセス）の間で、非同期通信および状態管理を行うための共有メモリ構造体です。</p>
+<p>ヘッダーファイル <code>src/include/storage/pmsignal.h</code> においては不透明な構造体（opaque struct）として宣言されており、その詳細な内部レイアウトは <code>src/backend/storage/ipc/pmsignal.c</code> 内に隠蔽（カプセル化）されています。</p>
+<h2>なぜ重要か</h2>
+<p>Postmasterと子プロセス群が、重いロックを使用することなく、安全かつ非同期にイベント通知や状態追跡を行うための基盤となるからです。</p>
+<p>特に、シグナルハンドラ内での安全な更新を保証する <code>sig_atomic_t</code> 型のフラグを使用し、<code>SIGUSR1</code> や <code>SIGQUIT</code> などのシグナルと連携して、システムのシャットダウン理由の伝達や各バックエンドプロセスの状態（UNUSED/ASSIGNED/ACTIVE/WALSENDER等）の追跡を効率的に実現しています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/ipc/pmsignal.c#PMSignalData</code>**: 構造体の実体定義。<code>PMSignalFlags</code>、<code>sigquit_reason</code>、<code>PMChildFlags</code> などの具体的なメンバを持ちます。</li>
+<li>**<code>symbol:src/include/storage/pmsignal.h#PMSignalData</code>**: 外部モジュール向けに公開される不透明な構造体としての宣言。</li>
+<li>**<code>PMSignalState</code>**: <code>PMSignalData</code> を指すグローバルなポインタ変数。</li>
+<li>**<code>PMSignalReason</code>**: 子プロセスからPostmasterへの通知理由を定義する列挙型。</li>
+<li>**<code>QuitSignalReason</code>**: シャットダウン理由を保持する列挙型。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 共有メモリ上に <code>PMSignalData</code> が配置され、グローバルポインタ <code>PMSignalState</code> がこれを指すように初期化されます。この際、必要なメモリサイズは <code>PMSignalShmemSize()</code> によって計算されます。 2. **シグナル通知と処理**:</p>
+<ul>
+<li>子プロセスが <code>SendPostmasterSignal(reason)</code> を呼び出し、共有メモリ上の <code>PMSignalFlags</code> を更新して、Postmasterへ <code>SIGUSR1</code> を送信します。</li>
+<li>Postmasterは <code>CheckPostmasterSignal(reason)</code> を用いて共有メモリ上のフラグを監視し、通知された理由に応じた処理を実行します。</li>
+<p>3. **シャットダウン理由の伝達**: Postmasterが <code>SIGQUIT</code> を送出する際、その理由を <code>sigquit_reason</code> に格納し、子プロセスがこれを参照します。 4. **状態追跡**: <code>PMChildFlags</code> を用いて、各バックエンドプロセスの状態（UNUSED/ASSIGNED/ACTIVE/WALSENDER等）を管理・追跡します。</p>
+</ul>
+<p>*注意: 共有メモリの初期化が行われる具体的なタイミングや、Postmasterが <code>CheckPostmasterSignal</code> を呼び出すメインループの全体像など、一部のエンドツーエンドのフローの全貌は提供されたコンテキストからは完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**共有メモリ配置**: <code>PMSignalData</code> は必ず共有メモリ上に配置される必要があります。</li>
+<li>**アトミック性**: <code>PMSignalFlags</code> および <code>PMChildFlags</code> は <code>sig_atomic_t</code> 型であり、明示的なロックなしでシグナルハンドラ内から安全かつアトミックに読み書き可能でなければなりません。</li>
+<li>**サイズ整合性**: <code>PMChildFlags</code> は可変長配列（<code>FLEXIBLE_ARRAY_MEMBER</code>）であり、そのメモリ確保サイズは <code>num_child_flags</code> および <code>PMSignalShmemSize()</code> で計算されるサイズと厳密に整合している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**初期化前のアクセス**: 共有メモリが初期化される前に <code>PMSignalState</code> を介してアクセスしようとすると、ポインタが <code>NULL</code> であるためセグメンテーション違反（クラッシュ）が発生します。</li>
+<li>**カプセル化の破壊**: <code>PMSignalData</code> は不透明な構造体として設計されているため、<code>pmsignal.c</code> 以外の外部モジュールから直接メンバにアクセスすることは推奨されません。構造体のレイアウト変更が他モジュールへ波及するのを防ぐため、操作は必ず提供されたインターフェース関数を介して行う必要があります。</li>
+<li>**メモリ破壊**: <code>PMChildFlags</code> の可変長配列に対するメモリ確保時のサイズ計算（<code>offsetof</code> を使用）が不適切である場合、メモリ破壊やアクセス違反を引き起こす可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/storage/ipc/pmsignal.c</code>**: 構造体の詳細な定義、および <code>SendPostmasterSignal</code> や <code>CheckPostmasterSignal</code> などの操作関数の実装。</li>
+<li>**<code>src/include/storage/pmsignal.h</code>**: 外部公開用の不透明な構造体宣言、および <code>PMSignalReason</code> などの関連定義。</li>
+<li>**<code>src/backend/postmaster/launch_backend.c</code>**: <code>PMSignalState</code> ポインタを通じて本構造体を参照している箇所。</li>
+</ul></body></html>

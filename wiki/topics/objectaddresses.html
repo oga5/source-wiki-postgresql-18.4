@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/objectaddresses.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ObjectAddresses</h1>
+<h2>概念</h2>
+<p><code>ObjectAddresses</code> は、PostgreSQLのデータベースオブジェクト削除処理（<code>DROP</code> 操作など）において、削除対象となる複数のオブジェクトをまとめて管理・蓄積するための動的に拡張可能なリスト構造体です。</p>
+<p>個々のオブジェクトを識別する <code>ObjectAddress</code> の配列（<code>refs</code>）や、削除処理に関連する補助的な状態を保持する <code>ObjectAddressExtra</code> の配列（<code>extras</code>）を内包し、カスケード削除などの複雑な依存関係の解決において中心的な役割を果たします。</p>
+<h2>なぜ重要か</h2>
+<p>データベースオブジェクトを削除する際、オブジェクト間の依存関係を考慮して正しい順序で削除を実行する必要があります。<code>ObjectAddresses</code> は、依存関係の探索中に削除対象オブジェクトを一時的に蓄積するコンテナとして機能します。これにより、重複する依存関係の排除（<code>eliminate_duplicate_dependencies</code>）や、依存関係の順序制御を効率的かつ安全に行うことができるため重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/catalog</code></li>
+<li><code>module:src/include/catalog</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/catalog/dependency.c#ObjectAddresses</code>**: 構造体の実体定義。以下のメンバを持ち、動的なメモリ確保（<code>palloc</code>）によって管理されます。</li>
+<li><code>refs</code>: <code>ObjectAddress</code> の配列</li>
+<li><code>extras</code>: <code>ObjectAddressExtra</code> の配列（または <code>NULL</code>）</li>
+<li><code>numrefs</code>: 現在の参照数</li>
+<li><code>maxrefs</code>: 配列の現在の最大容量</li>
+<li>**<code>symbol:src/include/catalog/dependency.h#ObjectAddresses</code>**: 他のモジュールから参照できるようにするための不完全型（<code>typedef struct ObjectAddresses ObjectAddresses</code>）の定義。</li>
+<li>**<code>symbol:src/backend/catalog/dependency.c#free_object_addresses</code>**: <code>ObjectAddresses</code> に割り当てられたメモリ領域を解放するための関数（詳細な実装仕様は提供されたコンテキストからは未詳）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化と蓄積**: <code>performDeletion</code> や <code>performMultipleDeletions</code> などの削除処理の開始時に <code>ObjectAddresses</code> が用意されます。 2. **依存関係の探索**: <code>findDependentObjects</code> などの関数が再帰的に依存オブジェクトを探索し、削除対象となるオブジェクトを <code>ObjectAddresses</code> に順次追加します。この際、必要に応じて配列の容量が拡張されます。 3. **重複排除**: <code>eliminate_duplicate_dependencies</code> 関数により、蓄積されたリストから重複する依存関係が排除されます。 4. **削除の実行**: 整理された <code>ObjectAddresses</code> リストに基づき、依存関係の順序を考慮しながら実際のオブジェクト削除処理が実行されます。 5. **クリーンアップ**: 処理終了後、<code>free_object_addresses</code> 等により確保されたメモリが解放されます。</p>
+<p>*注意: 例外発生時のロールバック処理や、具体的なメモリ解放のタイミングなど、詳細なエンドツーエンドのライフサイクルは提供されたコンテキストからは完全には特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**容量の整合性**: 現在の参照数を示す <code>numrefs</code> は、常に配列の最大容量を示す <code>maxrefs</code> 以下でなければなりません（<code>numrefs &lt;= maxrefs</code>）。</li>
+<li>**補助データの任意性**: <code>extras</code> フィールドは、追加のオブジェクト状態（削除フラグなど）が必要ない場合には <code>NULL</code> に設定されることが許容されます。</li>
+<li>**重複の排除**: 最終的な削除処理に移行する前に、<code>eliminate_duplicate_dependencies</code> によってリスト内の重複が排除されている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリ不足（OOM）**: リストの拡張は <code>palloc</code> を用いて動的に行われるため、極めて大量のオブジェクトを一度に削除しようとすると、メモリ不足エラーが発生する可能性があります。</li>
+<li>**スタックオーバーフロー**: 依存関係が極めて深いオブジェクト群を再帰的に探索する際、<code>check_stack_depth()</code> による制限を超えてスタックオーバーフローを引き起こす可能性があります。</li>
+<li>**循環参照**: 依存関係の探索中に循環参照が発生する可能性があり、これを防ぐために <code>ObjectAddressStack</code> などの関連構造体と組み合わせて適切に管理する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/catalog/dependency.h</code>: <code>ObjectAddresses</code> の宣言や、関連する依存関係管理関数のプロトタイプ宣言。</li>
+<li><code>src/backend/catalog/dependency.c</code>: <code>ObjectAddresses</code> の構造体定義、および <code>eliminate_duplicate_dependencies</code> や <code>findDependentObjects</code> などの具体的な操作ロジックの実装。</li>
+</ul></body></html>

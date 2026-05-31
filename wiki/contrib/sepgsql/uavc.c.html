@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/uavc.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/uavc.c</h1>
+<h2>概要</h2>
+<p>SELinux のアクセス制御決定をキャッシュするユーザー空間アクセスベクタキャッシュ（AVC）の実装です。カーネルへのシステムコール呼び出し頻度を抑え、SELinux 統合によるパフォーマンス低下を最小限に抑える役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> サブシステムにおけるパフォーマンス最適化層です。他のモジュール（<code>dml.c</code> や <code>relation.c</code> など）が権限チェックを行う際、直接カーネルを叩く代わりにこのキャッシュを経由します。</p>
+<h2>責務</h2>
+<ul>
+<li>**アクセス決定のキャッシュ**: 主体（Subject）と対象（Target）のセキュリティラベルおよびオブジェクトクラスのペアに対する権限判定結果を保持。</li>
+<li>**キャッシュの妥当性管理**: SELinux ポリシーのリロードを検知し、必要に応じてキャッシュをフラッシュ。</li>
+<li>**LRU ベースのメモリ管理**: キャッシュエントリが閾値を超えた際、参照頻度の低いエントリを解放。</li>
+<li>**監査ログの生成**: 権限違反が発生した際のログ出力処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>avc_cache</code>: キャッシュエントリを保持する構造体。権限ビットマスクやラベル情報を格納。</li>
+<li><code>sepgsql_avc_check_perms</code>: 外部から呼び出される主要な権限チェック関数。</li>
+<li><code>sepgsql_avc_lookup</code>: キャッシュを検索し、存在しない場合は <code>sepgsql_avc_compute</code> を呼び出す。</li>
+<li><code>sepgsql_avc_check_valid</code>: SELinux の状態更新を監視し、キャッシュの有効性を検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>sepgsql_avc_check_perms_label</code></li>
+<li><code>sepgsql_avc_exit</code></li>
+<li><code>sepgsql_avc_hash</code></li>
+<li><code>sepgsql_avc_reclaim</code></li>
+<li><code>sepgsql_avc_reset</code></li>
+<li><code>sepgsql_avc_trusted_proc</code></li>
+<li><code>sepgsql_avc_unlabeled</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **チェック開始**: <code>sepgsql_avc_check_perms</code> が呼ばれると、まず <code>sepgsql_avc_check_valid</code> でポリシー変更がないか確認します。 2.  **検索/計算**: <code>sepgsql_avc_lookup</code> を通じてハッシュテーブルを検索します。ヒットしなければ <code>sepgsql_avc_compute</code> がカーネルへ問い合わせを行い、結果をキャッシュします。 3.  **ループ処理**: 権限チェックは <code>do-while</code> ループ内で実行され、判定中にポリシーが更新された場合は再試行されます。 4.  **監査**: 権限違反や監査設定に基づき、必要に応じて <code>sepgsql_audit_log</code> が呼び出されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>sepgsql.h</code>: モジュール共通のインターフェースと定数。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>storage/ipc.h</code>: プロセス終了時のクリーンアップ処理。</li>
+<li><code>common/hashfn.h</code>: ハッシュ計算用ユーティリティ。</li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>utils/guc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>sepgsql.h</code>: <code>SEPG_CLASS_*</code> などのオブジェクトクラス定義。</li>
+<li><code>selinux.c</code>: カーネルとの低レベルな通信や <code>sepgsql_compute_avd</code> などの判定ロジック。</li>
+<li><code>hooks.c</code>: <code>sepgsql_avc_check_perms</code> を呼び出すフックポイントの集合。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**アトミック性**: 権限チェックはシステムコールを跨ぐ可能性があるため、<code>sepgsql_avc_check_valid</code> をループ内で使用するイディオムが必須です。</li>
+<li>**メモリ管理**: キャッシュは <code>avc_mem_cxt</code> という専用のメモリコンテキストで管理されており、<code>sepgsql_avc_reset</code> で一括解放されます。</li>
+<li>**信頼されたプロシージャ**: <code>DB_PROCEDURE</code> クラスの場合、単なる権限判定だけでなく、実行時に切り替えるべきセキュリティラベル（<code>ncontext</code>）もキャッシュされる点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__avc_cache.html" target="wiki-view"><code>avc_cache</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_hash.html" target="wiki-view"><code>sepgsql_avc_hash</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_reset.html" target="wiki-view"><code>sepgsql_avc_reset</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_reclaim.html" target="wiki-view"><code>sepgsql_avc_reclaim</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_check_valid.html" target="wiki-view"><code>sepgsql_avc_check_valid</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_unlabeled.html" target="wiki-view"><code>sepgsql_avc_unlabeled</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_compute.html" target="wiki-view"><code>sepgsql_avc_compute</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_lookup.html" target="wiki-view"><code>sepgsql_avc_lookup</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_check_perms_label.html" target="wiki-view"><code>sepgsql_avc_check_perms_label</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_check_perms.html" target="wiki-view"><code>sepgsql_avc_check_perms</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_trusted_proc.html" target="wiki-view"><code>sepgsql_avc_trusted_proc</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__uavc_c__sepgsql_avc_exit.html" target="wiki-view"><code>sepgsql_avc_exit</code></a></li>
+</ul></body></html>

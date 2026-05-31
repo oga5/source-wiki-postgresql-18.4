@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/relation.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Relation</h1>
+<h2>概念</h2>
+<p><code>Relation</code> は、PostgreSQLにおけるデータベースオブジェクト（テーブル、インデックス、ビュー、外部テーブルなど）の物理的・論理的構造やメタデータをメモリ上で表現・管理するための共通の記述子（ポインタ型）です。</p>
+<p>実体は <code>src/include/utils/relcache.h</code> で定義されている <code>struct RelationData</code> へのポインタ（<code>typedef struct RelationData *Relation;</code>）であり、システム全体で広く参照されます。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのコアシステムおよび拡張モジュールにおいて、データベースオブジェクトを操作する際の統一的なインターフェースとして機能するため、極めて重要です。</p>
+<ul>
+<li>**アクセスメソッド（AM）**: インデックスの構築や検証（<code>amcheck</code>）において、対象インデックスや親テーブルの識別・操作に不可欠です。</li>
+<li>**外部データラッパー（FDW）**: FDW APIにおいて、対象となる外部テーブルのメタデータやアクセスパスを特定するために使用されます。</li>
+<li>**行レベルセキュリティ（RLS）**: クエリ書き換えフェーズにおいて、ポリシーを適用する対象テーブルの特定に使用されます。</li>
+<li>**キャッシュ管理（RelCache）**: システムカタログから読み取ったメタデータをメモリ上に保持し、高速なアクセスを提供します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/amcheck</code></li>
+<li><code>module:src/include/access</code></li>
+<li><code>module:src/include/foreign</code></li>
+<li><code>module:src/include/rewrite</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/amcheck/verify_common.h#Relation</code> : インデックス検証処理（B-tree, GIN, Heap等）における対象リレーションの識別・操作用。</li>
+<li><code>symbol:src/include/access/amapi.h#Relation</code> : インデックス・アクセスメソッド（AM）インターフェースでの操作対象（インデックス）の表現用。</li>
+<li><code>symbol:src/include/foreign/fdwapi.h#Relation</code> : FDW APIにおける外部テーブルのメタデータやアクセスパス特定用。</li>
+<li><code>symbol:src/include/rewrite/rowsecurity.h#Relation</code> : クエリ書き換えフェーズにおける行レベルセキュリティ（RLS）ポリシー適用対象の表現用。</li>
+<li><code>symbol:src/include/utils/relcache.h#Relation</code> : リレーションキャッシュ（RelCache）におけるデータベースオブジェクトのメタデータ保持・参照用（実体定義）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>リレーションオブジェクトの一般的なライフサイクルおよび利用の流れは以下の通りです。</p>
+<p>1. **取得と構築**: クエリ実行や検証処理の開始時、オブジェクトID（OID）を基に <code>RelationIdGetRelation(Oid)</code> 等を呼び出します。キャッシュ（RelCache）内に存在しない場合は、システムカタログからメタデータを読み込んで <code>Relation</code> 構造体を構築します。 2. **各機能での利用**:</p>
+<ul>
+<li>**クエリ書き換え**: <code>row_security_policy_hook_type</code> 等を通じて、RLSポリシーの適用可否や内容を決定するコンテキストとして渡されます。</li>
+<li>**プランニング/FDW**: FDW API（<code>AddForeignUpdateTargets_function</code> 等）において、外部テーブルのメタデータアクセスに利用されます。</li>
+<li>**実行/検証**: <code>amcheck</code> などの検証モジュールにおいて、<code>Relation</code> を引数として受け取り、ロック管理やアクセス手法固有の検証ロジック（<code>IndexDoCheckCallback</code> 等）を実行します。</li>
+<p>3. **解放**: 処理終了時、<code>RelationClose(Relation)</code> を呼び出して参照カウントを減らし、必要に応じてキャッシュから解放します。トランザクション終了時には <code>AtEOXact_RelationCache</code> によるクリーンアップが行われます。</p>
+</ul>
+<p>*注意: 各モジュール間（例: RLSからAM、FDWからRelCacheなど）を跨ぐ詳細なエンドツーエンドの制御フローの全容は、提供されたコンテキストからは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効性とロック**: <code>Relation</code> を操作する際、対象リレーションに対して適切なロック（例: <code>amcheck_lock_relation_and_check</code> によるロック）が事前に取得されている必要があります。</li>
+<li>**キャッシュ管理**: 取得した <code>Relation</code> は、使用後に必ず <code>RelationClose</code> を呼び出して参照カウントを適切に管理しなければなりません。</li>
+<li>**整合性**: DDL操作等でカタログが変更された場合、キャッシュ無効化メカニズム（<code>RelationCacheInvalidate</code>）によってキャッシュエントリがフラッシュされ、古い <code>Relation</code> 記述子が参照され続けないようにする必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効なポインタ/NULLアクセス**: <code>Relation</code> ポインタが <code>NULL</code> である、または適切にロックされていない状態でアクセスすると、セグメンテーションフォールトやシステムクラッシュを引き起こします。</li>
+<li>**リソースリーク**: トランザクション終了時に <code>AtEOXact_RelationCache</code> によるクリーンアップが適切に行われない場合、メモリリークやキャッシュの不整合が発生します。</li>
+<li>**不適合なオブジェクトの検証**: <code>amcheck</code> 等で <code>index_checkable</code> による事前確認を怠ると、サポートされていないインデックス種別に対して検証が実行され、予期せぬエラーが発生するリスクがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/relcache.h</code> (実体定義 <code>RelationData</code> およびキャッシュ管理)</li>
+<li><code>contrib/amcheck/verify_common.h</code> (検証処理での利用例)</li>
+<li><code>src/include/access/amapi.h</code> (インデックスAMでの利用例)</li>
+<li><code>src/include/foreign/fdwapi.h</code> (FDWでの利用例)</li>
+<li><code>src/include/rewrite/rowsecurity.h</code> (RLSでの利用例)</li>
+</ul></body></html>

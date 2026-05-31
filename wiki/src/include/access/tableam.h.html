@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/include/access/tableam.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/include/access/tableam.h</h1>
+<h2>概要</h2>
+<p><code>tableam.h</code> は、PostgreSQL のテーブルアクセスメソッド（Table AM）の抽象化レイヤーを定義する中心的なヘッダーファイルです。このファイルは、ストレージエンジン（ヒープ、AO 等）の物理的な実装詳細を隠蔽し、実行エンジンやクエリプランナが統一されたインターフェースでテーブル操作を行えるようにします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/access</code> モジュールにおいて、テーブルアクセスの最上位 API を提供します。<code>TableAmRoutine</code> 構造体を通じて、各 AM が実装すべき関数ポインタの契約を定義しており、<code>table_*.c</code> 系の関数群がこのルーチンをディスパッチするラッパーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**AM インターフェースの定義**: スキャン、タプル操作（挿入・更新・削除）、DDL 操作、プランナ向け統計情報取得の抽象化。</li>
+<li>**スキャン制御**: シーケンシャル、ビットマップ、TID、サンプルスキャン等の実行状態管理。</li>
+<li>**トランザクションと可視性**: MVCC スナップショットに基づくタプルの可視性判定と、ロック管理の統合。</li>
+<li>**並列処理のサポート**: 並列スキャン時の共有メモリ管理とブロック割り当ての調整。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>AM 定義とルーチン</h3>
+<ul>
+<li><code>TableAmRoutine</code>: 各 AM が実装すべき関数ポインタの集合体。<code>amhandler</code> を介して取得されます。</li>
+<li><code>GetTableAmRoutine()</code>: 指定された AM ハンドラから <code>TableAmRoutine</code> を取得するファクトリ関数。</li>
+</ul>
+<h3>スキャン制御</h3>
+<ul>
+<li><code>TableScanDesc</code>: スキャン状態を保持する構造体。各 AM はこれを継承または埋め込んで使用します。</li>
+<li><code>ScanOptions</code>: スキャンの挙動（シーケンシャル、ビットマップ、一時スナップショット等）を指定するビットマスク。</li>
+<li><code>table_beginscan_*</code>: 各種スキャンを開始するためのインラインラッパー群。</li>
+</ul>
+<h3>タプル操作と結果</h3>
+<ul>
+<li><code>TM_Result</code>: タプル操作（更新・削除・ロック）の結果コード（<code>TM_Ok</code>, <code>TM_Updated</code>, <code>TM_SelfModified</code> 等）。</li>
+<li><code>TM_FailureData</code>: 操作失敗時に、競合したトランザクション情報や更新チェーンの情報を保持する構造体。</li>
+<li><code>TM_IndexDeleteOp</code>: インデックスのボトムアップ削除時に、テーブル AM とインデックス AM 間で情報をやり取りするための状態構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Datum</code></li>
+<li><code>ScanOptions</code></li>
+<li><code>TM_FailureData</code></li>
+<li><code>TM_IndexDelete</code></li>
+<li><code>TM_IndexDeleteOp</code></li>
+<li><code>TM_IndexStatus</code></li>
+<li><code>TM_Result</code></li>
+<li><code>TU_UpdateIndexes</code></li>
+<li><code>TableAmRoutine</code></li>
+<li><code>table_beginscan</code></li>
+<li><code>table_beginscan_bm</code></li>
+<li><code>table_beginscan_strat</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ディスパッチ**: 実行エンジンが <code>table_tuple_insert()</code> 等の <code>table_*</code> 関数を呼び出すと、対象リレーションの <code>rd_tableam</code>（<code>TableAmRoutine</code>）を介して、具体的な実装（例: <code>heapam.c</code>）の関数へ制御が移ります。 2. **スキャン**: <code>table_beginscan</code> で開始されたスキャンは、<code>scan_getnextslot</code> を通じて <code>TupleTableSlot</code> にデータを読み込みます。この際、<code>Snapshot</code> を用いて可視性が判定されます。 3. **並列処理**: <code>table_parallelscan_initialize</code> で共有メモリを確保し、各ワーカーが <code>table_beginscan_parallel</code> でスキャン状態をアタッチします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/relscan.h</code>: スキャン記述子の定義。</li>
+<li><code>access/xact.h</code>: トランザクション ID と可視性判定。</li>
+<li><code>executor/tuptable.h</code>: タプルを保持する <code>TupleTableSlot</code> の定義。</li>
+<li><code>utils/rel.h</code>: リレーションキャッシュ（<code>Relation</code> 構造体）。</li>
+<li><code>utils/snapshot.h</code>: MVCC スナップショットの定義。</li>
+<li><code>access/sdir.h</code></li>
+<li><code>storage/read_stream.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/table/tableam.c</code>: インライン化できない複雑な AM 補助関数や並列スキャンロジックの実装。</li>
+<li><code>src/backend/access/heap/heapam_handler.c</code>: 標準ヒープ AM の実装。</li>
+<li><code>src/include/access/amapi.h</code>: AM ハンドラの基盤定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>table_slot_create</code> 等で生成されるスロットは、呼び出し元が管理する必要があります。<code>table_multi_insert</code> 等の一部関数はメモリコンテキストを消費するため、ループ処理時は注意が必要です。</li>
+<li>**インライン関数の役割**: 多くの <code>table_*</code> 関数は <code>static inline</code> で定義されており、<code>Relation</code> 構造体内の <code>rd_tableam</code> を経由して直接ディスパッチします。これにより、関数呼び出しのオーバーヘッドを最小限に抑えています。</li>
+<li>**省略された詳細**: 本ファイルはインターフェース定義に特化しており、具体的なページレイアウトや WAL レコードの物理フォーマットについては、各 AM の実装ファイル（<code>heapam.c</code> 等）を参照する必要があります。</li>
+<li>**不変条件**: <code>TableAmRoutine</code> はサーバーライフタイムで生存する静的構造体である必要があります。動的な割り当ては想定されていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__access__tableam_h__ScanOptions.html" target="wiki-view"><code>ScanOptions</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TM_Result.html" target="wiki-view"><code>TM_Result</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TU_UpdateIndexes.html" target="wiki-view"><code>TU_UpdateIndexes</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TM_FailureData.html" target="wiki-view"><code>TM_FailureData</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TM_IndexDelete.html" target="wiki-view"><code>TM_IndexDelete</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TM_IndexStatus.html" target="wiki-view"><code>TM_IndexStatus</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TM_IndexDeleteOp.html" target="wiki-view"><code>TM_IndexDeleteOp</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__Datum.html" target="wiki-view"><code>Datum</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__TableAmRoutine.html" target="wiki-view"><code>TableAmRoutine</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__table_beginscan.html" target="wiki-view"><code>table_beginscan</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__table_beginscan_strat.html" target="wiki-view"><code>table_beginscan_strat</code></a></li>
+<li><a href="../../../symbols/src__include__access__tableam_h__table_beginscan_bm.html" target="wiki-view"><code>table_beginscan_bm</code></a></li>
+</ul></body></html>

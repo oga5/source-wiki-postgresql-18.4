@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/spi.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/spi.c</h1>
+<h2>概要</h2>
+<p><code>spi.c</code> は、PostgreSQL の **Server Programming Interface (SPI)** を実装するモジュールです。SPI は、サーバー内部のコード（PL/pgSQL などの手続き型言語やトリガー関数）から SQL クエリを安全かつ透過的に実行するためのインターフェースを提供します。クエリの解析、計画、実行、およびトランザクション制御をカプセル化し、呼び出し元のコンテキストと実行エンジンを分離します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、実行エンジン（<code>execMain.c</code> 等）をラップし、手続き型言語が SQL を実行するための「ゲートウェイ」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: SPI 呼び出しのネストレベルを管理し、呼び出し元ごとのメモリコンテキストとグローバル状態（<code>SPI_processed</code> 等）を保護する。</li>
+<li>**クエリ実行**: SQL 文字列の解析・計画・実行、およびプリペアドプランの実行。</li>
+<li>**データ変換**: 内部的なタプル表現と、呼び出し元が扱うデータ形式間の変換。</li>
+<li>**トランザクション制御**: 手続き内からのトランザクション終了（コミット/ロールバック）の制御。</li>
+<li>**リソース管理**: SPI 経由で生成されたタプルテーブルやメモリコンテキストの自動クリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理（グローバル変数）</h3>
+<ul>
+<li><code>SPI_processed</code>: 直近の操作で処理された行数。</li>
+<li><code>SPI_tuptable</code>: 直近の操作で返されたタプルのテーブル。</li>
+<li><code>SPI_result</code>: 直近の操作のステータスコード。</li>
+</ul>
+<h3>接続・ライフサイクル</h3>
+<ul>
+<li><code>SPI_connect()</code> / <code>SPI_finish()</code>: SPI セッションの開始と終了。</li>
+<li><code>AtEOXact_SPI()</code> / <code>AtEOSubXact_SPI()</code>: トランザクション/サブトランザクション終了時の SPI 状態のクリーンアップ。</li>
+</ul>
+<h3>クエリ実行</h3>
+<ul>
+<li><code>SPI_execute()</code> / <code>SPI_execute_extended()</code>: SQL 文字列の即時実行。</li>
+<li><code>SPI_execute_plan()</code> / <code>SPI_execute_plan_extended()</code>: プリペアドプランの実行。</li>
+<li><code>SPI_prepare()</code> / <code>SPI_prepare_extended()</code>: クエリの解析と計画の事前作成。</li>
+</ul>
+<h3>カーソル操作</h3>
+<ul>
+<li><code>SPI_cursor_open()</code> / <code>SPI_cursor_fetch()</code>: カーソルの作成とフェッチ。</li>
+</ul>
+<h3>データ操作・ユーティリティ</h3>
+<ul>
+<li><code>SPI_copytuple()</code> / <code>SPI_modifytuple()</code>: タプルのコピーと変更。</li>
+<li><code>SPI_getvalue()</code> / <code>SPI_getbinval()</code>: タプルからの値抽出。</li>
+<li><code>SPI_register_relation()</code>: 一時的な名前付きリレーションの登録。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOSubXact_SPI</code></li>
+<li><code>AtEOXact_SPI</code></li>
+<li><code>SPICallbackArg</code></li>
+<li><code>SPI_commit</code></li>
+<li><code>SPI_commit_and_chain</code></li>
+<li><code>SPI_connect</code></li>
+<li><code>SPI_connect_ext</code></li>
+<li><code>SPI_finish</code></li>
+<li><code>SPI_inside_nonatomic_context</code></li>
+<li><code>SPI_rollback</code></li>
+<li><code>SPI_rollback_and_chain</code></li>
+<li><code>SPI_start_transaction</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **接続**: <code>SPI_connect</code> が <code>_SPI_stack</code> を拡張し、新しい <code>_SPI_connection</code> を作成。<code>procCxt</code>（プロシージャ用）と <code>execCxt</code>（実行用）メモリコンテキストを初期化。 2. **実行**: <code>SPI_execute</code> 等が <code>_SPI_prepare_oneshot_plan</code> で解析を行い、<code>_SPI_execute_plan</code> を呼び出す。 3. **実行フロー**: <code>_SPI_execute_plan</code> は <code>GetCachedPlan</code> でプランを取得し、<code>ProcessUtility</code> または <code>_SPI_pquery</code>（<code>ExecutorStart/Run/Finish</code> を呼び出す）を通じてクエリを処理。 4. **結果返却**: <code>spi_dest_startup</code> と <code>spi_printtup</code> が <code>DestReceiver</code> として機能し、実行結果を <code>SPITupleTable</code> に蓄積。 5. **終了**: <code>SPI_finish</code> がメモリコンテキストを解放し、スタックをポップする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/executor.h</code>: 実行エンジンの主要機能。</li>
+<li><code>tcop/pquery.h</code>, <code>tcop/utility.h</code>: クエリ解析とユーティリティコマンドの実行。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/xact.h</code>: トランザクション制御。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/printtup.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>executor/spi_priv.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/spi.h</code>: 公開 API 定義。</li>
+<li><code>src/backend/executor/execMain.c</code>: 実行エンジンのメインループ。</li>
+<li><code>src/backend/tcop/pquery.c</code>: ポータルとクエリ実行の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: SPI は <code>procCxt</code>（プロシージャ終了まで生存）と <code>execCxt</code>（個々のクエリ実行中のみ生存）の二層構造でメモリを管理します。<code>SPI_palloc</code> は <code>procCxt</code> を使用します。</li>
+<li>**グローバル変数**: <code>SPI_processed</code> 等のグローバル変数は、SPI のネスト呼び出し時に <code>_SPI_connection</code> 構造体に保存・復元されます。</li>
+<li>**制約**: <code>SPI_commit</code> や <code>SPI_rollback</code> は、アトミックな（関数内の）SPI コンテキストでは呼び出せません。</li>
+<li>**省略箇所**: 本ファイルは非常に大規模であるため、各 <code>SPI_execute_*</code> 系関数の詳細な引数バリデーションロジックや、<code>spi_printtup</code> の詳細なタプルコピー処理は省略しています。これらは主に <code>execTuples.c</code> の機能に依存しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPICallbackArg.html" target="wiki-view"><code>SPICallbackArg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_connect.html" target="wiki-view"><code>SPI_connect</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_connect_ext.html" target="wiki-view"><code>SPI_connect_ext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_finish.html" target="wiki-view"><code>SPI_finish</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_start_transaction.html" target="wiki-view"><code>SPI_start_transaction</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_commit.html" target="wiki-view"><code>SPI_commit</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_commit_and_chain.html" target="wiki-view"><code>SPI_commit_and_chain</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_rollback.html" target="wiki-view"><code>SPI_rollback</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_rollback_and_chain.html" target="wiki-view"><code>SPI_rollback_and_chain</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__AtEOXact_SPI.html" target="wiki-view"><code>AtEOXact_SPI</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__AtEOSubXact_SPI.html" target="wiki-view"><code>AtEOSubXact_SPI</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__spi_c__SPI_inside_nonatomic_context.html" target="wiki-view"><code>SPI_inside_nonatomic_context</code></a></li>
+</ul></body></html>

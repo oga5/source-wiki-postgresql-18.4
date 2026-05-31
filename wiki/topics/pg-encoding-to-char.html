@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pg-encoding-to-char.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_encoding_to_char</h1>
+<h2>概念</h2>
+<p><code>pg_encoding_to_char</code> は、PostgreSQLの内部的な文字エンコーディングID（<code>int</code> 型または <code>pg_enc</code>）を、対応する公式のエンコーディング名（文字列）に変換するための機能群です。SQLインターフェースから呼び出し可能なラッパー関数と、C言語レベルで動作する内部ユーティリティ関数の2つのレイヤーで構成されています。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLの内部では、文字エンコーディングは効率的な処理のために数値（エンコーディングID）として管理されています。しかし、ユーザーや外部システム、SQLクエリ、システムカタログ（<code>pg_collation</code> や <code>pg_conversion</code> など）とのやり取りにおいては、人間が理解できる「UTF8」や「EUC_JP」といった文字列形式のエンコーディング名が必要です。<code>pg_encoding_to_char</code> は、この数値IDから文字列名への変換を高速かつ安全に行うための共通インターフェースを提供します。</p>
+<h2>関与するモジュール</h2>
+<p>提供されたソース情報に基づき、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:src/backend/utils/mb</code> (マルチバイト文字処理ユーティリティ)</li>
+<li><code>module:src/common</code> (共通ユーティリティコード)</li>
+<li><code>module:src/include/mb</code> (マルチバイト文字関連のヘッダー定義)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/mb/mbutils.c#PG_encoding_to_char</code>**</li>
+<p>SQL関数として公開されるラッパー関数。<code>PG_FUNCTION_ARGS</code> を受け取り、内部関数 <code>pg_encoding_to_char</code> を呼び出して、結果を PostgreSQL の <code>name</code> 型（<code>Datum</code>）として返します。</p>
+<li>**<code>symbol:src/common/encnames.c#pg_encoding_to_char</code>**</li>
+<p>C言語レベルの実体関数。エンコーディングID（<code>int</code>）を引数に取り、対応するヌル終端文字列（<code>const char *</code>）を返します。</p>
+<li>**<code>symbol:src/include/mb/pg_wchar.h#pg_encoding_to_char</code>**</li>
+<p>関数のプロトタイプ宣言や、関連するマクロ（<code>PG_VALID_ENCODING</code> など）を定義するヘッダーファイル。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **SQLレイヤーからの呼び出し**: SQLクエリなどからエンコーディングID（<code>int32</code>）が渡されると、<code>PG_encoding_to_char</code> が呼び出されます。 2. **引数の取得**: <code>PG_encoding_to_char</code> は <code>PG_GETARG_INT32(0)</code> を介してエンコーディングIDを取得します。 3. **内部変換処理**: 取得したIDを引数として、内部ユーティリティ関数 <code>pg_encoding_to_char(encoding)</code> を呼び出します。 4. **テーブル参照**: <code>pg_encoding_to_char</code> は、入力されたIDが有効な範囲内（<code>PG_VALID_ENCODING</code>）であるかを検証します。有効な場合、静的テーブル <code>pg_enc2name_tbl</code> のインデックスを直接参照し、対応する <code>pg_enc2name</code> 構造体からエンコーディング名（<code>const char *</code>）を取得して返します。 5. **型変換と返却**: <code>PG_encoding_to_char</code> は、取得した文字列を <code>CStringGetDatum</code> で変換し、<code>namein</code> 関数を <code>DirectFunctionCall1</code> で呼び出すことで PostgreSQL の <code>name</code> 型に変換して呼び出し元に返します。</p>
+<p>※なお、SQLレイヤーを経由しない直接のC言語レベルの呼び出し元（<code>pg_collation.c</code>、<code>pg_conversion.c</code>、<code>copyfrom.c</code>、<code>dbcommands.c</code> など）からは、手順3および4の <code>pg_encoding_to_char</code> が直接呼び出されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**IDの有効性検証**: <code>pg_encoding_to_char</code> の内部では、<code>PG_VALID_ENCODING(encoding)</code> マクロを用いて入力IDが有効範囲内であることを保証します。</li>
+<li>**テーブル整合性**: <code>pg_enc2name_tbl</code> のインデックスと、格納されている構造体の <code>encoding</code> フィールドが一致している必要があります（内部で <code>Assert(encoding == p-&gt;encoding)</code> により検証されます）。</li>
+<li>**無効なIDに対するフォールバック**: 入力されたエンコーディングIDが無効な場合、関数はエラーを発生させず、空文字列 <code>&quot;&quot;</code> を返します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無効なIDのハンドリング**: <code>pg_encoding_to_char</code> は無効なIDに対して空文字列 <code>&quot;&quot;</code> を返すため、呼び出し側で空文字列が返された場合のハンドリングを考慮する必要があります。</li>
+<li>**ICUなどの外部ライブラリとの互換性**: 本関数が返す名前は PostgreSQL 内部の公式エンコーディング名です。ICUなどの外部ライブラリで必要なエンコーディング名とは異なる場合があるため、その場合は <code>get_encoding_name_for_icu</code> などの専用関数を使用する必要があります。</li>
+<li>**テーブル同期の維持**: <code>pg_enc2name_tbl</code> のインデックスを直接使用するため、テーブルのサイズと <code>PG_VALID_ENCODING</code> の定義が常に同期している必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/mb/mbutils.c</code> (SQLラッパー関数の実装)</li>
+<li><code>src/common/encnames.c</code> (エンコーディング名変換の実装と <code>pg_enc2name_tbl</code> の定義)</li>
+<li><code>src/include/mb/pg_wchar.h</code> (関連マクロやプロトタイプ宣言)</li>
+</ul></body></html>

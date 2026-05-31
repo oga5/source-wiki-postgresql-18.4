@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__checkpointer_c__CheckpointWriteDelay.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CheckpointWriteDelay</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/postmaster/checkpointer.c:771</code></li>
+</ul>
+<h2>目的</h2>
+<p>チェックポイント実行中の書き込み速度を制御（スロットリング）し、システム負荷を平滑化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void CheckpointWriteDelay(int flags, double progress)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>flags</code>: チェックポイントの動作フラグ（<code>CHECKPOINT_IMMEDIATE</code> 等）。</li>
+<li><code>progress</code>: 現在の進捗状況（0.0 から 1.0 の範囲）。</li>
+<li>**出力**: なし（<code>void</code>）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元が <code>checkpointer</code> プロセスでない場合、本関数は即座に復帰する。</li>
+<li><code>flags</code> に <code>CHECKPOINT_IMMEDIATE</code> が含まれる場合、またはシャットダウン要求がある場合はスリープを行わない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **プロセス確認**: <code>AmCheckpointerProcess()</code> を確認し、チェックポインター以外であれば処理を終了する。 2. **スロットリング判定**: <code>IsCheckpointOnSchedule(progress)</code> を用いて、チェックポイントが予定通り進行しているかを確認する。 3. **待機処理**: 予定通り進行しており、かつ即時実行やシャットダウンの要求がない場合：</p>
+<ul>
+<li>設定変更（<code>ConfigReloadPending</code>）があれば適用する。</li>
+<li><code>AbsorbSyncRequests()</code> を呼び出し、保留中の fsync 要求を処理する。</li>
+<li><code>CheckArchiveTimeout()</code> を実行し、統計情報を報告する。</li>
+<li><code>WaitLatch</code> を使用して 100ms の待機を行う。</li>
+<p>4. **強制吸収**: 待機を行わない場合でも、<code>WRITES_PER_ABSORB</code> 回の書き込みごとに <code>AbsorbSyncRequests()</code> を呼び出し、fsync キューの溢れを防止する。 5. **バリア処理**: <code>ProcSignalBarrierPending</code> が真であれば <code>ProcessProcSignalBarrier()</code> を実行する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/buffer/bufmgr.c</code> (バッファ同期処理中)</li>
+<li>**呼び出し先**:</li>
+<li><code>AmCheckpointerProcess()</code></li>
+<li><code>ImmediateCheckpointRequested()</code></li>
+<li><code>IsCheckpointOnSchedule()</code></li>
+<li><code>ProcessConfigFile()</code></li>
+<li><code>UpdateSharedMemoryConfig()</code></li>
+<li><code>AbsorbSyncRequests()</code></li>
+<li><code>CheckArchiveTimeout()</code></li>
+<li><code>pgstat_report_checkpointer()</code></li>
+<li><code>WaitLatch()</code> / <code>ResetLatch()</code></li>
+<li><code>ProcessProcSignalBarrier()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MyLatch</code>: プロセスの待機制御に使用。</li>
+<li><code>ConfigReloadPending</code>: 設定再読み込みフラグ。</li>
+<li><code>ShutdownXLOGPending</code> / <code>ShutdownRequestPending</code>: シャットダウン状態フラグ。</li>
+<li><code>ProcSignalBarrierPending</code>: プロセスシグナルバリアフラグ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キューの溢れ**: <code>AbsorbSyncRequests</code> を定期的に呼び出すことで、fsync 要求キューのオーバーフローを回避する設計となっている。</li>
+<li>**即時実行**: <code>CHECKPOINT_IMMEDIATE</code> フラグが立っている場合、スリープをスキップして処理を優先する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>bgwriter_delay</code> とは独立しており、現在は 100ms の固定待機を行う。</li>
+<li><code>absorb_counter</code> は静的変数であり、書き込み回数に応じた fsync 要求の吸い上げ頻度を管理している。</li>
+</ul></body></html>

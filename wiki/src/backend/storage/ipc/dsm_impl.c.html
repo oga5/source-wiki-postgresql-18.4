@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/dsm_impl.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/dsm_impl.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「動的共有メモリ（DSM）」の低レベルな実装レイヤーです。サーバーのライフサイクル中に動的に作成・破棄可能な共有メモリセグメントを管理するための抽象化APIを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc/dsm.c</code> が提供する高レベルなDSM管理機能の下位層として機能します。OSごとに異なる共有メモリのプリミティブ（POSIX, System V, Windows, mmap）を統一的なインターフェースにラップし、上位層がプラットフォームの違いを意識せずに利用できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**プラットフォーム抽象化**: OS固有のAPI（<code>shm_open</code>, <code>shmget</code>, <code>CreateFileMapping</code> 等）を <code>dsm_impl_op</code> 関数に集約する。</li>
+<li>**セグメントのライフサイクル管理**: セグメントの作成、アタッチ、デタッチ、破棄の各操作を実装する。</li>
+<li>**永続化の制御**: Windows環境におけるハンドル保持や、mmap実装におけるファイルベースの管理など、OS特有の生存期間制御を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>dsm_impl_op</code>: 全てのDSM操作の入り口となるメイン関数。</li>
+<li><code>dsm_op</code>: 操作の種類（CREATE, ATTACH, DETACH, DESTROY）を定義する列挙型。</li>
+<li><code>dynamic_shared_memory_type</code>: 現在使用中の実装方式を保持するGUC変数。</li>
+<li><code>dsm_impl_pin_segment</code> / <code>dsm_impl_unpin_segment</code>: セグメントの生存期間を延長・終了させるための補助関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>dsm_impl_mmap</code></li>
+<li><code>dsm_impl_posix</code></li>
+<li><code>dsm_impl_posix_resize</code></li>
+<li><code>dsm_impl_sysv</code></li>
+<li><code>dsm_impl_windows</code></li>
+<li><code>errcode_for_dynamic_shared_memory</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **呼び出し**: 上位層が <code>dsm_impl_op</code> を呼び出し、操作対象の <code>dsm_handle</code> と操作種別を指定します。 2.  **ディスパッチ**: <code>dynamic_shared_memory_type</code> に基づき、<code>dsm_impl_posix</code>, <code>dsm_impl_sysv</code>, <code>dsm_impl_windows</code>, <code>dsm_impl_mmap</code> のいずれかの実装関数へ処理を委譲します。 3.  **実行**: 各実装関数はOS固有のシステムコールを呼び出し、メモリマッピングを行います。 4.  **状態更新**: <code>impl_private</code> ポインタを通じて、実装固有の識別子（ファイル記述子やハンドルなど）を保持し、後続の操作で再利用します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/dsm_impl.h</code>: インターフェース定義。</li>
+<li><code>sys/mman.h</code>, <code>sys/shm.h</code>: POSIX/System V共有メモリ用ヘッダー。</li>
+<li><code>utils/guc.h</code>: GUC変数管理。</li>
+<li><code>portability/mem.h</code>: OS間のメモリ操作差異の吸収。</li>
+<li><code>common/file_perm.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>sys/ipc.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/ipc/dsm.c</code>: 本ファイルのAPIを利用して、セグメントの割り当てや管理を行う上位モジュール。</li>
+<li><code>src/include/storage/dsm_impl.h</code>: 実装に必要な定数や型定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**実装の選択**: PostgreSQLは実行環境に応じて最適なDSM実装を自動選択しますが、<code>dynamic_shared_memory_type</code> GUCで明示的に変更可能です。</li>
+<li>**Windowsの特殊性**: Windowsではカーネルオブジェクトの生存期間管理が特殊であるため、<code>pin/unpin</code> 関数を通じてハンドルをPostmasterプロセスへ複製する処理が含まれています。</li>
+<li>**mmap実装の注意**: <code>mmap</code> 実装はファイルシステム上にセグメントを配置するため、ディスクI/Oが発生する可能性があります。パフォーマンスを重視する場合は、<code>pg_dynshmem</code> ディレクトリをRAMディスクに配置することが推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_op.html" target="wiki-view"><code>dsm_impl_op</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_posix.html" target="wiki-view"><code>dsm_impl_posix</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_posix_resize.html" target="wiki-view"><code>dsm_impl_posix_resize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_sysv.html" target="wiki-view"><code>dsm_impl_sysv</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_windows.html" target="wiki-view"><code>dsm_impl_windows</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_mmap.html" target="wiki-view"><code>dsm_impl_mmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_pin_segment.html" target="wiki-view"><code>dsm_impl_pin_segment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__dsm_impl_unpin_segment.html" target="wiki-view"><code>dsm_impl_unpin_segment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__dsm_impl_c__errcode_for_dynamic_shared_memory.html" target="wiki-view"><code>errcode_for_dynamic_shared_memory</code></a></li>
+</ul></body></html>

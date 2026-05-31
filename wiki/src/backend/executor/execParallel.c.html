@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execParallel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execParallel.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の並列クエリ実行における、リーダープロセスとワーカープロセス間の調整および状態共有を担うモジュールです。動的共有メモリ（DSM）を用いた実行計画のシリアライズ、パラメータの受け渡し、実行統計（Instrumentation）の集約、およびワーカーのライフサイクル管理を実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、プランナが生成した並列実行可能なプランを、複数のバックエンドプロセスで協調して実行するためのインフラを提供します。<code>ParallelContext</code>（<code>src/backend/access/transam/parallel.c</code>）をラップし、実行エンジン特有のデータ（<code>PlannedStmt</code>, <code>ParamListInfo</code>, <code>EState</code> 等）を共有メモリ経由でワーカーへ伝播させる役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**並列実行環境の構築**: リーダー側での DSM 領域の確保、プランのシリアライズ、およびワーカーへのタスク割り当て。</li>
+<li>**状態の共有と同期**: リーダーとワーカー間での <code>ParamExecData</code>、バッファ/WAL 使用統計、および JIT コンパイル統計の共有。</li>
+<li>**ワーカーの実行制御**: <code>ParallelQueryMain</code> を通じたワーカー側の <code>ExecutorStart/Run/End</code> の呼び出しと、タプルキュー（<code>shm_mq</code>）を通じた結果の返却。</li>
+<li>**統計情報の集約**: 実行終了後の各ワーカーからの実行時間やノード統計の収集と統合。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>リーダー側管理用</h3>
+<ul>
+<li><code>ParallelExecutorInfo</code>: 並列実行の全体状態を保持する構造体。DSM へのポインタやタプルキューのハンドルを管理。</li>
+<li><code>ExecInitParallelPlan</code>: 並列実行の初期化。DSM のサイズ見積もり、メモリ確保、およびプランのシリアライズを行う。</li>
+<li><code>ExecParallelFinish</code>: ワーカーの終了待機と、バッファ/WAL 使用量の集約。</li>
+<li><code>ExecParallelCleanup</code>: DSM のデタッチとリソースの解放。</li>
+</ul>
+<h3>ワーカー側実行用</h3>
+<ul>
+<li><code>ParallelQueryMain</code>: ワーカープロセスのエントリーポイント。共有メモリからプランを復元し、<code>ExecutorRun</code> を実行する。</li>
+<li><code>ExecParallelGetReceiver</code>: ワーカーがタプルを書き込むための <code>DestReceiver</code> を生成。</li>
+</ul>
+<h3>共有データ構造</h3>
+<ul>
+<li><code>FixedParallelExecutorState</code>: ワーカーに渡す固定長パラメータ（タプル制限、フラグ等）。</li>
+<li><code>SharedExecutorInstrumentation</code>: 全ワーカーの実行統計を格納する DSM 上の構造体。</li>
+<li><code>PARALLEL_KEY_*</code>: DSM 内の各データ領域を識別するための定数キー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>EstimateParamExecSpace</code></li>
+<li><code>ExecInitParallelPlan</code></li>
+<li><code>ExecParallelCreateReaders</code></li>
+<li><code>ExecParallelEstimate</code></li>
+<li><code>ExecParallelEstimateContext</code></li>
+<li><code>ExecParallelInitializeDSM</code></li>
+<li><code>ExecParallelInitializeDSMContext</code></li>
+<li><code>ExecParallelInitializeWorker</code></li>
+<li><code>ExecParallelReInitializeDSM</code></li>
+<li><code>ExecSerializePlan</code></li>
+<li><code>FixedParallelExecutorState</code></li>
+<li><code>SharedExecutorInstrumentation</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化 (Leader)**: <code>ExecInitParallelPlan</code> がプランツリーを走査し、必要な DSM サイズを見積もる。<code>ExecSerializePlan</code> で <code>PlannedStmt</code> を文字列化し、<code>SerializeParamExecParams</code> でパラメータを DSA（Dynamic Shared Area）に書き込む。 2. **ワーカー起動**: <code>ParallelContext</code> を通じてワーカーが起動し、<code>ParallelQueryMain</code> が呼び出される。 3. **実行 (Worker)**: <code>ExecParallelGetQueryDesc</code> でプランを復元し、<code>ExecutorStart</code> を実行。<code>ExecParallelInitializeWorker</code> で各ノードの並列用初期化を行う。 4. **結果返却**: ワーカーは <code>DestReceiver</code> を通じてタプルを <code>shm_mq</code> に書き込む。 5. **終了と集約 (Leader)**: <code>ExecParallelFinish</code> でワーカーの完了を待ち、<code>ExecParallelRetrieveInstrumentation</code> で各ワーカーの統計を <code>InstrAggNode</code> を用いて統合する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/</code>: <code>node*.h</code> 各種プランノードの並列用初期化関数。</li>
+<li><code>utils/dsa.h</code>: 動的共有メモリ上のメモリ管理。</li>
+<li><code>utils/snapmgr.h</code>: スナップショットの共有。</li>
+<li><code>tqueue.h</code>: 共有メモリ上のタプルキュー管理。</li>
+<li><code>executor/execParallel.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>executor/nodeAppend.h</code></li>
+<li><code>executor/nodeBitmapHeapscan.h</code></li>
+<li><code>executor/nodeBitmapIndexscan.h</code></li>
+<li><code>executor/nodeCustom.h</code></li>
+<li><code>executor/nodeForeignscan.h</code></li>
+<li><code>executor/nodeHash.h</code></li>
+<li><code>executor/nodeHashjoin.h</code></li>
+<li><code>executor/nodeIncrementalSort.h</code></li>
+<li><code>executor/nodeIndexonlyscan.h</code></li>
+<li><code>executor/nodeIndexscan.h</code></li>
+<li><code>executor/nodeMemoize.h</code></li>
+<li><code>executor/nodeSeqscan.h</code></li>
+<li><code>executor/nodeSort.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><code>executor/tqueue.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/parallel.c</code>: 並列クエリの基盤（プロセス管理、DSM 管理）。</li>
+<li><code>src/backend/executor/execMain.c</code>: 実行エンジンのメインループ。</li>
+<li><code>src/include/executor/execParallel.h</code>: 本ファイルの公開インターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: DSM 上のデータはリーダーが確保し、ワーカーはアタッチして読み取る。<code>ParallelExecutorInfo</code> はリーダーのメモリコンテキストで管理される。</li>
+<li>**不変条件**: <code>ExecParallelInitializeDSM</code> と <code>ExecParallelReInitializeDSM</code> は、プランツリーの構造がリーダーとワーカーで完全に一致していることを前提としている。</li>
+<li>**エッジケース**: <code>tuples_needed</code> が指定されている場合、ワーカーは過剰なタプルを生成しないよう制限される。</li>
+<li>**省略箇所**: 本ファイルは「並列実行の調整」に特化しており、個々のプランノード（<code>nodeSeqscan.c</code> 等）がどのように DSM を利用して並列スキャンを行うかの詳細ロジックは、各ノード側の <code>Exec*InitializeDSM</code> 関数に委譲されている。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__FixedParallelExecutorState.html" target="wiki-view"><code>FixedParallelExecutorState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__SharedExecutorInstrumentation.html" target="wiki-view"><code>SharedExecutorInstrumentation</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelEstimateContext.html" target="wiki-view"><code>ExecParallelEstimateContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelInitializeDSMContext.html" target="wiki-view"><code>ExecParallelInitializeDSMContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecSerializePlan.html" target="wiki-view"><code>ExecSerializePlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelEstimate.html" target="wiki-view"><code>ExecParallelEstimate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__EstimateParamExecSpace.html" target="wiki-view"><code>EstimateParamExecSpace</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelInitializeDSM.html" target="wiki-view"><code>ExecParallelInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecInitParallelPlan.html" target="wiki-view"><code>ExecInitParallelPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelCreateReaders.html" target="wiki-view"><code>ExecParallelCreateReaders</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelReInitializeDSM.html" target="wiki-view"><code>ExecParallelReInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execParallel_c__ExecParallelInitializeWorker.html" target="wiki-view"><code>ExecParallelInitializeWorker</code></a></li>
+</ul></body></html>

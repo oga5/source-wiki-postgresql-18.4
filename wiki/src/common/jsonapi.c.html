@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/jsonapi.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/jsonapi.c</h1>
+<h2>概要</h2>
+<p><code>jsonapi.c</code> は、PostgreSQL のバックエンドおよびフロントエンド（<code>libpq</code> 等）で共有される、JSON の字句解析および構文解析を行うための汎用ライブラリです。ストリーミング（インクリメンタル）解析と、従来の再帰下降解析の両方をサポートします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> 内の JSON 処理基盤として、JSON データの検証や、特定の構造に対するセマンティックアクション（コールバック）の実行を提供します。環境に応じて <code>StringInfo</code>（バックエンド）または <code>PQExpBuffer</code>（フロントエンド）を抽象化し、メモリ管理を統一しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**字句解析**: JSON トークンの切り出し、エスケープシーケンスのデコード、Unicode サロゲートペアの処理。</li>
+<li>**構文解析**: </li>
+<li>再帰下降パーサーによる標準的な JSON 解析。</li>
+<li>テーブル駆動型（Dragon Book 4.3 準拠）の非再帰パーサーによるインクリメンタル解析。</li>
+<li>**エラー報告**: 解析コンテキストに応じた詳細なエラーメッセージの生成。</li>
+<li>**メモリ管理**: 解析コンテキストのライフサイクル管理および、環境依存のメモリ割り当ての抽象化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>解析コンテキストと状態</h3>
+<ul>
+<li><code>JsonLexContext</code>: 解析のメイン構造体。入力バッファ、現在のトークン位置、解析レベル、フラグを保持。</li>
+<li><code>JsonParserStack</code>: インクリメンタル解析用の予測スタックおよび状態保持用構造体。</li>
+<li><code>JsonIncrementalState</code>: 部分的なトークン（チャンク境界を跨ぐデータ）を蓄積するための状態。</li>
+</ul>
+<h3>公開インターフェース</h3>
+<ul>
+<li><code>makeJsonLexContextCstringLen</code>: 解析コンテキストの初期化（再帰下降用）。</li>
+<li><code>makeJsonLexContextIncremental</code>: インクリメンタル解析用コンテキストの初期化。</li>
+<li><code>pg_parse_json</code>: 再帰下降パーサーの実行。</li>
+<li><code>pg_parse_json_incremental</code>: インクリメンタルパーサーの実行。</li>
+<li><code>freeJsonLexContext</code>: コンテキストに関連するメモリの解放。</li>
+<li><code>json_errdetail</code>: 解析エラーの詳細メッセージ生成。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>json_lex</code>: 次のトークンを取得する字句解析器。</li>
+<li><code>parse_object</code>, <code>parse_array</code>, <code>parse_scalar</code>: 再帰下降パーサーの各構成要素。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>IsValidJsonNumber</code></li>
+<li><code>JsonIncrementalState</code></li>
+<li><code>JsonNonTerminal</code></li>
+<li><code>JsonParseContext</code></li>
+<li><code>JsonParserSem</code></li>
+<li><code>JsonParserStack</code></li>
+<li><code>allocate_incremental_state</code></li>
+<li><code>freeJsonLexContext</code></li>
+<li><code>inc_lex_level</code></li>
+<li><code>lex_expect</code></li>
+<li><code>lex_peek</code></li>
+<li><code>td_entry</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>makeJsonLexContext...</code> 関数で <code>JsonLexContext</code> を作成し、必要に応じて <code>need_escapes</code> フラグを設定。 2. **解析**:</p>
+<ul>
+<li>**再帰下降**: <code>pg_parse_json</code> が呼び出され、<code>parse_object</code> 等が再帰的に呼び出される。</li>
+<li>**インクリメンタル**: <code>pg_parse_json_incremental</code> が呼び出され、<code>td_parser_table</code> を参照して予測スタックを操作し、トークンと非終端記号をマッチングさせる。</li>
+<p>3. **セマンティックアクション**: 解析中に <code>JsonSemAction</code> で渡された関数ポインタが呼び出され、ユーザー定義の処理（データ抽出など）が実行される。 4. **エラー処理**: <code>report_parse_error</code> が解析コンテキストと現在のトークンに基づいてエラーコードを返し、<code>json_errdetail</code> が人間が読める形式に変換する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>common/jsonapi.h</code>: 公開型定義。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字処理。</li>
+<li><code>lib/stringinfo.h</code> / <code>pqexpbuffer.h</code>: 文字列バッファ管理。</li>
+<li><code>port/pg_lfind.h</code>: 高速な文字検索。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postgres_fe.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/common/jsonapi.h</code>: 本ファイルのインターフェース定義。</li>
+<li><code>src/backend/utils/adt/jsonfuncs.c</code>: 本 API を利用した具体的な JSON 操作の実装例。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>JsonLexContext</code> の <code>flags</code>（<code>JSONLEX_FREE_STRUCT</code>, <code>JSONLEX_FREE_STRVAL</code>）により、メモリ解放の責任範囲が制御されます。<code>freeJsonLexContext</code> を適切に呼び出す必要があります。</li>
+<li>**インクリメンタル解析**: チャンク境界でトークンが分断される場合、<code>inc_state-&gt;partial_token</code> にデータが蓄積されます。このため、インクリメンタル解析中は <code>prev_token_terminator</code> の使用は避けるべきです。</li>
+<li>**制限事項**: インクリメンタルパーサーのスタックサイズは現在 <code>JSON_TD_MAX_STACK</code>（6400）に固定されています。</li>
+<li>**省略された詳細**: 本ファイルは字句解析の Unicode 変換ロジックが非常に詳細ですが、ここでは構造的な役割に焦点を当てています。<code>pg_unicode_to_server_noerror</code> 等のバックエンド固有の変換関数は、フロントエンドビルド時には除外されるよう <code>#ifndef FRONTEND</code> でガードされています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__jsonapi_c__JsonParseContext.html" target="wiki-view"><code>JsonParseContext</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__JsonNonTerminal.html" target="wiki-view"><code>JsonNonTerminal</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__JsonParserSem.html" target="wiki-view"><code>JsonParserSem</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__JsonParserStack.html" target="wiki-view"><code>JsonParserStack</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__JsonIncrementalState.html" target="wiki-view"><code>JsonIncrementalState</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__td_entry.html" target="wiki-view"><code>td_entry</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__lex_peek.html" target="wiki-view"><code>lex_peek</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__lex_expect.html" target="wiki-view"><code>lex_expect</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__IsValidJsonNumber.html" target="wiki-view"><code>IsValidJsonNumber</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__allocate_incremental_state.html" target="wiki-view"><code>allocate_incremental_state</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__inc_lex_level.html" target="wiki-view"><code>inc_lex_level</code></a></li>
+<li><a href="../../symbols/src__common__jsonapi_c__freeJsonLexContext.html" target="wiki-view"><code>freeJsonLexContext</code></a></li>
+</ul></body></html>

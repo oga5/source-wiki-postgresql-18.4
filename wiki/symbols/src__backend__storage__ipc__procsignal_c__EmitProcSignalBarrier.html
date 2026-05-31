@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__procsignal_c__EmitProcSignalBarrier.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>EmitProcSignalBarrier</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/procsignal.c:356</code></li>
+</ul>
+<h2>目的</h2>
+<p>全バックエンドプロセスに対してバリアイベントを通知し、同期を促すためのグローバルな同期メカニズムを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>uint64 EmitProcSignalBarrier(ProcSignalBarrierType type)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>type</code> (<code>ProcSignalBarrierType</code>) - 発生させるバリアの種類。</li>
+<li>**出力**: <code>uint64</code> - 呼び出し時点でのバリア生成番号（generation counter）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し側は、バリアに関連する状態変更が全プロセスから可視であることを保証する責任があります。</li>
+<li><code>pg_atomic_fetch_or_u32</code> を使用しているため、呼び出し前後の操作と順序が厳密に保護されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 全 <code>ProcSignalSlot</code> を走査し、指定された <code>type</code> に対応するビットを <code>pss_barrierCheckMask</code> にセットします。 2. 共有メモリ上の <code>psh_barrierGeneration</code> をインクリメントし、現在の生成番号を取得します。 3. 全プロセスに対して <code>SIGUSR1</code> シグナルを送信します。</p>
+<ul>
+<li>各スロットの <code>pss_mutex</code> を取得し、PIDが有効な場合に <code>pss_signalFlags[PROCSIG_BARRIER]</code> を <code>true</code> に設定してシグナルを送信します。</li>
+<p>4. 最終的に生成番号を返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/backend/commands/dbcommands.c</code> (複数箇所)</li>
+<li><code>src/backend/commands/tablespace.c</code> (複数箇所)</li>
+<li>**呼び出し先**:</li>
+<li><code>pg_atomic_fetch_or_u32</code> (アトミック操作)</li>
+<li><code>pg_atomic_add_fetch_u64</code> (アトミック操作)</li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>kill</code> (シグナル送信)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ProcSignalSlot</code>: 各プロセスのシグナル状態を保持する共有メモリ構造体。</li>
+<li><code>ProcSignalHeader</code>: 全スロットを管理するヘッダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>プロセスが終了済みの場合、そのスロットのPIDは0であり、シグナル送信はスキップされます。</li>
+<li>頻繁な呼び出しは全プロセスを中断させるため、パフォーマンス上のオーバーヘッドが大きくなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は全プロセスを対象とするため、高頻度な実行は避けてください。</li>
+<li><code>SIGUSR1</code> の多重化により、シグナルが連続して届いた場合に古い通知が上書きされる可能性がある点に留意してください。</li>
+</ul></body></html>

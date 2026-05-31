@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__tsearch__ts_typanalyze_c__compute_tsvector_stats.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>compute_tsvector_stats</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/tsearch/ts_typanalyze.c:140</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>tsvector</code> 型カラムに対する <code>ANALYZE</code> 処理において、Lossy Counting アルゴリズムを用いて語彙（lexeme）の出現頻度を近似計算し、統計情報を生成する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void compute_tsvector_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>stats</code>: 統計情報を格納する <code>VacAttrStats</code> 構造体。</li>
+<li><code>fetchfunc</code>: サンプル行を取得するためのコールバック関数。</li>
+<li><code>samplerows</code>: サンプリングする行数。</li>
+<li><code>totalrows</code>: テーブルの総行数。</li>
+<li>**出力**:</li>
+<li><code>stats</code> 構造体の <code>stanullfrac</code>（NULL率）、<code>stawidth</code>（平均幅）、<code>stadistinct</code>（一意性）、および <code>stats_valid</code> フラグを更新する。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>stats-&gt;attstattarget</code> に基づいてハッシュテーブルのバケット幅が決定される。</li>
+<li><code>CurrentMemoryContext</code> 上でハッシュテーブルが構築される。</li>
+<li>処理対象の <code>tsvector</code> は detoast された後に処理され、必要に応じてメモリ解放が行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>num_mcelem</code>（追跡する語彙数）と <code>bucket_width</code> を設定し、語彙追跡用のハッシュテーブルを作成する。 2. **サンプリング**: <code>fetchfunc</code> を通じて各行の <code>tsvector</code> を取得する。 3. **Lossy Counting**:</p>
+<ul>
+<li>各語彙をハッシュテーブルに挿入または更新する。</li>
+<li>新規語彙の場合は頻度を 1、誤差（delta）を現在のバケット番号から 1 引いた値で初期化する。</li>
+<li><code>bucket_width</code> ごとに <code>prune_lexemes_hashtable</code> を呼び出し、低頻度エントリを削除してメモリを維持する。</li>
+<p>4. **統計生成**: サンプリング終了後、閾値を超えた頻度の語彙を抽出し、<code>pg_statistic</code> 用の形式に変換する準備を行う。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/statistics/attribute_stats.c</code>（<code>ANALYZE</code> 処理フロー内）</li>
+<li><code>src/backend/tsearch/ts_typanalyze.c</code>（<code>ts_typanalyze</code> 関数による登録）</li>
+<li>**呼び出し先**:</li>
+<li><code>fetchfunc</code>（サンプル行取得）</li>
+<li><code>hash_create</code>, <code>hash_search</code>（ハッシュテーブル操作）</li>
+<li><code>prune_lexemes_hashtable</code>（頻度に基づく剪定）</li>
+<li><code>vacuum_delay_point</code>（VACUUM 処理の遅延制御）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>VacAttrStats</code>: 統計情報の格納先。</li>
+<li><code>LexemeHashKey</code>: 語彙を識別するキー。</li>
+<li><code>TrackItem</code>: ハッシュテーブル内の各語彙の頻度と誤差を保持するエントリ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>samplerows</code> が 0 の場合や、すべての値が NULL の場合は統計計算をスキップする。</li>
+<li>メモリ不足時は <code>palloc</code> がエラーを発生させる可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_statistic</code> の <code>MCELEM</code> スロットを埋めるためのロジックを含む。</li>
+<li>語彙のソート順は、クエリ実行時のバイナリサーチを効率化するため「辞書順」である必要がある。</li>
+<li>Lossy Counting のパラメータ（<code>bucket_width</code>）は、精度とメモリ消費のトレードオフを決定する重要な定数である。</li>
+</ul></body></html>

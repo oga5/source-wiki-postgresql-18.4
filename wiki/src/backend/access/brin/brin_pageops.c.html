@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_pageops.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_pageops.c</h1>
+<h2>概要</h2>
+<p>BRIN（Block Range Index）インデックスの物理的なページ操作を抽象化するモジュールです。タプルの挿入、更新、およびページ管理（初期化や空き領域管理）を担当します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/brin</code> において、インデックスの論理的な構造（MinMaxやBloomなど）と、PostgreSQLのバッファ管理・WAL記録の橋渡しを行います。上位層がタプルを挿入・更新する際、適切な物理ページを確保し、整合性を保ちながら書き込むための低レベルAPIを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプル操作**: インデックスページへのタプル挿入 (<code>brin_doinsert</code>) および更新 (<code>brin_doupdate</code>)。</li>
+<li>**ページ管理**: インデックスページの初期化、空き領域の計算、およびページ退避（evacuation）プロトコルの実行。</li>
+<li>**WAL記録**: ページ操作に伴うWALログの生成と、クリティカルセクションの管理。</li>
+<li>**FSM連携**: 空き領域マップ（FSM）の更新と、必要に応じたリレーションの拡張。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>brin_doupdate</code>: 既存のタプルを新しい値で更新します。同一ページ内での更新を優先し、不可な場合は別ページへの移動を試みます。</li>
+<li><code>brin_doinsert</code>: 新しいタプルをインデックスに挿入します。必要に応じてFSMから空きページを探すか、リレーションを拡張します。</li>
+<li><code>brin_getinsertbuffer</code>: 挿入に適したバッファを検索・確保する内部関数。</li>
+<li><code>BrinMaxItemSize</code>: BRINページに格納可能な最大タプルサイズを定義するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>br_page_get_freespace</code></li>
+<li><code>brin_can_do_samepage_update</code></li>
+<li><code>brin_evacuate_page</code></li>
+<li><code>brin_initialize_empty_new_buffer</code></li>
+<li><code>brin_metapage_init</code></li>
+<li><code>brin_page_cleanup</code></li>
+<li><code>brin_page_init</code></li>
+<li><code>brin_start_evacuating_page</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入/更新要求**: 上位層から <code>brin_doinsert</code> または <code>brin_doupdate</code> が呼び出されます。 2. **バッファ確保**: <code>brin_getinsertbuffer</code> がFSMを参照し、十分な空き領域を持つページを特定します。必要であれば <code>ReadBuffer(rel, P_NEW)</code> でリレーションを拡張します。 3. **排他制御**: 該当ページおよびRevmapページに対して排他ロックを取得します。 4. **実行とWAL**: クリティカルセクション内で <code>PageAddItem</code> 等を用いてデータを書き込み、<code>XLogInsert</code> でWALを記録します。 5. **後処理**: ロックを解放し、必要に応じてFSMを更新して終了します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/brin_page.h</code>, <code>access/brin_pageops.h</code>, <code>access/brin_revmap.h</code>, <code>access/brin_xlog.h</code>: BRIN固有のデータ構造とインターフェース。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/freespace.h</code>: バッファ管理およびFSM操作。</li>
+<li><code>access/xloginsert.h</code>: WALログの生成。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/brin/brin_revmap.c</code>: Revmap（ヒープブロックとインデックスの対応表）の管理。</li>
+<li><code>src/backend/access/brin/brin_tuple.c</code>: BRINタプルのシリアライズ・デシリアライズ。</li>
+<li><code>src/include/access/brin_page.h</code>: BRINページのレイアウト定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ページ退避**: <code>brin_start_evacuating_page</code> と <code>brin_evacuate_page</code> は、ページを再利用または削除する際にタプルを別の場所へ移動させるための特殊な処理です。</li>
+<li>**クリティカルセクション**: ページ操作は必ず <code>START_CRIT_SECTION()</code> と <code>END_CRIT_SECTION()</code> で囲まれており、エラー発生時の整合性確保が厳格に行われています。</li>
+<li>**FSMの更新**: ページが拡張された際や、挿入後に空き領域が変化した際は、FSMを適切に更新しないとインデックスの肥大化を招くため注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_doupdate.html" target="wiki-view"><code>brin_doupdate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_can_do_samepage_update.html" target="wiki-view"><code>brin_can_do_samepage_update</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_doinsert.html" target="wiki-view"><code>brin_doinsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_page_init.html" target="wiki-view"><code>brin_page_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_metapage_init.html" target="wiki-view"><code>brin_metapage_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_start_evacuating_page.html" target="wiki-view"><code>brin_start_evacuating_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_evacuate_page.html" target="wiki-view"><code>brin_evacuate_page</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_page_cleanup.html" target="wiki-view"><code>brin_page_cleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_getinsertbuffer.html" target="wiki-view"><code>brin_getinsertbuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__brin_initialize_empty_new_buffer.html" target="wiki-view"><code>brin_initialize_empty_new_buffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_pageops_c__br_page_get_freespace.html" target="wiki-view"><code>br_page_get_freespace</code></a></li>
+</ul></body></html>

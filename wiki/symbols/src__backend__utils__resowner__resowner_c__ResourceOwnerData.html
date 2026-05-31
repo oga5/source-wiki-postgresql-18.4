@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__resowner__resowner_c__ResourceOwnerData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ResourceOwnerData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/utils/resowner/resowner.c:112</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクションやクエリの生存期間中に確保されたリソース（バッファピン、ロック、メモリコンテキスト等）を追跡し、階層的な管理と確実な解放を行うための内部状態保持構造体。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct ResourceOwnerData {
+    ResourceOwner parent;
+    ResourceOwner firstchild;
+    ResourceOwner nextchild;
+    const char *name;
+    bool releasing;
+    bool sorted;
+    uint8 nlocks;
+    uint8 narr;
+    uint32 nhash;
+    ResourceElem arr[RESOWNER_ARRAY_SIZE];
+    ResourceElem *hash;
+    uint32 capacity;
+    uint32 grow_at;
+    LOCALLOCK *locks[MAX_RESOWNER_LOCKS];
+    dlist_head aio_handles;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: リソース登録時（<code>ResourceOwnerRemember</code>）に <code>ResourceElem</code> が追加され、<code>nlocks</code>, <code>narr</code>, <code>nhash</code> が更新される。</li>
+<li>**出力**: 解放時（<code>ResourceOwnerRelease</code>）に、優先順位に従ってソートされたリソースが順次解放される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ResourceOwnerRemember()</code> を呼び出す前に、必ず <code>ResourceOwnerEnlarge()</code> で十分な容量を確保する必要がある。</li>
+<li>解放処理（<code>ResourceOwnerRelease</code>）が開始された後は、新規リソースの登録や個別の解放は禁止される。</li>
+<li>リソースの解放は <code>BEFORE_LOCKS</code> -&gt; <code>LOCKS</code> -&gt; <code>AFTER_LOCKS</code> の順序で行われる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**リソース管理**: 高速な固定長配列（<code>arr</code>）と、オーバーフロー時に使用されるハッシュテーブル（<code>hash</code>）の二段構えでリソースを保持する。</li>
+<li>**階層処理**: <code>parent</code>, <code>firstchild</code>, <code>nextchild</code> を用いてツリー構造を形成し、再帰的にリソースを解放する。</li>
+<li>**ソート**: 解放フェーズに入ると、<code>sorted</code> フラグが立てられ、優先順位に基づいてリソースがソートされる。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/aio/aio.c</code> 内の <code>pgaio_io_resowner_register</code>, <code>pgaio_io_acquire</code>, <code>pgaio_io_acquire_nb</code> 等から参照されている。</li>
+<li>**呼び出し先**: 本構造体自体はデータ保持用であり、具体的な解放処理は <code>ResourceOwnerRelease</code> 等の関数が本構造体のメンバを操作することで実行される。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ResourceElem</code>: 個々のリソース情報を保持する要素。</li>
+<li><code>LOCALLOCK</code>: ローカルロックの追跡用。</li>
+<li><code>dlist_head</code>: AIO ハンドル管理用リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ハッシュテーブルの拡張**: <code>nhash</code> が <code>grow_at</code> に達すると、ハッシュテーブルの再構築（リハッシュ）が発生する。</li>
+<li>**メモリ管理**: <code>TopMemoryContext</code> に割り当てられるため、明示的に <code>ResourceOwnerDelete()</code> を呼ばない限りメモリリークの原因となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>releasing</code> フラグと <code>sorted</code> フラグは、<code>ResourceOwnerReleaseAllOfKind()</code> による一時的な状態変更と、通常の解放処理を区別するために個別に管理されている。</li>
+<li>AIO ハンドルはクリティカルセクションでの登録が必要なため、通常の <code>ResourceElem</code> 機構ではなく <code>dlist_head</code> を介して管理される。</li>
+</ul></body></html>

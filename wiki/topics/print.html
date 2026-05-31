@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/print.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>print</h1>
+<h2>概念</h2>
+<p>PostgreSQLのソースコード内において、<code>print</code> という名前の関数は、文脈に応じて全く異なる2つの役割で定義されています。</p>
+<p>1. **デバッグ用のノードダンプユーティリティ**: バックエンドの構文木や実行計画などの内部データ構造（<code>Node</code>）をシリアライズし、整形して標準出力にダンプする機能。 2. **ECPGテスト用のエラーハンドラ**: 埋め込みSQL（ECPG）の回帰テストにおいて、SQL実行エラー発生時にエラーメッセージと詳細なSQLエラー情報を標準エラー出力へ出力するカスタムハンドラ。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**デバッグ効率の向上**: バックエンド開発において、複雑な <code>Node</code> 構造体の状態を人間が読める形式で標準出力にダンプできるため、クエリ解析や最適化処理のデバッグに不可欠です。</li>
+<li>**テストの堅牢性と検証**: ECPGのプリプロセッサテストにおいて、エラーハンドリングが正しく機能しているかを検証し、エラー発生時の詳細情報を標準エラー出力に確実に記録するために重要です。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/nodes</code></li>
+<li><code>module:src/interfaces/ecpg/test/expected</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/backend/nodes/print.c#print</code>: <code>void print(const void *obj)</code>。<code>Node</code> 構造体をシリアライズ・整形して標準出力に書き出すデバッグ用関数。</li>
+<li><code>symbol:src/interfaces/ecpg/test/expected/preproc-whenever.c#print</code>: <code>static void print(const char *msg)</code>。ECPGテスト用のエラーハンドラ。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>これら2つの関数は独立して動作し、統一された単一のエンドツーエンドフローは存在しません。それぞれのフローは以下の通りです。</p>
+<h3>1. バックエンドのデバッグ用 <code>print</code> のフロー</h3>
+<p>1. 開発者またはデバッガが <code>print(obj)</code> を呼び出します（具体的な呼び出し元コードは提供された範囲からは未解明です）。 2. <code>nodeToStringWithLocations(obj)</code> により、<code>Node</code> 構造体が文字列形式にシリアライズされます。 3. <code>format_node_dump(s)</code> により、シリアライズされた文字列に改行やインデントが挿入され、整形されます。 4. 整形された文字列が <code>printf</code> で標準出力に書き出され、<code>fflush(stdout)</code> で即座にフラッシュされます。 5. 一時バッファが <code>pfree</code> で解放されます。</p>
+<h3>2. ECPGテスト用 <code>print</code> のフロー</h3>
+<p>1. ECPGの回帰テスト実行中にSQLエラーが発生します（具体的な呼び出し元フローは提供されたソースコードからは未解明です）。 2. <code>print(msg)</code> が呼び出されます。 3. <code>fprintf</code> を使用して、引数 <code>msg</code> を含むエラーメッセージを標準エラー出力 (<code>stderr</code>) に出力します。 4. <code>sqlprint()</code> を呼び出し、ECPGライブラリが保持する詳細なSQLエラー情報（<code>sqlca</code> 構造体経由）を出力します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**バックエンド <code>print</code>**:</li>
+<li>引数 <code>obj</code> は有効な PostgreSQL ノード構造体（シリアライズ可能であること）でなければなりません。</li>
+<li>本番環境のコードから呼び出されてはならず、デバッグ専用として維持される必要があります。</li>
+<li>**ECPGテスト用 <code>print</code>**:</li>
+<li><code>stderr</code> が有効であり、ECPGライブラリの <code>sqlprint()</code> が呼び出し可能でなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**バックエンド <code>print</code>**:</li>
+<li>引数 <code>obj</code> に <code>NULL</code> を渡すと、内部の <code>nodeToStringWithLocations</code> の実装に依存しますが、セグメンテーションフォールトを引き起こす可能性があります。</li>
+<li>複雑なノード構造の場合、<code>format_node_dump</code> による整形が最適化されず、出力が読みづらくなる場合があります。</li>
+<li>**ECPGテスト用 <code>print</code>**:</li>
+<li>引数 <code>msg</code> が <code>NULL</code> の場合、<code>fprintf</code> の動作に依存してクラッシュする可能性があります。</li>
+<li>この関数はECPGプリプロセッサのテスト生成物の一部であるため、エラーハンドリングロジックを変更する際は、<code>src/interfaces/ecpg/preproc/</code> 内のプリプロセッサ変換ロジックとの整合性を壊さないよう注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/nodes/print.c</code></li>
+<li><code>src/interfaces/ecpg/test/expected/preproc-whenever.c</code></li>
+</ul></body></html>

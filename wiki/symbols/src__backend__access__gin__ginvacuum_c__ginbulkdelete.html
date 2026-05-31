@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginvacuum_c__ginbulkdelete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ginbulkdelete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginvacuum.c:563</code></li>
+</ul>
+<h2>目的</h2>
+<p>GINインデックスのバキューム処理におけるメインエントリポイントとして、インデックス内の不要なタプル（TID）の削除およびポストティングツリーの整理を行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>IndexBulkDeleteResult *ginbulkdelete(
+    IndexVacuumInfo *info, 
+    IndexBulkDeleteResult *stats,
+    IndexBulkDeleteCallback callback, 
+    void *callback_state
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>info</code>: バキューム対象のインデックス情報。</li>
+<li><code>stats</code>: 統計情報（初回呼び出し時は <code>NULL</code>）。</li>
+<li><code>callback</code>: 不要なTIDを判定するコールバック関数。</li>
+<li><code>callback_state</code>: コールバック関数に渡す状態データ。</li>
+<li>**出力**: 更新された <code>IndexBulkDeleteResult</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>初回呼び出し時（<code>stats == NULL</code>）には、保留中の挿入を処理するために <code>ginInsertCleanup</code> が実行される。</li>
+<li>処理中、一時的なメモリコンテキスト（<code>gvs.tmpCxt</code>）が作成され、終了時に解放される。</li>
+<li>エントリツリーの走査において、ルートからリーフまで辿るロック順序が維持される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>GinVacuumState</code> を構築し、必要に応じて保留中の挿入をクリーンアップする。 2. **リーフ探索**: GINインデックスのルートから開始し、エントリツリーの左端リーフページまで降下する。 3. **エントリツリー走査**:</p>
+<ul>
+<li>各リーフページに対して <code>ginVacuumEntryPage</code> を呼び出し、不要なTIDを削除する。</li>
+<li>変更があった場合は <code>xlogVacuumPage</code> でWALログを記録し、ページを更新する。</li>
+<li>ページ内のポストティングツリーへの参照を収集する。</li>
+<p>4. **ポストティングツリーのバキューム**: 収集した各ポストティングツリーに対して <code>ginVacuumPostingTree</code> を実行し、リーフのバキュームと空ページの削除を行う。 5. **反復**: 右リンク（<code>rightlink</code>）を辿り、インデックスの全リーフページに対して上記処理を繰り返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/gin/ginutil.c</code>: <code>ambulkdelete</code> インターフェース経由で呼び出される。</li>
+<li>**呼び出し先**:</li>
+<li><code>ginInsertCleanup</code>: 保留中の挿入処理。</li>
+<li><code>ginVacuumEntryPage</code>: エントリページのバキューム。</li>
+<li><code>ginVacuumPostingTree</code>: ポストティングツリーのバキューム。</li>
+<li><code>xlogVacuumPage</code>: WALログの記録。</li>
+<li><code>vacuum_delay_point</code>: バキュームの遅延制御。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GinVacuumState</code>: バキューム処理中の状態を保持する構造体。</li>
+<li><code>IndexBulkDeleteResult</code>: バキューム結果の統計情報。</li>
+<li><code>IndexVacuumInfo</code>: バキューム対象のインデックス情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>stats</code> が <code>NULL</code> の場合、新規に統計構造体を割り当てる。</li>
+<li>ポストティングツリーの削除時、親から子へのロック順序が厳密に管理されており、デッドロック回避のための実装が求められる。</li>
+<li>右端ページに到達した時点で走査を終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>ginVacuumEntryPage</code> および <code>ginVacuumPostingTree</code> の呼び出し前後で <code>vacuum_delay_point</code> が呼ばれており、長時間実行時の負荷を調整している。</li>
+<li>エントリツリーのリーフページ更新には <code>PageRestoreTempPage</code> を使用しており、変更が細かいためフルページイメージのWAL記録が必須となっている。</li>
+</ul></body></html>

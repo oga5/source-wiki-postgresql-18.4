@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/matview.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/matview.c</h1>
+<h2>概要</h2>
+<p>マテリアライズド・ビュー（MV）の作成および更新（<code>REFRESH MATERIALIZED VIEW</code>）を管理するバックエンドモジュールです。MVのデータ再構築、一時テーブルを用いた差分更新、およびMVのメタデータ管理機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> の一部として、SQLコマンドの実行エンジンとストレージ層の橋渡しをします。特に、<code>tablecmds.c</code> が提供するテーブル操作機能を利用し、MV特有の「クエリ結果の永続化」と「整合性維持」を実装しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ再構築**: <code>REFRESH</code> コマンド実行時に、元のクエリを再実行して新しいデータを一時テーブルに生成する。</li>
+<li>**アトミックな更新**: </li>
+<li>非同時実行時：<code>finish_heap_swap</code> を用いて物理ファイルを入れ替え、MVを更新する。</li>
+<li>同時実行時：一時テーブルとの差分（<code>FULL JOIN</code>）を計算し、<code>DELETE</code>/<code>INSERT</code> で増分更新を行う。</li>
+<li>**メタデータ管理**: <code>pg_class</code> の <code>relispopulated</code> フラグを制御し、MVの有効状態を管理する。</li>
+<li>**セキュリティ制御**: MV所有者の権限でクエリを実行するためのコンテキスト切り替え。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecRefreshMatView</code>: SQLコマンドの入り口。ロックモードを決定し、処理を委譲する。</li>
+<li><code>RefreshMatViewByOid</code>: 更新処理のメインロジック。一時テーブルの作成、データ生成、入れ替え/マージのフローを統括する。</li>
+<li><code>DR_transientrel</code>: 一時テーブルへのデータ挿入を行うための <code>DestReceiver</code> 構造体。</li>
+<li><code>refresh_by_match_merge</code>: <code>CONCURRENTLY</code> 指定時の差分更新ロジック。</li>
+<li><code>MatViewIncrementalMaintenanceIsEnabled</code>: 内部的な更新処理中であることを示すフラグ制御。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CloseMatViewIncrementalMaintenance</code></li>
+<li><code>CreateTransientRelDestReceiver</code></li>
+<li><code>OpenMatViewIncrementalMaintenance</code></li>
+<li><code>SetMatViewPopulatedState</code></li>
+<li><code>refresh_matview_datafill</code></li>
+<li><code>transientrel_receive</code></li>
+<li><code>transientrel_shutdown</code></li>
+<li><code>transientrel_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>ExecRefreshMatView</code> が対象MVをロックし、所有者の権限へ切り替える。 2.  **データ生成**: <code>refresh_matview_datafill</code> が <code>DestReceiver</code> を介してクエリ結果を一時テーブルへ流し込む。 3.  **更新適用**:</p>
+<ul>
+<li>通常更新: <code>refresh_by_heap_swap</code> で物理ファイルを置換。</li>
+<li>同時更新: <code>refresh_by_match_merge</code> が一時テーブルとMVの差分を計算し、<code>SPI</code> を通じて <code>DELETE</code>/<code>INSERT</code> を実行。</li>
+<p>4.  **終了**: 統計情報の更新、一時テーブルの削除、権限コンテキストの復元を行う。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: テーブルアクセス（<code>tableam.h</code>）、ヒープ操作、インデックス操作。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_class</code>）へのアクセス。</li>
+<li><code>executor/</code>: クエリ実行（<code>executor.h</code>）、SPI（<code>spi.h</code>）。</li>
+<li><code>rewrite/</code>: MV定義時のルール（<code>rewriteHandler.h</code>）の取得。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>commands/cluster.h</code></li>
+<li><code>commands/matview.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/spi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/matview.h</code>: 公開プロトタイプ定義。</li>
+<li><code>src/backend/commands/tablecmds.c</code>: <code>make_new_heap</code> や <code>finish_heap_swap</code> など、MVの物理構造操作の基盤。</li>
+<li><code>src/backend/rewrite/rewriteHandler.c</code>: MVのクエリ書き換えルール管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**同時実行更新の制約**: <code>CONCURRENTLY</code> を使用する場合、MVには「WHERE句のない一意なインデックス」が必須です。これは差分計算（<code>FULL JOIN</code>）のキーとして利用されるためです。</li>
+<li>**セキュリティ**: <code>REFRESH</code> は所有者の権限で実行されるため、内部で <code>SetUserIdAndSecContext</code> を使用して権限昇格を行っています。</li>
+<li>**SPIの利用**: <code>refresh_by_match_merge</code> 内では、複雑な差分計算のために <code>SPI</code>（Server Programming Interface）経由でSQLを発行しています。デバッグ時はこの生成されたクエリ文字列に注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__matview_c__DR_transientrel.html" target="wiki-view"><code>DR_transientrel</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__SetMatViewPopulatedState.html" target="wiki-view"><code>SetMatViewPopulatedState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__ExecRefreshMatView.html" target="wiki-view"><code>ExecRefreshMatView</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__RefreshMatViewByOid.html" target="wiki-view"><code>RefreshMatViewByOid</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__refresh_matview_datafill.html" target="wiki-view"><code>refresh_matview_datafill</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__CreateTransientRelDestReceiver.html" target="wiki-view"><code>CreateTransientRelDestReceiver</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__transientrel_startup.html" target="wiki-view"><code>transientrel_startup</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__transientrel_receive.html" target="wiki-view"><code>transientrel_receive</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__transientrel_shutdown.html" target="wiki-view"><code>transientrel_shutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__MatViewIncrementalMaintenanceIsEnabled.html" target="wiki-view"><code>MatViewIncrementalMaintenanceIsEnabled</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__OpenMatViewIncrementalMaintenance.html" target="wiki-view"><code>OpenMatViewIncrementalMaintenance</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__matview_c__CloseMatViewIncrementalMaintenance.html" target="wiki-view"><code>CloseMatViewIncrementalMaintenance</code></a></li>
+</ul></body></html>

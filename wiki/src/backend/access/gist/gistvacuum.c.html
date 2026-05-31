@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistvacuum.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistvacuum.c</h1>
+<h2>概要</h2>
+<p>GiST インデックスの <code>VACUUM</code> 処理（不要なタプルの削除および空ページの回収）を担当するモジュールです。インデックスの物理スキャンを行い、不要になったタプルの削除と、空になったリーフページのツリーからの切り離しを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> サブシステムにおいて、メンテナンスフェーズの主役です。<code>gistbulkdelete</code>（<code>VACUUM</code> 中の削除）および <code>gistvacuumcleanup</code>（後処理）のエントリポイントを提供し、インデックスの健全性を維持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプル削除**: <code>IndexBulkDeleteCallback</code> を使用して、不要なインデックスエントリを特定・削除する。</li>
+<li>**空ページ回収**: 空になったリーフページを特定し、親ページからダウンリンクを削除してツリーから切り離す。</li>
+<li>**統計情報更新**: インデックスのタプル数やページ数を集計し、<code>IndexBulkDeleteResult</code> を更新する。</li>
+<li>**並行性制御**: ページ分割や挿入と競合しないよう、適切なロック管理と再スキャン（再帰的処理）を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gistbulkdelete</code>: <code>VACUUM</code> 中に呼び出されるメイン関数。</li>
+<li><code>gistvacuumcleanup</code>: <code>VACUUM</code> の終了時に呼び出され、統計情報の確定や空ページの最終処理を行う。</li>
+<li><code>GistVacState</code>: スキャン中に保持する一時的な状態（空ページセットやメモリコンテキストなど）。</li>
+<li><code>gistvacuumscan</code>: インデックス全体を走査し、各ページに対して <code>gistvacuumpage</code> を適用する中心的なループ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>gistdeletepage</code></li>
+<li><code>gistvacuum_delete_empty_pages</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャン開始**: <code>gistvacuumscan</code> が <code>ReadStream</code> を使用してインデックスを物理順に走査。 2. **ページ処理**: <code>gistvacuumpage</code> が各ページをロックし、不要タプルを削除。分割が発生した場合は <code>NSN</code>（Node Sequence Number）を確認し、必要に応じて過去のページへ再帰的に戻る。 3. **空ページ特定**: 空になったリーフページを <code>IntegerSet</code> に記録。 4. **切り離し**: <code>gistvacuum_delete_empty_pages</code> が内部ページを再スキャンし、記録された空リーフへのダウンリンクを削除。 5. **FSM 更新**: 回収されたページを <code>IndexFreeSpaceMap</code> に登録し、再利用可能にする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST 固有の構造体やマクロ定義。</li>
+<li><code>lib/integerset.h</code>: 空ページ番号を効率的に管理するための集合データ構造。</li>
+<li><code>storage/indexfsm.h</code>: インデックスの空き領域マップ（FSM）操作。</li>
+<li><code>storage/read_stream.h</code>: インデックス走査の効率化（先読み）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gist/gistutil.c</code>: ページ操作や GiST 固有のユーティリティ関数。</li>
+<li><code>src/backend/access/gist/gistxlog.c</code>: 削除操作の WAL 記録。</li>
+<li><code>src/backend/commands/vacuumlazy.c</code>: PostgreSQL 全体の <code>VACUUM</code> フレームワーク。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰的スキャン**: GiST はインデックス構築中にページ分割が発生するため、スキャン中に「右側」へ移動したページを追いかける必要があります。<code>gistvacuumpage</code> 内の <code>goto restart</code> は、この再帰的な追いかけをスタック消費を抑えて実現するための工夫です。</li>
+<li>**ロック順序**: デッドロックを避けるため、親ページをロックした後に子ページをロックするのではなく、子ページを先に処理する設計になっています。</li>
+<li>**空ページ削除**: ページが空になっても即座に削除せず、一度 <code>IntegerSet</code> に溜めてから後段でまとめて処理することで、効率を向上させています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__GistVacState.html" target="wiki-view"><code>GistVacState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistbulkdelete.html" target="wiki-view"><code>gistbulkdelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistvacuumcleanup.html" target="wiki-view"><code>gistvacuumcleanup</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistvacuumscan.html" target="wiki-view"><code>gistvacuumscan</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistvacuumpage.html" target="wiki-view"><code>gistvacuumpage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistvacuum_delete_empty_pages.html" target="wiki-view"><code>gistvacuum_delete_empty_pages</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistvacuum_c__gistdeletepage.html" target="wiki-view"><code>gistdeletepage</code></a></li>
+</ul></body></html>

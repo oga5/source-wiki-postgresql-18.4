@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/sort/logtape.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/sort/logtape.c</h1>
+<h2>概要</h2>
+<p><code>logtape.c</code> は、PostgreSQL のソート処理（<code>tuplesort.c</code>）において、単一の物理ファイル上に複数の「論理テープ」をエミュレートするための管理モジュールです。外部ソートにおけるマージパス実行時、読み終えたデータを即座に再利用することで、ディスク使用量を最小限に抑えることを目的としています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/sort</code> モジュールの一部として、<code>tuplesort.c</code> が必要とする「独立した複数のテープ」という抽象化を提供します。物理的なファイル操作は <code>storage/buffile.h</code> に依存し、本ファイルはブロック単位の割り当て、解放、および論理的なチェーン管理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**論理テープの管理**: 1つの物理ファイル内で複数のテープを並行して書き込み・読み込み可能にする。</li>
+<li>**ブロックの再利用**: 読み込み済みのブロックを解放し、フリーリスト（最小ヒープ）で管理して再利用する。</li>
+<li>**並列ソートのサポート**: 複数のワーカーが生成したテープを、リーダープロセスで単一の論理テープセットとして統合する。</li>
+<li>**バッファリング**: 効率的なI/Oのために、ブロック単位の読み書きおよび先読みバッファを制御する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LogicalTapeSet</code>: テープセット全体を管理する構造体。フリーリストや物理ファイルへのポインタを保持。</li>
+<li><code>LogicalTape</code>: 個別の論理テープの状態（書き込み中か、凍結済みか等）を保持。</li>
+<li><code>TapeBlockTrailer</code>: 各ブロックの末尾に配置され、チェーンの前後関係を記録するメタデータ。</li>
+<li><code>LogicalTapeSetCreate</code>: テープセットの初期化。</li>
+<li><code>LogicalTapeWrite</code> / <code>LogicalTapeRead</code>: テープに対する順次アクセスインターフェース。</li>
+<li><code>LogicalTapeFreeze</code>: 最終マージパス用にテープを読み取り専用（かつランダムアクセス可能）に固定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LogicalTapeClose</code></li>
+<li><code>LogicalTapeCreate</code></li>
+<li><code>LogicalTapeImport</code></li>
+<li><code>LogicalTapeRewindForRead</code></li>
+<li><code>LogicalTapeSetClose</code></li>
+<li><code>LogicalTapeSetForgetFreeSpace</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み**: <code>LogicalTapeWrite</code> は <code>ltsGetBlock</code> を呼び出し、フリーリストからブロックを取得します。ブロックが満杯になると <code>ltsWriteBlock</code> で物理ファイルへフラッシュし、次のブロックへチェーンを繋ぎます。 2. **読み込み**: <code>LogicalTapeRead</code> は <code>ltsReadFillBuffer</code> を介してブロックを読み込みます。通常は読み込み後に <code>ltsReleaseBlock</code> が呼ばれ、ブロックはフリーリストへ戻されます。 3. **凍結**: <code>LogicalTapeFreeze</code> を呼ぶと、以降の読み込みでブロックが解放されなくなり、<code>LogicalTapeSeek</code> や <code>LogicalTapeBackspace</code> によるランダムアクセスが可能になります。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buffile.h</code>: 物理的なファイルI/Oの抽象化。</li>
+<li><code>utils/logtape.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>postgres.h</code>: 基本的な型定義とエラーハンドリング。</li>
+<li><code>fcntl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: 本モジュールの主要な利用者。ソートアルゴリズムのロジックが記述されています。</li>
+<li><code>src/include/storage/buffile.h</code>: <code>logtape.c</code> が利用する低レベルファイルI/Oインターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ブロックの再利用**: 本モジュールは「読み込み済みのデータは二度と必要としない」というソートの特性を前提としています。<code>LogicalTapeFreeze</code> を呼び出すとこの再利用が停止するため、注意が必要です。</li>
+<li>**並列ソート**: リーダープロセスで <code>LogicalTapeImport</code> を使用する場合、ワーカーが作成した <code>BufFile</code> を連結して扱うため、ブロック番号のオフセット計算が行われます。</li>
+<li>**デバッグ**: <code>TapeBlockTrailer</code> はブロックの末尾に配置されるため、メモリダンプを確認する際は <code>BLCKSZ</code> の境界を意識してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__TapeBlockTrailer.html" target="wiki-view"><code>TapeBlockTrailer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTape.html" target="wiki-view"><code>LogicalTape</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeSet.html" target="wiki-view"><code>LogicalTapeSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeSetCreate.html" target="wiki-view"><code>LogicalTapeSetCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeImport.html" target="wiki-view"><code>LogicalTapeImport</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeSetClose.html" target="wiki-view"><code>LogicalTapeSetClose</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeCreate.html" target="wiki-view"><code>LogicalTapeCreate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeClose.html" target="wiki-view"><code>LogicalTapeClose</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeSetForgetFreeSpace.html" target="wiki-view"><code>LogicalTapeSetForgetFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeWrite.html" target="wiki-view"><code>LogicalTapeWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeRewindForRead.html" target="wiki-view"><code>LogicalTapeRewindForRead</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__logtape_c__LogicalTapeFreeze.html" target="wiki-view"><code>LogicalTapeFreeze</code></a></li>
+</ul></body></html>

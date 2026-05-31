@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/interrupt.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/interrupt.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのバックグラウンドプロセス（Postmaster配下の各ワーカ）における、シグナル受信時の共通的な割り込み処理ルーチンを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>Postmasterが管理する各プロセスが、シグナル（SIGHUP, SIGTERM, SIGQUIT等）を安全かつ一貫した方法で処理するためのユーティリティ層です。個別のプロセスが複雑なシグナルハンドラを個別に実装する負担を軽減します。</p>
+<h2>責務</h2>
+<ul>
+<li>**フラグ管理**: シグナル受信時に <code>sig_atomic_t</code> 型のフラグを立て、メインループでの処理を予約する。</li>
+<li>**ラッチの通知**: <code>SetLatch</code> を呼び出し、シグナル受信時に待機中のプロセスを即座に起床させる。</li>
+<li>**定型処理の実行**: 設定再読み込みやシャットダウン要求などの標準的な割り込み処理を、メインループの適切なタイミングで実行する。</li>
+<li>**緊急終了**: 共有メモリ破損時などを想定した、クリーンアップを行わない即時終了処理の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ConfigReloadPending</code>: 設定再読み込み（SIGHUP）が要求されたことを示すフラグ。</li>
+<li><code>ShutdownRequestPending</code>: プロセスのシャットダウン（SIGTERM等）が要求されたことを示すフラグ。</li>
+<li><code>ProcessMainLoopInterrupts()</code>: メインループ内で呼び出される、保留中の割り込みを処理する統合関数。</li>
+<li><code>SignalHandlerForCrashExit()</code>: <code>_exit(2)</code> を呼び出し、クリーンアップなしでプロセスを終了させるハンドラ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ProcessMainLoopInterrupts</code></li>
+<li><code>SignalHandlerForConfigReload</code></li>
+<li><code>SignalHandlerForCrashExit</code></li>
+<li><code>SignalHandlerForShutdownRequest</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **シグナル受信**: OSからシグナルを受け取ると、<code>SignalHandlerFor...</code> 系関数が実行されます。 2. **フラグ設定**: ハンドラ内で <code>Pending</code> フラグを <code>true</code> にし、<code>SetLatch</code> でプロセスを起床させます。 3. **メインループでの検知**: プロセスはメインループの反復ごとに <code>ProcessMainLoopInterrupts</code> を呼び出します。 4. **処理の実行**: <code>ProcessMainLoopInterrupts</code> 内でフラグを確認し、<code>ProcessConfigFile</code> や <code>proc_exit</code> などの実処理を実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postmaster/interrupt.h</code>: インタフェース定義。</li>
+<li><code>storage/latch.h</code>: プロセスの起床（<code>SetLatch</code>）に使用。</li>
+<li><code>storage/procsignal.h</code>: プロセス間シグナル処理の補助。</li>
+<li><code>utils/guc.h</code>: 設定再読み込み（<code>ProcessConfigFile</code>）に使用。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/interrupt.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/storage/ipc/latch.c</code>: <code>SetLatch</code> の実装。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: シグナルハンドラの登録やプロセス管理の全体像。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルで定義されるハンドラは、シグナルハンドラ内での非同期安全性を考慮し、最小限の操作（フラグ設定とラッチ通知）のみを行う設計になっています。</li>
+<li><code>SignalHandlerForCrashExit</code> は、共有メモリの破損を想定しているため、<code>proc_exit</code>（クリーンアップ処理）を意図的に回避しています。この挙動は、Postmasterによるシステムリセットを誘発するための重要な設計です。</li>
+<li>独自のバックグラウンドプロセスを実装する際は、メインループ内で <code>ProcessMainLoopInterrupts</code> を定期的に呼び出すことで、これらの標準的なシグナル処理を容易に組み込めます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__interrupt_c__ProcessMainLoopInterrupts.html" target="wiki-view"><code>ProcessMainLoopInterrupts</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__interrupt_c__SignalHandlerForConfigReload.html" target="wiki-view"><code>SignalHandlerForConfigReload</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__interrupt_c__SignalHandlerForCrashExit.html" target="wiki-view"><code>SignalHandlerForCrashExit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__interrupt_c__SignalHandlerForShutdownRequest.html" target="wiki-view"><code>SignalHandlerForShutdownRequest</code></a></li>
+</ul></body></html>

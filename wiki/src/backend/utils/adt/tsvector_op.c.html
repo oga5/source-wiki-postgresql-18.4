@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/tsvector_op.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/tsvector_op.c</h1>
+<h2>概要</h2>
+<p><code>tsvector_op.c</code> は、PostgreSQL の全文検索用データ型 <code>tsvector</code> に対する演算、操作、および統計処理を実装するモジュールです。<code>tsvector</code> の内部構造（ソートされた語彙と位置情報の配列）を直接操作し、検索クエリとの照合、重み付け、編集、および統計情報の抽出を行います。</p>
+<h2>モジュール内での役割</h2>
+<p>全文検索サブシステム（<code>tsearch</code>）のデータ型操作レイヤーとして機能します。<code>tsvector</code> 型の SQL 関数（<code>setweight</code>, <code>strip</code>, <code>delete</code> 等）のバックエンド実装を提供し、インデックス（GIN/GiST）やクエリ実行エンジンが利用する比較・照合ロジックを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ操作**: <code>tsvector</code> の結合、重み付け、不要な位置情報の削除、特定の語彙の削除。</li>
+<li>**クエリ照合**: <code>tsquery</code> と <code>tsvector</code> の照合ロジック（<code>TS_execute</code>）。特に位置情報（<code>phrase</code> 演算子）を考慮した複雑な照合。</li>
+<li>**統計処理**: <code>ts_stat</code> 関数による <code>tsvector</code> カラムの語彙統計情報の集計。</li>
+<li>**トリガーサポート**: テキストカラムから <code>tsvector</code> を自動生成するトリガー関数の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>TSVector</code>: <code>tsvector</code> 型の内部表現（<code>varlena</code> 構造）。</li>
+<li><code>CHKVAL</code>: クエリ照合時に <code>tsvector</code> の走査状態を保持するコンテキスト。</li>
+<li><code>TSVectorStat</code>: <code>ts_stat</code> 実行時に語彙の出現頻度を保持するツリー構造。</li>
+<li><code>ExecPhraseData</code>: <code>phrase</code> 演算子実行時に位置情報とマッチ幅を保持する構造体。</li>
+</ul>
+<h3>演算・操作関数</h3>
+<ul>
+<li><code>tsvector_strip</code>: 位置情報を削除し、語彙のみにする。</li>
+<li><code>tsvector_setweight</code>: 指定された重みを全語彙に適用。</li>
+<li><code>tsvector_delete_str</code> / <code>tsvector_delete_arr</code>: 指定した語彙を削除。</li>
+<li><code>tsvector_concat</code>: 2つの <code>tsvector</code> をマージし、位置情報をオフセット調整して結合。</li>
+</ul>
+<h3>クエリ照合・実行</h3>
+<ul>
+<li><code>TS_execute</code>: <code>tsquery</code> の論理演算を実行するメインエントリーポイント。</li>
+<li><code>TS_phrase_execute</code>: <code>phrase</code> 演算子を含む複雑なクエリの照合と位置情報の計算。</li>
+<li><code>ts_match_vq</code>: <code>tsvector</code> と <code>tsquery</code> のマッチングを行う SQL 関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CHKVAL</code></li>
+<li><code>StatEntry</code></li>
+<li><code>TSVectorStat</code></li>
+<li><code>TS_execute</code></li>
+<li><code>TS_phrase_execute</code></li>
+<li><code>TS_phrase_output</code></li>
+<li><code>tsvector_delete_arr</code></li>
+<li><code>tsvector_delete_by_indices</code></li>
+<li><code>tsvector_delete_str</code></li>
+<li><code>tsvector_update_trigger</code></li>
+<li><code>tsvector_update_trigger_bycolumn</code></li>
+<li><code>tsvector_update_trigger_byid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **照合フロー**: <code>ts_match_vq</code> が <code>TS_execute</code> を呼び出し、<code>checkcondition_str</code> コールバックを通じて <code>tsvector</code> のバイナリ配列を二分探索（<code>tsvector_bsearch</code>）します。 2. **位置情報フロー**: <code>phrase</code> 演算子が含まれる場合、<code>TS_phrase_execute</code> が再帰的に呼び出され、<code>ExecPhraseData</code> を介してマッチした位置のリストをマージ・計算します。 3. **統計フロー**: <code>ts_stat</code> は <code>SPI</code> を使用してテーブルを走査し、<code>ts_accum</code> で各行の <code>tsvector</code> を <code>TSVectorStat</code> ツリーに挿入して集計します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>tsearch/ts_utils.h</code>: 全文検索の共通定義とパース関数。</li>
+<li><code>utils/array.h</code>: <code>tsvector</code> と配列間の変換用。</li>
+<li><code>executor/spi.h</code>: <code>ts_stat</code> およびトリガー処理でのテーブルアクセス用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tsearch/</code>: 全文検索のコアロジック（パース、辞書、クエリ解析）。</li>
+<li><code>src/backend/utils/adt/tsquery_op.c</code>: <code>tsquery</code> 型の演算子実装。</li>
+<li><code>src/backend/access/gin/</code>: <code>tsvector</code> を利用する GIN インデックスの実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>tsvector</code> は可変長データ型であり、関数内で <code>palloc</code> を使用して新しい <code>TSVector</code> を生成する際は、<code>VARSIZE</code> の計算と <code>SET_VARSIZE</code> が必須です。</li>
+<li>**位置情報の制約**: <code>tsvector</code> の位置情報は <code>uint16</code> に格納され、重み（2bit）と位置（14bit）を共有します。このため、位置は <code>MAXENTRYPOS</code>（16383）までに制限されます。</li>
+<li>**パフォーマンス**: <code>tsvector_concat</code> や <code>tsvector_delete</code> は、内部配列の再構築を伴うため、大きな <code>tsvector</code> に対してはコストが高くなります。</li>
+<li>**未実装/浅い部分**: <code>tsquery_requires_match</code> は、インデックススキャン最適化のために簡略化されたロジックを使用しており、複雑な NOT 演算のネストについては網羅的ではありません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__CHKVAL.html" target="wiki-view"><code>CHKVAL</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__StatEntry.html" target="wiki-view"><code>StatEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__TSVectorStat.html" target="wiki-view"><code>TSVectorStat</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_delete_by_indices.html" target="wiki-view"><code>tsvector_delete_by_indices</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_delete_str.html" target="wiki-view"><code>tsvector_delete_str</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_delete_arr.html" target="wiki-view"><code>tsvector_delete_arr</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__TS_phrase_output.html" target="wiki-view"><code>TS_phrase_output</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__TS_phrase_execute.html" target="wiki-view"><code>TS_phrase_execute</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__TS_execute.html" target="wiki-view"><code>TS_execute</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_update_trigger_byid.html" target="wiki-view"><code>tsvector_update_trigger_byid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_update_trigger_bycolumn.html" target="wiki-view"><code>tsvector_update_trigger_bycolumn</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__tsvector_op_c__tsvector_update_trigger.html" target="wiki-view"><code>tsvector_update_trigger</code></a></li>
+</ul></body></html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/prep/prepjointree.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/prep/prepjointree.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのクエリ最適化における「ジョインツリー（JoinTree）の変形」を担う中心的なモジュールです。パーサが生成した論理的なジョインツリーを、物理プランナが効率的にパスを探索できる形式へ正規化・簡略化します。具体的には、サブクエリの引き上げ（Pull-up）、外結合の削減（Reduce Outer Joins）、不要なリレーションの除去などを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/prep</code> モジュールの一部として、クエリの構造を物理プランニングに適したフラットな状態に変換します。<code>prepagg.c</code> や <code>prepunion.c</code> が特定の演算ノードの最適化を行うのに対し、本ファイルはクエリ全体の結合構造を再構築する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**サブクエリの引き上げ**: <code>RTE_SUBQUERY</code> を親のジョインツリーに統合し、結合の再配置を可能にする。</li>
+<li>**外結合の削減**: <code>LEFT JOIN</code> や <code>FULL JOIN</code> を、制約条件に基づいて <code>INNER JOIN</code> や <code>ANTI JOIN</code> へと強度を下げ、探索空間を広げる。</li>
+<li>**ジョインツリーの正規化**: <code>RTE_RESULT</code> の除去や、単一の子を持つ <code>FromExpr</code> の平坦化。</li>
+<li>**MERGE文の変換**: <code>MERGE</code> コマンドの論理構造を、プランナが処理可能な <code>JOIN</code> 構造へ変換する。</li>
+<li>**生成列の展開**: 仮想生成列（Virtual Generated Columns）の参照を、定義式への置換によって展開する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>変換・最適化関数</h3>
+<ul>
+<li><code>pull_up_subqueries</code>: ジョインツリー内のサブクエリを親クエリへ引き上げるメインエントリ。</li>
+<li><code>pull_up_sublinks</code>: <code>ANY</code>/<code>EXISTS</code> サブリンクをセミジョイン/アンチセミジョインへ変換する。</li>
+<li><code>reduce_outer_joins</code>: 外結合を内結合へ削減する。</li>
+<li><code>remove_useless_result_rtes</code>: 不要な <code>RTE_RESULT</code> を削除し、ジョインツリーを簡略化する。</li>
+<li><code>transform_MERGE_to_join</code>: <code>MERGE</code> 文を <code>JOIN</code> 構造に書き換える。</li>
+</ul>
+<h3>コンテキスト構造体</h3>
+<ul>
+<li><code>pullup_replace_vars_context</code>: サブクエリ引き上げ時に、親クエリ側の変数参照をサブクエリの出力式へ置換するためのコンテキスト。</li>
+<li><code>reduce_outer_joins_pass1_state</code> / <code>pass2_state</code>: 外結合削減の2パス処理で、ツリーの各ノードの結合状態を保持する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ReplaceWrapOption</code></li>
+<li><code>find_dependent_phvs_context</code></li>
+<li><code>nullingrel_info</code></li>
+<li><code>pull_up_sublinks</code></li>
+<li><code>pull_up_sublinks_jointree_recurse</code></li>
+<li><code>pullup_replace_vars_context</code></li>
+<li><code>reduce_outer_joins_partial_state</code></li>
+<li><code>reduce_outer_joins_pass1_state</code></li>
+<li><code>reduce_outer_joins_pass2_state</code></li>
+<li><code>replace_empty_jointree</code></li>
+<li><code>substitute_phv_relids_context</code></li>
+<li><code>transform_MERGE_to_join</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>replace_empty_jointree</code> により、空のジョインツリーを <code>RTE_RESULT</code> で埋める。 2. **サブクエリ引き上げ**: <code>pull_up_subqueries_recurse</code> がジョインツリーを再帰的に探索し、引き上げ可能なサブクエリを特定。<code>perform_pullup_replace_vars</code> を通じて、親クエリ内の変数参照をサブクエリのターゲットリストへ置換する。 3. **外結合削減**: <code>reduce_outer_joins</code> が2パスで動作。1パス目で結合構造と外結合の有無を収集し、2パス目で <code>WHERE</code> 句の制約（strictness）に基づき結合タイプを変換する。 4. **クリーンアップ**: <code>remove_useless_results_recurse</code> が、引き上げ後に不要となった <code>RTE_RESULT</code> や冗長な <code>FromExpr</code> を削除し、ツリーを整理する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>nodeFuncs.h</code>, <code>makefuncs.h</code> 等のノード操作系。</li>
+<li><code>optimizer/</code>: <code>optimizer.h</code>, <code>subselect.h</code>, <code>tlist.h</code> 等のプランナ基盤。</li>
+<li><code>rewrite/</code>: <code>rewriteHandler.h</code> 等のクエリ書き換え系。</li>
+<li><code>catalog/pg_type.h</code>: 型情報の参照。</li>
+<li><code>access/table.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/multibitmapset.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/plan/subselect.c</code>: サブリンクの変換ロジックの補完。</li>
+<li><code>src/backend/optimizer/prep/preptlist.c</code>: ターゲットリストの物理変換。</li>
+<li><code>src/backend/rewrite/rewriteManip.c</code>: 変数置換やノード操作のユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本モジュールは <code>PlannerInfo</code> を通じてメモリを管理し、再帰的なツリー操作を行うため、<code>check_stack_depth()</code> によるスタックオーバーフロー対策が随所に施されています。</li>
+<li>**不変条件**: <code>pull_up_subqueries</code> 実行中、ジョインツリーの構造を維持しながら変数を置換する必要があるため、<code>perform_pullup_replace_vars</code> はツリー構造自体を破壊しないよう慎重に設計されています。</li>
+<li>**制約**: <code>LATERAL</code> サブクエリの引き上げは、結合順序やスコープの制約により非常に複雑です。<code>is_simple_subquery</code> 内の条件分岐がその複雑性を物語っています。</li>
+<li>**省略された詳細**: <code>MERGE</code> 文の変換ロジックは、トリガー付きビュー等の特殊ケースを扱うため非常に複雑ですが、本ファイルでは主にジョインツリーへの変換に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__nullingrel_info.html" target="wiki-view"><code>nullingrel_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__ReplaceWrapOption.html" target="wiki-view"><code>ReplaceWrapOption</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__pullup_replace_vars_context.html" target="wiki-view"><code>pullup_replace_vars_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__reduce_outer_joins_pass1_state.html" target="wiki-view"><code>reduce_outer_joins_pass1_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__reduce_outer_joins_pass2_state.html" target="wiki-view"><code>reduce_outer_joins_pass2_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__reduce_outer_joins_partial_state.html" target="wiki-view"><code>reduce_outer_joins_partial_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__transform_MERGE_to_join.html" target="wiki-view"><code>transform_MERGE_to_join</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__replace_empty_jointree.html" target="wiki-view"><code>replace_empty_jointree</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__pull_up_sublinks.html" target="wiki-view"><code>pull_up_sublinks</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__pull_up_sublinks_jointree_recurse.html" target="wiki-view"><code>pull_up_sublinks_jointree_recurse</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__find_dependent_phvs_context.html" target="wiki-view"><code>find_dependent_phvs_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__prep__prepjointree_c__substitute_phv_relids_context.html" target="wiki-view"><code>substitute_phv_relids_context</code></a></li>
+</ul></body></html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spgtextproc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgtextproc.c</h1>
+<h2>概要</h2>
+<p><code>spgtextproc.c</code> は、PostgreSQL の SP-GiST 索引において、<code>text</code> 型に対する基数木（Radix Tree / Compressed Trie）の実装を提供します。文字列の共通接頭辞を内部タプルに保持し、後続のバイトをノードラベルとして分岐させることで、効率的な文字列検索を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p>SP-GiST のインデックスメソッド（<code>text_ops</code>）における「プロシージャ」層を担います。コアエンジンが提供する汎用的な SP-GiST インターフェースに対し、<code>text</code> 型特有のデータ分割、検索、および一致判定ロジックを注入します。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ構造の定義**: 文字列の接頭辞圧縮とノード分岐のルール管理。</li>
+<li>**インデックス構築支援**: <code>picksplit</code> による効率的なノード分割と接頭辞の抽出。</li>
+<li>**検索最適化**: <code>choose</code> および <code>inner_consistent</code> による、木構造を辿る際のパス選択と枝刈り。</li>
+<li>**照合順序（Collation）対応**: ロケール依存の比較処理と、C ロケール時の高速なバイト比較の切り替え。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SPGIST_MAX_PREFIX_LENGTH</code>: 内部タプルのサイズ制限に基づき、接頭辞の最大長を決定するマクロ。</li>
+<li><code>spg_text_choose</code>: 挿入時にどのノードへ進むか、あるいは分割が必要かを決定する関数。</li>
+<li><code>spg_text_picksplit</code>: ページ分割時にデータをノードへ分配し、共通接頭辞を決定する関数。</li>
+<li><code>spg_text_inner_consistent</code>: 検索時にどの枝を探索すべきかを判定する関数。</li>
+<li><code>spg_text_leaf_consistent</code>: リーフノードに到達した際、最終的な一致判定を行う関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cmpNodePtr</code></li>
+<li><code>commonPrefix</code></li>
+<li><code>formTextDatum</code></li>
+<li><code>searchChar</code></li>
+<li><code>spgNodePtr</code></li>
+<li><code>spg_text_config</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入時**: <code>spg_text_choose</code> が呼び出され、入力文字列と現在の接頭辞を比較します。一致すれば子ノードへ進み、不一致であれば <code>spgSplitTuple</code> を返して木を再構成します。 2. **構築時**: <code>spg_text_picksplit</code> が複数の値をソートし、最長共通接頭辞を抽出してノードラベルを生成します。 3. **検索時**: <code>spg_text_inner_consistent</code> が現在のパスまでの文字列を再構築し、スキャンキーと比較して探索不要な枝を排除します。最後に <code>spg_text_leaf_consistent</code> で完全な文字列を復元し、最終的な比較を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>access/spgist.h</code>: SP-GiST のインターフェース定義。</li>
+<li><code>utils/varlena.h</code>: 可変長データ（<code>text</code>）の操作用。</li>
+<li><code>utils/pg_locale.h</code>: ロケール依存の比較処理用。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の処理用。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/spgist/spgutils.c</code>: インデックスの共通ユーティリティ。</li>
+<li><code>src/backend/access/spgist/spgscan.c</code>: スキャン処理の制御フロー。</li>
+<li><code>src/backend/access/spgist/spgdoinsert.c</code>: 挿入処理のメインロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**特殊なノードラベル**: <code>-1</code> は「接頭辞以降に文字がない（終端）」、<code>-2</code> は「<code>allTheSame</code> タプルの分割時に生成されたダミーラベル」を意味します。これらは文字列の復元には寄与しません。</li>
+<li>**照合順序の扱い**: <code>SPG_IS_COLLATION_AWARE_STRATEGY</code> マクロに注目してください。C ロケール以外では木全体を走査する必要があるため、パフォーマンス上の制約となります。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用するため、インデックス操作中のメモリ消費量には注意が必要です。特に <code>picksplit</code> は大量のデータをソートするため、メモリ負荷が高くなる傾向があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spgNodePtr.html" target="wiki-view"><code>spgNodePtr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spg_text_config.html" target="wiki-view"><code>spg_text_config</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__formTextDatum.html" target="wiki-view"><code>formTextDatum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__commonPrefix.html" target="wiki-view"><code>commonPrefix</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__searchChar.html" target="wiki-view"><code>searchChar</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spg_text_choose.html" target="wiki-view"><code>spg_text_choose</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__cmpNodePtr.html" target="wiki-view"><code>cmpNodePtr</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spg_text_picksplit.html" target="wiki-view"><code>spg_text_picksplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spg_text_inner_consistent.html" target="wiki-view"><code>spg_text_inner_consistent</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgtextproc_c__spg_text_leaf_consistent.html" target="wiki-view"><code>spg_text_leaf_consistent</code></a></li>
+</ul></body></html>

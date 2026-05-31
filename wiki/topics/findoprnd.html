@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/findoprnd.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>findoprnd</h1>
+<h2>概念</h2>
+<p><code>findoprnd</code> は、PostgreSQL の特定のクエリ表現（<code>ltxtquery</code>、<code>tsquery</code>、および <code>intarray</code> のクエリなど）において、平坦化された <code>ITEM</code> 配列（逆ポーランド記法などで表現された抽象構文木）を走査し、各演算子ノードが参照すべき左オペランドへの相対的なオフセット（<code>left</code> フィールド）を計算・設定するための関数です。</p>
+<h2>なぜ重要か</h2>
+<p>シリアライズ可能でコンパクトなクエリデータ構造を実現するために、ポインタの代わりに配列内の相対オフセット（<code>left</code>）が使用されます。<code>findoprnd</code> は、パースされたクエリ構造を正しく評価・実行できるように、このオフセットを正確に解決する役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/ltree/ltxtquery_io.c#findoprnd</code>: <code>ltxtquery</code> 内の <code>ITEM</code> 配列を走査し、左オペランドへのオフセットを計算・設定します。</li>
+<li><code>symbol:contrib/intarray/_int_bool.c#findoprnd</code>: <code>intarray</code> の論理演算処理において同様のオフセット解決を行います。</li>
+<li><code>symbol:src/backend/utils/adt/tsquery.c#findoprnd</code>: <code>tsquery</code>（テキスト検索クエリ）の構築・解析時に同様の処理を行います。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>提供された情報に基づく <code>contrib/ltree</code> における処理の流れは以下の通りです。なお、<code>tsquery</code> や <code>intarray</code> における詳細なエンドツーエンドの差異や全体像は完全には明らかになっていません。</p>
+<p>1. **初期呼び出し**: クエリ構築処理（または論理演算処理）から、<code>ITEM</code> 配列の先頭を指す <code>pos</code> とともに <code>findoprnd</code> が呼び出されます。 2. **再帰的走査**:</p>
+<ul>
+<li>**オペランドノード (<code>VAL</code> / <code>VALTRUE</code>)**: オペランドを持たないため、<code>left</code> を <code>0</code> に設定します。</li>
+<li>**単項演算子ノード (<code>!</code>)**: <code>left</code> を <code>1</code> に設定し、右オペランドを再帰的に走査します。</li>
+<li>**二項演算子ノード**:</li>
+<p>1. 右オペランドを再帰的に走査します。 2. 現在の <code>pos</code> と開始位置の差分（<code>delta</code>）を計算し、左オペランドへのオフセットとして <code>left</code> に格納します。 3. 左オペランドを再帰的に走査します。 3. **完了**: すべてのノードの <code>left</code> フィールドが更新され、クエリ構造体が完成します。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**入力の妥当性**: <code>ptr</code> は有効な <code>ITEM</code> 配列であり、<code>pos</code> は配列の処理開始位置を指している必要があります。</li>
+<li>**オフセットの正値性**: 計算された左オペランドへの差分 <code>delta</code> は常に正数でなければなりません（<code>Assert(delta &gt; 0)</code>）。</li>
+<li>**スタック制限の遵守**: 再帰処理の安全性を保証するため、<code>check_stack_depth()</code> によるスタック深さの制限を遵守する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**プログラム制限超過**: <code>left</code> フィールドは <code>int16</code> 型（符号付き16ビット整数）であるため、クエリの構造が極めて大きく複雑な場合、計算された <code>delta</code> が <code>PG_INT16_MAX</code> を超えてしまい、<code>ERRCODE_PROGRAM_LIMIT_EXCEEDED</code> エラーが発生します。</li>
+<li>**スタックオーバーフロー**: 非常に深いネストを持つクエリを処理する際、再帰呼び出しの制限（<code>check_stack_depth()</code>）に達して処理が失敗する可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/ltree/ltxtquery_io.c</code> (<code>findoprnd</code> の具体的な再帰アルゴリズムの実装)</li>
+<li><code>contrib/intarray/_int_bool.c</code> (整数配列クエリにおける同名関数の実装)</li>
+<li><code>src/backend/utils/adt/tsquery.c</code> (テキスト検索クエリにおける同名関数の実装)</li>
+</ul></body></html>

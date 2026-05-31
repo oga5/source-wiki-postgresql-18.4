@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_target.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_target.c</h1>
+<h2>概要</h2>
+<p>SQLクエリのターゲットリスト（<code>SELECT</code>句のリストや<code>INSERT</code>/<code>UPDATE</code>の対象列）を解析・変換するためのモジュールです。構文解析後の抽象構文木（AST）を、プランナーが処理可能な形式（<code>TargetEntry</code>ノード）へ変換する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムの一部として、クエリ解析の最終段階に近い「ターゲットリストの構築」を担当します。<code>parse_expr.c</code> で個々の式を変換した後、それらをリストとしてまとめ、列名の推論や型変換、アクセス権限のマーク付けを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ターゲットリストの変換**: <code>ResTarget</code>（構文解析結果）を <code>TargetEntry</code>（意味解析結果）へ変換。</li>
+<li>**ワイルドカード展開**: <code>SELECT *</code> や <code>table.*</code> のような展開を解決し、対象となる全列のリストを生成。</li>
+<li>**代入処理のサポート**: <code>INSERT</code> や <code>UPDATE</code> における列への代入（サブフィールドや配列添字を含む）の型チェックと coercion（型強制）の実行。</li>
+<li>**列名の推論**: <code>AS</code> 句がない場合に、式の内容から適切な列名を自動生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>transformTargetList</code>: ターゲットリスト全体を変換するメインのエントリポイント。</li>
+<li><code>transformTargetEntry</code>: 個別の式を <code>TargetEntry</code> に変換する。</li>
+<li><code>transformAssignedExpr</code>: 代入対象の式を型チェックし、必要に応じて <code>FieldStore</code> や <code>SubscriptingRef</code> を構築。</li>
+<li><code>FigureColname</code>: 式からデフォルトの列名を推論する。</li>
+<li><code>ExpandColumnRefStar</code>: <code>*</code> 展開のロジックを管理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExpandAllTables</code></li>
+<li><code>ExpandIndirectionStar</code></li>
+<li><code>ExpandRowReference</code></li>
+<li><code>ExpandSingleTable</code></li>
+<li><code>FigureColnameInternal</code></li>
+<li><code>FigureIndexColname</code></li>
+<li><code>resolveTargetListUnknowns</code></li>
+<li><code>transformExpressionList</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **変換開始**: <code>transformTargetList</code> が呼び出され、リスト内の各要素を走査。 2. **展開**: <code>*</code> が含まれる場合、<code>ExpandColumnRefStar</code> 等を呼び出し、対象となる列のリストを動的に生成・結合。 3. **式変換**: <code>transformTargetEntry</code> を通じて各式を <code>transformExpr</code> で変換し、<code>TargetEntry</code> を生成。 4. **代入処理**: <code>UPDATE</code> 等では <code>transformAssignedExpr</code> が呼び出され、ターゲット列の型情報に基づき、代入値の型変換や添字操作（<code>transformAssignmentIndirection</code>）を再帰的に適用。 5. **後処理**: <code>resolveTargetListUnknowns</code> で型不明な列を <code>TEXT</code> に固定し、<code>markTargetListOrigins</code> で列の由来（テーブル/列番号）を記録。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/parse_expr.h</code>, <code>parser/parse_coerce.h</code>: 式の変換と型強制。</li>
+<li><code>parser/parse_relation.h</code>, <code>parser/parse_type.h</code>: リレーションや型情報の取得。</li>
+<li><code>nodes/makefuncs.h</code>, <code>nodes/nodeFuncs.h</code>: ノードの生成と操作。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログからの型・属性情報の取得。</li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/analyze.c</code>: クエリ解析の全体フローを管理。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 個々の式（<code>transformExpr</code>）の変換。</li>
+<li><code>src/backend/parser/parse_relation.c</code>: 名前空間やリレーションの解決。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「代入」の複雑なロジック（特に <code>FieldStore</code> や <code>SubscriptingRef</code> を伴う再帰的な処理）を含んでいます。これらは <code>INSERT</code> や <code>UPDATE</code> の際に、複合型や配列の特定要素のみを更新するために使用されます。</li>
+<li><code>FigureColname</code> は非常に多くのノード型を網羅しており、新しい式ノードを追加した際はここへの追記が必要になる場合があります。</li>
+<li><code>*</code> 展開のロジックは、<code>SELECT</code> 句と <code>ROW()</code> などのコンストラクタで共有されており、<code>make_target_entry</code> フラグで出力形式を制御しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__transformTargetEntry.html" target="wiki-view"><code>transformTargetEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__transformTargetList.html" target="wiki-view"><code>transformTargetList</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__transformExpressionList.html" target="wiki-view"><code>transformExpressionList</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__resolveTargetListUnknowns.html" target="wiki-view"><code>resolveTargetListUnknowns</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__ExpandColumnRefStar.html" target="wiki-view"><code>ExpandColumnRefStar</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__ExpandAllTables.html" target="wiki-view"><code>ExpandAllTables</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__ExpandIndirectionStar.html" target="wiki-view"><code>ExpandIndirectionStar</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__ExpandSingleTable.html" target="wiki-view"><code>ExpandSingleTable</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__ExpandRowReference.html" target="wiki-view"><code>ExpandRowReference</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__FigureColname.html" target="wiki-view"><code>FigureColname</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__FigureIndexColname.html" target="wiki-view"><code>FigureIndexColname</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_target_c__FigureColnameInternal.html" target="wiki-view"><code>FigureColnameInternal</code></a></li>
+</ul></body></html>

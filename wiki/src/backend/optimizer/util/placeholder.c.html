@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/placeholder.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/placeholder.c</h1>
+<h2>概要</h2>
+<p><code>placeholder.c</code> は、PostgreSQLのクエリ最適化プロセスにおいて <code>PlaceHolderVar</code> (PHV) および <code>PlaceHolderInfo</code> を管理するためのルーチン群を提供します。PHVは、サブクエリのプルアップ（pull-up）時に、外部結合によるNULL生成の影響を正しく表現するために導入される特殊なノードです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、クエリの結合順序や最適化の過程で、式がどの結合レベルで評価されるべきか、どのリレーションに依存しているかを追跡します。特に、結合の除去や再構成が行われる際に、式の正当性を維持する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**PHVの生成と管理**: <code>PlaceHolderVar</code> の作成および、クエリ全体で一意な <code>PlaceHolderInfo</code> へのマッピング。</li>
+<li>**評価レベルの決定**: 各PHVがどのリレーションの集合（<code>ph_eval_at</code>）で評価可能かを計算し、必要な依存関係（<code>ph_lateral</code>）を特定する。</li>
+<li>**ターゲットリストへの注入**: 最適化の過程で、PHVを適切なベースリレーションや結合リレーションのターゲットリストに追加する。</li>
+<li>**最適化の補助**: 不要なPHVの除去（<code>strip_noop_phvs</code>）や、結合除去後の依存関係の再計算。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>make_placeholder_expr</code>: PHVノードを生成する初期エントリーポイント。</li>
+<li><code>find_placeholder_info</code>: PHVに対応する <code>PlaceHolderInfo</code> を取得・作成する。クエリプランナーの実行中に呼び出される。</li>
+<li><code>add_placeholders_to_joinrel</code>: 結合リレーション形成時に、そのレベルで評価可能になったPHVをターゲットリストへ追加する。</li>
+<li><code>strip_noop_phvs</code>: NULL生成の影響を受けない（<code>phnullingrels</code> が空の）PHVを式から除去し、最適化を容易にする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>add_placeholders_to_base_rels</code></li>
+<li><code>contain_placeholder_references_context</code></li>
+<li><code>contain_placeholder_references_to</code></li>
+<li><code>contain_placeholder_references_walker</code></li>
+<li><code>find_placeholders_in_expr</code></li>
+<li><code>find_placeholders_in_jointree</code></li>
+<li><code>find_placeholders_recurse</code></li>
+<li><code>fix_placeholder_input_needed_levels</code></li>
+<li><code>rebuild_placeholder_attr_needed</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>find_placeholders_in_jointree</code> がジョイントリーを走査し、クエリ内のPHVを特定して <code>PlaceHolderInfo</code> を作成します。 2. **評価レベル計算**: <code>find_placeholder_info</code> 内で、PHVの式が参照する変数（<code>pull_varnos</code>）に基づき、<code>ph_eval_at</code>（評価場所）と <code>ph_lateral</code>（LATERAL依存）を決定します。 3. **注入**: <code>add_placeholders_to_base_rels</code> や <code>add_placeholders_to_joinrel</code> が、各リレーションの <code>reltarget</code> にPHVを挿入し、コスト計算に反映させます。 4. **クリーンアップ**: 最適化の最終段階や特定の変換時に、<code>strip_noop_phvs</code> が不要なPHVを剥がし、式を簡略化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: 式ツリーの走査・変異用。</li>
+<li><code>optimizer/pathnode.h</code>: <code>PlannerInfo</code> や <code>RelOptInfo</code> 構造体へのアクセス。</li>
+<li><code>optimizer/placeholder.h</code>: 公開プロトタイプ定義。</li>
+<li><code>utils/lsyscache.h</code>: 型情報の取得。</li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/nodes/pathnodes.h</code>: <code>PlaceHolderVar</code> および <code>PlaceHolderInfo</code> の構造体定義。</li>
+<li><code>src/backend/optimizer/plan/initsplan.c</code>: サブクエリのプルアップ時にPHVが生成される主要な箇所。</li>
+<li><code>src/backend/optimizer/path/joinrels.c</code>: 結合リレーションの構築とPHVの注入タイミングに関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**PHVの性質**: PHVは「結合によってNULLが混入する可能性がある式」をカプセル化するものです。<code>phnullingrels</code> が空であれば、そのPHVは単なる式のラッパーとして機能します。</li>
+<li>**注意点**: <code>find_placeholder_info</code> は <code>root-&gt;placeholdersFrozen</code> が真になった後は新しい情報を追加できません。これは最適化のフェーズが進行したことを示します。</li>
+<li>**デバッグ**: PHVの評価レベルが意図通りか確認するには、<code>ph_eval_at</code> と <code>ph_needed</code> のビットマップを確認するのが最も確実です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__contain_placeholder_references_context.html" target="wiki-view"><code>contain_placeholder_references_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__make_placeholder_expr.html" target="wiki-view"><code>make_placeholder_expr</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__find_placeholder_info.html" target="wiki-view"><code>find_placeholder_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__find_placeholders_in_jointree.html" target="wiki-view"><code>find_placeholders_in_jointree</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__find_placeholders_recurse.html" target="wiki-view"><code>find_placeholders_recurse</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__find_placeholders_in_expr.html" target="wiki-view"><code>find_placeholders_in_expr</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__fix_placeholder_input_needed_levels.html" target="wiki-view"><code>fix_placeholder_input_needed_levels</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__rebuild_placeholder_attr_needed.html" target="wiki-view"><code>rebuild_placeholder_attr_needed</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__add_placeholders_to_base_rels.html" target="wiki-view"><code>add_placeholders_to_base_rels</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__add_placeholders_to_joinrel.html" target="wiki-view"><code>add_placeholders_to_joinrel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__contain_placeholder_references_to.html" target="wiki-view"><code>contain_placeholder_references_to</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__placeholder_c__contain_placeholder_references_walker.html" target="wiki-view"><code>contain_placeholder_references_walker</code></a></li>
+</ul></body></html>

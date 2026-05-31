@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/logical/launcher.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/replication/logical/launcher.c</h1>
+<h2>概要</h2>
+<p>論理レプリケーションのワーカー（Apply Worker, TableSync Worker）を管理・起動する「ランチャー」プロセスを実装するファイルです。PostgreSQLのバックグラウンドワーカー（Background Worker）インフラを利用し、有効化されたサブスクリプションに対して必要なワーカーが常に稼働している状態を維持します。</p>
+<h2>モジュール内での役割</h2>
+<p>論理レプリケーションの制御層に位置します。<code>worker.c</code> や <code>tablesync.c</code> が個別のワーカーの動作を定義するのに対し、本ファイルはそれらのライフサイクル（起動、監視、停止）を司る監督者としての役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ワーカーの監視と起動**: <code>pg_subscription</code> を定期的にスキャンし、停止しているワーカーを再起動する。</li>
+<li>**リソース管理**: <code>max_logical_replication_workers</code> 等の制限に基づき、ワーカーの起動可否を判定する。</li>
+<li>**共有状態の保持**: ワーカーの稼働状況や、最後に起動を試みた時刻を共有メモリ上で管理する。</li>
+<li>**ライフサイクル制御**: ワーカーの正常終了・異常終了時のクリーンアップ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ApplyLauncherMain</code>: ランチャープロセスのメインループ。</li>
+<li><code>LogicalRepCtx</code>: ワーカーの状態を保持する共有メモリ上のコンテキスト構造体。</li>
+<li><code>logicalrep_worker_launch</code>: 新しいワーカーをバックグラウンドワーカーとして登録する関数。</li>
+<li><code>LogicalRepWorkerLock</code>: ワーカーの状態変更を保護する <code>LWLock</code>。</li>
+<li><code>ApplyLauncherRegister</code>: ポストマスターがランチャープロセスを起動するための登録関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ApplyLauncherForgetWorkerStartTime</code></li>
+<li><code>ApplyLauncherGetWorkerStartTime</code></li>
+<li><code>ApplyLauncherSetWorkerStartTime</code></li>
+<li><code>ApplyLauncherShmemInit</code></li>
+<li><code>ApplyLauncherShmemSize</code></li>
+<li><code>ApplyLauncherWakeup</code></li>
+<li><code>ApplyLauncherWakeupAtCommit</code></li>
+<li><code>AtEOXact_ApplyLauncher</code></li>
+<li><code>LauncherLastStartTimesEntry</code></li>
+<li><code>LogicalRepCtxStruct</code></li>
+<li><code>WaitForReplicationWorkerAttach</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ApplyLauncherShmemInit</code> で共有メモリを確保し、<code>ApplyLauncherRegister</code> でランチャーを登録。 2. **メインループ**: <code>ApplyLauncherMain</code> が <code>get_subscription_list</code> でサブスクリプションを取得。 3. **判定**: 稼働していないサブスクリプションに対し、<code>wal_retrieve_retry_interval</code> を考慮して <code>logicalrep_worker_launch</code> を呼び出す。 4. **起動**: <code>RegisterDynamicBackgroundWorker</code> を経由してワーカーを起動し、<code>WaitForReplicationWorkerAttach</code> でワーカーが共有メモリにアタッチするまで待機する。 5. **終了**: ワーカー終了時に <code>logicalrep_worker_onexit</code> が呼ばれ、共有メモリ上のフラグをクリアしてランチャーに通知する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postmaster/bgworker.h</code>: バックグラウンドワーカーの登録・管理。</li>
+<li><code>catalog/pg_subscription.h</code>: サブスクリプション情報の取得。</li>
+<li><code>lib/dshash.h</code>: 起動時刻管理のための共有ハッシュテーブル。</li>
+<li><code>storage/ipc.h</code>, <code>storage/proc.h</code>: プロセス間通信およびラッチ制御。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_subscription_rel.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>replication/worker_internal.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>replication/worker_internal.h</code>: ワーカーの内部構造体定義。</li>
+<li><code>src/backend/replication/logical/worker.c</code>: Apply Worker のメイン処理。</li>
+<li><code>src/backend/replication/logical/tablesync.c</code>: TableSync Worker のメイン処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「ワーカーの起動」に特化しており、レプリケーションのデータ変換や適用ロジックは含まれていません。</li>
+<li><code>LogicalRepWorkerLock</code> は頻繁に取得されるため、デッドロックや長時間のロック保持には注意が必要です。</li>
+<li>ワーカーが起動しない場合、<code>max_logical_replication_workers</code> や <code>max_worker_processes</code> の設定値がボトルネックになっていないか確認してください。</li>
+<li><code>last_start_times</code> ハッシュテーブルは、ワーカーの再起動間隔を制御し、エラー発生時に無限ループでリソースを消費するのを防ぐために重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__LogicalRepCtxStruct.html" target="wiki-view"><code>LogicalRepCtxStruct</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__LauncherLastStartTimesEntry.html" target="wiki-view"><code>LauncherLastStartTimesEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__WaitForReplicationWorkerAttach.html" target="wiki-view"><code>WaitForReplicationWorkerAttach</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherShmemSize.html" target="wiki-view"><code>ApplyLauncherShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherRegister.html" target="wiki-view"><code>ApplyLauncherRegister</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherShmemInit.html" target="wiki-view"><code>ApplyLauncherShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherSetWorkerStartTime.html" target="wiki-view"><code>ApplyLauncherSetWorkerStartTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherGetWorkerStartTime.html" target="wiki-view"><code>ApplyLauncherGetWorkerStartTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherForgetWorkerStartTime.html" target="wiki-view"><code>ApplyLauncherForgetWorkerStartTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__AtEOXact_ApplyLauncher.html" target="wiki-view"><code>AtEOXact_ApplyLauncher</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherWakeupAtCommit.html" target="wiki-view"><code>ApplyLauncherWakeupAtCommit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__launcher_c__ApplyLauncherWakeup.html" target="wiki-view"><code>ApplyLauncherWakeup</code></a></li>
+</ul></body></html>

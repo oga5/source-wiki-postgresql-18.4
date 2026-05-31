@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__parallel_c__LaunchParallelWorkers.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LaunchParallelWorkers</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/transam/parallel.c:579</code></li>
+</ul>
+<h2>目的</h2>
+<p>リーダープロセスが指定された数のバックグラウンドワーカーを登録し、並列クエリ実行を開始させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void LaunchParallelWorkers(ParallelContext *pcxt)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ParallelContext *pcxt</code>（並列実行コンテキスト。ワーカー数や共有メモリセグメント情報を含む）。</li>
+<li>**出力**: なし（副作用として <code>pcxt</code> 内のワーカーハンドルや状態が更新される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pcxt-&gt;nworkers</code> および <code>pcxt-&gt;nworkers_to_launch</code> が 0 より大きいこと。</li>
+<li><code>pcxt-&gt;seg</code> が有効な共有メモリセグメントを指していること。</li>
+<li>呼び出し元はロックグループリーダーである必要がある（<code>BecomeLockGroupLeader()</code> が内部で実行される）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>TopTransactionContext</code> にメモリコンテキストを切り替え、ワーカー設定用の <code>BackgroundWorker</code> 構造体を初期化する。 2. **ワーカー設定**: エントリポイントを <code>ParallelWorkerMain</code> に固定し、共有メモリセグメントのハンドルを引数として設定する。 3. **登録ループ**: <code>pcxt-&gt;nworkers_to_launch</code> 回数分、<code>RegisterDynamicBackgroundWorker</code> を呼び出す。</p>
+<ul>
+<li>登録成功時: <code>shm_mq</code>（エラー用メッセージキュー）をワーカーハンドルに関連付け、<code>nworkers_launched</code> をインクリメントする。</li>
+<li>登録失敗時: <code>max_worker_processes</code> 制限等により登録が失敗した場合、以降のループでは登録を試行せず、該当するエラーキューを解放してリソースを整理する。</li>
+<p>4. **状態更新**: 起動したワーカー数に基づき、<code>known_attached_workers</code> 配列を割り当てる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/brin/brin.c</code></li>
+<li><code>src/backend/access/gin/gininsert.c</code></li>
+<li><code>src/backend/access/nbtree/nbtsort.c</code></li>
+<li><code>src/backend/commands/vacuumparallel.c</code></li>
+<li><code>src/backend/executor/nodeGather.c</code></li>
+<li><code>src/backend/executor/nodeGatherMerge.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>BecomeLockGroupLeader()</code></li>
+<li><code>MemoryContextSwitchTo()</code></li>
+<li><code>RegisterDynamicBackgroundWorker()</code></li>
+<li><code>shm_mq_set_handle()</code></li>
+<li><code>shm_mq_detach()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelContext</code>: 並列実行の全体状態を管理する構造体。</li>
+<li><code>BackgroundWorker</code>: バックグラウンドワーカーの起動パラメータを保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**登録失敗**: <code>RegisterDynamicBackgroundWorker</code> が失敗した場合、エラーを投げずに処理を継続する。これはシステム全体のワーカー上限に達した場合を許容するためであり、起動できなかったワーカー分のエラーキューは適切に解放される。</li>
+<li>**ワーカー数 0**: <code>nworkers</code> または <code>nworkers_to_launch</code> が 0 の場合、何もせずに即時復帰する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はワーカーの「登録」を行うものであり、ワーカーが実際に起動・初期化されることを保証するものではない。</li>
+<li><code>any_registrations_failed</code> フラグは、一度登録に失敗した後に残りのスロットを適切にクリーンアップするために使用される。このロジックを変更する際は、エラーキューのデタッチ処理が漏れないよう注意すること。</li>
+</ul></body></html>

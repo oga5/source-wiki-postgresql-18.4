@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execCurrent_c__execCurrentOf.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>execCurrentOf</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execCurrent.c:43</code></li>
+</ul>
+<h2>目的</h2>
+<p>SQLの <code>WHERE CURRENT OF cursor_name</code> 句を処理し、指定されたカーソルが現在指し示している行の物理的な位置（TID）を特定して更新・削除操作を可能にする。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool execCurrentOf(CurrentOfExpr *cexpr, ExprContext *econtext, Oid table_oid, ItemPointer current_tid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>cexpr</code>: <code>WHERE CURRENT OF</code> 句の式情報。</li>
+<li><code>econtext</code>: 式評価コンテキスト。</li>
+<li><code>table_oid</code>: 対象テーブルのOID。</li>
+<li><code>current_tid</code>: 特定されたTIDを格納する出力用ポインタ。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 成功かつ対象テーブルの行を指している場合は <code>true</code>、対象テーブルがアクティブでない（継承テーブル等）場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>指定されたカーソルは <code>SELECT</code> クエリである必要がある。</li>
+<li>カーソルは現在有効な行を指している必要がある（<code>atStart</code> または <code>atEnd</code> であってはならない）。</li>
+<li>トランザクションを跨いで保持されているカーソルはエラーとなる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **カーソル解決**: <code>cexpr</code> からカーソル名を取得し、<code>GetPortalByName</code> で <code>Portal</code> を特定する。 2. **戦略の分岐**:</p>
+<ul>
+<li><code>FOR UPDATE/SHARE</code> を使用している場合: <code>es_rowmarks</code> を走査し、対象テーブルに対応する <code>ExecRowMark</code> から <code>curCtid</code> を抽出する。</li>
+<li>それ以外の場合: <code>search_plan_tree</code> を用いてプランツリーから該当する <code>ScanState</code> を探索し、物理タプルからTIDを取得する。</li>
+<p>3. **TID抽出**:</p>
+<li><code>IndexOnlyScanState</code> の場合は <code>xs_heaptid</code> を使用。</li>
+<li>それ以外はスキャンノードの現在のタプルからTIDを取得する。</li>
+<p>4. **継承テーブルの考慮**: 対象テーブルがアクティブでない場合は <code>false</code> を返し、呼び出し元が次のテーブルを試行できるようにする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/executor/nodeTidscan.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>fetch_cursor_param_value</code></li>
+<li><code>GetPortalByName</code></li>
+<li><code>search_plan_tree</code></li>
+<li><code>RowMarkRequiresRowShareLock</code></li>
+<li><code>slot_getsysattr</code> (実装の続きで参照)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CurrentOfExpr</code>: <code>WHERE CURRENT OF</code> 句の構文解析結果。</li>
+<li><code>Portal</code>: カーソルの状態を保持する構造体。</li>
+<li><code>ExecRowMark</code>: <code>FOR UPDATE/SHARE</code> 句の行ロック情報。</li>
+<li><code>ScanState</code>: プランツリーのスキャン状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**:</li>
+<li>カーソルが存在しない場合 (<code>ERRCODE_UNDEFINED_CURSOR</code>)。</li>
+<li>カーソルが <code>SELECT</code> ではない、または保持されたカーソルである場合 (<code>ERRCODE_INVALID_CURSOR_STATE</code>)。</li>
+<li>カーソルが特定の行を指していない場合 (<code>ERRCODE_INVALID_CURSOR_STATE</code>)。</li>
+<li><code>FOR UPDATE/SHARE</code> 参照が重複または存在しない場合。</li>
+<li>スキャンノードが見つからない場合。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>継承テーブルの扱いにおいて、特定のテーブルが非アクティブな場合はエラーではなく <code>false</code> を返す設計となっている。</li>
+<li><code>search_plan_tree</code> は複雑なプラン（<code>MergeAppend</code> 等）を透過的に探索できない制限がある。</li>
+<li><code>USE_ASSERT_CHECKING</code> が有効な場合、取得したTIDとテーブルOIDの厳密な整合性チェックが行われる。</li>
+</ul></body></html>

@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__jit__llvm__llvmjit_inline_cpp__llvm_build_inline_plan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>llvm_build_inline_plan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/jit/llvm/llvmjit_inline.cpp:182</code></li>
+</ul>
+<h2>目的</h2>
+<p>現在の LLVM モジュール内で未定義の外部関数参照を解析し、コストベースのヒューリスティックに基づいて、インライン化すべき関数とモジュールの対応関係（<code>ImportMapTy</code>）を構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static std::unique_ptr&lt;ImportMapTy&gt; llvm_build_inline_plan(LLVMContextRef lc, llvm::Module *mod)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>lc</code>: LLVM コンテキスト (<code>LLVMContextRef</code>)。</li>
+<li><code>mod</code>: インライン化対象の LLVM モジュール (<code>llvm::Module*</code>)。</li>
+<li>**出力**: </li>
+<li>インポートすべき関数名とモジュールパスのマップを保持する <code>std::unique_ptr&lt;ImportMapTy&gt;</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>defaultSearchPath</code> に <code>$libdir/postgres</code> が追加可能であること（追加できない場合は <code>nullptr</code> を返す）。</li>
+<li>インライン化対象の関数定義は、LLVM のビットコードインデックスから取得可能であること。</li>
+<li><code>funcDef</code> は外部リンケージ（<code>hasExternalLinkage</code>）を持つ必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: モジュール内の全関数を走査し、宣言のみ（<code>isDeclaration</code>）かつ組み込み関数（<code>isIntrinsic</code>）でないものを <code>worklist</code> に追加する。 2. **探索**: <code>worklist</code> が空になるまで以下の処理を繰り返す。</p>
+<ul>
+<li>シンボル名からモジュール名と関数名を分離し、GUID を計算する。</li>
+<li><code>summaries_for_guid</code> を用いてインデックスから関数定義を検索する。</li>
+<li><code>fs-&gt;instCount()</code> がコスト制限を超えていないか確認する。</li>
+<li><code>load_module_cached</code> で対象モジュールをロードし、<code>function_inlinable</code> を呼び出して依存関係を含めたインライン化の可否を判定する。</li>
+<p>3. **計画確定**: インライン化可能と判定された場合、<code>importVars</code> に対象関数を追加し、<code>globalsToInline</code> マップに記録する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/jit/llvm/llvmjit_inline.cpp</code> 内のインライン化処理フローから呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li><code>add_module_to_inline_search_path</code></li>
+<li><code>llvm_split_symbol_name</code></li>
+<li><code>summaries_for_guid</code></li>
+<li><code>load_module_cached</code></li>
+<li><code>function_inlinable</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ImportMapTy</code>: インポートする関数とモジュールのマッピング。</li>
+<li><code>FunctionInlineStates</code>: 各関数のインライン化状態（コスト制限、処理済みフラグ等）を管理。</li>
+<li><code>InlineWorkList</code>: 処理待ちの関数リスト。</li>
+<li><code>InlineSearchPath</code>: モジュール検索パス。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**検索パスの欠如**: <code>defaultSearchPath</code> が空の場合、<code>nullptr</code> を返す。</li>
+<li>**メタデータ取得失敗**: <code>defMod-&gt;materializeMetadata()</code> または <code>funcDef-&gt;materialize()</code> が失敗した場合、<code>FATAL</code> エラーで終了する。</li>
+<li>**ハッシュ衝突**: 関数名の GUID 衝突により定義が見つからない場合、そのエントリはスキップされる。</li>
+<li>**コスト超過**: <code>instCount</code> が <code>inlineState.costLimit</code> を超える場合、インライン化は見送られる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>LLVM_VERSION_MAJOR &gt;= 21</code> の条件分岐により、GUID 計算方法が LLVM のバージョンに依存している点に注意。</li>
+<li><code>inline_cost_decay_factor</code> (0.5) が再帰的なコスト計算に影響を与えるため、インライン化の深さに応じて許容値が厳しくなる。</li>
+<li><code>INLINE_DEBUG</code> マクロを有効にすると、判定プロセスが <code>elog</code> で詳細に出力される。</li>
+</ul></body></html>

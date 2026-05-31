@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/jsonb_plpython/jsonb_plpython.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/jsonb_plpython/jsonb_plpython.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの <code>jsonb</code> 型と Python のオブジェクト間での相互変換機能を提供する拡張モジュールです。<code>plpython</code> 拡張と連携し、データベース内の JSONB データを Python の辞書やリスト、数値型として操作可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>plpython</code> 拡張のサブモジュールとして機能します。PostgreSQL の型システムと Python の型システムを橋渡しする変換ロジックをカプセル化しており、<code>plpython</code> 本体がロードされた後に動的に関数ポインタを取得して連携します。</p>
+<h2>責務</h2>
+<ul>
+<li>**JSONB から Python への変換**: <code>JsonbContainer</code> や <code>JsonbValue</code> を走査し、対応する Python オブジェクト（<code>dict</code>, <code>list</code>, <code>Decimal</code>, <code>str</code>, <code>bool</code>, <code>None</code>）を生成する。</li>
+<li>**Python から JSONB への変換**: Python のシーケンスやマッピングを再帰的に解析し、<code>JsonbParseState</code> を用いて <code>JsonbValue</code> 構造体を構築する。</li>
+<li>**型変換の整合性維持**: 数値の NaN/Infinity 判定や、Python の <code>Decimal</code> 型への変換など、JSON 仕様と PostgreSQL の制約を遵守した変換を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>plpython_to_jsonb</code>: SQL から呼び出される、Python オブジェクトを JSONB に変換する関数。</li>
+<li><code>jsonb_to_plpython</code>: SQL から呼び出される、JSONB を Python オブジェクトに変換する関数。</li>
+<li><code>PLyObject_FromJsonbContainer</code>: JSONB のコンテナ（オブジェクト/配列）を再帰的に Python オブジェクトへ変換する中心的な関数。</li>
+<li><code>PLyObject_ToJsonbValue</code>: Python オブジェクトを JSONB の要素に変換する再帰的な変換器。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PLyMapping_ToJsonbValue</code></li>
+<li><code>PLyNumber_ToJsonbValue</code></li>
+<li><code>PLyObject_FromJsonbValue</code></li>
+<li><code>PLySequence_ToJsonbValue</code></li>
+<li><code>PLyUnicode_FromJsonbValue</code></li>
+<li><code>PLyUnicode_ToJsonbValue</code></li>
+<li><code>PLy_elog_impl_t</code></li>
+<li><code>PyObject</code></li>
+<li><code>Py_ssize_t</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> が実行され、<code>plpython</code> 本体から <code>PLyObject_AsString</code> などの関数ポインタをロードします。 2. **変換フロー (JSONB → Python)**:</p>
+<ul>
+<li><code>jsonb_to_plpython</code> が <code>JsonbIterator</code> を初期化。</li>
+<li><code>PLyObject_FromJsonbContainer</code> がトークンを順次読み取り、型に応じて <code>PyDict_New</code> や <code>PyList_New</code> を呼び出し、再帰的に構造を構築します。</li>
+<p>3. **変換フロー (Python → JSONB)**:</p>
+<li><code>plpython_to_jsonb</code> が <code>JsonbParseState</code> を初期化。</li>
+<li><code>PLyObject_ToJsonbValue</code> が Python オブジェクトの型を判定し、<code>pushJsonbValue</code> を介して JSONB 構造を構築します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>utils/jsonb.h</code>: JSONB 構造体およびイテレータ操作用。</li>
+<li><code>utils/numeric.h</code>: 数値変換用。</li>
+<li><code>plpy_*.h</code>: <code>plpython</code> 拡張とのインターフェース定義。</li>
+<li><code>plpy_elog.h</code></li>
+<li><code>plpy_typeio.h</code></li>
+<li><code>plpy_util.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>plpy_typeio.c</code>: 本ファイルが動的に関数ポインタを取得する <code>PLyObject_AsString</code> 等の定義元。</li>
+<li><code>src/backend/utils/adt/jsonb.c</code>: PostgreSQL 内部での JSONB 操作の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**動的リンク**: 本モジュールは <code>plpython</code> がロードされていることを前提としています。<code>_PG_init</code> 内で <code>load_external_function</code> を使用して関数ポインタを解決している点に注意してください。</li>
+<li>**例外処理**: Python のメモリ管理（<code>Py_DECREF</code>）と PostgreSQL のエラーハンドリング（<code>PG_TRY</code>/<code>PG_CATCH</code>）が混在しています。変換中にエラーが発生した場合、メモリリークを防ぐために <code>PG_CATCH</code> ブロック内で適切に <code>Py_XDECREF</code> を呼び出す設計になっています。</li>
+<li>**Decimal 変換**: JSONB の数値は Python の <code>Decimal</code> 型に変換されます。<code>cdecimal</code> が利用可能な場合はそれが優先されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PyObject.html" target="wiki-view"><code>PyObject</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLy_elog_impl_t.html" target="wiki-view"><code>PLy_elog_impl_t</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__Py_ssize_t.html" target="wiki-view"><code>Py_ssize_t</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyUnicode_FromJsonbValue.html" target="wiki-view"><code>PLyUnicode_FromJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyUnicode_ToJsonbValue.html" target="wiki-view"><code>PLyUnicode_ToJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyObject_FromJsonbValue.html" target="wiki-view"><code>PLyObject_FromJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyObject_FromJsonbContainer.html" target="wiki-view"><code>PLyObject_FromJsonbContainer</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyMapping_ToJsonbValue.html" target="wiki-view"><code>PLyMapping_ToJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLySequence_ToJsonbValue.html" target="wiki-view"><code>PLySequence_ToJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyNumber_ToJsonbValue.html" target="wiki-view"><code>PLyNumber_ToJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__PLyObject_ToJsonbValue.html" target="wiki-view"><code>PLyObject_ToJsonbValue</code></a></li>
+<li><a href="../../symbols/contrib__jsonb_plpython__jsonb_plpython_c__plpython_to_jsonb.html" target="wiki-view"><code>plpython_to_jsonb</code></a></li>
+</ul></body></html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/instrument.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/instrument.c</h1>
+<h2>概要</h2>
+<p>クエリ実行計画の各ノードにおける実行統計（時間、タプル数、バッファ使用量、WAL生成量）を収集・集計するための基盤機能を提供します。<code>EXPLAIN ANALYZE</code> 等の実行統計出力の根拠となるデータ構造を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>executor</code> モジュールの一部として、実行計画の各ノード（<code>node*.c</code>）が実行時に呼び出す計測フックを提供します。実行計画のツリー構造全体にわたる統計収集のライフサイクルを制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**計測のライフサイクル管理**: ノードの開始・停止・ループ終了時の統計更新。</li>
+<li>**リソース使用量の追跡**: バッファアクセス（<code>BufferUsage</code>）および WAL 生成量（<code>WalUsage</code>）の差分計算。</li>
+<li>**並列クエリの統計集約**: パラレルワーカーから報告される統計をリーダープロセスへ統合。</li>
+<li>**統計構造体の初期化**: 実行計画ノードごとの計測用メモリ領域の確保と初期化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>Instrumentation</code>: 計測データを保持する主要構造体。</li>
+<li><code>InstrStartNode</code> / <code>InstrStopNode</code>: ノード実行の開始・終了時に呼び出し、経過時間とリソース使用量を記録。</li>
+<li><code>InstrEndLoop</code>: 複数回実行されるノードの統計を累積し、次のループのためにリセット。</li>
+<li><code>InstrAggNode</code>: 複数の計測結果を親ノードや集約ノードへ統合。</li>
+<li><code>pgBufferUsage</code> / <code>pgWalUsage</code>: プロセス全体で累積されるグローバルな統計カウンタ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BufferUsageAccumDiff</code></li>
+<li><code>BufferUsageAdd</code></li>
+<li><code>InstrAccumParallelQuery</code></li>
+<li><code>InstrAlloc</code></li>
+<li><code>InstrEndParallelQuery</code></li>
+<li><code>InstrInit</code></li>
+<li><code>InstrStartParallelQuery</code></li>
+<li><code>InstrUpdateTupleCount</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InstrAlloc</code> でノード数に応じた <code>Instrumentation</code> 配列を確保。 2. **ノード実行**:</p>
+<ul>
+<li><code>InstrStartNode</code>: 現在のグローバル統計（<code>pgBufferUsage</code>等）をスナップショットとして保存。</li>
+<li><code>InstrStopNode</code>: 現在のグローバル統計との差分を計算し、ノードの累積値に加算。</li>
+<p>3. **集約**: <code>InstrEndLoop</code> で実行サイクルごとの値を合計へ反映。並列クエリの場合は <code>InstrAccumParallelQuery</code> を介してワーカーの統計をリーダーに加算。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>unistd.h</code>: システムコール用。</li>
+<li><code>executor/instrument.h</code>: <code>Instrumentation</code> 構造体および関連する型定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/instrument.h</code>: 統計収集のためのデータ構造定義。</li>
+<li><code>src/backend/executor/execMain.c</code>: 実行計画の実行開始・終了時に <code>instrument.c</code> の関数を呼び出すメインロジック。</li>
+<li><code>src/backend/executor/node*.c</code>: 各実行ノードが自身の処理中に <code>InstrStartNode</code> 等を呼び出す。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**累積の仕組み**: <code>BufferUsage</code> や <code>WalUsage</code> はグローバル変数として無限に増加し続けます。特定のノードの統計を得るには、開始時と終了時の差分（<code>AccumDiff</code>）を計算する必要があります。</li>
+<li>**並列クエリ**: 並列実行時は <code>InstrStartParallelQuery</code> で開始時の状態を保存し、終了時に差分を抽出する設計になっています。</li>
+<li>**精度**: <code>instr_time</code> を使用しており、プラットフォーム依存のタイマー精度に依存します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrAlloc.html" target="wiki-view"><code>InstrAlloc</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrInit.html" target="wiki-view"><code>InstrInit</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrStartNode.html" target="wiki-view"><code>InstrStartNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrStopNode.html" target="wiki-view"><code>InstrStopNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrUpdateTupleCount.html" target="wiki-view"><code>InstrUpdateTupleCount</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrEndLoop.html" target="wiki-view"><code>InstrEndLoop</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrAggNode.html" target="wiki-view"><code>InstrAggNode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrStartParallelQuery.html" target="wiki-view"><code>InstrStartParallelQuery</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrEndParallelQuery.html" target="wiki-view"><code>InstrEndParallelQuery</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__InstrAccumParallelQuery.html" target="wiki-view"><code>InstrAccumParallelQuery</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__BufferUsageAdd.html" target="wiki-view"><code>BufferUsageAdd</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__instrument_c__BufferUsageAccumDiff.html" target="wiki-view"><code>BufferUsageAccumDiff</code></a></li>
+</ul></body></html>

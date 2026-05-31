@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_node.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_node.c</h1>
+<h2>概要</h2>
+<p><code>parse_node.c</code> は、PostgreSQL のパーサーがクエリツリーを構築する際に使用する、基本的なノード生成および管理ルーチンを提供します。主に <code>ParseState</code> のライフサイクル管理、エラー位置の報告、および定数や添字（subscripting）ノードの変換を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムにおいて、このファイルは「パーサーの基盤」として機能します。他の <code>parse_*.c</code> ファイルが特定の SQL 構文（式、句、関数など）を解析する際、共通のコンテキストである <code>ParseState</code> を介して情報を共有し、エラー報告を行うためのユーティリティを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ParseState の管理**: 解析セッション全体で共有される状態（<code>ParseState</code>）の生成と破棄。</li>
+<li>**エラー位置の追跡**: SQL 解析中に発生したエラーに対し、ソーステキスト上の正確な位置を報告するためのコールバック機構の提供。</li>
+<li>**ノード変換**: 構文解析器から渡された未加工のノード（<code>A_Const</code> など）を、実行可能なクエリツリー用のノード（<code>Const</code> など）へ変換。</li>
+<li>**コンテナ操作の抽象化**: 配列やその他の添字可能な型に対する添字操作の変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ParseState</code>: 解析中のクエリの状態を保持する構造体。</li>
+<li><code>make_parsestate</code> / <code>free_parsestate</code>: <code>ParseState</code> のメモリ管理を行う関数。</li>
+<li><code>parser_errposition</code>: エラー発生時にソーステキスト内の位置を特定し、ユーザーに通知する関数。</li>
+<li><code>transformContainerSubscripts</code>: 配列等の添字操作を解析し、<code>SubscriptingRef</code> ノードを生成する関数。</li>
+<li><code>make_const</code>: 構文解析器からの定数値を、型情報を持つ <code>Const</code> ノードへ変換する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cancel_parser_errposition_callback</code></li>
+<li><code>pcb_error_callback</code></li>
+<li><code>setup_parser_errposition_callback</code></li>
+<li><code>transformContainerType</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>make_parsestate</code> が呼び出され、解析コンテキストが作成されます。 2.  **解析中**: 構文解析器が <code>transformContainerSubscripts</code> や <code>make_const</code> を呼び出し、未加工の構文要素を意味のあるノードへ変換します。 3.  **エラー処理**: 外部関数でエラーが発生した場合、<code>setup_parser_errposition_callback</code> で登録されたコールバックが <code>pcb_error_callback</code> を経由して <code>parser_errposition</code> を呼び出し、エラー位置を特定します。 4.  **終了**: 解析完了後、<code>free_parsestate</code> がリソースを解放し、ターゲットリレーションのロックを解除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>makefuncs.h</code>, <code>miscnodes.h</code>, <code>nodeFuncs.h</code>, <code>subscripting.h</code>（ノード操作の基盤）。</li>
+<li><code>catalog/pg_type.h</code>: 型 OID の定義。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>（型情報の取得）、<code>builtins.h</code>（型変換関数）。</li>
+<li><code>parser/parse_node.h</code>: <code>ParseState</code> 構造体定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/subscripting.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/parser/parse_node.h</code>: <code>ParseState</code> の定義と <code>ParseExprKind</code> 列挙型。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 式の変換ロジック。</li>
+<li><code>src/backend/parser/parse_type.c</code>: 型解決のロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>ParseState</code> は再帰的なクエリ（サブクエリなど）を扱うために <code>parentParseState</code> を持つことができます。</li>
+<li><code>parser_errposition</code> は、バイトオフセットを文字インデックスに変換するため、マルチバイト文字を考慮した <code>pg_mbstrlen_with_len</code> を使用しています。</li>
+<li><code>make_const</code> は、型が明示されていない定数（<code>UNKNOWN</code> 型）を扱う際の重要な入り口です。将来的な型解決のために、まずは <code>UNKNOWN</code> としてマークされます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__make_parsestate.html" target="wiki-view"><code>make_parsestate</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__free_parsestate.html" target="wiki-view"><code>free_parsestate</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__parser_errposition.html" target="wiki-view"><code>parser_errposition</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__setup_parser_errposition_callback.html" target="wiki-view"><code>setup_parser_errposition_callback</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__cancel_parser_errposition_callback.html" target="wiki-view"><code>cancel_parser_errposition_callback</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__pcb_error_callback.html" target="wiki-view"><code>pcb_error_callback</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__transformContainerType.html" target="wiki-view"><code>transformContainerType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__transformContainerSubscripts.html" target="wiki-view"><code>transformContainerSubscripts</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_node_c__make_const.html" target="wiki-view"><code>make_const</code></a></li>
+</ul></body></html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/common/tidstore.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/common/tidstore.c</h1>
+<h2>概要</h2>
+<p><code>tidstore.c</code> は、PostgreSQL において <code>ItemPointerData</code> (TID) の集合をメモリ効率よく保持・検索するためのデータ構造 <code>TidStore</code> を提供します。主に VACUUM 処理などで、特定のブロックに含まれるタプルのオフセットを追跡するために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/common</code> モジュールの一部として、インデックスやヒープ処理で必要となる汎用的なデータ管理機能を提供します。特に、基盤となる <code>lib/radixtree.h</code> を利用して、TID 情報を効率的に格納するラッパーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**TID 集合の管理**: <code>BlockNumber</code> をキーとし、そのブロック内のオフセットをビットマップまたは配列形式で保持する。</li>
+<li>**メモリ管理**: ローカルメモリ（<code>MemoryContext</code>）および共有メモリ（<code>DSA</code>）の両方に対応したストレージの作成・破棄。</li>
+<li>**並行アクセス制御**: 共有メモリ使用時のロック管理。</li>
+<li>**イテレーション**: 格納された全 TID への順次アクセス機能の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TidStore</code>: TID 集合を保持するメイン構造体。ローカルまたは共有メモリ上のラディックツリーを抽象化する。</li>
+<li><code>BlocktableEntry</code>: 各ブロックのオフセット情報を保持する構造体。少数のオフセットはヘッダーに直接格納し、多数の場合はビットマップを使用する。</li>
+<li><code>TidStoreCreateLocal</code> / <code>TidStoreCreateShared</code>: ストレージの初期化関数。</li>
+<li><code>TidStoreSetBlockOffsets</code>: 特定ブロックのオフセット情報を登録する。</li>
+<li><code>TidStoreIsMember</code>: 指定した TID が存在するかを判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>TidStoreAttach</code></li>
+<li><code>TidStoreDestroy</code></li>
+<li><code>TidStoreDetach</code></li>
+<li><code>TidStoreIter</code></li>
+<li><code>TidStoreLockExclusive</code></li>
+<li><code>TidStoreLockShare</code></li>
+<li><code>TidStoreUnlock</code></li>
+<li><code>uint8</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>TidStoreCreateLocal</code> または <code>TidStoreCreateShared</code> でストレージを確保。共有メモリの場合は <code>dsa_area</code> を使用。 2. **登録**: <code>TidStoreSetBlockOffsets</code> が呼び出されると、オフセット数に応じて <code>BlocktableEntry</code> を構築し、ラディックツリーに挿入する。 3. **検索**: <code>TidStoreIsMember</code> がブロック番号でツリーを検索し、該当する <code>BlocktableEntry</code> のビットマップまたはヘッダー配列を走査して存在を確認する。 4. **反復**: <code>TidStoreBeginIterate</code> でイテレータを作成し、<code>TidStoreIterateNext</code> でツリー内の全ブロックを順次取得する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tidstore.h</code>: 公開インターフェース定義。</li>
+<li><code>lib/radixtree.h</code>: 基盤となるラディックツリー実装。</li>
+<li><code>utils/dsa.h</code>: 共有メモリ領域の管理。</li>
+<li><code>storage/lwlock.h</code>: 共有メモリ使用時のロック制御。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/bitmapset.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/tidstore.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/lib/radixtree.c</code>: <code>TidStore</code> が内部で使用するラディックツリーの実装。</li>
+<li><code>src/backend/access/heap/vacuumlazy.c</code>: <code>TidStore</code> の主要な利用例（VACUUM 処理）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**最適化**: <code>TidStoreSetBlockOffsets</code> は VACUUM のヒープスキャン向けに設計されており、オフセットは昇順である必要があります。また、同一ブロックに対する再登録は上書きとなります。</li>
+<li>**メモリ効率**: <code>BlocktableEntry</code> は、オフセットが少ない場合はヘッダー領域に直接格納することで、ビットマップのオーバーヘッドを回避する工夫がなされています。</li>
+<li>**共有メモリ**: 共有メモリ版を使用する場合、呼び出し側で適切なロック（<code>TidStoreLockExclusive</code> 等）を管理する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__BlocktableEntry.html" target="wiki-view"><code>BlocktableEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__uint8.html" target="wiki-view"><code>uint8</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStore.html" target="wiki-view"><code>TidStore</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreIter.html" target="wiki-view"><code>TidStoreIter</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreCreateLocal.html" target="wiki-view"><code>TidStoreCreateLocal</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreCreateShared.html" target="wiki-view"><code>TidStoreCreateShared</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreAttach.html" target="wiki-view"><code>TidStoreAttach</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreDetach.html" target="wiki-view"><code>TidStoreDetach</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreLockExclusive.html" target="wiki-view"><code>TidStoreLockExclusive</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreLockShare.html" target="wiki-view"><code>TidStoreLockShare</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreUnlock.html" target="wiki-view"><code>TidStoreUnlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__common__tidstore_c__TidStoreDestroy.html" target="wiki-view"><code>TidStoreDestroy</code></a></li>
+</ul></body></html>

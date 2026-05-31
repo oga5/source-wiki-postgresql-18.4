@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_surgery/heap_surgery.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_surgery/heap_surgery.c</h1>
+<h2>概要</h2>
+<p><code>heap_surgery.c</code> は、破損したヒープテーブルに対して直接的な修正を行うための低レベルな関数群を提供します。主に、整合性が失われたタプルを強制的に削除（Kill）したり、フリーズ（Freeze）状態に強制変更したりするために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pg_surgery</code> モジュールの中心的な実装ファイルです。SQL インターフェース（<code>heap_force_kill</code>, <code>heap_force_freeze</code>）と、それらの処理を共通化するバックエンドロジックを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**強制的な状態変更**: 指定された TID（タプル識別子）リストに基づき、ヒープページ内のタプル状態を直接書き換える。</li>
+<li>**整合性チェック**: 操作対象がヒープテーブルであること、および実行者が所有者またはスーパーユーザーであることを検証する。</li>
+<li>**WAL ログの生成**: ページ変更を永続化するために、必要な WAL ログ（<code>log_newpage_buffer</code>）を生成する。</li>
+<li>**可視性マップの更新**: <code>KILL</code> 操作時に、必要に応じて可視性マップ（VM）のビットをクリアする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>HeapTupleForceOption</code>: 実行する操作の種類（<code>HEAP_FORCE_KILL</code> または <code>HEAP_FORCE_FREEZE</code>）を定義する列挙型。</li>
+<li><code>heap_force_kill</code>: SQL から呼び出される、タプルを強制的に Dead にする関数。</li>
+<li><code>heap_force_freeze</code>: SQL から呼び出される、タプルを強制的に Frozen 状態にする関数。</li>
+<li><code>heap_force_common</code>: 上記2関数の実処理を行う共通関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>find_tids_one_page</code></li>
+<li><code>sanity_check_tid_array</code></li>
+<li><code>tidcmp</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力検証**: TID 配列をソートし、ページ単位で処理できるように準備する。 2. **ページ走査**: <code>find_tids_one_page</code> を使用して、同じブロック内の TID をグループ化する。 3. **バッファロック**: 対象ブロックを <code>ReadBuffer</code> で読み込み、<code>LockBufferForCleanup</code> で排他制御を行う。 4. **状態変更**:</p>
+<ul>
+<li><code>KILL</code>: <code>ItemIdSetDead</code> を使用してタプルを無効化。</li>
+<li><code>FREEZE</code>: タプルのヘッダー情報を直接書き換え、<code>FrozenTransactionId</code> を設定。</li>
+<p>5. **コミット**: 変更があれば <code>MarkBufferDirty</code> を呼び出し、WAL に記録してロックを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/bufmgr.h</code>: バッファ管理とロック操作。</li>
+<li><code>access/visibilitymap.h</code>: 可視性マップの更新とピン留め。</li>
+<li><code>access/xloginsert.h</code>: WAL ログの生成。</li>
+<li><code>utils/rel.h</code>, <code>access/relation.h</code>: リレーション情報の取得とロック。</li>
+<li><code>utils/array.h</code>: SQL から渡された TID 配列の解析。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/acl.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/heap/heapam.c</code>: 通常のヒープ操作の標準的な実装。</li>
+<li><code>src/backend/storage/page/bufpage.c</code>: ページレベルの操作（<code>PageGetItemId</code> 等）。</li>
+<li><code>src/include/storage/itemptr.h</code>: <code>ItemPointer</code> の操作と比較ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**危険性**: 本モジュールの関数は、PostgreSQL の整合性チェックをバイパスしてデータを直接書き換えます。誤った使用はデータベースの深刻な破損を招くため、緊急時の最終手段としてのみ使用してください。</li>
+<li>**リカバリ中の制限**: <code>RecoveryInProgress()</code> が真の場合、これらの関数は実行できません。</li>
+<li>**ロック**: 操作対象のリレーションに対して <code>RowExclusiveLock</code> を取得します。</li>
+<li>**WAL**: 変更は WAL に記録されるため、PITR（ポイントインタイムリカバリ）やレプリケーションには反映されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__HeapTupleForceOption.html" target="wiki-view"><code>HeapTupleForceOption</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__heap_force_kill.html" target="wiki-view"><code>heap_force_kill</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__heap_force_freeze.html" target="wiki-view"><code>heap_force_freeze</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__heap_force_common.html" target="wiki-view"><code>heap_force_common</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__tidcmp.html" target="wiki-view"><code>tidcmp</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__sanity_check_tid_array.html" target="wiki-view"><code>sanity_check_tid_array</code></a></li>
+<li><a href="../../symbols/contrib__pg_surgery__heap_surgery_c__find_tids_one_page.html" target="wiki-view"><code>find_tids_one_page</code></a></li>
+</ul></body></html>

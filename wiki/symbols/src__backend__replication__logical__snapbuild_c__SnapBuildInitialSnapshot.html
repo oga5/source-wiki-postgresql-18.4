@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__snapbuild_c__SnapBuildInitialSnapshot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SnapBuildInitialSnapshot</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/replication/logical/snapbuild.c:439</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理デコーディングにおいて、カタログ読み取り用の初期MVCCスナップショットを構築する。既存の <code>SnapBuild</code> 状態から、進行中のトランザクションを特定して標準的なスナップショット形式へ変換する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Snapshot SnapBuildInitialSnapshot(SnapBuild *builder)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>SnapBuild *builder</code>（スナップショット構築状態を保持する構造体）</li>
+<li>**出力**: <code>Snapshot</code>（構築された <code>SNAPSHOT_MVCC</code> 型のスナップショット）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>トランザクション分離レベルが <code>XACT_REPEATABLE_READ</code> であること。</li>
+<li><code>builder-&gt;building_full_snapshot</code> が真であること。</li>
+<li><code>builder-&gt;state</code> が <code>SNAPBUILD_CONSISTENT</code> であること。</li>
+<li><code>builder-&gt;committed.includes_all_transactions</code> が真であること（すべてのトランザクションが監視対象であること）。</li>
+<li>既存のスナップショットが登録・アクティブでないこと。</li>
+<li><code>MyProc-&gt;xmin</code> が無効であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検証**: 前提条件を満たしているか確認し、満たさない場合はエラーを投げる。 2. **スナップショット生成**: <code>SnapBuildBuildSnapshot</code> を呼び出し、カタログ用スナップショットを取得する。 3. **安全性の確認**: <code>ProcArrayLock</code> を取得し、<code>GetOldestSafeDecodingTransactionId</code> を用いて、現在のスナップショットの <code>xmin</code> が安全な範囲内にあるか検証する。 4. **ProcArrayへの反映**: <code>MyProc-&gt;xmin</code> にスナップショットの <code>xmin</code> を設定する。 5. **変換処理**: <code>SnapBuild</code> が保持する「コミット済みリスト」を反転させ、<code>xmin</code> から <code>xmax</code> までの範囲でコミットされていないトランザクションを「実行中」として <code>newxip</code> 配列に格納する。 6. **完了**: スナップショットの型を <code>SNAPSHOT_MVCC</code> に設定し、構築した配列を割り当てて返却する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/logical/snapbuild.c</code> (内部呼び出し)</li>
+<li><code>src/backend/replication/walsender.c:1330</code></li>
+<li>**呼び出し先**:</li>
+<li><code>SnapBuildBuildSnapshot</code></li>
+<li><code>GetOldestSafeDecodingTransactionId</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>palloc</code></li>
+<li><code>bsearch</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SnapBuild</code>: スナップショット構築のメイン状態構造体。</li>
+<li><code>Snapshot</code>: PostgreSQLのMVCCスナップショット構造体。</li>
+<li><code>MyProc</code>: 現在のプロセスの制御構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: 既存のスナップショットが存在する場合、一貫性状態に達していない場合、または監視対象外のトランザクションがある場合はエラーとなる。</li>
+<li>**メモリ制限**: <code>GetMaxSnapshotXidCount()</code> を超えるトランザクションが存在する場合、<code>initial slot snapshot too large</code> エラーが発生する。</li>
+<li>**安全性の欠如**: <code>safeXid</code> がスナップショットの <code>xmin</code> より後方にある場合、データ整合性保護のためエラーとなる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、論理デコーディングの開始時に一度だけ実行される高コストな処理である。</li>
+<li><code>snapbuild.c</code> はコミット済みトランザクションを保持する性質上、標準的なスナップショット（実行中トランザクションを保持）への変換には <code>bsearch</code> を用いた反転処理が必要となる。</li>
+</ul></body></html>

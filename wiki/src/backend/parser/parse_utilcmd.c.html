@@ -1,0 +1,137 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_utilcmd.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_utilcmd.c</h1>
+<h2>概要</h2>
+<p><code>parse_utilcmd.c</code> は、<code>CREATE TABLE</code>、<code>ALTER TABLE</code>、<code>CREATE INDEX</code>、<code>CREATE STATISTICS</code>、<code>CREATE RULE</code> などの DDL（データ定義言語）ユーティリティコマンドに対する意味解析（Parse Analysis）を担当します。</p>
+<p>かつては <code>analyze.c</code> で処理されていましたが、クエリツリーのキャッシュやロック管理の安全性、および実行時の状態依存性を考慮し、現在は各コマンドの実行開始時に呼び出される設計となっています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> モジュールにおいて、DDL 固有の複雑な変換ロジックを分離したサブシステムです。生の解析ツリー（Raw Parse Tree）を、システムカタログを参照して型解決や制約の展開を行った「実行可能なユーティリティコマンドのリスト」へ変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**DDL 変換**: <code>CREATE TABLE</code> 等の構文を、実行時に必要な複数のコマンド（<code>DefineRelation</code>, <code>DefineIndex</code> 等）のシーケンスに分解する。</li>
+<li>**制約の統合**: 列定義に散らばる制約（CHECK, NOT NULL, FK, UNIQUE/PK）を収集・正規化し、適切な順序で実行されるよう整理する。</li>
+<li>**LIKE 句の展開**: <code>CREATE TABLE ... (LIKE ...)</code> の解析。列定義のコピーや、インデックス・統計情報のクローン生成を行う。</li>
+<li>**シリアル/ID 列の管理**: <code>SERIAL</code> や <code>IDENTITY</code> 列に関連するシーケンスの自動生成と所有権の設定。</li>
+<li>**パーティション解析**: パーティション境界（Partition Bound）の型変換と検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
+<ul>
+<li><code>CreateStmtContext</code>: <code>CREATE TABLE</code> 解析中に状態を保持する構造体。列定義、制約リスト、実行順序（before/after）を管理する。</li>
+<li><code>CreateSchemaStmtContext</code>: <code>CREATE SCHEMA</code> 内の要素を分類・整理するための構造体。</li>
+</ul>
+<h3>主要な変換関数</h3>
+<ul>
+<li><code>transformCreateStmt</code>: <code>CREATE TABLE</code> のメインエントリー。列と制約を分離し、実行順序を決定する。</li>
+<li><code>transformAlterTableStmt</code>: <code>ALTER TABLE</code> の各サブコマンドを解析し、必要な追加コマンドを生成する。</li>
+<li><code>transformIndexStmt</code> / <code>transformStatsStmt</code>: インデックスや統計情報の式を解析し、プランナが扱える形式に変換する。</li>
+<li><code>transformRuleStmt</code>: ルール定義の解析と、<code>OLD</code>/<code>NEW</code> 擬似リレーションの解決。</li>
+</ul>
+<h3>補助・クローン生成</h3>
+<ul>
+<li><code>generateSerialExtraStmts</code>: シリアル列のためのシーケンス生成と所有権設定。</li>
+<li><code>generateClonedIndexStmt</code>: 既存インデックスから新しいインデックス定義を生成する。</li>
+<li><code>transformColumnDefinition</code>: 列定義の型解決と制約の抽出。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateSchemaStmtContext</code></li>
+<li><code>CreateStmtContext</code></li>
+<li><code>expandTableLikeClause</code></li>
+<li><code>generateSerialExtraStmts</code></li>
+<li><code>get_collation</code></li>
+<li><code>get_opclass</code></li>
+<li><code>transformColumnDefinition</code></li>
+<li><code>transformCreateSchemaStmtElements</code></li>
+<li><code>transformCreateStmt</code></li>
+<li><code>transformOfType</code></li>
+<li><code>transformTableConstraint</code></li>
+<li><code>transformTableLikeClause</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ParseState</code> を作成し、ターゲットとなるリレーションのロックと名前空間の検証を行う。 2. **要素の分離**: <code>transformCreateStmt</code> が <code>tableElts</code> を走査し、列定義と制約を <code>CreateStmtContext</code> に蓄積する。 3. **制約の解決**:</p>
+<ul>
+<li><code>transformIndexConstraints</code>: インデックスを生成する制約（PK, UNIQUE等）を処理。</li>
+<li><code>transformFKConstraints</code>: 外部キー制約を処理。</li>
+<li><code>transformCheckConstraints</code>: CHECK 制約を処理。</li>
+<p>4. **順序付け**: <code>blist</code>（実行前）、<code>stmt</code>（本体）、<code>alist</code>（実行後）の順にコマンドリストを連結して返す。 5. **LIKE 展開**: <code>expandTableLikeClause</code> が、テーブル作成後に確定する列番号を必要とするインデックスや統計情報のクローン生成を遅延実行する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: システムカタログ（<code>pg_type</code>, <code>pg_index</code>, <code>pg_constraint</code> 等）の参照。</li>
+<li><code>parser/</code>: <code>parse_expr.c</code>, <code>parse_coerce.c</code> 等の式解析・型変換機能。</li>
+<li><code>commands/</code>: <code>tablecmds.h</code>, <code>sequence.h</code> 等のユーティリティコマンド実行定義。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>（システムキャッシュ）、<code>rel.h</code>（リレーション管理）。</li>
+<li><code>access/amapi.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/toast_compression.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>parser/parser.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/tablecmds.c</code>: 本ファイルで生成されたコマンドリストを実際に実行する実体。</li>
+<li><code>src/backend/parser/analyze.c</code>: DML（SELECT/INSERT等）の解析を行うメインドライバ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>CreateStmtContext</code> 内のリストは <code>CurrentMemoryContext</code> 上で構築されます。</li>
+<li>**実行順序**: <code>CREATE TABLE</code> では、制約の依存関係（例: PK インデックス作成後に FK を作成する）を維持するため、<code>blist</code> と <code>alist</code> を用いた順序制御が極めて重要です。</li>
+<li>**制約の重複**: <code>transformIndexConstraints</code> は、ユーザーが指定した重複する制約（例: <code>UNIQUE PRIMARY KEY</code>）をマージするロジックを含んでいます。</li>
+<li>**未実装/浅い部分**: <code>CREATE SCHEMA</code> の解析ロジックは、オブジェクト間の相互参照（forward references）の解決において一部簡略化されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__CreateStmtContext.html" target="wiki-view"><code>CreateStmtContext</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__CreateSchemaStmtContext.html" target="wiki-view"><code>CreateSchemaStmtContext</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformCreateStmt.html" target="wiki-view"><code>transformCreateStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__generateSerialExtraStmts.html" target="wiki-view"><code>generateSerialExtraStmts</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformColumnDefinition.html" target="wiki-view"><code>transformColumnDefinition</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformTableConstraint.html" target="wiki-view"><code>transformTableConstraint</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformTableLikeClause.html" target="wiki-view"><code>transformTableLikeClause</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__expandTableLikeClause.html" target="wiki-view"><code>expandTableLikeClause</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformOfType.html" target="wiki-view"><code>transformOfType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__get_collation.html" target="wiki-view"><code>get_collation</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__get_opclass.html" target="wiki-view"><code>get_opclass</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_utilcmd_c__transformCreateSchemaStmtElements.html" target="wiki-view"><code>transformCreateSchemaStmtElements</code></a></li>
+</ul></body></html>

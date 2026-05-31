@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spgdoinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgdoinsert.c</h1>
+<h2>概要</h2>
+<p>SP-GiST（Space-Partitioned GiST）インデックスへのデータ挿入アルゴリズムを実装するコアファイルです。ツリーの探索、ノードの分割（PickSplit）、およびリーフタプルの挿入・移動といった、インデックス構造を維持するための複雑な操作を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/spgist</code> モジュールにおいて、インデックスの更新処理の心臓部です。<code>spginsert.c</code> が外部インターフェースを提供し、このファイルが実際のツリー構造の変更（ページ分割や再配置）を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**挿入ロジックの実行**: <code>spgdoinsert</code> 関数を起点に、適切なリーフページへの到達と挿入を試行する。</li>
+<li>**ページ管理**: ページ容量不足時の分割（<code>doPickSplit</code>）や、リーフチェーンの移動（<code>moveLeafs</code>）を制御する。</li>
+<li>**WAL 記録**: インデックスの整合性を保つため、構造変更時の WAL ログ生成を管理する。</li>
+<li>**ノード操作**: インナータプルのノード追加（<code>spgAddNodeAction</code>）や分割（<code>spgSplitNodeAction</code>）を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>spgdoinsert</code>: 挿入のメインループ。ツリーを下降し、必要に応じて分割やノード追加を繰り返す。</li>
+<li><code>SPPageDesc</code>: 挿入中のページ、タプル、ノード情報を保持する一時的な構造体。</li>
+<li><code>doPickSplit</code>: ページ容量が不足した際に、リーフタプルを再分配してインナータプルを生成する。</li>
+<li><code>moveLeafs</code>: 分割するほどではないが、ページ容量が足りない場合にリーフチェーンを別のページへ移動させる。</li>
+<li><code>spgPageIndexMultiDelete</code>: ページ内のタプルを削除し、リダイレクトやプレースホルダーで置き換える。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>addLeafTuple</code></li>
+<li><code>addNode</code></li>
+<li><code>checkAllTheSame</code></li>
+<li><code>checkSplitConditions</code></li>
+<li><code>cmpOffsetNumbers</code></li>
+<li><code>saveNodeLink</code></li>
+<li><code>setRedirectionTuple</code></li>
+<li><code>spgUpdateNodeLink</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>spgdoinsert</code> が挿入対象のリーフタプルを準備し、ルートページから探索を開始する。 2. **探索**: <code>spgChoose</code> プロシージャを呼び出し、インナータプルのどのノードへ進むかを決定する。 3. **挿入/分割**:</p>
+<ul>
+<li>ページに空きがあれば <code>addLeafTuple</code> で挿入。</li>
+<li>空きがなければ <code>doPickSplit</code> または <code>moveLeafs</code> を実行し、ツリー構造を更新。</li>
+<p>4. **再帰/ループ**: 構造変更が発生した場合、新しいインナータプルに対して再度探索を行う。 5. **完了**: 最終的にリーフページへ挿入が完了するまでループを継続する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/spgist_private.h</code>: SP-GiST 内部構造体定義。</li>
+<li><code>access/spgxlog.h</code>: WAL ログの構造定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とロック制御。</li>
+<li><code>access/xloginsert.h</code>: WAL 挿入インターフェース。</li>
+<li><code>access/genam.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>spgproc.c</code>: ユーザー定義の <code>choose</code> や <code>picksplit</code> 関数を呼び出すための基盤。</li>
+<li><code>spgutils.c</code>: タプルの作成やページ初期化などのユーティリティ関数群。</li>
+<li><code>spgxlog.c</code>: WAL リプレイ時の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**デッドロック回避**: ページを下降する際、ロック取得順序に注意が必要です。<code>ConditionalLockBuffer</code> を使用してデッドロックを回避しており、ロック取得に失敗した場合は挿入を中断して再試行する設計になっています。</li>
+<li>**WAL 整合性**: 構造変更は <code>START_CRIT_SECTION()</code> で囲まれており、エラー発生時にはインデックスが壊れないよう細心の注意が払われています。</li>
+<li>**無限ループ**: 壊れた opclass が <code>picksplit</code> で進捗のない分割を繰り返す可能性があるため、<code>numNoProgressCycles</code> によるガードが実装されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__SPPageDesc.html" target="wiki-view"><code>SPPageDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__spgUpdateNodeLink.html" target="wiki-view"><code>spgUpdateNodeLink</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__addNode.html" target="wiki-view"><code>addNode</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__cmpOffsetNumbers.html" target="wiki-view"><code>cmpOffsetNumbers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__spgPageIndexMultiDelete.html" target="wiki-view"><code>spgPageIndexMultiDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__saveNodeLink.html" target="wiki-view"><code>saveNodeLink</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__addLeafTuple.html" target="wiki-view"><code>addLeafTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__checkSplitConditions.html" target="wiki-view"><code>checkSplitConditions</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__moveLeafs.html" target="wiki-view"><code>moveLeafs</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__setRedirectionTuple.html" target="wiki-view"><code>setRedirectionTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__checkAllTheSame.html" target="wiki-view"><code>checkAllTheSame</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__spgist__spgdoinsert_c__doPickSplit.html" target="wiki-view"><code>doPickSplit</code></a></li>
+</ul></body></html>

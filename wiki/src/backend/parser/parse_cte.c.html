@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_cte.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_cte.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのパーサーにおいて、<code>WITH</code> 句（共通テーブル式: CTE）の構文解析および意味解析を担当するモジュールです。再帰的CTEの依存関係解決、順序付け、および再帰の妥当性チェックを主に行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> の一部として、クエリ解析の初期段階で <code>WITH</code> 句を処理します。<code>analyze.c</code> から呼び出され、<code>WITH</code> 句内の各クエリを <code>Query</code> ノードへ変換し、名前空間（<code>p_ctenamespace</code>）を構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**CTEの変換**: <code>transformWithClause</code> を通じて、<code>WITH</code> 句内の各ステートメントを解析し、<code>Query</code> ノードへ変換する。</li>
+<li>**依存関係の解決**: 再帰的CTEにおいて、前方参照を排除するためのトポロジカルソートを行う。</li>
+<li>**再帰の妥当性検証**: 再帰的CTEがSQL標準に従った構造（非再帰項 <code>UNION</code> 再帰項）であるか、および不正な位置に再帰参照が含まれていないかを検証する。</li>
+<li>**メタデータ管理**: CTEの出力列の型、照合順序、名前を確定させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>transformWithClause</code>: <code>WITH</code> 句解析のメインエントリーポイント。</li>
+<li><code>CteState</code>: 解析中に依存関係や再帰の検証状態を保持する構造体。</li>
+<li><code>RecursionContext</code>: 再帰参照が許可される場所と禁止される場所を区別するための列挙型。</li>
+<li><code>analyzeCTE</code>: 個別のCTEを解析し、<code>Query</code> ノードへ変換する関数。</li>
+<li><code>TopologicalSort</code>: 再帰的CTEの処理順序を決定する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CteItem</code></li>
+<li><code>WalkInnerWith</code></li>
+<li><code>analyzeCTETargetList</code></li>
+<li><code>checkWellFormedRecursion</code></li>
+<li><code>checkWellFormedRecursionWalker</code></li>
+<li><code>makeDependencyGraph</code></li>
+<li><code>makeDependencyGraphWalker</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>transformWithClause</code> が <code>WITH</code> 句内の重複名をチェックし、<code>CteState</code> を初期化します。 2. **依存グラフ構築**: <code>makeDependencyGraph</code> がツリーウォーカーを用いて各CTE間の依存関係を特定します。 3. **ソート**: <code>TopologicalSort</code> が依存関係に基づき、解析順序を決定します。 4. **検証**: <code>checkWellFormedRecursion</code> が再帰的CTEの構造が正しいか、再帰参照が許可された位置にあるかを検証します。 5. **解析**: 決定された順序に従い、<code>analyzeCTE</code> が各CTEを順次解析し、<code>p_ctenamespace</code> に追加します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/analyze.h</code>: <code>parse_sub_analyze</code> 等の解析関数。</li>
+<li><code>parser/parse_expr.h</code>, <code>parser/parse_coerce.h</code>: 式の型変換や照合順序の解決。</li>
+<li><code>utils/lsyscache.h</code>, <code>utils/typcache.h</code>: 型情報の取得とキャッシュ。</li>
+<li><code>nodes/nodeFuncs.h</code>: ツリーウォーカー（<code>raw_expression_tree_walker</code>）の利用。</li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_cte.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/parser/parse_cte.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/parser/analyze.c</code>: クエリ解析全体の制御フロー。</li>
+<li><code>src/backend/parser/parse_clause.c</code>: <code>FROM</code> 句や <code>WHERE</code> 句など、他のクエリ節の解析。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、再帰的CTEの「非再帰項」と「再帰項」を厳密に区別して処理します。</li>
+<li><code>makeDependencyGraphWalker</code> は、ネストされた <code>WITH</code> 句（<code>innerwiths</code>）を考慮して名前の可視性を正しく追跡します。</li>
+<li>再帰的CTEの検証ロジックは複雑です。特に <code>checkWellFormedRecursionWalker</code> は、<code>JOIN</code> や <code>SubLink</code> 内での再帰参照の可否を <code>RecursionContext</code> を切り替えながら再帰的にチェックするため、読み解く際は状態遷移に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__RecursionContext.html" target="wiki-view"><code>RecursionContext</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__CteItem.html" target="wiki-view"><code>CteItem</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__CteState.html" target="wiki-view"><code>CteState</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__transformWithClause.html" target="wiki-view"><code>transformWithClause</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__analyzeCTE.html" target="wiki-view"><code>analyzeCTE</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__analyzeCTETargetList.html" target="wiki-view"><code>analyzeCTETargetList</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__makeDependencyGraph.html" target="wiki-view"><code>makeDependencyGraph</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__makeDependencyGraphWalker.html" target="wiki-view"><code>makeDependencyGraphWalker</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__WalkInnerWith.html" target="wiki-view"><code>WalkInnerWith</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__TopologicalSort.html" target="wiki-view"><code>TopologicalSort</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__checkWellFormedRecursion.html" target="wiki-view"><code>checkWellFormedRecursion</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_cte_c__checkWellFormedRecursionWalker.html" target="wiki-view"><code>checkWellFormedRecursionWalker</code></a></li>
+</ul></body></html>

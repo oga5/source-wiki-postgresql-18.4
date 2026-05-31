@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/planner.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/planner.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のクエリ最適化プロセスにおけるメインエントリーポイントを担うファイルです。SQL パーサーが生成した <code>Query</code> ツリーを受け取り、実行エンジンが処理可能な <code>PlannedStmt</code> へ変換するまでのオーケストレーションを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムの中核であり、プランニングの各フェーズ（前処理、結合順序決定、物理プラン変換、最終化）を呼び出す司令塔です。</p>
+<h2>責務</h2>
+<ul>
+<li>**プランニングの統括**: <code>planner()</code> および <code>standard_planner()</code> を通じて、クエリのプランニング全体を制御する。</li>
+<li>**サブクエリの再帰的処理**: <code>subquery_planner()</code> を用いて、クエリツリー内のサブクエリを再帰的にプランニングする。</li>
+<li>**式の前処理**: <code>preprocess_expression()</code> を通じて、定数畳み込み、演算子解決、サブリンクの変換、相関変数のパラメータ化を行う。</li>
+<li>**グループ化・集約の最適化**: <code>grouping_planner()</code> を中心に、<code>GROUP BY</code>、<code>HAVING</code>、<code>WINDOW</code> 関数、<code>DISTINCT</code> などの物理パス生成を管理する。</li>
+<li>**プランの最終化**: <code>set_plan_references()</code> を呼び出し、変数参照の解決やパラメータの確定を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>エントリーポイント</h3>
+<ul>
+<li><code>planner()</code>: プランニングの最上位関数。<code>planner_hook</code> をサポートし、プラグインによる介入を可能にする。</li>
+<li><code>standard_planner()</code>: プランニングの標準的な実装。グローバル状態の初期化から最終的な <code>PlannedStmt</code> 生成までを行う。</li>
+<li><code>subquery_planner()</code>: 特定の <code>Query</code> オブジェクトに対するプランニングのメインロジック。</li>
+</ul>
+<h3>グループ化・集約関連</h3>
+<ul>
+<li><code>grouping_planner()</code>: <code>GROUP BY</code>、<code>HAVING</code>、<code>WINDOW</code>、<code>DISTINCT</code> などの処理を物理パスに変換する。</li>
+<li><code>create_grouping_paths()</code>: グループ化および集約のためのパスを生成する。</li>
+<li><code>create_window_paths()</code>: ウィンドウ関数の評価パスを生成する。</li>
+<li><code>create_distinct_paths()</code>: <code>DISTINCT</code> 処理のためのパスを生成する。</li>
+</ul>
+<h3>式処理・最適化</h3>
+<ul>
+<li><code>preprocess_expression()</code>: 式ツリーに対して定数畳み込みやサブリンク変換を適用する。</li>
+<li><code>find_having_collation_conflicts()</code>: <code>HAVING</code> 句が <code>WHERE</code> 句へ移動可能かを照合順序の観点から判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>WindowClauseSortData</code></li>
+<li><code>find_having_collation_conflicts</code></li>
+<li><code>grouping_planner</code></li>
+<li><code>grouping_sets_data</code></li>
+<li><code>having_collation_conflict_walker</code></li>
+<li><code>having_collation_ctx</code></li>
+<li><code>preprocess_expression</code></li>
+<li><code>preprocess_phv_expression</code></li>
+<li><code>preprocess_qual_conditions</code></li>
+<li><code>standard_planner</code></li>
+<li><code>standard_qp_extra</code></li>
+<li><code>subquery_planner</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>standard_planner</code> が <code>PlannerGlobal</code> を作成し、並列クエリの可否を判定する。 2. **再帰的プランニング**: <code>subquery_planner</code> がクエリツリーを走査し、<code>pull_up_subqueries</code> や <code>pull_up_sublinks</code> で論理的な最適化を行う。 3. **式変換**: <code>preprocess_expression</code> により、式が実行可能な形式に正規化される。 4. **パス生成**: <code>grouping_planner</code> が <code>query_planner</code> を呼び出し、スキャン/結合のパスを生成した後、グループ化、ウィンドウ関数、ソート、<code>DISTINCT</code> の順でパスを積み上げる。 5. **最終化**: <code>set_plan_references</code> がプランノード内の変数参照を物理的なインデックスに書き換え、<code>PlannedStmt</code> を完成させる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/</code>: <code>pathnode.h</code>, <code>paths.h</code>, <code>planmain.h</code> 等のパス生成・コスト計算用ヘッダー。</li>
+<li><code>nodes/</code>: <code>makefuncs.h</code>, <code>nodeFuncs.h</code> 等のノード操作ユーティリティ。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_aggregate</code> 等）へのアクセス。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code> 等のキャッシュアクセス。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>lib/bipartite_match.h</code></li>
+<li><code>lib/knapsack.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/print.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paramassign.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/subselect.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/backend_status.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/plan/planmain.c</code>: 結合プランニングの核心。</li>
+<li><code>src/backend/optimizer/plan/createplan.c</code>: <code>Path</code> から <code>Plan</code> への変換。</li>
+<li><code>src/backend/optimizer/plan/setrefs.c</code>: 最終的な変数参照解決。</li>
+<li><code>src/backend/optimizer/plan/subselect.c</code>: サブクエリの扱い。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: プランニング中に生成されるデータ構造は <code>PlannerInfo-&gt;planner_cxt</code> に割り当てられ、プランニング終了後に一括解放される。</li>
+<li>**フック**: <code>planner_hook</code> はプランニングプロセス全体を置き換える強力なフックであり、拡張機能開発時に注意が必要。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大なため、個別の <code>create_*_path</code> 関数の詳細なコスト計算ロジックや、特定の集約最適化（<code>planagg.c</code> への委譲など）の詳細は省略している。これらは各ヘルパー関数の実装を参照すること。</li>
+<li>**不変条件**: <code>standard_planner</code> は入力された <code>Query</code> ツリーを破壊的に変更するため、再利用する場合はコピーが必要である。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__grouping_sets_data.html" target="wiki-view"><code>grouping_sets_data</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__WindowClauseSortData.html" target="wiki-view"><code>WindowClauseSortData</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__standard_qp_extra.html" target="wiki-view"><code>standard_qp_extra</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__having_collation_ctx.html" target="wiki-view"><code>having_collation_ctx</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__standard_planner.html" target="wiki-view"><code>standard_planner</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__subquery_planner.html" target="wiki-view"><code>subquery_planner</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__preprocess_expression.html" target="wiki-view"><code>preprocess_expression</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__preprocess_qual_conditions.html" target="wiki-view"><code>preprocess_qual_conditions</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__find_having_collation_conflicts.html" target="wiki-view"><code>find_having_collation_conflicts</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__having_collation_conflict_walker.html" target="wiki-view"><code>having_collation_conflict_walker</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__preprocess_phv_expression.html" target="wiki-view"><code>preprocess_phv_expression</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__planner_c__grouping_planner.html" target="wiki-view"><code>grouping_planner</code></a></li>
+</ul></body></html>

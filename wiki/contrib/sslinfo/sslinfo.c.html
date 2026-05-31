@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sslinfo/sslinfo.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sslinfo/sslinfo.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのセッションにおいて、現在使用中のSSL接続に関する詳細情報（バージョン、暗号スイート、クライアント証明書の内容など）をSQL関数経由で取得するための拡張モジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sslinfo</code> ディレクトリの唯一のソースファイルであり、PostgreSQLのバックエンドプロセスが保持する <code>Port</code> 構造体（<code>MyProcPort</code>）にアクセスし、OpenSSLのAPIを介して証明書情報を抽出するブリッジの役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**セッション情報の公開**: SSLの有効性、バージョン、暗号化方式の確認。</li>
+<li>**証明書属性の抽出**: クライアント証明書のシリアル番号、DN（Distinguished Name）、発行者情報の取得。</li>
+<li>**ASN.1変換**: OpenSSLのASN.1形式データをPostgreSQLの <code>text</code> 型へ変換し、データベースエンコーディングへ適応させる。</li>
+<li>**拡張情報の列挙**: 証明書に含まれるX.509拡張情報をセットとして返す（SRF: Set-Returning Function）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>MyProcPort</code>: 現在のセッションのSSL状態（<code>ssl_in_use</code>, <code>peer_cert_valid</code>, <code>peer</code>）を保持するグローバル変数。</li>
+<li><code>SSLExtensionInfoContext</code>: <code>ssl_extension_info</code> 関数が複数回の呼び出し間で状態を保持するためのコンテキスト構造体。</li>
+<li><code>ssl_is_used</code>, <code>ssl_cipher</code>: SSL接続の基本情報を返す関数群。</li>
+<li><code>ssl_client_dn_field</code>: 証明書のDNから特定のフィールド（CNなど）を抽出する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ASN1_STRING_to_text</code></li>
+<li><code>X509_NAME_field_to_text</code></li>
+<li><code>ssl_client_cert_present</code></li>
+<li><code>ssl_client_dn</code></li>
+<li><code>ssl_client_serial</code></li>
+<li><code>ssl_issuer_dn</code></li>
+<li><code>ssl_issuer_field</code></li>
+<li><code>ssl_version</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **基本情報取得**: 各関数は <code>MyProcPort</code> を参照し、SSLが有効でない場合は <code>NULL</code> を返します。 2. **ASN.1変換**: <code>ASN1_STRING_to_text</code> がOpenSSLの <code>BIO</code> を使用してデータをバッファに書き出し、<code>pg_any_to_server</code> でデータベースのエンコーディングに変換します。 3. **SRFフロー**: <code>ssl_extension_info</code> は <code>SRF_IS_FIRSTCALL()</code> でコンテキストを初期化し、<code>SRF_RETURN_NEXT()</code> を用いて証明書の拡張情報を1つずつタプルとして返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQLの基本定義。</li>
+<li><code>openssl/x509.h</code>, <code>openssl/x509v3.h</code>: 証明書解析のためのOpenSSL API。</li>
+<li><code>libpq/libpq-be.h</code>: バックエンドのポート構造体定義。</li>
+<li><code>funcapi.h</code>: SQL関数インターフェースおよびSRFサポート。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>openssl/asn1.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/libpq/be-secure-openssl.c</code>: <code>be_tls_get_...</code> 系関数の実装元。SSL接続の低レイヤー処理を確認する際に参照します。</li>
+<li><code>src/include/libpq/libpq-be.h</code>: <code>Port</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ASN1_STRING_to_text</code> 内での <code>BIO</code> の解放や、SRFにおけるメモリコンテキストの切り替え（<code>MemoryContextSwitchTo</code>）に注意してください。</li>
+<li>**エンコーディング**: OpenSSLから取得したデータはUTF-8として扱われ、PostgreSQLのサーバーエンコーディングへ変換されます。変換失敗時の挙動は <code>pg_any_to_server</code> に依存します。</li>
+<li>**エラーハンドリング**: OpenSSLのAPIが失敗した場合は <code>ereport(ERROR, ...)</code> を使用してトランザクションを中断させる設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__SSLExtensionInfoContext.html" target="wiki-view"><code>SSLExtensionInfoContext</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_is_used.html" target="wiki-view"><code>ssl_is_used</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_version.html" target="wiki-view"><code>ssl_version</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_cipher.html" target="wiki-view"><code>ssl_cipher</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_client_cert_present.html" target="wiki-view"><code>ssl_client_cert_present</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_client_serial.html" target="wiki-view"><code>ssl_client_serial</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ASN1_STRING_to_text.html" target="wiki-view"><code>ASN1_STRING_to_text</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__X509_NAME_field_to_text.html" target="wiki-view"><code>X509_NAME_field_to_text</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_client_dn_field.html" target="wiki-view"><code>ssl_client_dn_field</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_issuer_field.html" target="wiki-view"><code>ssl_issuer_field</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_client_dn.html" target="wiki-view"><code>ssl_client_dn</code></a></li>
+<li><a href="../../symbols/contrib__sslinfo__sslinfo_c__ssl_issuer_dn.html" target="wiki-view"><code>ssl_issuer_dn</code></a></li>
+</ul></body></html>

@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/array_userfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/array_userfuncs.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの配列型（<code>ARRAY</code>）に対するユーザー向けの操作関数および集約関数を実装しています。配列の連結、要素の追加・削除、検索、ソート、シャッフルといった、SQLから直接呼び出される配列操作の主要なロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、配列型に対する高レベルな操作を担います。低レベルな配列構造の操作（<code>arrayfuncs.c</code>）や、メタデータ管理（<code>arrayutils.c</code>）を基盤とし、それらを組み合わせてユーザーが利用可能なSQL関数として公開する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**配列操作関数の提供**: <code>array_append</code>, <code>array_prepend</code>, <code>array_cat</code> などの基本的な配列操作の実装。</li>
+<li>**集約関数のサポート**: <code>array_agg</code> のための遷移関数（<code>transfn</code>）、結合関数（<code>combine</code>）、シリアライズ/デシリアライズ関数、最終化関数（<code>finalfn</code>）の提供。</li>
+<li>**検索・変換ユーティリティ**: <code>array_position</code>, <code>array_shuffle</code>, <code>array_sort</code> など、配列内の要素を操作・検索する機能の実装。</li>
+<li>**プランナサポート**: 一部の関数に対するプランナ最適化（<code>support</code>関数）の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>fetch_array_arg_replace_nulls</code>: 配列引数を展開形式で取得し、NULLの場合は空配列を生成するヘルパー関数。</li>
+<li><code>array_agg_transfn</code> / <code>array_agg_combine</code>: <code>array_agg</code> 集約のコアロジック。</li>
+<li><code>array_agg_serialize</code> / <code>array_agg_deserialize</code>: 並列クエリ実行時に集約状態を転送するためのシリアライズ処理。</li>
+<li><code>array_sort_internal</code>: 配列のソート処理を共通化する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ArraySortCachedInfo</code></li>
+<li><code>DeserialIOData</code></li>
+<li><code>SerialIOData</code></li>
+<li><code>array_append</code></li>
+<li><code>array_append_support</code></li>
+<li><code>array_cat</code></li>
+<li><code>array_prepend</code></li>
+<li><code>array_prepend_support</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **関数呼び出し**: SQLから関数が呼ばれると、<code>PG_GETARG_*</code> マクロで引数を取得します。 2. **メタデータ取得**: <code>fetch_array_arg_replace_nulls</code> 等を通じて、配列の要素型情報（<code>ArrayMetaState</code>）を <code>fn_extra</code> にキャッシュし、以降の呼び出しで再利用します。 3. **処理実行**:</p>
+<ul>
+<li>追加・連結系: <code>array_set_element</code> やメモリコピーを用いて新しい配列を構築します。</li>
+<li>集約系: <code>ArrayBuildState</code> を用いて要素を蓄積し、最終的に <code>makeArrayResult</code> で配列化します。</li>
+<li>ソート系: <code>tuplesort</code> を利用して要素をソートし、再構築します。</li>
+<p>4. **結果返却**: <code>PG_RETURN_DATUM</code> 等で結果を返します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/array.h</code>: 配列操作の基本API。</li>
+<li><code>utils/tuplesort.h</code>: ソート処理用。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュと演算子検索。</li>
+<li><code>libpq/pqformat.h</code>: 集約状態のシリアライズ用。</li>
+<li><code>common/pg_prng.h</code>: シャッフル処理用の乱数生成。</li>
+<li><code>catalog/pg_operator_d.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/arrayfuncs.c</code>: 配列の低レベルな構築・分解ロジック。</li>
+<li><code>src/backend/utils/adt/arrayutils.c</code>: 配列の次元計算や境界チェックなどのユーティリティ。</li>
+<li><code>src/backend/executor/nodeAgg.c</code>: 集約関数の実行エンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の集約関数（<code>array_agg</code>関連）は、<code>internal</code> 型を状態として保持します。これらは並列クエリ実行時にシリアライズされる必要があるため、<code>serialize</code>/<code>deserialize</code> 関数が実装されています。</li>
+<li><code>fn_extra</code> を利用したキャッシュ戦略が多用されています。これは、同一クエリ内で繰り返し呼ばれる関数において、カタログ検索コストを削減するための重要な最適化です。</li>
+<li><code>array_sort</code> などの関数は、多次元配列に対しては制限がある（またはサポート外である）点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__SerialIOData.html" target="wiki-view"><code>SerialIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__DeserialIOData.html" target="wiki-view"><code>DeserialIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__ArraySortCachedInfo.html" target="wiki-view"><code>ArraySortCachedInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__fetch_array_arg_replace_nulls.html" target="wiki-view"><code>fetch_array_arg_replace_nulls</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_append.html" target="wiki-view"><code>array_append</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_append_support.html" target="wiki-view"><code>array_append_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_prepend.html" target="wiki-view"><code>array_prepend</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_prepend_support.html" target="wiki-view"><code>array_prepend_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_cat.html" target="wiki-view"><code>array_cat</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_agg_transfn.html" target="wiki-view"><code>array_agg_transfn</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_agg_combine.html" target="wiki-view"><code>array_agg_combine</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_userfuncs_c__array_agg_serialize.html" target="wiki-view"><code>array_agg_serialize</code></a></li>
+</ul></body></html>

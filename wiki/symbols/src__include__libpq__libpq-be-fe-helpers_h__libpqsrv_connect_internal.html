@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__libpq__libpq-be-fe-helpers_h__libpqsrv_connect_internal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>libpqsrv_connect_internal</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/include/libpq/libpq-be-fe-helpers.h:159</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL バックエンドプロセスにおいて、非同期な <code>libpq</code> 接続確立プロセスを安全に実行するためのヘルパー関数です。接続待機中にバックエンドの割り込み処理を可能にし、リソース（ファイル記述子）の適切な解放を保証します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static inline void libpqsrv_connect_internal(PGconn *conn, uint32 wait_event_info)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>conn</code>: 接続対象の <code>PGconn</code> オブジェクト。</li>
+<li><code>wait_event_info</code>: 待機イベントの識別子（<code>WaitLatchOrSocket</code> で使用）。</li>
+<li>戻り値: なし（<code>void</code>）。成功時は接続が確立され、失敗時は例外がスローされるか、接続がクローズされます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>conn</code> が <code>NULL</code> の場合、<code>ReleaseExternalFD()</code> を呼び出してファイル記述子を解放し、即座に終了します。</li>
+<li><code>PQstatus(conn)</code> が <code>CONNECTION_BAD</code> の場合、接続確立を試みずに終了します。</li>
+<li>接続確立プロセスは <code>PG_TRY/PG_CATCH</code> ブロックで保護されており、エラー発生時には <code>ReleaseExternalFD()</code> と <code>PQfinish(conn)</code> が確実に実行されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>PGRES_POLLING_OK</code> または <code>PGRES_POLLING_FAILED</code> に達するまで、<code>PQconnectPoll</code> をループ実行します。 2. ループ内では <code>WaitLatchOrSocket</code> を使用し、ソケットの準備状況（読み込み可能/書き込み可能）を監視します。 3. <code>WaitLatchOrSocket</code> が <code>WL_LATCH_SET</code> を返した場合、<code>CHECK_FOR_INTERRUPTS()</code> を呼び出し、バックエンドの割り込み要求（停止要求など）を処理します。 4. ソケットが準備完了状態であれば、<code>PQconnectPoll</code> を進めます。 5. 処理中に例外が発生した場合、<code>PG_CATCH</code> ブロックでリソースを解放し、エラーを再スローします。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/include/libpq/libpq-be-fe-helpers.h</code> 内の接続関連関数（<code>libpqsrv_connect</code> 等）から参照されています。</li>
+<li>呼び出し先: <code>ReleaseExternalFD</code>, <code>PQstatus</code>, <code>PQsocket</code>, <code>WaitLatchOrSocket</code>, <code>ResetLatch</code>, <code>CHECK_FOR_INTERRUPTS</code>, <code>PQconnectPoll</code>, <code>PQfinish</code>, <code>PG_RE_THROW</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGconn</code>: <code>libpq</code> の接続ハンドル。</li>
+<li><code>MyLatch</code>: バックエンドのプロセス間通信用ラッチ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>conn</code> が <code>NULL</code> の場合: FD を解放して正常終了。</li>
+<li><code>PQstatus</code> が <code>CONNECTION_BAD</code> の場合: 何もせず終了。</li>
+<li>接続確立失敗時: <code>PG_CATCH</code> ブロックにより FD 解放と <code>PQfinish</code> が行われ、例外が再スローされます。</li>
+<li>割り込み発生時: <code>CHECK_FOR_INTERRUPTS()</code> により、バックエンドのシグナル処理が優先されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>static inline</code> で定義されており、ヘッダーファイル内で完結しています。</li>
+<li><code>WaitLatchOrSocket</code> の待機イベント設定には <code>wait_event_info</code> を使用するため、呼び出し側で適切なイベントタイプを指定してください。</li>
+<li>Windows 環境では <code>CONNECTION_STARTED</code> 状態に対して <code>WL_SOCKET_CONNECTED</code> を使用する特殊な分岐が含まれています。</li>
+</ul></body></html>

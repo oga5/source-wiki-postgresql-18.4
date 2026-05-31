@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__port__dirmod_c__pgrename.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgrename</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/port/dirmod.c:51</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows 環境において、ファイル名の変更（リネーム）操作を堅牢に行うためのラッパー関数です。他プロセスによるファイルロックや共有違反が発生した場合に、短時間の再試行を行うことで POSIX 互換の <code>rename</code> 挙動をエミュレートします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int pgrename(const char *from, const char *to)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>from</code>: 移動元ファイルのパス（文字列）</li>
+<li><code>to</code>: 移動先ファイルのパス（文字列）</li>
+<li>**出力**: </li>
+<li>成功時は <code>0</code> を返します。</li>
+<li>失敗時は <code>-1</code> を返し、<code>errno</code> が適切に設定されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>Windows 環境（<code>WIN32</code> かつ <code>!__CYGWIN__</code>）では、<code>MoveFileEx</code> を使用して <code>MOVEFILE_REPLACE_EXISTING</code> フラグ付きで実行されます。</li>
+<li>非 Windows 環境では、標準の <code>rename</code> 関数を呼び出します。</li>
+<li>共有違反等のエラーが発生した場合、最大 10 秒間（100ms 間隔で最大 100 回）の再試行を行います。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>MoveFileEx</code>（Windows）または <code>rename</code>（その他）を実行します。 2. 失敗した場合、エラーコードを確認します。</p>
+<ul>
+<li>Windows の場合: <code>ERROR_ACCESS_DENIED</code>、<code>ERROR_SHARING_VIOLATION</code>、<code>ERROR_LOCK_VIOLATION</code> のいずれかであれば再試行対象と判断します。</li>
+<li>その他: <code>errno</code> が <code>EACCES</code> であれば再試行対象と判断します。</li>
+<p>3. 再試行対象外のエラー、または 10 秒経過しても成功しない場合は <code>-1</code> を返します。 4. 再試行が必要な場合は <code>pg_usleep(100000)</code> で待機し、ループを継続します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>src/bin/pg_upgrade/pg_upgrade.h</code> にて <code>pg_mv_file</code> としてマクロ定義されています。</li>
+<li><code>src/include/port.h</code> にて <code>rename</code> マクロとして再定義されており、広範なコードから利用されています。</li>
+<li>**呼び出し先**: </li>
+<li><code>MoveFileEx</code> (Windows API)</li>
+<li><code>rename</code> (標準ライブラリ)</li>
+<li><code>_dosmaperr</code> (Windows エラーコード変換)</li>
+<li><code>pg_usleep</code> (待機処理)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li>特になし。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**共有違反**: 他のプロセスがファイルをロックしている場合、最大 10 秒間リトライを試みます。</li>
+<li>**タイムアウト**: 10 秒経過してもロックが解除されない場合は失敗とみなされます。</li>
+<li>**権限エラー**: 再試行対象外のアクセス拒否エラーが発生した場合は即座に失敗します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>src/include/port.h</code> で <code>rename</code> をオーバーライドしているため、Windows 上でのファイル操作の挙動を根本的に制御しています。</li>
+<li>Windows SDK のバージョンやアンチウイルスソフトの挙動により、<code>ERROR_LOCK_VIOLATION</code> 等の追加が必要になる場合があります。</li>
+<li>Cygwin 環境では標準の <code>rename</code> が使用されるため、本関数のリトライロジックは適用されません。</li>
+</ul></body></html>

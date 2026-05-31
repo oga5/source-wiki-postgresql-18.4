@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__common__session_c__GetSessionDsmHandle.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GetSessionDsmHandle</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/common/session.c:69</code></li>
+</ul>
+<h2>目的</h2>
+<p>セッションスコープの動的共有メモリ（DSM）セグメントを生成または取得し、そのハンドルを返します。このセグメントは、並列クエリ実行時などにリーダープロセスとワーカープロセス間でセッション状態を共有するために使用されます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>dsm_handle GetSessionDsmHandle(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし</li>
+<li>**出力**: <code>dsm_handle</code> 型のセグメントハンドル。生成に失敗した場合は <code>DSM_HANDLE_INVALID</code> を返します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>CurrentSession</code> グローバル変数が初期化されている必要があります。</li>
+<li>既にセッションDSMが作成されている場合、そのハンドルを再利用します。</li>
+<li>新規作成時は <code>TopMemoryContext</code> に切り替えてメモリ確保を行います。</li>
+<li>成功時は <code>dsm_pin_mapping</code> および <code>dsa_pin_mapping</code> により、バックエンドの生存期間中メモリマッピングが保持されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **既存確認**: <code>CurrentSession-&gt;segment</code> が存在すれば、そのハンドルを即座に返します。 2. **見積もり**: <code>shm_toc_estimator</code> を使用し、DSA領域とレコード型修飾子レジストリに必要なサイズを見積もります。 3. **セグメント作成**: <code>dsm_create</code> で共有メモリセグメントを確保し、<code>shm_toc</code> を初期化します。 4. **領域確保**: <code>shm_toc_allocate</code> を用いてDSA領域とレジストリ領域を確保し、それぞれ <code>SESSION_KEY_DSA</code> および <code>SESSION_KEY_RECORD_TYPMOD_REGISTRY</code> キーで登録します。 5. **初期化**: <code>dsa_create_in_place</code> および <code>SharedRecordTypmodRegistryInit</code> を実行します。 6. **永続化**: <code>dsm_pin_mapping</code> と <code>dsa_pin_mapping</code> を呼び出し、<code>CurrentSession</code> にセグメントと領域を格納してハンドルを返します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/parallel.c</code> (並列クエリ実行時)</li>
+<li>**呼び出し先**:</li>
+<li><code>dsm_create</code>, <code>dsm_segment_handle</code>, <code>dsm_pin_mapping</code></li>
+<li><code>shm_toc_initialize_estimator</code>, <code>shm_toc_create</code>, <code>shm_toc_allocate</code>, <code>shm_toc_insert</code></li>
+<li><code>dsa_create_in_place</code>, <code>dsa_pin_mapping</code></li>
+<li><code>SharedRecordTypmodRegistryEstimate</code>, <code>SharedRecordTypmodRegistryInit</code></li>
+<li><code>MemoryContextSwitchTo</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CurrentSession</code>: セッション状態を保持するグローバル構造体。</li>
+<li><code>shm_toc</code>: 共有メモリ内のデータ配置を管理するテーブル・オブ・コンテンツ。</li>
+<li><code>dsa_area</code>: 動的共有メモリ領域。</li>
+<li><code>SharedRecordTypmodRegistry</code>: 共有される型修飾子レジストリ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>dsm_create</code> が <code>NULL</code> を返した場合（メモリ不足やセグメント上限到達時）、<code>DSM_HANDLE_INVALID</code> を返します。この際、メモリコンテキストは呼び出し前の状態に復元されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数で確保されたリソースは、バックエンドの生存期間中保持される設計です。</li>
+<li><code>SESSION_MAGIC</code> や <code>SESSION_KEY_*</code> 定数の変更は、リーダーとワーカー間の通信整合性に影響するため注意してください。</li>
+<li><code>SharedRecordTypmodRegistry</code> の初期化失敗時のクリーンアップは、<code>CurrentResourceOwner</code> によるDSMデタッチ時に自動的に行われる仕組みになっています。</li>
+</ul></body></html>

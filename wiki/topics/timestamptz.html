@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/timestamptz.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TimestampTz</h1>
+<h2>概念</h2>
+<p><code>TimestampTz</code> は、PostgreSQLにおいてタイムゾーン付きの絶対時間（Timestamp with time zone）を表現するためのデータ型です。内部的にはマイクロ秒単位の64ビット整数（<code>int64</code>）として定義されており、データベースコア、論理レプリケーション、およびECPG（埋め込みSQL）などの複数モジュールにまたがって共通のデータ表現として利用されます。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**高精度かつ決定論的な時間管理**: 浮動小数点演算による誤差を避けるため、マイクロ秒精度の整数演算（<code>int64</code>）に最適化されており、システム全体で一貫した時間表現を可能にします。</li>
+<li>**モジュール間のインターフェース一貫性**: コアのデータ型定義（<code>datatype</code>）だけでなく、論理デコーディング（<code>replication</code>）におけるトランザクションの準備・コミット時刻の伝達や、クライアント側のECPGアプリケーション（<code>ecpg</code>）との相互運用において、共通のインターフェース型として機能します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/datatype</code></li>
+<li><code>module:src/include/replication</code></li>
+<li><code>module:src/interfaces/ecpg/include</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/datatype/timestamp.h#TimestampTz</code>: コアにおけるタイムゾーン付き絶対時間の基本型定義（<code>int64</code>）。</li>
+<li><code>symbol:src/include/replication/output_plugin.h#TimestampTz</code>: 論理デコーディングのコールバック（<code>LogicalDecodeRollbackPreparedCB</code> など）でトランザクションの準備時刻（<code>prepare_time</code>）を扱うための型参照。</li>
+<li><code>symbol:src/include/replication/reorderbuffer.h#TimestampTz</code>: 論理デコーディングのコールバック（<code>ReorderBufferRollbackPreparedCB</code>）の引数としてトランザクション準備時刻を伝達するための型定義。</li>
+<li><code>symbol:src/interfaces/ecpg/include/pgtypes_timestamp.h#TimestampTz</code>: ECPGアプリケーションにおいて、データベースのタイムゾーン付きタイムスタンプ型とC言語変数間で相互運用するための <code>int64</code> エイリアス。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>データベース内部から外部アプリケーション、およびレプリケーションに至る具体的なエンドツーエンドのデータフローの全容は、提供された情報からは完全には明らかになっていません。現時点で判明している部分的な流れは以下の通りです：</p>
+<p>1. **論理デコーディングにおける時刻伝達**: トランザクションの準備やロールバックの際、<code>ReorderBufferRollbackPreparedCB</code> や <code>LogicalDecodeRollbackPreparedCB</code> などのコールバック関数を通じて、トランザクションの準備時刻（<code>prepare_time</code>）が <code>TimestampTz</code> 型の引数としてプラグインやバッファ管理機構に伝達されます。 2. **ECPGアプリケーションでの相互運用**: データベースから取得したタイムゾーン付きタイムスタンプ値は、ECPGライブラリ（<code>PGTYPEStimestamp_from_asc</code> などの変換関数）を介して、C言語環境の <code>TimestampTz</code> 型変数にマッピングされ、相互運用されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**内部表現の不変性**: 内部的には常にマイクロ秒単位の <code>int64</code> 整数として扱われ、浮動小数点数による誤差を排除します。</li>
+<li>**無限大の表現**: 無限大（Infinity / -Infinity）を表現する場合、<code>int64</code> の最大値または最小値が使用されます。これらを判定する際は、<code>TIMESTAMP_NOT_FINITE</code> マクロを使用する必要があります。</li>
+<li>**有効範囲の検証**: 格納される値は <code>IS_VALID_TIMESTAMP</code> マクロによって検証される有効な範囲内でなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**無限大の直接演算**: 無限大（±Infinity）を表す特殊な値に対して、通常の数値演算を直接適用すると意図しない動作を引き起こすため、必ず事前に <code>TIMESTAMP_NOT_FINITE</code> マクロ等で判定する必要があります。</li>
+<li>**オーバーフロー**: <code>int64</code> の範囲を超える値を代入した場合、サイレントにオーバーフローが発生する危険性があります。</li>
+<li>**タイムゾーンの解釈**: ECPGなどのクライアント側で扱う際、タイムゾーンの実際の解釈は実行時のデータベース設定や環境変数に依存するため、環境による差異に注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/datatype/timestamp.h</code> (基本定義と判定マクロ)</li>
+<li><code>src/include/replication/output_plugin.h</code> (論理デコーディングコールバックでの利用)</li>
+<li><code>src/include/replication/reorderbuffer.h</code> (リオーダーバッファにおけるトランザクション時刻の扱い)</li>
+<li><code>src/interfaces/ecpg/include/pgtypes_timestamp.h</code> (ECPGにおけるクライアント側定義)</li>
+</ul></body></html>

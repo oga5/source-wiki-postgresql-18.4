@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/levenshtein-less-equal.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>levenshtein_less_equal</h1>
+<h2>概念</h2>
+<p><code>levenshtein_less_equal</code> は、2つの文字列間のLevenshtein距離（編集距離）を計算し、その値が指定された閾値（<code>max_d</code>）以下であるかどうかを効率的に判定するための機能です。通常のLevenshtein距離計算とは異なり、閾値を超えることが確定した時点で計算を早期終了できるため、高速な類似文字列検索を可能にします。</p>
+<h2>なぜ重要か</h2>
+<p>大規模なデータセットにおいて、2つの文字列が「十分に類似しているか（一定の編集距離以内か）」のみを判定したい場合、厳密な距離を最後まで計算するのは非効率です。<code>levenshtein_less_equal</code> は、指定された最大距離 <code>max_d</code> を超えた段階で処理を打ち切る（早期終了する）ことで、計算コストを大幅に削減し、パフォーマンスを向上させるために重要です。</p>
+<h2>関与するモジュール</h2>
+<p>提供された情報によると、以下のモジュールが関与しています。</p>
+<ul>
+<li><code>module:contrib/fuzzystrmatch</code>: ユーザー向けのSQL関数 <code>levenshtein_less_equal</code> を提供する拡張モジュール。</li>
+<li><code>module:src/backend/utils/adt</code>: バックエンドの文字列処理ユーティリティ（<code>varlena.c</code> など）を提供するコアモジュール。</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/fuzzystrmatch/fuzzystrmatch.c#levenshtein_less_equal</code>: SQLインターフェースから呼び出されるC言語関数。入力テキストと最大距離 <code>max_d</code> を受け取り、内部関数を呼び出します。</li>
+<li><code>symbol:src/backend/utils/adt/varlena.c#LEVENSHTEIN_LESS_EQUAL</code>: コア側で定義されている関連シンボル（詳細な定義や役割は提供されたコンテキストからは未詳ですが、距離判定の処理に関連するものと推測されます）。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **SQL関数呼び出し**: ユーザーがSQLから <code>levenshtein_less_equal(text, text, int)</code> を呼び出します。 2. **引数の展開**: <code>contrib/fuzzystrmatch/fuzzystrmatch.c</code> の <code>levenshtein_less_equal</code> 関数が起動し、<code>PG_GETARG_TEXT_PP</code> を用いて2つの入力文字列（ソースとターゲット）および <code>PG_GETARG_INT32</code> を用いて許容最大距離 <code>max_d</code> を取得します。 3. **データの抽出**: <code>VARDATA_ANY</code> および <code>VARSIZE_ANY_EXHDR</code> を使用して、可変長 <code>text</code> 型から実際の文字列データとバイト長を抽出します。 4. **コア関数の呼び出し**: 抽出したデータと、固定されたコスト設定（挿入=1, 削除=1, 置換=1）、および <code>max_d</code> を引数として、コア側の <code>varstr_levenshtein_less_equal</code> 関数を呼び出します。 5. **結果の返却**: 計算された結果を <code>PG_RETURN_INT32</code> で返却します。</p>
+<p>*注意: <code>varstr_levenshtein_less_equal</code> の内部アルゴリズムや、<code>src/backend/utils/adt/varlena.c#LEVENSHTEIN_LESS_EQUAL</code> が具体的にどのように関与しているかの詳細なエンドツーエンドのフローは、提供された情報からは完全には明らかになっていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**コストの固定**: <code>contrib/fuzzystrmatch</code> の <code>levenshtein_less_equal</code> から呼び出す際、挿入・削除・置換の各コストはすべて <code>1</code> に固定されて <code>varstr_levenshtein_less_equal</code> に渡されます。</li>
+<li>**入力型**: 入力引数はPostgreSQLの <code>text</code> 型（可変長文字列）である必要があります。</li>
+</ul>
+<p>*注意: <code>max_d</code> に負の値が指定された場合の挙動や、マルチバイト文字フラグ（<code>false</code> が渡されている）に関する詳細な不変条件は、提供されたコンテキストからは未詳です。*</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**コストのカスタマイズ不可**: この関数では挿入・削除・置換のコストが <code>1</code> に固定されているため、任意のコストを設定した高度な編集距離計算には使用できません。</li>
+<li>**マルチバイト文字の扱い**: <code>varstr_levenshtein_less_equal</code> を呼び出す際、マルチバイト文字フラグに <code>false</code> が指定されているため、非ASCII文字（マルチバイト文字）を含む文字列に対する判定において、文字単位ではなくバイト単位での計算が行われる可能性があり、意図しない結果になる落とし穴があります（詳細な挙動は <code>varstr_levenshtein_less_equal</code> の仕様に依存します）。</li>
+<li>**負の閾値**: <code>max_d</code> に負の値を指定した場合の挙動は、依存先の実装に依存するため注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/fuzzystrmatch/fuzzystrmatch.c</code>: SQL関数 <code>levenshtein_less_equal</code> の具体的な実装と引数処理を確認できます。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>: 実際の編集距離計算ロジックや <code>LEVENSHTEIN_LESS_EQUAL</code> シンボルの定義、および <code>varstr_levenshtein_less_equal</code> の実装を確認できます。</li>
+</ul></body></html>

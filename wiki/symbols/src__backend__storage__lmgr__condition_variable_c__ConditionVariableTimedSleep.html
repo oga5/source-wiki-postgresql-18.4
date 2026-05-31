@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__condition_variable_c__ConditionVariableTimedSleep.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ConditionVariableTimedSleep</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/condition_variable.c:111</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定された条件変数（<code>ConditionVariable</code>）に対して、タイムアウト付きでプロセスを待機させる。条件変数の待機リストへの登録と、ラッチ（<code>MyLatch</code>）を用いた待機状態への遷移を管理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool ConditionVariableTimedSleep(ConditionVariable *cv, long timeout, uint32 wait_event_info)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>cv</code>: 待機対象の条件変数。</li>
+<li><code>timeout</code>: タイムアウト時間（ミリ秒）。負の値はタイムアウトなしを意味する。</li>
+<li><code>wait_event_info</code>: 待機イベントの識別子。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: タイムアウトが発生した場合は <code>true</code>、シグナル等により起床した場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し前に <code>ConditionVariablePrepareToSleep(cv)</code> が実行されていることが推奨される。未準備の場合は本関数内で準備が行われ、即座に <code>false</code> が返される。</li>
+<li>共有メモリ内のデータ構造整合性を保つため、内部でスピンロック（<code>cv-&gt;mutex</code>）を使用する。</li>
+<li>呼び出し側は、Spurious Wakeup（偽の起床）を考慮し、必ず <code>while</code> ループ内で条件を再評価する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **準備確認**: <code>cv_sleep_target</code> が対象の <code>cv</code> と一致するか確認し、不一致なら <code>ConditionVariablePrepareToSleep</code> を呼び出して終了する。 2. **待機設定**: タイムアウトが指定されている場合、開始時刻を記録し、<code>WaitLatch</code> 用のイベントフラグを設定する。 3. **待機ループ**:</p>
+<ul>
+<li><code>WaitLatch</code> を呼び出し、ラッチがセットされるまで待機する。</li>
+<li><code>ResetLatch</code> でラッチをリセットする。</li>
+<li>スピンロックを取得し、自身が待機リストから外れている（シグナルを受けた）ことを確認する。外れている場合はリストに再挿入する。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> を実行し、割り込み要求を処理する。</li>
+<li>タイムアウトが指定されている場合、経過時間を計算し、期限を超過していれば <code>true</code> を返す。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/transam/xlogrecovery.c</code></li>
+<li><code>src/backend/postmaster/walsummarizer.c</code></li>
+<li><code>src/backend/replication/slot.c</code></li>
+<li><code>src/backend/storage/ipc/procsignal.c</code></li>
+<li><code>src/backend/storage/lmgr/condition_variable.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ConditionVariablePrepareToSleep</code></li>
+<li><code>WaitLatch</code></li>
+<li><code>ResetLatch</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>proclist_contains</code> / <code>proclist_push_tail</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ConditionVariable</code>: 待機リストとスピンロックを保持する構造体。</li>
+<li><code>cv_sleep_target</code>: 現在のプロセスが待機準備中の条件変数を指すスレッドローカル変数。</li>
+<li><code>MyLatch</code>: 現在のプロセスのラッチ。</li>
+<li><code>MyProcNumber</code>: 現在のプロセスの識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**タイムアウト**: 待機時間が経過した場合、<code>true</code> を返して終了する。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、クエリキャンセルやシャットダウン要求が処理される。</li>
+<li>**偽の起床**: シグナル以外の理由でラッチがセットされた場合、ループを継続して再待機する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ConditionVariableSleep</code> と異なり、経過時間を追跡してタイムアウトを管理する。</li>
+<li>待機リストの操作は <code>cv-&gt;mutex</code> で保護されているため、リスト操作時は必ずロックを取得すること。</li>
+<li>呼び出し側が <code>ConditionVariableCancelSleep</code> を呼び出すまで、プロセスは待機リストに留まる必要がある。</li>
+</ul></body></html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_test_fsync/pg_test_fsync.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_test_fsync/pg_test_fsync.c</h1>
+<h2>概要</h2>
+<p><code>pg_test_fsync</code> は、PostgreSQL がサポートする様々な <code>fsync</code> 手法（<code>fsync</code>, <code>fdatasync</code>, <code>open_datasync</code>, <code>open_sync</code> 等）のパフォーマンスを比較・測定するためのコマンドラインツールです。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>src/bin/pg_test_fsync</code> ディレクトリの唯一のソースであり、PostgreSQL の WAL（Write Ahead Log）書き込みにおいて、どの同期手法が最も効率的かをユーザーが判断するためのベンチマークを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>指定された期間（デフォルト5秒）の各同期手法の実行回数（ops/sec）を計測する。</li>
+<li>OS やファイルシステムがサポートする同期オプションの可否を判定する。</li>
+<li>異なる書き込みサイズや、ファイル記述子を跨いだ同期の挙動を検証する。</li>
+<li>テスト用の一時ファイルを作成・管理し、終了時にクリーンアップする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>test_sync()</code>: 主要な同期手法（<code>open_datasync</code>, <code>fdatasync</code>, <code>fsync</code> 等）を順次実行するメインループ。</li>
+<li><code>START_TIMER</code> / <code>STOP_TIMER</code>: <code>alarm()</code> またはスレッドを用いた時間計測用マクロ。</li>
+<li><code>alarm_triggered</code>: 計測期間の終了を通知するシグナルフラグ。</li>
+<li><code>pg_pwrite()</code>: ファイルの特定オフセットへ書き込むためのラッパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>handle_args</code></li>
+<li><code>open_direct</code></li>
+<li><code>pg_fsync_writethrough</code></li>
+<li><code>prepare_buf</code></li>
+<li><code>print_elapse</code></li>
+<li><code>signal_cleanup</code></li>
+<li><code>test_file_descriptor_sync</code></li>
+<li><code>test_non_sync</code></li>
+<li><code>test_open</code></li>
+<li><code>test_open_sync</code></li>
+<li><code>test_open_syncs</code></li>
+<li><code>test_sync</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>handle_args()</code> で引数を解析し、<code>prepare_buf()</code> でランダムデータを含むバッファを準備。 2. **シグナル設定**: <code>SIGINT</code> 等の割り込みを捕捉し、一時ファイルを削除する <code>signal_cleanup</code> を登録。 3. **テスト実行**:</p>
+<ul>
+<li><code>test_open()</code>: 基本的な書き込みと同期の可否を確認。</li>
+<li><code>test_sync()</code>: 1ブロックおよび2ブロック書き込みで各手法を比較。</li>
+<li><code>test_open_syncs()</code>: 書き込みサイズを変えて <code>open_sync</code> のコストを評価。</li>
+<li><code>test_file_descriptor_sync()</code>: 異なるファイル記述子間での同期挙動を検証。</li>
+<li><code>test_non_sync()</code>: 同期なしのベースラインを測定。</li>
+<p>4. **終了**: 一時ファイルを削除して終了。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>common/logging.h</code>: ログ出力用ユーティリティ。</li>
+<li><code>common/pg_prng.h</code>: 乱数生成器。</li>
+<li><code>getopt_long.h</code>: コマンドライン引数解析。</li>
+<li>標準ライブラリ: <code>sys/stat.h</code>, <code>fcntl.h</code>, <code>unistd.h</code>, <code>signal.h</code> 等のシステムコール関連。</li>
+<li><code>limits.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>time.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/pg_config.h</code>: <code>HAVE_FSYNC_WRITETHROUGH</code> などのプラットフォーム依存マクロの定義元。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: 本ツールで測定された手法が実際に PostgreSQL の WAL 書き込みで使用される場所。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**プラットフォーム差異**: Windows と Unix 系でタイマー処理（<code>alarm</code> vs <code>CreateThread</code>）が大きく異なります。</li>
+<li>**O_DIRECT**: <code>O_DIRECT</code> をサポートする環境では、ファイルシステムやマウントオプションによって書き込みが失敗する可能性があるため、結果の <code>n/a*</code> 表示に注意してください。</li>
+<li>**計測の正確性**: 本ツールはあくまで「同期手法の比較」を目的としており、実際のデータベース負荷を完全にシミュレートするものではありません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__handle_args.html" target="wiki-view"><code>handle_args</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__prepare_buf.html" target="wiki-view"><code>prepare_buf</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_open.html" target="wiki-view"><code>test_open</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__open_direct.html" target="wiki-view"><code>open_direct</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_sync.html" target="wiki-view"><code>test_sync</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_open_syncs.html" target="wiki-view"><code>test_open_syncs</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_open_sync.html" target="wiki-view"><code>test_open_sync</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_file_descriptor_sync.html" target="wiki-view"><code>test_file_descriptor_sync</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__test_non_sync.html" target="wiki-view"><code>test_non_sync</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__signal_cleanup.html" target="wiki-view"><code>signal_cleanup</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__pg_fsync_writethrough.html" target="wiki-view"><code>pg_fsync_writethrough</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_test_fsync__pg_test_fsync_c__print_elapse.html" target="wiki-view"><code>print_elapse</code></a></li>
+</ul></body></html>

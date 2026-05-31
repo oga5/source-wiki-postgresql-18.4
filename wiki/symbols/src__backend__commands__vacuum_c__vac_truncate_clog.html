@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__vacuum_c__vac_truncate_clog.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>vac_truncate_clog</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/vacuum.c:1842</code></li>
+</ul>
+<h2>目的</h2>
+<p>トランザクションログ（CLOG）、マルチトランザクションID、およびコミットタイムスタンプのストレージを、指定された凍結トランザクションID（<code>frozenXID</code>）および最小マルチトランザクションID（<code>minMulti</code>）まで切り詰める。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void vac_truncate_clog(TransactionId frozenXID,
+                       MultiXactId minMulti,
+                       TransactionId lastSaneFrozenXid,
+                       MultiXactId lastSaneMinMulti)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>frozenXID</code>: 切り詰め対象の凍結トランザクションID。</li>
+<li><code>minMulti</code>: 切り詰め対象の最小マルチトランザクションID。</li>
+<li><code>lastSaneFrozenXid</code>, <code>lastSaneMinMulti</code>: 整合性チェック用の基準値。</li>
+<li>**出力**: なし（副作用としてストレージの切り詰めと統計情報の更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>WrapLimitsVacuumLock</code> 排他ロックを保持して実行する必要がある。</li>
+<li><code>pg_database</code> 内の各データベースの <code>datfrozenxid</code> および <code>datminmxid</code> を走査し、システム全体の最小値を算出する。</li>
+<li>算出された値が <code>lastSane</code> 値を超えている場合、またはトランザクションのラップアラウンドが既に発生していると判断された場合は、切り詰めを行わずに終了する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>WrapLimitsVacuumLock</code> を取得する。 2. <code>pg_database</code> をスキャンし、全データベースの中で最も古い <code>datfrozenxid</code> と <code>datminmxid</code> を特定する。 3. 無効なデータベースや、将来の日付を持つ不正なデータ（<code>bogus</code>）を検出した場合は処理を中断する。 4. <code>AsyncNotifyFreezeXids</code> を呼び出し、非同期通知キュー内の古いXIDを凍結する。 5. <code>AdvanceOldestCommitTsXid</code> を呼び出し、コミットタイムスタンプの最古値を更新する。 6. <code>TruncateCLOG</code>, <code>TruncateCommitTs</code>, <code>TruncateMultiXact</code> を順次呼び出し、ストレージを切り詰める。 7. <code>SetTransactionIdLimit</code> および <code>SetMultiXactIdLimit</code> で新しい制限値を設定する。 8. ロックを解放する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/vacuum.c</code> 内の <code>vacuum()</code> 等から呼び出される。</li>
+<li>**呼び出し先**: <code>table_open</code>, <code>table_beginscan_catalog</code>, <code>heap_getnext</code>, <code>AsyncNotifyFreezeXids</code>, <code>AdvanceOldestCommitTsXid</code>, <code>TruncateCLOG</code>, <code>TruncateCommitTs</code>, <code>TruncateMultiXact</code>, <code>SetTransactionIdLimit</code>, <code>SetMultiXactIdLimit</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pg_database</code>（システムカタログ）</li>
+<li><code>TransactionId</code>, <code>MultiXactId</code></li>
+<li><code>WrapLimitsVacuumLock</code>（LWLock）</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ラップアラウンド**: <code>frozenAlreadyWrapped</code> が真の場合、警告を出して切り詰めを中止する。</li>
+<li>**不正なデータ**: <code>bogus</code> フラグが立つ場合（<code>pg_upgrade</code> のバグ等に起因する将来のXID検出時）、切り詰めを中止する。</li>
+<li>**同時実行**: <code>pg_database</code> の更新はアトミックであると仮定している。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はクラスタ全体で1つのバックエンドのみが実行するように設計されている。</li>
+<li><code>pg_database</code> のスキャン中に <code>CREATE DATABASE</code> 等による競合が発生しても、最小値の算出には影響しないよう設計されている。</li>
+<li><code>TruncateCLOG</code> 等の呼び出し順序は、コミットタイムスタンプの参照エラーを防ぐために重要である。</li>
+</ul></body></html>

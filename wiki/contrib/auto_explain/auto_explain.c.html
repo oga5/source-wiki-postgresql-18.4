@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/auto_explain/auto_explain.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/auto_explain/auto_explain.c</h1>
+<h2>概要</h2>
+<p><code>auto_explain.c</code> は、PostgreSQL の実行計画を自動的にログ出力するための拡張モジュールです。クエリの実行時間が指定した閾値を超えた場合に、<code>EXPLAIN</code> コマンドの結果をログに記録します。</p>
+<h2>モジュール内での役割</h2>
+<p>PostgreSQL の実行エンジン（Executor）の各フェーズにフックを挿入し、クエリ実行のライフサイクルに介入します。標準の実行フローを妨げることなく、実行計画の統計情報を収集・整形して出力する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**GUC 変数の管理**: ログ出力の閾値、フォーマット、分析オプション（<code>ANALYZE</code> 等）を制御する設定項目を提供。</li>
+<li>**実行フックの管理**: <code>ExecutorStart</code>, <code>Run</code>, <code>Finish</code>, <code>End</code> の各フックを乗っ取り、統計情報の収集とログ出力のタイミングを制御。</li>
+<li>**サンプリング**: <code>auto_explain.sample_rate</code> に基づき、ログ対象のクエリを確率的に選別。</li>
+<li>**計画の整形**: <code>ExplainState</code> を利用して、収集した実行計画を JSON や YAML 等の指定フォーマットに変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>auto_explain_log_min_duration</code>: ログ出力のトリガーとなる実行時間の閾値。</li>
+<li><code>nesting_level</code>: 現在のクエリ実行のネスト深さを追跡し、再帰的なログ出力を制御。</li>
+<li><code>explain_ExecutorStart/End</code>: 実行開始時の準備（インストゥルメンテーション設定）と、終了時のログ出力処理を行う主要関数。</li>
+<li><code>auto_explain_enabled()</code>: 現在のクエリがログ出力対象かどうかを判定するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>explain_ExecutorEnd</code></li>
+<li><code>explain_ExecutorFinish</code></li>
+<li><code>explain_ExecutorRun</code></li>
+<li><code>explain_ExecutorStart</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化 (<code>_PG_init</code>)**: 各種 GUC 変数を定義し、既存の <code>Executor</code> フックを保存した上で、自身の関数で上書きします。 2. **開始 (<code>explain_ExecutorStart</code>)**: サンプリング判定を行い、対象であれば <code>queryDesc-&gt;instrument_options</code> を設定して実行統計の収集を有効化します。 3. **実行 (<code>explain_ExecutorRun/Finish</code>)**: <code>nesting_level</code> をインクリメント/デクリメントし、ネストされたクエリの実行状況を追跡します。 4. **終了 (<code>explain_ExecutorEnd</code>)**: 実行時間を計測し、閾値を超えていれば <code>ExplainPrintPlan</code> 等を用いて計画を文字列化し、<code>ereport</code> でログ出力します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本定義。</li>
+<li><code>executor/instrument.h</code>: クエリ実行統計の計測用。</li>
+<li><code>commands/explain.h</code>, <code>explain_state.h</code>: <code>EXPLAIN</code> 出力生成用。</li>
+<li><code>utils/guc.h</code>: 設定パラメータ（GUC）管理用。</li>
+<li><code>common/pg_prng.h</code>: サンプリング用の乱数生成。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>commands/explain_format.h</code></li>
+<li><code>commands/explain_state.h</code></li>
+<li><code>limits.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execMain.c</code>: <code>ExecutorStart</code> 等の標準的な実行フローが定義されており、本モジュールのフックが呼び出される場所です。</li>
+<li><code>src/backend/commands/explain.c</code>: <code>EXPLAIN</code> コマンドのコアロジック。本モジュールはこれを利用して計画を生成します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**フックの連鎖**: 本モジュールは既存のフックを <code>prev_</code> 変数に保存して呼び出すことで、他の拡張モジュールとの共存を図っています。</li>
+<li>**メモリ管理**: ログ出力用の文字列生成は <code>queryDesc-&gt;estate-&gt;es_query_cxt</code> 上で行われ、クエリ終了時に自動的に解放されるよう設計されています。</li>
+<li>**並列クエリ**: <code>IsParallelWorker()</code> をチェックし、パラレルワーカー内では二重にログ出力されないよう配慮されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__auto_explain__auto_explain_c__explain_ExecutorStart.html" target="wiki-view"><code>explain_ExecutorStart</code></a></li>
+<li><a href="../../symbols/contrib__auto_explain__auto_explain_c__explain_ExecutorRun.html" target="wiki-view"><code>explain_ExecutorRun</code></a></li>
+<li><a href="../../symbols/contrib__auto_explain__auto_explain_c__explain_ExecutorFinish.html" target="wiki-view"><code>explain_ExecutorFinish</code></a></li>
+<li><a href="../../symbols/contrib__auto_explain__auto_explain_c__explain_ExecutorEnd.html" target="wiki-view"><code>explain_ExecutorEnd</code></a></li>
+</ul></body></html>

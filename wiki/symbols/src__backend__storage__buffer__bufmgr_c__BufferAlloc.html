@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__buffer__bufmgr_c__BufferAlloc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BufferAlloc</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/buffer/bufmgr.c:1999</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有バッファプールから指定されたブロックに対応するバッファ記述子（<code>BufferDesc</code>）を取得または割り当てます。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static BufferDesc *BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
+                               BlockNumber blockNum, BufferAccessStrategy strategy,
+                               bool *foundPtr, IOContext io_context)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>smgr</code>: 対象リレーションのストレージマネージャ。</li>
+<li><code>relpersistence</code>: リレーションの永続性（<code>RELPERSISTENCE_PERMANENT</code> 等）。</li>
+<li><code>forkNum</code>, <code>blockNum</code>: 取得対象の識別情報。</li>
+<li><code>strategy</code>: バッファ置換戦略（<code>BufferAccessStrategy</code>）。</li>
+<li><code>io_context</code>: I/O コンテキスト。</li>
+<li>**出力**:</li>
+<li>戻り値: 取得したバッファの <code>BufferDesc</code> へのポインタ。</li>
+<li><code>foundPtr</code>: 既にバッファプール内に存在した場合は <code>true</code>、新規割り当ての場合は <code>false</code> を設定。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>CurrentResourceOwner</code> がピン留めを記録できる状態であること。</li>
+<li>呼び出し前に <code>ReservePrivateRefCountEntry()</code> が実行され、リソース所有権が確保されていること。</li>
+<li>新規割り当て時、対象バッファは参照カウントが 1 であり、かつ <code>BM_TAG_VALID</code> 等のフラグが立っていないクリーンな状態であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検索**: <code>BufTableLookup</code> を使用し、指定されたタグがバッファプールに存在するか確認する。 2. **ヒット時**: <code>PinBuffer</code> でピン留めし、バッファを返す。 3. **ミス時**:</p>
+<ul>
+<li><code>GetVictimBuffer</code> で置換候補のバッファを取得する。</li>
+<li><code>BufTableInsert</code> でハッシュテーブルに新しいタグを挿入する。</li>
+<li>挿入競合が発生した場合は、確保したバッファを解放し、既存のバッファを再利用する。</li>
+<li>競合がない場合、バッファヘッダーをロックし、タグを更新して <code>BM_TAG_VALID</code> を付与する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/buffer/bufmgr.c</code> 内の <code>ReadBuffer_common</code> 等から呼び出される。</li>
+<li>**呼び出し先**: <code>BufTableLookup</code>, <code>BufTableInsert</code>, <code>PinBuffer</code>, <code>GetVictimBuffer</code>, <code>StrategyFreeBuffer</code>, <code>LockBufHdr</code>, <code>UnlockBufHdr</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BufferDesc</code>: バッファの状態を管理する記述子。</li>
+<li><code>BufferTag</code>: バッファを識別する一意のタグ。</li>
+<li><code>BufferAccessStrategy</code>: バッファ置換の制御構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>ハッシュテーブルへの挿入時に他プロセスとの競合が発生した場合、確保した <code>victim_buffer</code> を解放し、競合相手のバッファを優先して使用する。</li>
+<li><code>foundPtr</code> が <code>false</code> の場合、バッファの内容は未初期化であるため、呼び出し側でディスクからの読み込みが必要となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>LWLock</code>（パーティションロック）の取得・解放を伴うため、デッドロックの回避に注意すること。</li>
+<li><code>BM_PERMANENT</code> フラグの付与条件（<code>relpersistence</code> や <code>INIT_FORKNUM</code>）はチェックポイント処理に直結するため、変更時は慎重に行うこと。</li>
+</ul></body></html>

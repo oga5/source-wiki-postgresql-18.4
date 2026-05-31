@@ -1,0 +1,144 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tcop/postgres.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tcop/postgres.c</h1>
+<h2>概要</h2>
+<p><code>postgres.c</code> は PostgreSQL バックエンドプロセスのメインループ（Traffic Cop）を実装する中心的なファイルです。クライアントからの通信プロトコル（Simple/Extended Query）を解釈し、パーサ、プランナ、エグゼキュータを呼び出してクエリのライフサイクルを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tcop</code> サブシステムにおける最上位の制御層です。<code>PostgresMain</code> がプロセスのメインエントリポイントとなり、クライアントとの通信、トランザクション境界の制御、およびエラー発生時のリカバリ処理を統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メインループ管理**: クライアントからのメッセージ受信とディスパッチ。</li>
+<li>**プロトコル処理**: Simple Query および Extended Query（Parse/Bind/Execute）プロトコルの実装。</li>
+<li>**トランザクション制御**: <code>start_xact_command</code> / <code>finish_xact_command</code> によるトランザクション境界の管理。</li>
+<li>**エラーリカバリ**: <code>sigsetjmp</code> を用いたトップレベルの例外ハンドリングとプロトコル同期の維持。</li>
+<li>**シグナルハンドリング**: <code>die</code>（終了）、<code>StatementCancelHandler</code>（クエリキャンセル）、<code>quickdie</code>（緊急停止）等の実装。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>メインエントリとループ</h3>
+<ul>
+<li><code>PostgresMain</code>: バックエンドプロセスのメインループ。</li>
+<li><code>ReadCommand</code>: クライアントまたは標準入力からのメッセージ読み込み。</li>
+<li><code>exec_simple_query</code>: Simple Query プロトコルの実行。</li>
+<li><code>exec_parse_message</code> / <code>exec_bind_message</code> / <code>exec_execute_message</code>: Extended Query プロトコルの各フェーズ実行。</li>
+</ul>
+<h3>状態管理変数</h3>
+<ul>
+<li><code>xact_started</code>: 現在のトランザクション状態を追跡。</li>
+<li><code>DoingCommandRead</code>: クライアントからの読み込み中であることを示すフラグ。</li>
+<li><code>ignore_till_sync</code>: エラー発生時に次の <code>Sync</code> メッセージまで入力をスキップするためのフラグ。</li>
+<li><code>unnamed_stmt_psrc</code>: 未命名のプリペアドステートメントを保持。</li>
+</ul>
+<h3>ユーティリティ・ヘルパー</h3>
+<ul>
+<li><code>pg_parse_query</code>, <code>pg_analyze_and_rewrite_*</code>, <code>pg_plan_query</code>: SQL 処理パイプラインの各ステップを実行するラッパー。</li>
+<li><code>start_xact_command</code>, <code>finish_xact_command</code>: トランザクションの開始・終了を管理する便利関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BindParamCbData</code></li>
+<li><code>FloatExceptionHandler</code></li>
+<li><code>InteractiveBackend</code></li>
+<li><code>IsTransactionExitStmt</code></li>
+<li><code>IsTransactionExitStmtList</code></li>
+<li><code>IsTransactionStmtList</code></li>
+<li><code>ProcessClientReadInterrupt</code></li>
+<li><code>ProcessClientWriteInterrupt</code></li>
+<li><code>ReadCommand</code></li>
+<li><code>ResetUsage</code></li>
+<li><code>SocketBackend</code></li>
+<li><code>StatementCancelHandler</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>PostgresMain</code> がシグナルハンドラを設定し、<code>InitPostgres</code> で接続を確立。 2. **ループ**: <code>for (;;)</code> ループ内で <code>ReadCommand</code> を呼び出し、メッセージタイプを判定。 3. **ディスパッチ**: <code>switch (firstchar)</code> でメッセージタイプに応じた <code>exec_*</code> 関数を呼び出す。 4. **実行**: <code>Portal</code> を作成し、<code>PortalRun</code> を通じて実行。結果は <code>DestReceiver</code> を介してクライアントへ送信。 5. **リカバリ**: <code>sigsetjmp</code> で設定されたスタックにより、<code>ereport(ERROR)</code> 発生時に <code>AbortCurrentTransaction</code> を呼び出し、プロトコル同期を維持しつつループの先頭へ戻る。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>tcop/tcopprot.h</code>: Traffic Cop の内部プロトコル定義。</li>
+<li><code>access/xact.h</code>: トランザクション管理。</li>
+<li><code>parser/</code>, <code>optimizer/</code>, <code>executor/</code>: クエリ処理の各フェーズ。</li>
+<li><code>libpq/</code>: 通信プロトコル処理。</li>
+<li><code>storage/</code>: プロセス制御、シグナル、メモリ管理。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/printtup.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/prepare.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>mb/stringinfo_mb.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/print.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parser.h</code></li>
+<li><code>pg_getopt.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>rewrite/rewriteHandler.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/sinval.h</code></li>
+<li><code>sys/resource.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>tcop/backend_startup.h</code></li>
+<li><code>tcop/fastpath.h</code></li>
+<li><code>tcop/pquery.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/varlena.h</code></li>
+<li><code>valgrind/valgrind.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tcop/pquery.c</code>: ポータルの詳細な管理。</li>
+<li><code>src/backend/tcop/utility.c</code>: DDL 等のユーティリティコマンド実行。</li>
+<li><code>src/backend/tcop/dest.c</code>: クエリ結果の出力先抽象化。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>MessageContext</code> は各コマンドメッセージの処理後にリセットされます。永続的なデータは <code>TopMemoryContext</code> 等に配置する必要があります。</li>
+<li>**エラーハンドリング**: <code>PG_TRY</code> ではなく <code>sigsetjmp</code> を使用しています。これはスタックの最下層でエラーリカバリを行うためです。</li>
+<li>**プロトコル同期**: <code>ignore_till_sync</code> フラグは、Extended Query プロトコルにおいてエラー発生後にクライアントとバックエンドの同期を保つために重要です。</li>
+<li>**省略された詳細**: <code>valgrind</code> 関連のデバッグコードや、統計情報（<code>ShowUsage</code>）の詳細は、メインの制御フロー理解には必須ではないため、適宜読み飛ばして構いません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__BindParamCbData.html" target="wiki-view"><code>BindParamCbData</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__InteractiveBackend.html" target="wiki-view"><code>InteractiveBackend</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__SocketBackend.html" target="wiki-view"><code>SocketBackend</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__ReadCommand.html" target="wiki-view"><code>ReadCommand</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__ProcessClientReadInterrupt.html" target="wiki-view"><code>ProcessClientReadInterrupt</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__ProcessClientWriteInterrupt.html" target="wiki-view"><code>ProcessClientWriteInterrupt</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__IsTransactionExitStmt.html" target="wiki-view"><code>IsTransactionExitStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__IsTransactionExitStmtList.html" target="wiki-view"><code>IsTransactionExitStmtList</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__IsTransactionStmtList.html" target="wiki-view"><code>IsTransactionStmtList</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__StatementCancelHandler.html" target="wiki-view"><code>StatementCancelHandler</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__FloatExceptionHandler.html" target="wiki-view"><code>FloatExceptionHandler</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__postgres_c__ResetUsage.html" target="wiki-view"><code>ResetUsage</code></a></li>
+</ul></body></html>

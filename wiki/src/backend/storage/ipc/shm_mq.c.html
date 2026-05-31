@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/shm_mq.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/shm_mq.c</h1>
+<h2>概要</h2>
+<p><code>shm_mq.c</code> は、PostgreSQL のバックエンドプロセス間でメッセージをやり取りするための、単一リーダー・単一ライターの共有メモリメッセージキューを実装しています。主にバックグラウンドワーカーとの通信に使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールの一部として、プロセス間通信（IPC）の抽象化を提供します。共有メモリ（DSM）上に構築され、プロセス間の同期には <code>Latch</code> を利用します。</p>
+<h2>責務</h2>
+<ul>
+<li>**キューの管理**: 共有メモリ上のリングバッファ構造の初期化と管理。</li>
+<li>**同期制御**: 送信側・受信側の <code>PGPROC</code> を介した <code>Latch</code> によるブロッキング/ウェイクアップ制御。</li>
+<li>**データ転送**: メッセージの断片化や再構築を透過的に行い、必要に応じてローカルバッファへのコピーを行う。</li>
+<li>**ライフサイクル管理**: プロセスの終了やデタッチ時のクリーンアップと、相手側への通知。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>struct shm_mq</code>: 共有メモリ上に配置されるキュー本体。</li>
+<li><code>struct shm_mq_handle</code>: 各バックエンドが保持するキューへのアクセス用プライベートハンドル。</li>
+<li><code>shm_mq_send</code> / <code>shm_mq_receive</code>: メッセージ送受信の主要インターフェース。</li>
+<li><code>shm_mq_attach</code> / <code>shm_mq_detach</code>: キューへの接続と切断。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>shm_mq</code></li>
+<li><code>shm_mq_create</code></li>
+<li><code>shm_mq_get_receiver</code></li>
+<li><code>shm_mq_get_sender</code></li>
+<li><code>shm_mq_handle</code></li>
+<li><code>shm_mq_sendv</code></li>
+<li><code>shm_mq_set_handle</code></li>
+<li><code>shm_mq_set_receiver</code></li>
+<li><code>shm_mq_set_sender</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>shm_mq_create</code> で共有メモリ領域を初期化し、送信側・受信側を <code>shm_mq_set_sender</code>/<code>receiver</code> で登録します。 2. **送受信**:</p>
+<ul>
+<li>送信側は <code>shm_mq_send</code> を呼び出し、リングバッファの空き領域にデータを書き込みます。</li>
+<li>受信側は <code>shm_mq_receive</code> を呼び出し、バッファからデータを読み取ります。</li>
+<li>バッファが満杯または空の場合、<code>WaitLatch</code> を使用して相手からの通知を待ちます。</li>
+<p>3. **効率化**: 頻繁な <code>SetLatch</code> を避けるため、一定量（リングサイズの1/4）のデータが溜まるまで共有メモリ上のポインタ更新を遅延させる仕組みがあります。 4. **終了**: <code>shm_mq_detach</code> により、相手側に <code>mq_detached</code> フラグを立てて通知し、リソースを解放します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>storage/shm_mq.h</code>: 公開インターフェース。</li>
+<li><code>storage/spin.h</code>: キューヘッダー保護用のスピンロック。</li>
+<li><code>postmaster/bgworker.h</code>: バックグラウンドワーカーの監視。</li>
+<li><code>port/pg_bitutils.h</code>: バッファサイズ計算用。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/shm_mq.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/storage/ipc/dsm.c</code>: 共有メモリセグメントの管理。</li>
+<li><code>src/backend/storage/ipc/latch.c</code>: プロセス間通知の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの最小化**: <code>mq_bytes_read</code> や <code>mq_bytes_written</code> はアトミック操作とメモリバリアで保護されており、スピンロックを極力避ける設計になっています。</li>
+<li>**非同期性**: <code>nowait = true</code> を指定すると、ブロッキングせずに <code>SHM_MQ_WOULD_BLOCK</code> を返すため、イベントループ内での利用が可能です。</li>
+<li>**デバッグ**: 相手プロセスが予期せず終了した場合、<code>BackgroundWorkerHandle</code> を介して検知する仕組みがあるため、デッドロックを回避できます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq.html" target="wiki-view"><code>shm_mq</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_handle.html" target="wiki-view"><code>shm_mq_handle</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_create.html" target="wiki-view"><code>shm_mq_create</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_set_receiver.html" target="wiki-view"><code>shm_mq_set_receiver</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_set_sender.html" target="wiki-view"><code>shm_mq_set_sender</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_get_receiver.html" target="wiki-view"><code>shm_mq_get_receiver</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_get_sender.html" target="wiki-view"><code>shm_mq_get_sender</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_attach.html" target="wiki-view"><code>shm_mq_attach</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_set_handle.html" target="wiki-view"><code>shm_mq_set_handle</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_send.html" target="wiki-view"><code>shm_mq_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_sendv.html" target="wiki-view"><code>shm_mq_sendv</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__shm_mq_c__shm_mq_receive.html" target="wiki-view"><code>shm_mq_receive</code></a></li>
+</ul></body></html>

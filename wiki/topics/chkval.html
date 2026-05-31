@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/chkval.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CHKVAL</h1>
+<h2>概念</h2>
+<p><code>CHKVAL</code> は、PostgreSQLの複数のクエリ評価モジュール（<code>intarray</code>、<code>ltree</code>、全文検索の <code>tsvector</code>/<code>tsgistidx</code>）において、評価対象となるデータセットやコンテキスト情報を条件判定関数（<code>checkcondition</code> 系関数）へ引き渡すために定義されている、ローカルなコンテキスト構造体です。</p>
+<p>各モジュールで同名の構造体として独立して定義されていますが、「クエリ評価エンジンと条件判定関数の間で、評価に必要な状態やポインタを <code>void *</code> を介して受け渡す」という共通の設計パターン（カプセル化）を担っています。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLのクエリ評価エンジン（<code>TS_execute</code> や <code>ltree_execute</code> など）は、汎用的なクエリツリーの走査ロジックを提供します。一方で、評価対象となるデータ構造（整数配列、<code>ltree</code> ノード、<code>tsvector</code> の語彙配列など）はモジュールごとに大きく異なります。</p>
+<p><code>CHKVAL</code> は、これらの多様なデータ構造を評価エンジンが解釈可能な形式に抽象化し、条件判定関数へ安全に引き渡すための「共通のコンテナ（インターフェース）」として機能します。これにより、評価ロジックの共通化と各データ型に特化したマッチング処理の分離が実現されています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/intarray</code></li>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:contrib/intarray/_int_bool.c#CHKVAL</code>**</li>
+<li>整数配列の範囲（開始ポインタ <code>arrb</code>、末尾ポインタ <code>arre</code>）を保持します。</li>
+<li>**<code>symbol:contrib/ltree/ltxtquery_op.c#CHKVAL</code>**</li>
+<li>照合対象の <code>ltree</code> ノード（<code>node</code>）と、クエリ内のオペランド文字列（<code>operand</code>）を保持します。</li>
+<li>**<code>symbol:src/backend/utils/adt/tsgistidx.c#CHKVAL</code>**</li>
+<li>全文検索の GiST インデックス照合において、検索対象配列の範囲（開始ポインタ <code>arrb</code>、終了ポインタ <code>arre</code>）を保持します。</li>
+<li>**<code>symbol:src/backend/utils/adt/tsvector_op.c#CHKVAL</code>**</li>
+<li>全文検索クエリ（<code>tsquery</code>）の評価において、<code>tsvector</code> 内の語彙配列（<code>arrb</code>、<code>arre</code>）、語彙文字列領域（<code>values</code>）、および評価用オペランド（<code>operand</code>）を保持します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>各モジュールにおける評価フローは以下の通りです（モジュール間を跨ぐ統一的な共通シーケンスは存在せず、各モジュール内で独立して完結しています）。</p>
+<p>1. **初期化**: クエリ評価の開始時（例: <code>ltxtq_exec</code> や <code>execute</code> などの呼び出し時）に、評価対象データへのポインタを用いて <code>CHKVAL</code> 構造体のインスタンスがローカル変数として初期化されます。 2. **評価エンジンの呼び出し**: 評価エンジン（例: <code>TS_execute</code> や <code>ltree_execute</code>）に対して、初期化した <code>CHKVAL</code> のポインタが <code>void *</code> 型（<code>checkval</code>）として渡されます。 3. **条件判定の実行**: 評価エンジンがクエリツリーを走査する際、登録された条件判定関数（例: <code>checkcondition_arr</code> や <code>checkcondition_str</code>）を呼び出し、引数として <code>void *</code>（<code>CHKVAL</code>）を引き渡します。 4. **キャストとマッチング**: 条件判定関数内において、<code>void *</code> はそれぞれのモジュール固有の <code>CHKVAL *</code> にキャストされ、構造体内のメンバ（配列ポインタやオペランドなど）を参照して、実際のバイナリサーチや文字列比較などのマッチング処理が行われます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ポインタの有効性**: <code>CHKVAL</code> 内に保持されるポインタ（<code>arrb</code>, <code>arre</code>, <code>node</code>, <code>operand</code>, <code>values</code> など）は、評価処理の実行中、常に有効なメモリ領域を指していなければなりません。</li>
+<li>**範囲の整合性（配列の場合）**: <code>intarray</code>、<code>tsgistidx</code>、<code>tsvector_op</code> において、開始ポインタ <code>arrb</code> は終了ポインタ <code>arre</code> 以下（<code>arrb &lt;= arre</code>）でなければならず、対象の配列はソート済みである必要があります（二分探索による判定の正当性を保証するため）。</li>
+<li>**キャストの型安全性**: <code>void *</code> を介して渡されるため、呼び出し側が渡す <code>CHKVAL</code> の型と、条件判定関数側でキャストする <code>CHKVAL</code> の型が完全に一致していなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**名前衝突と誤認**: <code>CHKVAL</code> という名前の構造体は、複数のファイル（<code>_int_bool.c</code>, <code>ltxtquery_op.c</code>, <code>tsgistidx.c</code>, <code>tsvector_op.c</code>）で**個別に定義**されています。これらはグローバルに共有された単一の構造体ではなく、各ファイル内で閉じた定義です。開発やデバッグの際、異なるモジュールの <code>CHKVAL</code> 定義を混同しないよう注意が必要です。</li>
+<li>**境界外アクセス**: 配列が空の場合や、<code>arrb</code> と <code>arre</code> の関係性が崩れている場合、二分探索や走査ロジックにおいて境界外参照（セグメンテーション違反）を引き起こすリスクがあります。</li>
+<li>**メモリレイアウトへの依存**: <code>ltxtquery_op.c</code> などの判定関数（<code>checkcondition_str</code>）は、<code>CHKVAL</code> の特定のメンバ順序やメモリレイアウトに強く依存してキャストを行っています。構造体のメンバを変更する場合は、関連するキャスト処理もすべて同期して修正しなければなりません。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>contrib/intarray/_int_bool.c</code>**: 整数配列に対するクエリ評価と <code>checkcondition_arr</code> での <code>CHKVAL</code> の利用方法。</li>
+<li>**<code>contrib/ltree/ltxtquery_op.c</code>**: <code>ltree</code> に対するクエリ評価と <code>checkcondition_str</code> での <code>CHKVAL</code> の利用方法。</li>
+<li>**<code>src/backend/utils/adt/tsgistidx.c</code>**: GiST インデックスにおける <code>tsvector</code> 評価と <code>CHKVAL</code> の利用方法。</li>
+<li>**<code>src/backend/utils/adt/tsvector_op.c</code>**: <code>tsvector</code> に対するクエリ評価と <code>CHKVAL</code> の利用方法。</li>
+</ul></body></html>

@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/inherit.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/inherit.c</h1>
+<h2>概要</h2>
+<p>継承（Inheritance）およびパーティション分割されたテーブルのクエリ最適化において、親テーブルの範囲テーブルエントリ（RTE）を個別の物理的な子テーブル（またはパーティション）に展開する処理を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、プランナがクエリの対象となる継承階層を解決し、各子テーブルに対して個別の <code>RelOptInfo</code> や <code>AppendRelInfo</code> を生成するための中心的な役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**継承階層の展開**: <code>inh</code> フラグが設定された RTE を検出し、子テーブルのリストを取得してクエリの範囲テーブルに追加する。</li>
+<li>**パーティション管理**: パーティション分割されたテーブルに対して、パーティションのプルーニング（不要なパーティションの除外）を行い、必要な子テーブルのみをプランニング対象とする。</li>
+<li>**メタデータの変換**: 親テーブルの列権限や制約を子テーブルの列順序や属性に合わせて変換・適用する。</li>
+<li>**行マークの管理**: <code>FOR UPDATE/SHARE</code> などの行ロック指定を継承階層全体に伝播させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>expand_inherited_rtentry</code>: 継承またはパーティション展開の起点となるメイン関数。</li>
+<li><code>expand_partitioned_rtentry</code>: パーティションテーブルを再帰的に展開し、プルーニングを行う。</li>
+<li><code>expand_single_inheritance_child</code>: 個別の子テーブルに対する RTE、<code>AppendRelInfo</code>、<code>PlanRowMark</code> を生成する。</li>
+<li><code>apply_child_basequals</code>: 親の制約（RestrictInfo）を子テーブルの属性に変換して適用し、不要な子テーブルを排除する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>expand_appendrel_subquery</code></li>
+<li><code>get_rel_all_updated_cols</code></li>
+<li><code>translate_col_privs</code></li>
+<li><code>translate_col_privs_multilevel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起点**: <code>expand_inherited_rtentry</code> が呼ばれ、RTE の種類（<code>RTE_RELATION</code> か <code>RTE_SUBQUERY</code>）を判定します。 2. **展開**:</p>
+<ul>
+<li>パーティションテーブルの場合: <code>expand_partitioned_rtentry</code> がパーティション記述子を取得し、プルーニング後に各パーティションを処理します。</li>
+<li>通常の継承の場合: <code>find_all_inheritors</code> で全子テーブルを取得し、順次処理します。</li>
+<p>3. **子ノード生成**: <code>expand_single_inheritance_child</code> が各子テーブルの RTE を作成し、<code>AppendRelInfo</code> を <code>root-&gt;append_rel_list</code> に追加します。 4. **制約適用**: <code>apply_child_basequals</code> が親の制約を子テーブルのコンテキストに変換し、定数評価によって明らかに不要な子テーブルを「ダミー」として除外します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_inherits.h</code>, <code>catalog/partition.h</code>: 継承およびパーティションのカタログ情報。</li>
+<li><code>optimizer/appendinfo.h</code>, <code>optimizer/pathnode.h</code>: 展開後のプランナデータ構造。</li>
+<li><code>partitioning/partprune.h</code>: パーティションプルーニング機能。</li>
+<li><code>parser/parsetree.h</code>: RTE 構造の定義。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/inherit.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/plancat.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/prep/prepunion.c</code>: <code>expand_inherited_rtentry</code> が生成した <code>AppendRelInfo</code> を利用して、最終的なプランを作成する処理。</li>
+<li><code>src/backend/partitioning/partprune.c</code>: パーティションプルーニングのロジック詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは、プランナがクエリを「抽象的な親」から「具体的な物理テーブル」の集合へ変換する重要なフェーズを扱います。</li>
+<li><code>securityQuals</code> の扱いに注意してください。親の RLS（行レベルセキュリティ）は子に伝播されますが、子テーブル固有のセキュリティ制約は <code>apply_child_basequals</code> で個別にマージされます。</li>
+<li>パーティションテーブルと従来の継承テーブルでは、展開の深さや <code>AppendRelInfo</code> の生成タイミングが異なるため、コードを読む際はどちらのケースを追っているか意識してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__expand_inherited_rtentry.html" target="wiki-view"><code>expand_inherited_rtentry</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__expand_partitioned_rtentry.html" target="wiki-view"><code>expand_partitioned_rtentry</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__expand_single_inheritance_child.html" target="wiki-view"><code>expand_single_inheritance_child</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__get_rel_all_updated_cols.html" target="wiki-view"><code>get_rel_all_updated_cols</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__translate_col_privs.html" target="wiki-view"><code>translate_col_privs</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__translate_col_privs_multilevel.html" target="wiki-view"><code>translate_col_privs_multilevel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__expand_appendrel_subquery.html" target="wiki-view"><code>expand_appendrel_subquery</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__util__inherit_c__apply_child_basequals.html" target="wiki-view"><code>apply_child_basequals</code></a></li>
+</ul></body></html>

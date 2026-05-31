@@ -1,0 +1,118 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/analyze.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/analyze.c</h1>
+<h2>概要</h2>
+<p><code>analyze.c</code> は、PostgreSQL のパーサーモジュールにおける「意味解析（Semantic Analysis）」のメインドライバです。<code>parser.c</code> が生成した「生の解析ツリー（<code>RawStmt</code>）」を受け取り、システムカタログを参照して型解決、名前解決、権限チェックを行い、プランナが処理可能な「クエリツリー（<code>Query</code>）」へ変換します。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは、SQL 文の種類ごとに変換処理を振り分けるハブの役割を果たします。各句（FROM, WHERE, SELECT 等）の具体的な変換ロジックは <code>parse_*.c</code> ファイル群に委譲されており、本ファイルはそれらを統合して <code>Query</code> 構造体を構築します。</p>
+<h2>責務</h2>
+<ul>
+<li>**解析の統括**: <code>ParseState</code> を初期化し、SQL 文の種類に応じて適切な変換関数を呼び出す。</li>
+<li>**文の変換**: <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>SELECT</code>, <code>MERGE</code> 等の各 SQL 文を <code>Query</code> ノードへ変換。</li>
+<li>**特殊処理**: <code>SELECT INTO</code> の <code>CREATE TABLE AS</code> への変換、<code>ON CONFLICT</code> 句の解析、<code>RETURNING</code> 句の処理。</li>
+<li>**フック管理**: プラグインが解析終了時に介入するための <code>post_parse_analyze_hook</code> の提供。</li>
+<li>**メタデータ付与**: クエリIDの生成（<code>JumbleQuery</code>）や、解析に必要なスナップショットの要否判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>解析エントリーポイント</h3>
+<ul>
+<li><code>parse_analyze_fixedparams</code>: パラメータ型が既知の場合の解析。</li>
+<li><code>parse_analyze_varparams</code>: パラメータ型をコンテキストから推論する場合の解析。</li>
+<li><code>parse_analyze_withcb</code>: カスタムコールバックを用いた解析。</li>
+<li><code>parse_sub_analyze</code>: サブクエリや CTE 内部の再帰的な解析。</li>
+</ul>
+<h3>文変換ファミリー</h3>
+<ul>
+<li><code>transformStmt</code>: 文の種類を判定し、適切な変換関数へディスパッチするメイン関数。</li>
+<li><code>transformInsertStmt</code>, <code>transformDeleteStmt</code>, <code>transformUpdateStmt</code>: DML 文の変換。</li>
+<li><code>transformSelectStmt</code>, <code>transformValuesClause</code>, <code>transformSetOperationStmt</code>: SELECT 関連の変換。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><code>stmt_requires_parse_analysis</code>: 解析が必要な文か判定。</li>
+<li><code>analyze_requires_snapshot</code>: スナップショットが必要な文か判定。</li>
+<li><code>transformReturningClause</code>: <code>RETURNING</code> 句の解析と名前空間管理。</li>
+<li><code>transformOnConflictClause</code>: <code>INSERT ... ON CONFLICT</code> の解析。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BuildOnConflictExcludedTargetlist</code></li>
+<li><code>CheckSelectLocking</code></li>
+<li><code>LCS_asString</code></li>
+<li><code>analyze_requires_snapshot</code></li>
+<li><code>parse_analyze_fixedparams</code></li>
+<li><code>parse_analyze_varparams</code></li>
+<li><code>parse_analyze_withcb</code></li>
+<li><code>parse_sub_analyze</code></li>
+<li><code>query_requires_rewrite_plan</code></li>
+<li><code>stmt_requires_parse_analysis</code></li>
+<li><code>transformCreateTableAsStmt</code></li>
+<li><code>transformDeleteStmt</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>make_parsestate()</code> で <code>ParseState</code> を作成し、ソーステキストやパラメータ情報を保持。 2. **ディスパッチ**: <code>transformStmt()</code> が <code>nodeTag</code> を見て、対応する <code>transform*Stmt</code> 関数を呼び出す。 3. **再帰的変換**: 各 <code>transform*Stmt</code> 関数は、<code>parse_relation.c</code> や <code>parse_expr.c</code> の関数を呼び出し、FROM 句、WHERE 句、ターゲットリストを順次変換する。 4. **名前空間管理**: <code>ParseState</code> 内の <code>p_namespace</code> を操作し、可視リレーションを制御。 5. **最終化**: <code>assign_query_collations()</code> で照合順序を確定し、必要に応じて <code>parseCheckAggregates()</code> で集約関数の配置を検証。 6. **解放**: <code>free_parsestate()</code> でメモリを解放。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>parser/</code>: <code>parse_*.h</code> ヘッダー群（各句の解析ロジック）。</li>
+<li><code>nodes/</code>: <code>parsetree.h</code>, <code>makefuncs.h</code>（ノード操作）。</li>
+<li><code>catalog/</code>: <code>pg_proc.h</code>, <code>pg_type.h</code>（システムカタログ参照）。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code>, <code>rel.h</code>（キャッシュ・リレーション管理）。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/queryjumble.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_cte.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_merge.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_param.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/backend_status.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/parser.c</code>: 構文解析の入り口。</li>
+<li><code>src/backend/parser/parse_relation.c</code>: 名前解決と <code>RangeTblEntry</code> の生成。</li>
+<li><code>src/backend/parser/parse_expr.c</code>: 式の型解決とキャスト挿入。</li>
+<li><code>src/include/parser/analyze.h</code>: 公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>ParseState</code> は <code>CurrentMemoryContext</code> 上で確保され、<code>free_parsestate</code> で解放されます。解析中に生成されるノードは、クエリツリーの一部として永続化されるため、メモリコンテキストの扱いに注意が必要です。</li>
+<li>**エラーパス**: <code>ereport(ERROR, ...)</code> が発生すると、PostgreSQL のエラーハンドリング機構によりスタックが巻き戻されます。</li>
+<li>**制約**: <code>transformStmt</code> は <code>CMD_UTILITY</code> を返す場合、元の構文木をそのまま保持します。これはプランナがユーティリティコマンドを直接実行するためです。</li>
+<li>**省略箇所**: <code>DEBUG_NODE_TESTS_ENABLED</code> が有効な場合のデバッグ用コードは、本質的な解析フローではないため詳細な解説を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__parse_analyze_fixedparams.html" target="wiki-view"><code>parse_analyze_fixedparams</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__parse_analyze_varparams.html" target="wiki-view"><code>parse_analyze_varparams</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__parse_analyze_withcb.html" target="wiki-view"><code>parse_analyze_withcb</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__parse_sub_analyze.html" target="wiki-view"><code>parse_sub_analyze</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__stmt_requires_parse_analysis.html" target="wiki-view"><code>stmt_requires_parse_analysis</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__analyze_requires_snapshot.html" target="wiki-view"><code>analyze_requires_snapshot</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__query_requires_rewrite_plan.html" target="wiki-view"><code>query_requires_rewrite_plan</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__transformDeleteStmt.html" target="wiki-view"><code>transformDeleteStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__BuildOnConflictExcludedTargetlist.html" target="wiki-view"><code>BuildOnConflictExcludedTargetlist</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__transformCreateTableAsStmt.html" target="wiki-view"><code>transformCreateTableAsStmt</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__LCS_asString.html" target="wiki-view"><code>LCS_asString</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__analyze_c__CheckSelectLocking.html" target="wiki-view"><code>CheckSelectLocking</code></a></li>
+</ul></body></html>

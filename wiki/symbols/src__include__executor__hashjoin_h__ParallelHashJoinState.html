@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__executor__hashjoin_h__ParallelHashJoinState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelHashJoinState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/executor/hashjoin.h:246</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ハッシュ結合（Parallel Hash Join）において、共有メモリ（DSM）上で複数プロセス間の同期と状態管理を行うための構造体。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct ParallelHashJoinState {
+    dsa_pointer batches;
+    dsa_pointer old_batches;
+    int         nbatch;
+    int         old_nbatch;
+    int         nbuckets;
+    ParallelHashGrowth growth;
+    dsa_pointer chunk_work_queue;
+    int         nparticipants;
+    size_t      space_allowed;
+    size_t      total_tuples;
+    LWLock      lock;
+    Barrier     build_barrier;
+    Barrier     grow_batches_barrier;
+    Barrier     grow_buckets_barrier;
+    pg_atomic_uint32 distributor;
+    SharedFileSet fileset;
+} ParallelHashJoinState;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ領域（DSA）を介したバッチ、チャンク、およびファイルセットのポインタ。</li>
+<li>**出力**: 複数プロセス間で共有されるハッシュテーブルの構築状態、バッチ分割・バケット成長の進捗、および同期用バリアの状態。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>lock</code>（<code>LWLock</code>）により、構造体内の主要な状態（<code>nbatch</code>, <code>nbuckets</code>, <code>growth</code> 等）へのアクセスが保護される必要がある。</li>
+<li>並列実行に参加する全プロセスは、<code>build_barrier</code>、<code>grow_batches_barrier</code>、<code>grow_buckets_barrier</code> を使用して、構築・プローブの各フェーズを同期させる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**構築フェーズ**: <code>build_barrier</code> を用いて、全参加プロセスがハッシュテーブル構築の各段階を同期して進行する。</li>
+<li>**成長制御**: メモリ制限に達した場合、<code>grow_batches_barrier</code> や <code>grow_buckets_barrier</code> を用いて、バッチの再分割やバケットの拡張を全プロセスで協調して行う。</li>
+<li>**負荷分散**: <code>distributor</code>（アトミックカウンタ）を使用して、プロセス間のタスク割り当てを調整する。</li>
+<li>**一時ファイル**: <code>SharedFileSet</code> を使用し、メモリ不足時にバッチをディスクへ退避・読み込みする。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeHash.c</code> 内の各関数（<code>hashtable-&gt;parallel_state</code> として参照）。</li>
+<li>**呼び出し先**: 構造体内部の <code>Barrier</code> や <code>LWLock</code>、<code>dsa_pointer</code> を介したメモリ領域、および <code>SharedFileSet</code> が操作対象となる。具体的な関数呼び出し関係はソース抜粋からは不明。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelHashJoinBatch</code>: バッチ管理用構造体。</li>
+<li><code>ParallelHashGrowth</code>: ハッシュテーブルの成長状態を示す列挙型。</li>
+<li><code>SharedFileSet</code>: 共有一時ファイル管理用。</li>
+<li><code>Barrier</code>: プロセス間同期用。</li>
+<li><code>LWLock</code>: 共有状態保護用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>メモリ不足時、<code>nbatch</code> の増加やバッチの再分割が必要となる。</li>
+<li>共有メモリ領域（DSA）の枯渇や、<code>SharedFileSet</code> による一時ファイル書き出し時のディスク容量不足が発生し得る。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は並列実行の心臓部であり、<code>LWLock</code> の競合や <code>Barrier</code> のデッドロックに注意が必要。</li>
+<li><code>dsa_pointer</code> を介したメモリ操作を行っているため、ポインタの有効性とライフサイクル管理が重要。</li>
+<li>構造体内の各フィールドの更新順序と同期タイミングについては、<code>nodeHash.c</code> の実装ロジックを詳細に参照すること。</li>
+</ul></body></html>

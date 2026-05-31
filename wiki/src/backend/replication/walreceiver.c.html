@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/replication/walreceiver.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/replication/walreceiver.c</h1>
+<h2>概要</h2>
+<p>スタンバイサーバーにおいて、プライマリサーバーから WAL（Write Ahead Log）をストリーミング受信し、ローカルのディスクに書き込むためのバックグラウンドプロセス（<code>walreceiver</code>）を実装するファイルです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication</code> モジュールにおいて、ストリーミングレプリケーションの「受信側」の心臓部を担います。スタートアッププロセスから指示を受け、<code>libpqwalreceiver</code> を介してプライマリと通信し、受信した WAL をリカバリプロセスが読み取れる形式で保存します。</p>
+<h2>責務</h2>
+<ul>
+<li>プライマリサーバーへの接続確立と維持。</li>
+<li>WAL ストリームの受信、ディスクへの書き込み、および <code>fsync</code> による永続化。</li>
+<li>受信進捗（<code>flushedUpto</code>）の共有メモリへの更新。</li>
+<li>プライマリへのフィードバック送信（受信確認、Hot Standby フィードバック）。</li>
+<li>タイムライン切り替え時の履歴ファイル取得。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>WalReceiverMain</code>: プロセスのメインエントリポイント。</li>
+<li><code>XLogWalRcvWrite</code>: 受信した WAL データをローカルファイルに書き込む。</li>
+<li><code>XLogWalRcvFlush</code>: 書き込まれたデータをディスクへフラッシュし、共有メモリを更新する。</li>
+<li><code>XLogWalRcvSendReply</code>: プライマリへ受信状況を報告する。</li>
+<li><code>wrconn</code>: <code>libpqwalreceiver</code> を介したプライマリとの接続ハンドル。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>WalRcvDie</code></li>
+<li><code>WalRcvFetchTimeLineHistoryFiles</code></li>
+<li><code>WalRcvWaitForStartPosition</code></li>
+<li><code>WalRcvWakeupReason</code></li>
+<li><code>XLogRecPtr</code></li>
+<li><code>XLogWalRcvClose</code></li>
+<li><code>XLogWalRcvProcessMsg</code></li>
+<li><code>XLogWalRcvSendHSFeedback</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>WalReceiverMain</code> が起動し、共有メモリ上の <code>WalRcv</code> 構造体を確認して接続情報を取得します。 2. **接続**: <code>libpqwalreceiver</code> を動的ロードし、プライマリへ接続します。 3. **ストリーミングループ**:</p>
+<ul>
+<li><code>walrcv_receive</code> でプライマリからデータを受信。</li>
+<li><code>XLogWalRcvProcessMsg</code> でメッセージ種別（WALデータまたはKeepalive）を判定。</li>
+<li><code>XLogWalRcvWrite</code> で WAL をファイルへ書き込み、<code>LogstreamResult</code> を更新。</li>
+<li>定期的に <code>XLogWalRcvFlush</code> を呼び出し、リカバリプロセスへ進捗を通知。</li>
+<p>4. **待機**: ストリーミング終了時やエラー時は <code>WalRcvWaitForStartPosition</code> で待機状態へ移行し、スタートアッププロセスからの再開指示を待ちます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/walreceiver.h</code>: 共有メモリ構造体定義。</li>
+<li><code>access/xlog_internal.h</code>: WAL 関連の低レベル定義。</li>
+<li><code>libpq/pqformat.h</code>: プライマリとの通信プロトコル処理。</li>
+<li><code>storage/proc.h</code>, <code>storage/ipc.h</code>: プロセス間通信およびラッチ制御。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlogarchive.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/replication/walreceiverfuncs.c</code>: 共有メモリ上の <code>WalRcv</code> 構造体の管理や、スタートアッププロセスとの連携関数。</li>
+<li><code>src/backend/replication/libpqwalreceiver/</code>: <code>libpq</code> を使用した実際のネットワーク通信実装。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: リカバリプロセス側で WAL を読み取る側の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**動的ロード**: 本ファイルは <code>libpq</code> に直接依存せず、実行時に <code>libpqwalreceiver</code> をロードします。これはサーバー本体を <code>libpq</code> から分離するための設計です。</li>
+<li>**同期**: <code>walreceiver</code> は自身の状態を共有メモリの <code>WalRcv</code> 構造体に保持します。スタートアッププロセスはこの構造体を介して <code>walreceiver</code> を制御（開始・停止・再開）します。</li>
+<li>**エラーハンドリング**: <code>SIGTERM</code> は正常終了、<code>SIGQUIT</code> は即時終了として扱われます。接続断は致命的なエラーではなく、再接続を試みる通常のフローの一部です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogRecPtr.html" target="wiki-view"><code>XLogRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__WalRcvWakeupReason.html" target="wiki-view"><code>WalRcvWakeupReason</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__WalReceiverMain.html" target="wiki-view"><code>WalReceiverMain</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__WalRcvWaitForStartPosition.html" target="wiki-view"><code>WalRcvWaitForStartPosition</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__WalRcvFetchTimeLineHistoryFiles.html" target="wiki-view"><code>WalRcvFetchTimeLineHistoryFiles</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__WalRcvDie.html" target="wiki-view"><code>WalRcvDie</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvProcessMsg.html" target="wiki-view"><code>XLogWalRcvProcessMsg</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvWrite.html" target="wiki-view"><code>XLogWalRcvWrite</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvFlush.html" target="wiki-view"><code>XLogWalRcvFlush</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvClose.html" target="wiki-view"><code>XLogWalRcvClose</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvSendReply.html" target="wiki-view"><code>XLogWalRcvSendReply</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walreceiver_c__XLogWalRcvSendHSFeedback.html" target="wiki-view"><code>XLogWalRcvSendHSFeedback</code></a></li>
+</ul></body></html>

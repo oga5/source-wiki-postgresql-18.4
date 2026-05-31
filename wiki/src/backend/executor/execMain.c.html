@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execMain.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execMain.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のクエリ実行エンジンの最上位インターフェースを定義するファイルです。クエリのライフサイクル（開始、実行、終了）を管理し、プランナが生成した実行計画（<code>PlannedStmt</code>）を <code>EState</code>（実行状態）に変換して実行します。</p>
+<h2>モジュール内での役割</h2>
+<p>実行エンジン（<code>src/backend/executor</code>）のメインエントリポイントです。プランノードの初期化、権限チェック、トリガー管理、および並列クエリの制御を統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**クエリライフサイクル管理**: <code>ExecutorStart</code>, <code>ExecutorRun</code>, <code>ExecutorFinish</code>, <code>ExecutorEnd</code> を通じた実行フローの制御。</li>
+<li>**実行環境の構築**: <code>EState</code> の作成、プランツリーの初期化、リソース（メモリ、スナップショット）の割り当て。</li>
+<li>**権限と制約の検証**: テーブルアクセス権限（<code>ExecCheckPermissions</code>）、NOT NULL 制約、チェック制約、パーティション制約の検証。</li>
+<li>**EvalPlanQual (EPQ) 管理**: READ COMMITTED 分離レベルにおける同時実行制御（更新競合時の再評価）のサポート。</li>
+<li>**フックポイントの提供**: プラグインが実行フローに介入するためのフック（<code>ExecutorStart_hook</code> 等）の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>実行制御インターフェース</h3>
+<ul>
+<li><code>ExecutorStart</code>: クエリ実行の準備。<code>EState</code> の構築とプランツリーの初期化。</li>
+<li><code>ExecutorRun</code>: プランツリーの実行。指定されたタプル数または完了まで実行。</li>
+<li><code>ExecutorFinish</code>: 実行後のクリーンアップ（AFTER トリガーの実行など）。</li>
+<li><code>ExecutorEnd</code>: リソースの解放と実行環境の破棄。</li>
+</ul>
+<h3>権限・制約チェック</h3>
+<ul>
+<li><code>ExecCheckPermissions</code>: クエリ内の全リレーションに対する権限チェック。</li>
+<li><code>ExecConstraints</code>: タプルの NOT NULL 制約およびチェック制約の検証。</li>
+<li><code>ExecPartitionCheck</code>: パーティション制約の検証。</li>
+</ul>
+<h3>EPQ（同時実行制御）関連</h3>
+<ul>
+<li><code>EvalPlanQual</code>: 更新競合発生時に、最新のタプルバージョンでクエリを再評価する。</li>
+<li><code>EPQState</code>: EPQ 実行中の状態を保持する構造体。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecutorStart</code> が <code>CreateExecutorState</code> で <code>EState</code> を作成し、<code>InitPlan</code> でプランツリーを初期化。<code>InitPlan</code> は権限チェックと <code>ExecInitNode</code> を呼び出し、実行可能な <code>PlanState</code> ツリーを構築します。 2. **実行**: <code>ExecutorRun</code> が <code>ExecutePlan</code> を呼び出し、<code>ExecProcNode</code> を通じてプランツリーを再帰的に走査。タプルは <code>TupleTableSlot</code> を介して上位ノードへ伝播されます。 3. **終了**: <code>ExecutorFinish</code> でトリガーを処理し、<code>ExecutorEnd</code> で <code>ExecEndNode</code> を呼び出して全ノードを終了させ、メモリコンテキストを解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/executor.h</code>: 実行エンジンの主要構造体定義。</li>
+<li><code>access/tableam.h</code>: テーブルアクセス層の抽象化。</li>
+<li><code>nodes/queryjumble.h</code>: クエリ ID 管理。</li>
+<li><code>utils/</code>: メモリコンテキスト、スナップショット、ACL（権限）管理。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/executor/execProcnode.c</code>: ノード実行のディスパッチ。</li>
+<li><code>src/backend/executor/execExprInterp.c</code>: 式評価エンジン。</li>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: INSERT/UPDATE/DELETE の実行ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>EState</code> はクエリ実行中のメモリコンテキストを所有しており、<code>ExecutorEnd</code> で <code>FreeExecutorState</code> を呼び出すことで、クエリに関連する全メモリが解放されます。</li>
+<li>**フックの利用**: <code>ExecutorStart_hook</code> 等は、PostgreSQL の機能を拡張するプラグイン（例: <code>pg_stat_statements</code>）がクエリ実行を監視するために使用します。</li>
+<li>**制約チェック**: <code>ExecConstraints</code> はタプルが変換された後（パーティションルーティング後など）に呼び出されるため、常に最終的なターゲットリレーションの制約を検証します。</li>
+<li>**省略された詳細**: 本ファイルはインターフェース層であり、個別のプランノード（<code>nodeAgg.c</code> 等）の具体的な実行ロジックは含まれていません。これらは <code>ExecProcNode</code> を通じて間接的に呼び出されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecutorStart.html" target="wiki-view"><code>ExecutorStart</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecutorRun.html" target="wiki-view"><code>ExecutorRun</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecutorFinish.html" target="wiki-view"><code>ExecutorFinish</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecutorEnd.html" target="wiki-view"><code>ExecutorEnd</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecutorRewind.html" target="wiki-view"><code>ExecutorRewind</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecCheckPermissions.html" target="wiki-view"><code>ExecCheckPermissions</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecCheckOneRelPerms.html" target="wiki-view"><code>ExecCheckOneRelPerms</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__ExecCheckPermissionsModified.html" target="wiki-view"><code>ExecCheckPermissionsModified</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__InitPlan.html" target="wiki-view"><code>InitPlan</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__CheckValidResultRel.html" target="wiki-view"><code>CheckValidResultRel</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__InitResultRelInfo.html" target="wiki-view"><code>InitResultRelInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execMain_c__EvalPlanQualInit.html" target="wiki-view"><code>EvalPlanQualInit</code></a></li>
+</ul></body></html>

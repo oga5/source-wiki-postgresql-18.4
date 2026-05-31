@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/sort/tuplestore.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/sort/tuplestore.c</h1>
+<h2>概要</h2>
+<p><code>tuplestore.c</code> は、PostgreSQL における一時的なタプル格納のための汎用的なストレージ機能を提供します。ソートを行わない「順序保持」に特化したデータ構造であり、Materialize ノードやハッシュ結合のバッチ処理などで利用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/sort</code> モジュールにおいて、<code>tuplesort.c</code> がソートを伴う一時格納を担当するのに対し、本ファイルはソート不要なシーケンシャルなタプル保持を担当します。メモリ制限を超えた場合に自動的に一時ファイル（<code>BufFile</code>）へ退避する仕組みを備えています。</p>
+<h2>責務</h2>
+<ul>
+<li>**メモリ管理**: 指定された <code>maxKBytes</code> に基づき、メモリ内（<code>memtuples</code> 配列）とディスク（<code>BufFile</code>）の切り替えを自動制御する。</li>
+<li>**読み取りポインタの管理**: 複数の独立した読み取りポインタをサポートし、カーソル操作やマーク/リストア機能を実現する。</li>
+<li>**抽象化**: タプルのコピー、書き込み、読み込み処理を関数ポインタ（<code>copytup</code>, <code>writetup</code>, <code>readtup</code>）で分離し、将来的なタプル型拡張を容易にしている。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>Tuplestorestate</code>: 状態を保持する不透明な構造体。</li>
+<li><code>TupStoreStatus</code>: 現在の状態（<code>TSS_INMEM</code>, <code>TSS_WRITEFILE</code>, <code>TSS_READFILE</code>）。</li>
+<li><code>TSReadPointer</code>: 個別の読み取り位置を管理する構造体。</li>
+<li><code>tuplestore_begin_heap</code>: 初期化関数。</li>
+<li><code>tuplestore_puttupleslot</code>: タプルの追加（メモリまたはディスクへ）。</li>
+<li><code>tuplestore_gettupleslot</code>: タプルの取得（順方向/逆方向）。</li>
+<li><code>tuplestore_trim</code>: 不要になった古いタプルをメモリから解放する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>tuplestore_alloc_read_pointer</code></li>
+<li><code>tuplestore_begin_common</code></li>
+<li><code>tuplestore_clear</code></li>
+<li><code>tuplestore_end</code></li>
+<li><code>tuplestore_get_stats</code></li>
+<li><code>tuplestore_select_read_pointer</code></li>
+<li><code>tuplestore_set_eflags</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tuplestore_begin_heap</code> でメモリコンテキストと初期読み取りポインタを生成。 2. **書き込み**: <code>tuplestore_puttupleslot</code> がタプルを受け取り、メモリ容量内であれば <code>memtuples</code> に格納。制限を超えると <code>dumptuples</code> を呼び出し、全タプルを一時ファイルへ書き出して <code>TSS_WRITEFILE</code> 状態へ移行。 3. **読み取り**: <code>tuplestore_gettupleslot</code> が要求されたポインタ位置からタプルを返す。ディスク状態であれば <code>BufFileSeek</code> を使用して位置を調整し、必要に応じて <code>readtup</code> でメモリへ復元する。 4. **状態遷移**: 読み取りと書き込みが混在する場合、<code>BufFileTell</code> と <code>BufFileSeek</code> を用いて、ファイルポインタを現在の操作対象に合わせて動的に切り替える。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buffile.h</code>: 一時ファイル操作。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>executor/executor.h</code>: タプルスロット操作。</li>
+<li><code>access/htup_details.h</code>: ヒープタプル操作。</li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/tuplestore.h</code>: 公開 API 定義。</li>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: 類似の設計思想を持つソート用モジュール。</li>
+<li><code>src/backend/storage/file/buffile.c</code>: <code>BufFile</code> の実装詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ計算**: <code>availMem</code> は <code>GetMemoryChunkSpace</code> を用いて実使用量を追跡しており、<code>palloc</code> のオーバーヘッドも考慮されています。</li>
+<li>**ポインタの挙動**: 読み取りポインタの <code>eof_reached</code> フラグは、書き込みと読み取りが並行する際の効率化のために重要です。</li>
+<li>**トリミング**: <code>tuplestore_trim</code> はメモリ節約に有効ですが、呼び出しタイミングには注意が必要です（呼び出し元が保持しているタプルポインタが無効化される可能性があるため）。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__TupStoreStatus.html" target="wiki-view"><code>TupStoreStatus</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__TSReadPointer.html" target="wiki-view"><code>TSReadPointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__Tuplestorestate.html" target="wiki-view"><code>Tuplestorestate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_begin_common.html" target="wiki-view"><code>tuplestore_begin_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_begin_heap.html" target="wiki-view"><code>tuplestore_begin_heap</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_set_eflags.html" target="wiki-view"><code>tuplestore_set_eflags</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_alloc_read_pointer.html" target="wiki-view"><code>tuplestore_alloc_read_pointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_clear.html" target="wiki-view"><code>tuplestore_clear</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_end.html" target="wiki-view"><code>tuplestore_end</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_select_read_pointer.html" target="wiki-view"><code>tuplestore_select_read_pointer</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_trim.html" target="wiki-view"><code>tuplestore_trim</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplestore_c__tuplestore_get_stats.html" target="wiki-view"><code>tuplestore_get_stats</code></a></li>
+</ul></body></html>

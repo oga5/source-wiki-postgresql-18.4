@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__xlogprefetcher_c__XLogPrefetcher.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>XLogPrefetcher</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>struct</code></li>
+<li>**定義箇所**: <code>src/backend/access/transam/xlogprefetcher.c:124</code></li>
+</ul>
+<h2>目的</h2>
+<p>リカバリ処理中のI/O待ち時間を削減するため、WALを先行デコードし、将来必要となるデータブロックをバッファプールへ事前にロード（先読み）するための状態管理構造体です。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct XLogPrefetcher
+{
+    XLogReaderState *reader;
+    DecodedXLogRecord *record;
+    int         next_block_id;
+    XLogRecPtr  next_stats_shm_lsn;
+    HTAB       *filter_table;
+    dlist_head  filter_queue;
+    RelFileLocator recent_rlocator[XLOGPREFETCHER_SEQ_WINDOW_SIZE];
+    BlockNumber recent_block[XLOGPREFETCHER_SEQ_WINDOW_SIZE];
+    int         recent_idx;
+    XLogRecPtr  no_readahead_until;
+    LsnReadQueue *streaming_read;
+    XLogRecPtr  begin_ptr;
+    int         reconfigure_count;
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogPrefetcherAllocate</code> により初期化され、<code>XLogReaderState</code> と紐付けられます。</li>
+<li>**出力**: <code>XLogPrefetcherNextBlock</code> 等の処理を通じて、<code>PrefetchSharedBuffer</code> を介したバッファプールへのI/O発行が行われます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>maintenance_io_concurrency</code> が0より大きい場合にのみ機能します。</li>
+<li>メインフォークのブロックのみが先読み対象となります。</li>
+<li><code>filter_table</code> および <code>filter_queue</code> は、存在しないファイルや切り詰められた範囲への不要なI/Oを抑制するために使用されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **WAL先行デコード**: <code>XLogPrefetcherReadRecord</code> をエントリポイントとして、<code>XLogReaderState</code> を用いてWALを先行して解析します。 2. **I/O発行判断**: 解析したレコードからブロック参照を抽出し、<code>LsnReadQueue</code> を介してI/Oを発行します。 3. **重複抑制**: <code>recent_rlocator</code> および <code>recent_block</code> を使用して、直近の先読みリクエストとの重複を回避します。 4. **フィルタリング**: <code>XLogPrefetcherAddFilter</code> で登録された範囲に基づき、リプレイが追いつく前の不正なI/Oを防止します。 5. **統計管理**: <code>next_stats_shm_lsn</code> に到達するごとに、共有メモリ上の統計情報を更新します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>XLogPrefetcherAllocate</code>（生成）、<code>XLogPrefetcherAddFilter</code>、<code>XLogPrefetcherCompleteFilters</code>、<code>XLogPrefetcherFree</code> 等のモジュール内関数から参照されます。</li>
+<li>**呼び出し先**: <code>PrefetchSharedBuffer</code>（I/O発行）、<code>XLogReaderState</code>（WAL読み込み）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>XLogReaderState</code>: WALデコードの基盤。</li>
+<li><code>LsnReadQueue</code>: 先読み中のI/Oリクエストを管理する循環キュー。</li>
+<li><code>XLogPrefetcherFilter</code>: 先読み禁止範囲を管理する構造体。</li>
+<li><code>RelFileLocator</code>: 対象ファイルの識別子。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**フィルタリング**: リプレイが追いつく前に存在しないファイルへアクセスしようとした場合、フィルタ機構によりI/Oが抑制されます。</li>
+<li>**再構成**: GUC変数の変更に伴い <code>reconfigure_count</code> が更新され、先読みキューの再構成が行われます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>#define XLOGPREFETCHER_DEBUG_LEVEL LOG</code> を有効にすると、先読みの抑制理由がログに出力されます。</li>
+<li>統計情報は <code>pg_stat_recovery_prefetch</code> ビューを通じて確認可能です。</li>
+<li>現在の設計ではメインフォーク以外のブロックは先読み対象外です。</li>
+</ul></body></html>

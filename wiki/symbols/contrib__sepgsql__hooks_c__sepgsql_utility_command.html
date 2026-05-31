@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__hooks_c__sepgsql_utility_command.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>sepgsql_utility_command</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/sepgsql/hooks.c:315</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL の <code>ProcessUtility_hook</code> として機能し、ユーティリティコマンド実行時のセキュリティコンテキストの管理および特定のコマンドに対するアクセス制御を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void sepgsql_utility_command(
+    PlannedStmt *pstmt,
+    const char *queryString,
+    bool readOnlyTree,
+    ProcessUtilityContext context,
+    ParamListInfo params,
+    QueryEnvironment *queryEnv,
+    DestReceiver *dest,
+    QueryCompletion *qc
+);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 実行対象の <code>PlannedStmt</code> およびユーティリティコマンドの実行に必要なコンテキスト情報。</li>
+<li>**出力**: なし（副作用として、<code>LOAD</code> コマンドの拒否や、後続のフック/標準処理への委譲を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sepgsql_context_info</code> グローバル変数を一時的に保存・復元し、コマンド実行中のみ現在の <code>nodeTag</code> を保持します。</li>
+<li><code>PG_TRY</code> / <code>PG_FINALLY</code> ブロックにより、エラー発生時でも必ず <code>sepgsql_context_info</code> が元の状態に復元されることが保証されています。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 現在の <code>sepgsql_context_info</code> を保存します。 2. <code>pstmt-&gt;utilityStmt</code> のノードタイプを確認します。</p>
+<ul>
+<li><code>T_CreatedbStmt</code>: テンプレートデータベース名を <code>sepgsql_context_info</code> に保存します。</li>
+<li><code>T_LoadStmt</code>: SELinux が強制モード（enforcing mode）の場合、<code>LOAD</code> コマンドをエラーとして拒否します。</li>
+<p>3. <code>next_ProcessUtility_hook</code> が存在する場合はそれを呼び出し、存在しない場合は <code>standard_ProcessUtility</code> を呼び出して処理を継続します。 4. 処理終了後、保存しておいた <code>sepgsql_context_info</code> を復元します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: PostgreSQL コアの <code>ProcessUtility</code> フック機構（<code>contrib/sepgsql/hooks.c:482</code> にてフックとして登録）。</li>
+<li>**呼び出し先**: </li>
+<li><code>next_ProcessUtility_hook</code>（連鎖している場合）</li>
+<li><code>standard_ProcessUtility</code>（連鎖がない場合）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>sepgsql_context_info_t</code>: コマンド実行中のメタデータ（コマンドタイプやテンプレート名）を保持する構造体。</li>
+<li><code>PlannedStmt</code>: 実行計画を保持するコア構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>sepgsql_getenforce()</code> が真の状態で <code>LOAD</code> コマンドが実行された場合、<code>ERRCODE_INSUFFICIENT_PRIVILEGE</code> でエラーを発生させます。</li>
+<li>他のユーティリティコマンドについては、詳細な解析が必要なため、本関数内では明示的な権限チェックを行わず、後続の処理に委ねています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>LOAD</code> コマンドを禁止している理由は、バイナリモジュールによるフックの不正な上書きを防ぐためです。</li>
+<li>フックの連鎖（<code>next_ProcessUtility_hook</code>）は、他のセキュリティ拡張機能との共存を可能にするために必須です。</li>
+</ul></body></html>

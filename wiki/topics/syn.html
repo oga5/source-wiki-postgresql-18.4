@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/syn.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>Syn</h1>
+<h2>概念</h2>
+<p><code>Syn</code> は、PostgreSQLの全文検索（Text Search）機能において、同義語（シノニム）辞書のエントリを表現するために使用される構造体です。 この構造体は、検索対象となる入力単語（キー）と、それに対応する置換後または展開用の同義語（値）のペアを保持します。</p>
+<p>ただし、PostgreSQLのソースツリー内には、用途や実装が異なる2つの独立した <code>Syn</code> 構造体が存在します。 1. **<code>contrib/dict_xsyn/dict_xsyn.c</code> の <code>Syn</code>**: 拡張シノニム辞書（dict_xsyn）用。キーに対して、未パースのシノニムリスト（文字列）を保持します。 2. **<code>src/backend/tsearch/dict_synonym.c</code> の <code>Syn</code>**: 標準の同義語辞書（dict_synonym）用。入力単語と置換後の単語の1対1のペア、およびその長さやフラグを保持します。</p>
+<h2>なぜ重要か</h2>
+<p>全文検索において、表記揺れや同義語を考慮した検索（シノニム展開・置換）を高速に行うために不可欠なデータ構造です。 辞書ファイルからロードされた大量の単語ペアをメモリ上に効率的に配置し、二分探索（<code>bsearch</code>）による $O(\log n)$ の高速なルックアップを実現するための基盤となります。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/dict_xsyn</code></li>
+<li><code>module:src/backend/tsearch</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/dict_xsyn/dict_xsyn.c#Syn</code>: 拡張シノニム辞書用の構造体。<code>key</code>（検索キー）と <code>value</code>（未パースのシノニムリスト）を持ちます。</li>
+<li><code>symbol:src/backend/tsearch/dict_synonym.c#Syn</code>: 標準同義語辞書用の構造体。<code>in</code>（入力文字列）、<code>out</code>（出力文字列）、<code>outlen</code>（出力長）、<code>flags</code>（制御フラグ）を持ちます。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>辞書の初期化から検索時までの処理の流れは、両モジュールで類似しています。</p>
+<p>1. **辞書の初期化とロード**:</p>
+<ul>
+<li><code>contrib/dict_xsyn</code> では、<code>dxsyn_init</code> 内で外部ファイルから辞書データが読み込まれ、<code>read_dictionary</code> を介して <code>Syn</code> 構造体の配列が構築されます。</li>
+<li><code>src/backend/tsearch</code> では、<code>dsynonym_init</code> 内で辞書ファイルから単語ペアが読み込まれ、<code>Syn</code> 構造体の配列が構築されます。</li>
+<p>2. **ソート**:</p>
+<li>ロードされた <code>Syn</code> 配列は、検索キー（<code>contrib/dict_xsyn</code> では <code>key</code>、<code>src/backend/tsearch</code> では <code>in</code>）を基準として <code>qsort</code> により昇順にソートされます。</li>
+<p>3. **検索と置換/展開**:</p>
+<li><code>contrib/dict_xsyn</code> では、<code>dxsyn_lexize</code> において入力単語をキーとして <code>bsearch</code> を行い、一致した <code>Syn</code> の <code>value</code>（未パース文字列）をパースしてシノニムリストを展開します。</li>
+<li><code>src/backend/tsearch</code> では、<code>dsynonym_lexize</code> において入力単語をキーとして <code>bsearch</code> を行い、一致した <code>Syn</code> の <code>out</code> を置換後の単語として返します。</li>
+</ul>
+<p>※なお、辞書ファイルのパース処理の詳細や、メモリ確保（<code>palloc</code>）の具体的な失敗時のエラーハンドリングなど、詳細なエンドツーエンドのフローの一部は本コンテキストからは完全には特定されていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ソート済みの維持**: 検索（<code>bsearch</code>）を正しく動作させるため、<code>Syn</code> 配列は初期化時に必ず検索キー（<code>key</code> または <code>in</code>）の昇順でソートされていなければなりません。</li>
+<li>**メモリ管理**: <code>Syn</code> 構造体内の文字列ポインタ（<code>key</code>/<code>value</code>、<code>in</code>/<code>out</code>）は、<code>palloc</code> 等によって確保されたメモリ領域を指す必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名構造体の混同**: <code>contrib/dict_xsyn/dict_xsyn.c</code> と <code>src/backend/tsearch/dict_synonym.c</code> の両方に <code>Syn</code> という名前の構造体が定義されていますが、これらは全く別個の定義であり、フィールド構成も異なります。コードの修正やデバッグ時には、対象としているファイルがどちらであるかを厳密に確認する必要があります。</li>
+<li>**未パース文字列の扱い（<code>contrib/dict_xsyn</code>）**: <code>contrib/dict_xsyn</code> の <code>Syn</code> における <code>value</code> フィールドは、パース前のシノニムリスト文字列です。利用時には <code>dxsyn_lexize</code> 内で適切にパース処理を行う必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/dict_xsyn/dict_xsyn.c</code>: 拡張シノニム辞書の実装、<code>dxsyn_init</code> や <code>dxsyn_lexize</code> の詳細。</li>
+<li><code>src/backend/tsearch/dict_synonym.c</code>: 標準同義語辞書の実装、<code>dsynonym_init</code> や <code>dsynonym_lexize</code> の詳細。</li>
+</ul></body></html>

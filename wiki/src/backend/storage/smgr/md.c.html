@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/smgr/md.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/smgr/md.c</h1>
+<h2>概要</h2>
+<p><code>md.c</code> は、PostgreSQL のストレージマネージャ（SMgr）サブシステムにおける「磁気ディスク（OS ファイルシステム）」への物理 I/O 実装です。リレーションを OS 上のファイルとして扱い、2GB（<code>RELSEG_SIZE</code>）を超えるリレーションを複数のセグメントファイルに分割して管理する責務を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>smgr.c</code> が提供する汎用的なストレージインターフェースを、具体的なファイルシステム操作（<code>open</code>, <code>read</code>, <code>write</code>, <code>unlink</code> 等）へ変換するバックエンドです。バッファマネージャやアクセスメソッドからは、物理的なセグメント分割を意識させない抽象化を提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**セグメント管理**: リレーションのブロック番号から適切なセグメントファイルを特定し、必要に応じて動的にオープンする。</li>
+<li>**物理 I/O**: <code>readv</code>/<code>writev</code> を用いた効率的なブロックアクセス、および非同期 I/O（AIO）のサポート。</li>
+<li>**整合性維持**: チェックポイント処理と連携した <code>fsync</code> 要求の登録、および削除予定ファイルの遅延削除（チェックポイント待ち）。</li>
+<li>**リソース管理**: <code>SMgrRelation</code> 内のファイル記述子キャッシュ（<code>MdfdVec</code>）のライフサイクル管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>MdfdVec</code>: 個別のセグメントファイル記述子（VFD）とセグメント番号を保持する構造体。</li>
+<li><code>MdCxt</code>: 全ての <code>MdfdVec</code> オブジェクトを割り当てるための専用メモリコンテキスト。</li>
+</ul>
+<h3>主要な操作関数</h3>
+<ul>
+<li><code>mdopen</code>/<code>mdclose</code>: リレーションのセグメント管理状態の初期化とクリーンアップ。</li>
+<li><code>mdreadv</code>/<code>mdwritev</code>: ブロック単位の読み書き。<code>iovec</code> を使用して複数ブロックのバッチ処理を行う。</li>
+<li><code>mdextend</code>/<code>mdzeroextend</code>: リレーションの拡張。<code>posix_fallocate</code> 等を利用した効率的な領域確保を含む。</li>
+<li><code>mdunlink</code>: リレーションの物理削除。<code>isRedo</code> フラグに応じ、即時削除またはチェックポイント後の遅延削除を行う。</li>
+<li><code>mdimmedsync</code>: 物理的な <code>fsync</code> を強制実行し、永続性を保証する。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>_mdfd_getseg</code>: 指定ブロック番号に対応するセグメントを検索・オープンする。</li>
+<li><code>register_dirty_segment</code>: チェックポインタへ <code>fsync</code> を要求する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DropRelationFiles</code></li>
+<li><code>ForgetDatabaseSyncRequests</code></li>
+<li><code>MdPathStr</code></li>
+<li><code>MdfdVec</code></li>
+<li><code>buffers_to_iovec</code></li>
+<li><code>do_truncate</code></li>
+<li><code>md_readv_complete</code></li>
+<li><code>md_readv_report</code></li>
+<li><code>mdexists</code></li>
+<li><code>mdinit</code></li>
+<li><code>register_dirty_segment</code></li>
+<li><code>register_forget_request</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **セグメント特定**: <code>_mdfd_getseg</code> がブロック番号からセグメント番号を算出し、<code>SMgrRelation</code> 内の <code>md_seg_fds</code> を参照。未オープンであれば <code>_mdfd_openseg</code> でファイルを開く。 2. **I/O 実行**: <code>mdreadv</code>/<code>mdwritev</code> が <code>buffers_to_iovec</code> を呼び出し、メモリ上のバッファを <code>iovec</code> 配列に変換して <code>FileReadV</code>/<code>FileWriteV</code> へ渡す。 3. **拡張**: <code>mdextend</code> は <code>_mdfd_getseg</code> に <code>EXTENSION_CREATE</code> を渡し、必要に応じて新しいセグメントファイルを作成する。 4. **同期**: <code>register_dirty_segment</code> が <code>RegisterSyncRequest</code> を介してチェックポインタに通知。キューが溢れた場合は、その場で <code>FileSync</code> を実行する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: VFD（仮想ファイル記述子）管理。</li>
+<li><code>storage/smgr.h</code>: ストレージマネージャの基本定義。</li>
+<li><code>storage/sync.h</code>: チェックポイント同期リクエストの管理。</li>
+<li><code>storage/aio.h</code>: 非同期 I/O インターフェース。</li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/md.h</code></li>
+<li><code>storage/relfilelocator.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/md.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/storage/smgr/smgr.c</code>: ストレージマネージャのディスパッチハブ。</li>
+<li><code>src/backend/storage/file/fd.c</code>: 低レベルファイル操作（VFD）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>MdfdVec</code> 配列は <code>MdCxt</code> 上に確保され、<code>SMgrRelation</code> のライフサイクルに依存します。<code>mdtruncate</code> はメモリ割り当てを行わないよう設計されており、クリティカルセクション内での実行が可能です。</li>
+<li>**セグメント分割の不変条件**: 最初のセグメント以外は <code>RELSEG_SIZE</code> でなければなりません。<code>mdtruncate</code> はファイルを削除せずサイズ 0 にすることで、他バックエンドによる FD 保持との競合を回避します。</li>
+<li>**省略された詳細**: 本ファイルは物理 I/O に特化しており、WAL ログの生成やバッファマネージャのキャッシュ戦略については上位層に委譲されています。</li>
+<li>**注意点**: <code>mdreadv</code> 内の <code>zero_damaged_pages</code> 関連ロジックは、将来的な削除が予定されている暫定的な実装です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__MdfdVec.html" target="wiki-view"><code>MdfdVec</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__MdPathStr.html" target="wiki-view"><code>MdPathStr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__mdinit.html" target="wiki-view"><code>mdinit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__mdexists.html" target="wiki-view"><code>mdexists</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__do_truncate.html" target="wiki-view"><code>do_truncate</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__buffers_to_iovec.html" target="wiki-view"><code>buffers_to_iovec</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__register_dirty_segment.html" target="wiki-view"><code>register_dirty_segment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__register_forget_request.html" target="wiki-view"><code>register_forget_request</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__ForgetDatabaseSyncRequests.html" target="wiki-view"><code>ForgetDatabaseSyncRequests</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__DropRelationFiles.html" target="wiki-view"><code>DropRelationFiles</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__md_readv_complete.html" target="wiki-view"><code>md_readv_complete</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__md_c__md_readv_report.html" target="wiki-view"><code>md_readv_report</code></a></li>
+</ul></body></html>

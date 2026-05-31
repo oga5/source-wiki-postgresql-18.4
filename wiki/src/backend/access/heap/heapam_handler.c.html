@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/heap/heapam_handler.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/heap/heapam_handler.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのテーブルアクセスメソッド（AM）インターフェースである <code>TableAmRoutine</code> を、ヒープストレージの実装（<code>heapam.c</code> 等）に接続するためのブリッジ層です。実行エンジンからの抽象的なテーブル操作要求を、ヒープ特有の物理操作へと変換する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/heap</code> モジュールにおける「インターフェース層」です。上位の実行エンジンやコマンド処理系は、このファイルで定義された <code>heapam_methods</code> 構造体を通じてヒープテーブルを操作します。これにより、テーブルの物理格納形式がヒープであることを意識せずに、統一的なAPIでデータアクセスが可能になります。</p>
+<h2>責務</h2>
+<ul>
+<li>**AMインターフェースの提供**: <code>TableAmRoutine</code> 構造体への関数ポインタの割り当て。</li>
+<li>**インデックススキャン連携**: インデックスから取得したTIDに基づくヒープタプルのフェッチとHOTチェーンの追跡。</li>
+<li>**DML操作の仲介**: 挿入、更新、削除、ロック操作を <code>heapam.c</code> の低レベル関数へ委譲。</li>
+<li>**メンテナンス・DDL処理**: <code>VACUUM</code>、<code>CLUSTER</code>、テーブル切り詰め、物理コピー等の管理操作の実行。</li>
+<li>**統計情報とプランナ支援**: テーブルサイズ見積もりやTOAST管理の判断。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インターフェース定義</h3>
+<ul>
+<li><code>heapam_methods</code>: <code>TableAmRoutine</code> 型の静的構造体。ヒープAMの全機能がここに集約されます。</li>
+<li><code>GetHeapamTableAmRoutine()</code> / <code>heap_tableam_handler()</code>: AMハンドラを取得するためのエントリポイント。</li>
+</ul>
+<h3>インデックススキャン関連</h3>
+<ul>
+<li><code>heapam_index_fetch_tuple</code>: インデックススキャン中にヒープタプルをフェッチし、HOTチェーンを辿る。</li>
+<li><code>heapam_index_build_range_scan</code>: インデックス構築時のヒープ走査。</li>
+</ul>
+<h3>DML操作</h3>
+<ul>
+<li><code>heapam_tuple_insert</code> / <code>heapam_tuple_update</code> / <code>heapam_tuple_delete</code>: 実行エンジンからの要求を <code>heap_insert</code> 等に変換。</li>
+<li><code>heapam_tuple_lock</code>: 行ロックの取得と、更新チェーンの追跡（<code>TM_Result</code> を返す）。</li>
+</ul>
+<h3>メンテナンス・DDL</h3>
+<ul>
+<li><code>heapam_relation_copy_for_cluster</code>: <code>CLUSTER</code> コマンド実行時の物理再構築。</li>
+<li><code>heapam_relation_copy_data</code>: テーブルの物理ファイルを直接コピーする低レベル操作。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BitmapHeapScanNextBlock</code></li>
+<li><code>GetHeapamTableAmRoutine</code></li>
+<li><code>SampleHeapTupleVisible</code></li>
+<li><code>heapam_fetch_row_version</code></li>
+<li><code>heapam_index_fetch_begin</code></li>
+<li><code>heapam_index_fetch_end</code></li>
+<li><code>heapam_index_fetch_reset</code></li>
+<li><code>heapam_index_fetch_tuple</code></li>
+<li><code>heapam_slot_callbacks</code></li>
+<li><code>heapam_tuple_insert</code></li>
+<li><code>heapam_tuple_satisfies_snapshot</code></li>
+<li><code>heapam_tuple_tid_valid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **スキャンフロー**: <code>heapam_scan_analyze_next_block</code> がページを読み込み、<code>heapam_scan_analyze_next_tuple</code> がページ内の各タプルを走査して可視性を判定します。 2. **インデックスフェッチ**: <code>heapam_index_fetch_tuple</code> は、<code>xs_cbuf</code>（現在のバッファ）を維持しつつ、<code>heap_hot_search_buffer</code> を呼び出してHOTチェーンを辿り、可視なタプルを <code>TupleTableSlot</code> に格納します。 3. **更新フロー**: <code>heapam_tuple_update</code> は、古いタプルを削除し新しいタプルを挿入する一連の処理を <code>heap_update</code> に委譲し、結果のTIDをスロットに反映します。 4. **CLUSTERフロー**: <code>heapam_relation_copy_for_cluster</code> は、<code>begin_heap_rewrite</code> で書き換えコンテキストを初期化し、走査したタプルを <code>reform_and_rewrite_tuple</code> で再構築して新しいリレーションへ書き込みます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>: <code>TableAmRoutine</code> 定義。</li>
+<li><code>access/heapam.h</code>: ヒープAMのコア関数群。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理（<code>LockBuffer</code>, <code>ReleaseBuffer</code>）。</li>
+<li><code>catalog/storage.h</code>: 物理ストレージ管理。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/rewriteheap.h</code></li>
+<li><code>access/syncscan.h</code></li>
+<li><code>access/tsmapi.h</code></li>
+<li><code>access/visibilitymap.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bufpage.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>heapam.c</code>: 本ファイルが呼び出す低レベルなヒープ操作の実装。</li>
+<li><code>heapam_visibility.c</code>: MVCC可視性判定のロジック。</li>
+<li><code>rewriteheap.c</code>: <code>CLUSTER</code> 等で利用されるテーブル再構築ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>TupleTableSlot</code> を介したタプルの受け渡しが基本です。<code>ExecFetchSlotHeapTuple</code> 等でスロットからタプルを取り出す際、<code>shouldFree</code> フラグによるメモリ解放の責任分担に注意してください。</li>
+<li>**ロックの粒度**: <code>LockBuffer</code> を用いたバッファレベルの共有ロック（<code>BUFFER_LOCK_SHARE</code>）が頻繁に使用されます。デッドロックを避けるため、ロック取得順序と解放タイミングは <code>heapam.c</code> の規約に従う必要があります。</li>
+<li>**HOTチェーン**: インデックススキャン時、HOTチェーンの追跡は <code>heap_hot_search_buffer</code> が行います。本ファイルは、チェーンの途中でバッファを切り替える必要があるかどうかの制御（<code>call_again</code>）を管理します。</li>
+<li>**省略された詳細**: 複雑なWAL生成ロジックや、ページ内の具体的なビットマップ操作は <code>heapam.c</code> や <code>hio.c</code> に委譲されており、本ファイルには含まれていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_slot_callbacks.html" target="wiki-view"><code>heapam_slot_callbacks</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_index_fetch_begin.html" target="wiki-view"><code>heapam_index_fetch_begin</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_index_fetch_reset.html" target="wiki-view"><code>heapam_index_fetch_reset</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_index_fetch_end.html" target="wiki-view"><code>heapam_index_fetch_end</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_index_fetch_tuple.html" target="wiki-view"><code>heapam_index_fetch_tuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_fetch_row_version.html" target="wiki-view"><code>heapam_fetch_row_version</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_tuple_tid_valid.html" target="wiki-view"><code>heapam_tuple_tid_valid</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_tuple_satisfies_snapshot.html" target="wiki-view"><code>heapam_tuple_satisfies_snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__heapam_tuple_insert.html" target="wiki-view"><code>heapam_tuple_insert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__SampleHeapTupleVisible.html" target="wiki-view"><code>SampleHeapTupleVisible</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__BitmapHeapScanNextBlock.html" target="wiki-view"><code>BitmapHeapScanNextBlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__heap__heapam_handler_c__GetHeapamTableAmRoutine.html" target="wiki-view"><code>GetHeapamTableAmRoutine</code></a></li>
+</ul></body></html>

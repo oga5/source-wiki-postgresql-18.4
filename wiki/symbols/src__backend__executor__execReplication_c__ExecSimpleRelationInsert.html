@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execReplication_c__ExecSimpleRelationInsert.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecSimpleRelationInsert</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execReplication.c:561</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションにおいて、リモートから受信したINSERT操作をローカルテーブルへ適用します。トリガーの実行、制約チェック、および競合検出を含めた一連の処理を管理します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo, EState *estate, TupleTableSlot *slot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>resultRelInfo</code>: 対象テーブルの実行時情報。</li>
+<li><code>estate</code>: 実行状態。</li>
+<li><code>slot</code>: 挿入対象のタプルを保持するスロット。</li>
+<li>出力: なし（副作用としてテーブルへの挿入およびトリガー実行を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象リレーションは <code>RELKIND_RELATION</code> であること。</li>
+<li>テーブルがレプリケーションのアイデンティティ要件を満たしていること（<code>CheckCmdReplicaIdentity</code> による検証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **事前処理**: <code>CheckCmdReplicaIdentity</code> を呼び出し、更新許可を確認。 2. **BEFOREトリガー**: <code>ExecBRInsertTriggers</code> を実行。トリガーが <code>false</code> を返した場合、挿入をスキップ。 3. **データ計算・検証**:</p>
+<ul>
+<li>生成列（Stored Generated Columns）の計算。</li>
+<li>制約チェック（<code>ExecConstraints</code>）およびパーティションチェック（<code>ExecPartitionCheck</code>）。</li>
+<p>4. **挿入**: <code>simple_table_tuple_insert</code> で物理的な挿入を実行。 5. **インデックス更新**: <code>ExecInsertIndexTuples</code> を呼び出し、インデックスエントリを作成。競合が発生した場合は <code>conflict</code> フラグを立てる。 6. **競合処理**: <code>conflict</code> が真の場合、<code>CheckAndReportConflict</code> を呼び出しエラーを報告。 7. **事後処理**: <code>ExecARInsertTriggers</code> を実行し、AFTERトリガーを起動。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/worker.c:2496</code>（論理レプリケーション適用ワーカー）。</li>
+<li>**呼び出し先**: <code>CheckCmdReplicaIdentity</code>, <code>ExecBRInsertTriggers</code>, <code>ExecComputeStoredGenerated</code>, <code>ExecConstraints</code>, <code>ExecPartitionCheck</code>, <code>simple_table_tuple_insert</code>, <code>ExecInsertIndexTuples</code>, <code>CheckAndReportConflict</code>, <code>ExecARInsertTriggers</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ResultRelInfo</code>: 実行対象のリレーション情報。</li>
+<li><code>TupleTableSlot</code>: 処理対象のタプル。</li>
+<li><code>EState</code>: 実行状態管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**制約違反**: <code>ExecConstraints</code> または <code>ExecPartitionCheck</code> で制約違反が発生した場合、エラーが発生する。</li>
+<li>**競合**: <code>ExecInsertIndexTuples</code> でユニーク制約違反等の競合が検出された場合、<code>CheckAndReportConflict</code> によりエラーが報告される。</li>
+<li>**トリガーによるスキップ**: BEFOREトリガーが挿入を拒否した場合、以降の挿入処理は実行されない。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、挿入前のインデックススキャンを省略して挿入後に競合をチェックする設計を採用しています。これは競合が稀であるという前提に基づいたパフォーマンス最適化です。</li>
+<li><code>recheckIndexes</code> のメモリリークを防ぐため、最後に <code>list_free</code> を実行しています。</li>
+<li>現時点では、ステートメントレベルのトリガーに必要な <code>TransitionCaptureState</code> は渡されていません。</li>
+</ul></body></html>

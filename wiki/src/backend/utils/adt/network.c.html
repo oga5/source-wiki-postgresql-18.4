@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/network.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/network.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のネットワーク関連データ型である <code>INET</code> および <code>CIDR</code> の実装を担うソースファイルです。SQL レベルの型定義、入出力処理、比較演算、インデックスサポート、およびネットワークアドレスに対する算術演算を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> サブシステムの一部として、ネットワークアドレスの内部表現（<code>inet</code> 構造体）を管理します。<code>inet</code> 型はホストアドレスとネットマスクを保持し、<code>cidr</code> 型はネットワークアドレスとしての制約（マスク長以降のビットがゼロであること）を強制します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換と I/O**: テキスト形式（<code>_in</code>/<code>_out</code>）およびバイナリ形式（<code>_recv</code>/<code>_send</code>）の相互変換。</li>
+<li>**バリデーション**: <code>CIDR</code> 型におけるマスク長以降のビットがゼロであることの検証。</li>
+<li>**比較とソート**: B-Tree インデックス等で使用される比較ロジックおよび <code>SortSupport</code> による高速化。</li>
+<li>**ネットワーク演算**: アドレスの加算・減算、ビット演算（AND/OR/NOT）、ネットワーク範囲の計算（broadcast, netmask 等）。</li>
+<li>**プランナ連携**: ネットワーク包含演算子（<code>&lt;&lt;</code>, <code>&gt;&gt;</code> 等）のインデックススキャン最適化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>型定義と状態管理</h3>
+<ul>
+<li><code>inet</code>: ネットワークアドレスを保持する可変長構造体。</li>
+<li><code>network_sortsupport_state</code>: ソート時のカーディナリティ推定用（HyperLogLog を使用）。</li>
+</ul>
+<h3>I/O 関数</h3>
+<ul>
+<li><code>inet_in</code>, <code>cidr_in</code>: 文字列から <code>inet</code> 構造体への変換。</li>
+<li><code>inet_out</code>, <code>cidr_out</code>: <code>inet</code> 構造体から文字列への変換。</li>
+<li><code>network_recv</code>, <code>network_send</code>: バイナリプロトコル用のシリアライズ/デシリアライズ。</li>
+</ul>
+<h3>比較・ソート</h3>
+<ul>
+<li><code>network_cmp_internal</code>: ネットワークアドレスの比較ロジック（ファミリー、ネットワーク部、マスク長、ホスト部の順）。</li>
+<li><code>network_sortsupport</code>: ソート最適化のためのコールバック設定。</li>
+<li><code>network_abbrev_convert</code>: ソート用省略キー（Abbreviated Key）の生成。</li>
+</ul>
+<h3>演算・サポート</h3>
+<ul>
+<li><code>network_sub</code>, <code>network_sup</code>: ネットワーク包含関係の判定。</li>
+<li><code>inet_merge</code>: 2つのアドレスを包含する最小の CIDR を計算。</li>
+<li><code>network_subset_support</code>: プランナがインデックススキャンを利用するためのサポート関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>cidr_in</code></li>
+<li><code>cidr_out</code></li>
+<li><code>cidr_recv</code></li>
+<li><code>inet_in</code></li>
+<li><code>inet_out</code></li>
+<li><code>inet_recv</code></li>
+<li><code>inet_send</code></li>
+<li><code>network_in</code></li>
+<li><code>network_out</code></li>
+<li><code>network_recv</code></li>
+<li><code>network_send</code></li>
+<li><code>network_sortsupport_state</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力フロー**: <code>network_in</code> が文字列をパースし、<code>pg_inet_net_pton</code> を経由して <code>inet</code> 構造体に格納。<code>CIDR</code> の場合は <code>addressOK</code> でビット制約を検証。 2. **ソートフロー**: <code>network_sortsupport</code> が <code>network_abbrev_convert</code> を登録。この関数は、IP ファミリーやマスク長を考慮したビットパッキングを行い、比較コストを削減する <code>Datum</code> を生成します。 3. **プランナフロー**: <code>network_subset_support</code> が演算子式を解析し、<code>match_network_subset</code> を通じて <code>network_scan_first</code>/<code>last</code> を呼び出し、インデックススキャン用の範囲条件（<code>&gt;=</code> および <code>&lt;=</code>）を生成します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/inet.h</code>: <code>inet</code> 構造体の定義とアクセスマクロ（<code>ip_addr</code>, <code>ip_bits</code> 等）。</li>
+<li><code>utils/sortsupport.h</code>: ソート最適化のためのインターフェース。</li>
+<li><code>lib/hyperloglog.h</code>: ソート時のカーディナリティ推定。</li>
+<li><code>catalog/pg_type.h</code>: 型 OID 定義。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>arpa/inet.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/inet.h</code>: ネットワーク型共通のヘッダー。</li>
+<li><code>src/backend/utils/adt/mac.c</code>: MAC アドレス型の実装（<code>convert_network_to_scalar</code> で関連）。</li>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 選択率推定のロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>palloc0</code> を使用して <code>inet</code> 構造体を割り当てます。<code>SET_INET_VARSIZE</code> マクロによる可変長ヘッダーの初期化が必須です。</li>
+<li>**レイアウト**: <code>inet</code> 構造体はネットワークバイトオーダーでアドレスを保持します。<code>bitncmp</code> はこのバイトオーダーを前提としたビット単位の比較を行います。</li>
+<li>**省略された詳細**: 本ファイルはネットワーク型の「演算」と「ソート」に焦点を当てており、低レベルな IP パース処理（<code>pg_inet_net_pton</code> 等）は <code>src/common/ip.c</code> に委譲されています。</li>
+<li>**注意点**: <code>inet_client_addr</code> 等の関数は <code>MyProcPort</code> を参照するため、バックエンドプロセス外では動作しません。また、IPv6 のゾーンインデックス（<code>%zone</code>）は現状サポートされておらず、<code>clean_ipv6_addr</code> で除去される点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__network_sortsupport_state.html" target="wiki-view"><code>network_sortsupport_state</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__network_in.html" target="wiki-view"><code>network_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__inet_in.html" target="wiki-view"><code>inet_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__cidr_in.html" target="wiki-view"><code>cidr_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__network_out.html" target="wiki-view"><code>network_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__inet_out.html" target="wiki-view"><code>inet_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__cidr_out.html" target="wiki-view"><code>cidr_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__network_recv.html" target="wiki-view"><code>network_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__inet_recv.html" target="wiki-view"><code>inet_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__cidr_recv.html" target="wiki-view"><code>cidr_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__network_send.html" target="wiki-view"><code>network_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_c__inet_send.html" target="wiki-view"><code>inet_send</code></a></li>
+</ul></body></html>

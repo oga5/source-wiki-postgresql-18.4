@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/like_support.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/like_support.c</h1>
+<h2>概要</h2>
+<p><code>like_support.c</code> は、<code>LIKE</code>、正規表現、および関連するパターンマッチング演算子に対するプランナのサポート関数を提供します。これらの関数は、インデックススキャンが直接サポートしていない演算子に対し、インデックスを利用可能な「近似条件」を生成することで、クエリ実行の効率化を図ります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、主にプランナがインデックスの利用可能性を判断する際のフックとして機能します。実行時のパターンマッチング処理（<code>like.c</code> や <code>regexp.c</code>）とは異なり、本ファイルは「どの範囲をスキャンすればよいか」という最適化の判断に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス条件の導出**: パターンから固定の接頭辞（prefix）を抽出し、<code>&gt;=</code> や <code>&lt;</code> といったインデックススキャン可能な条件式へ変換する。</li>
+<li>**選択率（Selectivity）の推定**: パターンマッチングがどの程度の行にヒットするかを統計情報に基づいて推定し、プランナが最適な実行計画を選択できるようにする。</li>
+<li>**演算子の抽象化**: <code>LIKE</code>、<code>ILIKE</code>、正規表現などの異なるパターンマッチング手法を、プランナが共通のインターフェースで扱えるよう抽象化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>like_regex_support</code>: プランナからの要求（選択率推定またはインデックス条件生成）を振り分けるメインエントリポイント。</li>
+<li><code>match_pattern_prefix</code>: パターンから固定接頭辞を抽出し、インデックススキャン用の <code>List</code> を生成する。</li>
+<li><code>patternsel_common</code>: パターンマッチングの選択率を計算する汎用ロジック。</li>
+<li><code>Pattern_Type</code>: サポートするパターンマッチングの種類（LIKE, Regex, Prefix等）を定義する列挙型。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Pattern_Prefix_Status</code></li>
+<li><code>like_fixed_prefix</code></li>
+<li><code>regex_fixed_prefix</code></li>
+<li><code>text_starts_with_support</code></li>
+<li><code>texticlike_support</code></li>
+<li><code>texticregexeq_support</code></li>
+<li><code>textlike_support</code></li>
+<li><code>textregexeq_support</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **プランナからの呼び出し**: <code>textlike_support</code> 等の関数がプランナから呼ばれ、<code>like_regex_support</code> に処理を委譲します。 2. **条件生成**: <code>match_pattern_prefix</code> がパターンを解析し、固定接頭辞を抽出します。 3. **インデックス適合性の確認**: 抽出した接頭辞と演算子、インデックスの照合順序（Collation）が適合するかを確認します。 4. **クエリの書き換え**: 適合する場合、<code>make_opclause</code> を用いてインデックススキャン用の条件式（<code>&gt;= prefix</code> など）を構築し、プランナへ返します。 5. **選択率計算**: <code>patternsel_common</code> が統計情報（ヒストグラムやMCV）を参照し、パターンマッチングのヒット率を推定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/supportnodes.h</code>: プランナのサポート関数用ノード定義。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定のためのユーティリティ。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>catalog/pg_operator.h</code>, <code>pg_opfamily.h</code>: 演算子および演算子族の定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_statistic.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>math.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/pg_locale.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/like.c</code>: 実際の <code>LIKE</code> 演算子の実行ロジック。</li>
+<li><code>src/backend/utils/adt/regexp.c</code>: 正規表現の実行ロジック。</li>
+<li><code>src/backend/optimizer/path/clausesel.c</code>: 選択率推定の全体的なフレームワーク。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「インデックスが本来サポートしていない演算子を、インデックスを使って高速化する」という、PostgreSQLの「損失のあるインデックススキャン（Lossy Index Scan）」の考え方を実装しています。</li>
+<li><code>make_greater_string</code> 関数は、非Cロケールにおいて「接頭辞より大きい文字列」を生成する複雑なロジックを含んでいます。この部分はロケール依存性が高いため、デバッグ時には注意が必要です。</li>
+<li>選択率推定において、ヒストグラムが小さい場合はヒューリスティックな手法にフォールバックする仕組みが組み込まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__Pattern_Type.html" target="wiki-view"><code>Pattern_Type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__Pattern_Prefix_Status.html" target="wiki-view"><code>Pattern_Prefix_Status</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__textlike_support.html" target="wiki-view"><code>textlike_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__texticlike_support.html" target="wiki-view"><code>texticlike_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__textregexeq_support.html" target="wiki-view"><code>textregexeq_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__texticregexeq_support.html" target="wiki-view"><code>texticregexeq_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__text_starts_with_support.html" target="wiki-view"><code>text_starts_with_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__like_regex_support.html" target="wiki-view"><code>like_regex_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__match_pattern_prefix.html" target="wiki-view"><code>match_pattern_prefix</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__patternsel_common.html" target="wiki-view"><code>patternsel_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__like_fixed_prefix.html" target="wiki-view"><code>like_fixed_prefix</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__like_support_c__regex_fixed_prefix.html" target="wiki-view"><code>regex_fixed_prefix</code></a></li>
+</ul></body></html>

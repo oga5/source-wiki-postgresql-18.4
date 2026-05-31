@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dshash-table-item.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>dshash_table_item</h1>
+<h2>概念</h2>
+<p><code>dshash_table_item</code> は、動的共有メモリ（DSA: Dynamic Shared Memory Area）上に構築されたハッシュテーブル（<code>dshash</code>）において、個々のエントリを管理するための内部ヘッダー構造体です。</p>
+<p>この構造体はハッシュテーブルのバケット内連結リストのノードとして機能し、実際のユーザー定義データエントリの直前に配置されます。</p>
+<h2>なぜ重要か</h2>
+<p>動的共有メモリ上で動作するハッシュテーブルにおいて、各エントリのメタデータを管理し、バケット内の連結リストを構築するために不可欠な要素です。</p>
+<p>1. **効率的な走査と比較**: 構造体内にハッシュ値（<code>hash</code>）をキャッシュすることで、衝突解決時のキー比較コストを削減します。 2. **共有メモリの抽象化**: 共有メモリ上のアドレスを直接的なポインタではなく <code>dsa_pointer</code> を使用して管理することで、プロセス間での安全なリンクを可能にします。 3. **密なメモリ配置**: ユーザー定義データとヘッダーをメモリ上で隣接させ、マクロによる高速な相互変換を実現しています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/lib</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/lib/dshash.c#dshash_table_item</code>**</li>
+<p>具体的な構造体定義です。以下のメンバを持ちます。</p>
+<li><code>dsa_pointer next</code>: 同一バケット内の次のアイテムへの共有メモリポインタ。</li>
+<li><code>dshash_hash hash</code>: 再計算を避けるために保持されるハッシュ値。</li>
+<li>**<code>symbol:src/include/lib/dshash.h#dshash_table_item</code>**</li>
+<p>外部モジュール向けに公開されている不透明型（Opaque Type）としての宣言です。具体的なメンバ構成は隠蔽されています。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **バケット操作の開始**: <code>dshash.c</code> 内のバケット操作関数（<code>find_in_bucket</code> や <code>insert_into_bucket</code> など）が呼び出されます。 2. **リストの走査**: <code>dshash_table_item</code> の <code>next</code>（<code>dsa_pointer</code>）を辿り、バケット内の連結リストを走査します。 3. **ハッシュ値の比較**: 走査中、まず <code>dshash_table_item</code> 内の <code>hash</code> フィールドを比較し、一致する場合のみ実際のキー比較を行います。 4. **データへのアクセス**:</p>
+<ul>
+<li>アイテムからユーザーデータへアクセスする際は、<code>ENTRY_FROM_ITEM</code> マクロ等を使用して <code>dshash_table_item</code> の直後のアドレスを計算します。</li>
+<li>逆に、ユーザーデータからアイテムヘッダーを特定する際は、<code>ITEM_FROM_ENTRY</code> マクロ（<code>dshash.c</code> 内）を使用して逆算します。</li>
+</ul>
+<p>※なお、ハッシュテーブル全体の初期化から破棄に至る完全なライフサイクルや、並行アクセス制御（ロック等）の具体的なエンドツーエンドのフローは、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**メモリ配置の整合性**: ユーザーデータは <code>dshash_table_item</code> の直後に配置されるため、メモリレイアウトは必ず <code>MAXALIGN</code> で調整されていなければなりません。</li>
+<li>**ポインタの有効性**: <code>next</code> フィールドは <code>dsa_pointer</code> であり、常に共有メモリ上の有効な領域を指している必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**構造体変更時のアライメント崩れ**: <code>dshash_table_item</code> のサイズやフィールドを変更すると、<code>ENTRY_FROM_ITEM</code> や <code>ITEM_FROM_ENTRY</code> マクロによる <code>MAXALIGN</code> を用いたオフセット計算の整合性が崩れ、メモリ破壊や不正アクセスを引き起こす危険性があります。</li>
+<li>**共有メモリの枯渇**: 共有メモリ（DSA）が枯渇した場合、本構造体を含むエントリの新規確保に失敗します。</li>
+<li>**無効なポインタ参照**: <code>dsa_pointer</code> が破損または無効な場合、リスト走査時に不正なメモリ参照が発生します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/backend/lib/dshash.c</code>**: 構造体の具体的な定義、<code>ENTRY_FROM_ITEM</code> や <code>ITEM_FROM_ENTRY</code> マクロ、および <code>find_in_bucket</code> や <code>insert_into_bucket</code> などの具体的なバケット操作関数の実装が存在します。</li>
+<li>**<code>src/include/lib/dshash.h</code>**: 外部公開用のヘッダーであり、不透明型としての宣言や関連する <code>dshash_table</code> などのインターフェイスが定義されています。</li>
+</ul></body></html>

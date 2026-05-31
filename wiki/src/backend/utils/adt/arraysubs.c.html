@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/arraysubs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/arraysubs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける配列型に対する添字操作（サブスクリプト）の解析および実行をサポートするモジュールです。SQLの <code>array[i]</code> や <code>array[i:j]</code> といった構文を処理するためのハンドラと、実行時のデータ変換ロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、配列型（<code>arrayfuncs.c</code> 等で定義される標準的な配列）および「raw」配列型に対する添字操作のインターフェースを定義します。パーサーが添字操作を認識した際、このモジュールが提供するハンドラを通じて解析と実行計画の構築が行われます。</p>
+<h2>責務</h2>
+<ul>
+<li>**構文解析の完了**: <code>SubscriptingRef</code> ノードの解析を行い、添字式を整数型へ強制変換し、結果の型を決定する。</li>
+<li>**実行時環境の構築**: 実行時に必要な型情報（要素の長さ、アライメント等）を保持するワークスペースを初期化する。</li>
+<li>**データ操作の実行**: 配列要素の取得（fetch）、スライスの取得、および要素・スライスの代入（assign）を行うための関数群を提供。</li>
+<li>**ハンドラの提供**: SQLレベルで呼び出される <code>array_subscript_handler</code> および <code>raw_array_subscript_handler</code> を公開。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ArraySubWorkspace</code>: 実行時に添字の境界値や要素の型情報を保持する構造体。</li>
+<li><code>array_subscript_transform</code>: パーサーが呼び出す解析関数。添字の型チェックと変換を行う。</li>
+<li><code>array_exec_setup</code>: 実行時に呼び出され、操作に応じた関数ポインタ（fetch/assign）をセットアップする。</li>
+<li><code>array_subscript_handler</code>: 標準的な配列型用のエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>array_subscript_assign</code></li>
+<li><code>array_subscript_assign_slice</code></li>
+<li><code>array_subscript_check_subscripts</code></li>
+<li><code>array_subscript_fetch</code></li>
+<li><code>array_subscript_fetch_old</code></li>
+<li><code>array_subscript_fetch_old_slice</code></li>
+<li><code>array_subscript_fetch_slice</code></li>
+<li><code>raw_array_subscript_handler</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析フェーズ**: パーサーが <code>array_subscript_transform</code> を呼び出し、添字式を <code>INT4</code> に変換して <code>SubscriptingRef</code> ノードに格納します。 2. **セットアップ**: 実行計画の初期化時に <code>array_exec_setup</code> が呼ばれ、<code>ArraySubWorkspace</code> が割り当てられます。 3. **実行フェーズ**:</p>
+<ul>
+<li><code>array_subscript_check_subscripts</code> が添字の妥当性を検証し、整数値に変換します。</li>
+<li>操作の種類（要素アクセスかスライスか）に応じて、<code>array_get_element</code> / <code>array_set_element</code> または <code>array_get_slice</code> / <code>array_set_slice</code> が呼び出されます。</li>
+<li>代入操作の場合、必要に応じて <code>array_subscript_fetch_old</code> が呼ばれ、更新前の値を保持します。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/subscripting.h</code>: 添字操作用ノード定義。</li>
+<li><code>utils/array.h</code>: 配列操作の低レベルAPI。</li>
+<li><code>parser/parse_coerce.h</code>: 型変換ロジック。</li>
+<li><code>utils/lsyscache.h</code>: 型情報のキャッシュ取得。</li>
+<li><code>executor/execExpr.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/arrayfuncs.c</code>: 配列操作の基盤となる関数群。</li>
+<li><code>src/backend/nodes/nodeFuncs.c</code>: 式ノードの操作全般。</li>
+<li><code>src/backend/executor/execExpr.c</code>: 式評価の実行エンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>SubscriptingRef</code> という汎用的なノード構造を利用しています。</li>
+<li><code>ArraySubWorkspace</code> は <code>MAXDIM</code>（配列の最大次元数）に基づいた固定長配列を持つため、次元数制限のチェックが重要です。</li>
+<li><code>raw_array_subscript_handler</code> は、ヘッダーを持たない単純な配列構造を扱うためのもので、将来的に標準配列と分離される可能性があります。</li>
+<li>代入操作における <code>NULL</code> の扱いは、固定長配列と可変長配列（varlena）で挙動が異なるため注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__ArraySubWorkspace.html" target="wiki-view"><code>ArraySubWorkspace</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_transform.html" target="wiki-view"><code>array_subscript_transform</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_check_subscripts.html" target="wiki-view"><code>array_subscript_check_subscripts</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_fetch.html" target="wiki-view"><code>array_subscript_fetch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_fetch_slice.html" target="wiki-view"><code>array_subscript_fetch_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_assign.html" target="wiki-view"><code>array_subscript_assign</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_assign_slice.html" target="wiki-view"><code>array_subscript_assign_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_fetch_old.html" target="wiki-view"><code>array_subscript_fetch_old</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_fetch_old_slice.html" target="wiki-view"><code>array_subscript_fetch_old_slice</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_exec_setup.html" target="wiki-view"><code>array_exec_setup</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__array_subscript_handler.html" target="wiki-view"><code>array_subscript_handler</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__arraysubs_c__raw_array_subscript_handler.html" target="wiki-view"><code>raw_array_subscript_handler</code></a></li>
+</ul></body></html>

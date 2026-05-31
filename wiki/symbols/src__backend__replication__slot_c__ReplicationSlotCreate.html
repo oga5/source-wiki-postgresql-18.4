@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__slot_c__ReplicationSlotCreate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ReplicationSlotCreate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/slot.c:352</code></li>
+</ul>
+<h2>目的</h2>
+<p>新しいレプリケーションスロットを割り当て、ディスク上に永続化し、共有メモリ上でアクティブ化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void ReplicationSlotCreate(const char *name, bool db_specific,
+                           ReplicationSlotPersistency persistency,
+                           bool two_phase, bool failover, bool synced)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>name</code>: スロット名。</li>
+<li><code>db_specific</code>: データベース固有のスロットか否か。</li>
+<li><code>persistency</code>: 永続性（<code>RS_TEMPORARY</code> 等）。</li>
+<li><code>two_phase</code>, <code>failover</code>, <code>synced</code>: 論理レプリケーションおよびフェイルオーバー用のフラグ。</li>
+<li>**出力**: なし（成功時は共有メモリおよびディスクに反映）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MyReplicationSlot</code> が <code>NULL</code> であること（既にスロットを所有していないこと）。</li>
+<li><code>ReplicationSlotAllocationLock</code> を排他モードで取得して実行する。</li>
+<li>スロット名が有効であること（<code>ReplicationSlotValidateName</code> による検証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検証**: スタンバイ側でのフェイルオーバー有効化や、一時スロットでのフェイルオーバー有効化など、許可されない組み合わせをエラーにする。 2. **排他制御**: <code>ReplicationSlotAllocationLock</code> を取得し、スロット作成中の競合を防ぐ。 3. **重複確認**: <code>ReplicationSlotControlLock</code> (共有) を取得し、既存スロットとの名前衝突を確認。空きスロットを検索する。 4. **初期化**: 共有メモリ上の <code>ReplicationSlot</code> 構造体をゼロクリアし、引数およびデフォルト値で初期化する。 5. **永続化**: <code>CreateSlotOnDisk(slot)</code> を呼び出し、ディスク上にディレクトリを作成する。 6. **アクティブ化**: <code>ReplicationSlotControlLock</code> (排他) を取得し、<code>in_use</code> を <code>true</code> に設定。<code>active_pid</code> を現在のプロセスIDに設定し、<code>MyReplicationSlot</code> に割り当てる。 7. **統計情報**: 論理スロットの場合は <code>pgstat_create_replslot</code> を呼び出す。 8. **解放**: ロックを解放し、<code>ConditionVariableBroadcast</code> で待機中のプロセスに通知する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/replication/logical/slotsync.c</code></li>
+<li><code>src/backend/replication/slotfuncs.c</code></li>
+<li><code>src/backend/replication/walsender.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>ReplicationSlotValidateName</code></li>
+<li><code>CreateSlotOnDisk</code></li>
+<li><code>pgstat_create_replslot</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>SpinLockAcquire</code> / <code>SpinLockRelease</code></li>
+<li><code>ConditionVariableBroadcast</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReplicationSlot</code>: スロットの共有メモリ状態を保持する構造体。</li>
+<li><code>ReplicationSlotCtl</code>: スロット配列を管理するグローバル制御構造体。</li>
+<li><code>MyReplicationSlot</code>: 現在のバックエンドが所有するスロットへのポインタ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**名前衝突**: 同名のスロットが既に存在する場合、<code>ERRCODE_DUPLICATE_OBJECT</code> でエラー。</li>
+<li>**リソース枯渇**: <code>max_replication_slots</code> に達している場合、<code>ERRCODE_CONFIGURATION_LIMIT_EXCEEDED</code> でエラー。</li>
+<li>**不正な構成**: スタンバイでのフェイルオーバー有効化や、一時スロットでのフェイルオーバー有効化は <code>ERRCODE_FEATURE_NOT_SUPPORTED</code> でエラー。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ReplicationSlotAllocationLock</code> を保持したまま終了するため、呼び出し元でのロック管理に注意すること。</li>
+<li><code>CreateSlotOnDisk</code> が失敗した場合、スロットはまだ <code>in_use</code> になっていないため、特別なクリーンアップは不要である。</li>
+</ul></body></html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/activity/pgstat_database.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/activity/pgstat_database.c</h1>
+<h2>概要</h2>
+<p>データベースレベルの統計情報を管理・集計するための実装ファイルです。トランザクション数、セッション時間、I/O時間、デッドロック、リカバリ競合など、データベース単位で追跡すべき広範なメトリクスを扱います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgstat.c</code> から統計情報の詳細な処理を分離したサブモジュールの一つです。統計情報の「保存・アクセス」という共通基盤と、「個別の統計項目」という詳細実装を切り分ける役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の蓄積**: トランザクションのコミット/ロールバック、一時ファイル生成、セッション接続/切断などのイベントをデータベース単位で集計する。</li>
+<li>**共有メモリへのフラッシュ**: 各バックエンドが保持するローカルな統計情報を、共有メモリ上の統計構造体へ同期する（<code>pgstat_database_flush_cb</code>）。</li>
+<li>**即時報告**: チェックサムエラーやオートバキューム開始など、即時反映が必要な統計情報の更新。</li>
+<li>**ライフサイクル管理**: データベース削除時の統計情報破棄や、統計リセット時刻の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgstat_database_flush_cb</code>: バックエンドのローカル統計を共有メモリに書き出すためのコールバック関数。</li>
+<li><code>pgstat_prep_database_pending</code>: 指定したデータベースの統計エントリをローカルに準備（取得または作成）する。</li>
+<li><code>pgstat_report_recovery_conflict</code>: ホットスタンバイ時のリカバリ競合を記録する。</li>
+<li><code>pgstat_update_dbstats</code>: トランザクション終了時や定期的なタイミングで、I/O時間やセッション時間を更新する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_PgStat_Database</code></li>
+<li><code>pgstat_drop_database</code></li>
+<li><code>pgstat_prepare_report_checksum_failure</code></li>
+<li><code>pgstat_report_autovac</code></li>
+<li><code>pgstat_report_checksum_failures_in_db</code></li>
+<li><code>pgstat_report_connect</code></li>
+<li><code>pgstat_report_deadlock</code></li>
+<li><code>pgstat_report_tempfile</code></li>
+<li><code>pgstat_reset_database_timestamp</code></li>
+<li><code>pgstat_update_parallel_workers_stats</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **蓄積**: 各バックエンドは、処理の過程で <code>pgstat_prep_database_pending</code> を呼び出し、ローカルな <code>PgStat_StatDBEntry</code> を更新します。 2. **更新**: <code>pgstat_update_dbstats</code> が定期的に呼び出され、グローバル変数（<code>pgStatXactCommit</code> 等）からデータベース統計へ値が転送されます。 3. **同期**: <code>pgstat_database_flush_cb</code> が呼び出されると、ローカルの統計値が共有メモリ上の <code>PgStatShared_Database</code> に加算され、ローカル側はゼロクリアされます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的なPostgreSQLの型定義。</li>
+<li><code>storage/procsignal.h</code>: リカバリ競合の理由定義（<code>PROCSIG_RECOVERY_CONFLICT_*</code>）。</li>
+<li><code>utils/pgstat_internal.h</code>: 統計サブシステムの内部構造体および共有メモリ操作関数。</li>
+<li><code>utils/timestamp.h</code>: 統計更新時刻の取得および計算。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/activity/pgstat.c</code>: 統計システム全体のメインエントリポイント。</li>
+<li><code>src/backend/utils/activity/pgstat_shmem.c</code>: 共有メモリ上の統計領域の初期化と管理。</li>
+<li><code>src/include/pgstat.h</code>: 統計情報の公開インターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「データベース単位」の統計に特化しています。テーブルやインデックス単位の統計は <code>pgstat_relation.c</code> を参照してください。</li>
+<li><code>pgstat_report_checksum_failures_in_db</code> はクリティカルセクション内での呼び出しを想定しており、メモリ確保を避ける設計になっています。</li>
+<li>統計情報の更新は、可能な限り <code>pgstat_track_counts</code> フラグを確認してから実行する設計が徹底されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_drop_database.html" target="wiki-view"><code>pgstat_drop_database</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_autovac.html" target="wiki-view"><code>pgstat_report_autovac</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_recovery_conflict.html" target="wiki-view"><code>pgstat_report_recovery_conflict</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_deadlock.html" target="wiki-view"><code>pgstat_report_deadlock</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_prepare_report_checksum_failure.html" target="wiki-view"><code>pgstat_prepare_report_checksum_failure</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_checksum_failures_in_db.html" target="wiki-view"><code>pgstat_report_checksum_failures_in_db</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_tempfile.html" target="wiki-view"><code>pgstat_report_tempfile</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_connect.html" target="wiki-view"><code>pgstat_report_connect</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_report_disconnect.html" target="wiki-view"><code>pgstat_report_disconnect</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_fetch_stat_dbentry.html" target="wiki-view"><code>pgstat_fetch_stat_dbentry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__AtEOXact_PgStat_Database.html" target="wiki-view"><code>AtEOXact_PgStat_Database</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__pgstat_database_c__pgstat_reset_database_timestamp.html" target="wiki-view"><code>pgstat_reset_database_timestamp</code></a></li>
+</ul></body></html>

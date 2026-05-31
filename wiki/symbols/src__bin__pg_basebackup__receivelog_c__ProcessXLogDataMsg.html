@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_basebackup__receivelog_c__ProcessXLogDataMsg.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ProcessXLogDataMsg</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/bin/pg_basebackup/receivelog.c:1046</code></li>
+</ul>
+<h2>目的</h2>
+<p>ストリーミングレプリケーションプロトコルを通じて受信した <code>XLogData</code> メッセージ（WALデータ）を解析し、ローカルのWALファイルへ書き出す。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool ProcessXLogDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len, XLogRecPtr *blockpos)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>conn</code>: サーバーとの接続ハンドル。</li>
+<li><code>stream</code>: ストリーミング設定を保持する <code>StreamCtl</code> 構造体。</li>
+<li><code>copybuf</code>: 受信したメッセージバッファ。</li>
+<li><code>len</code>: メッセージの長さ。</li>
+<li>**出力**:</li>
+<li><code>blockpos</code>: 書き込み開始位置（LSN）を格納するポインタ。</li>
+<li>**戻り値**: 処理が正常に完了した場合は <code>true</code>、エラー発生時は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>still_sending</code> が偽の場合、メッセージは無視され即座に <code>true</code> を返す。</li>
+<li>メッセージヘッダー（17バイト）が最低限存在すること。</li>
+<li>受信したWALデータのオフセットが、現在開いている <code>walfile</code> の位置と一致すること（またはファイルが未オープンであること）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ヘッダー解析**: メッセージからWAL開始位置（<code>dataStart</code>）を抽出。 2. **整合性チェック**: 現在のWALオフセットと受信データのオフセットを比較し、不一致があればエラーを報告。 3. **書き込みループ**:</p>
+<ul>
+<li>ファイルが未オープンであれば <code>open_walfile</code> を呼び出す。</li>
+<li>WALセグメント境界を跨ぐ場合は、セグメント末尾までを書き込む。</li>
+<li><code>stream-&gt;walmethod-&gt;ops-&gt;write</code> を介してデータをディスクへ書き出す。</li>
+<li>書き込み成功後、位置情報を更新。</li>
+<p>4. **セグメント終了処理**: セグメント末尾に到達した場合、<code>close_walfile</code> を呼び出す。</p>
+<li><code>stream_stop</code> コールバックが真を返せば、サーバーへ <code>COPY</code> 終了を通知し、<code>still_sending</code> を偽に設定して終了する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>HandleCopyStream</code>（<code>src/bin/pg_basebackup/receivelog.c:834</code>）。</li>
+<li>**呼び出し先**:</li>
+<li><code>open_walfile</code> / <code>close_walfile</code></li>
+<li><code>stream-&gt;walmethod-&gt;ops-&gt;write</code></li>
+<li><code>stream-&gt;stream_stop</code></li>
+<li><code>PQputCopyEnd</code> / <code>PQflush</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>StreamCtl</code>: ストリーミングの動作制御。</li>
+<li><code>walfile</code>: 現在書き込み中のファイルハンドルを保持する静的変数。</li>
+<li><code>WalWriteMethod</code>: 書き込み処理の抽象化レイヤー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ヘッダー不足**: <code>len</code> がヘッダー長（17バイト）未満の場合。</li>
+<li>**オフセット不整合**: 受信データが期待する位置と異なる場合。</li>
+<li>**書き込み失敗**: <code>walmethod-&gt;ops-&gt;write</code> が要求バイト数と異なる値を返した場合。</li>
+<li>**ファイル操作失敗**: <code>open_walfile</code> または <code>close_walfile</code> が失敗した場合。</li>
+<li>**通信エラー**: <code>PQputCopyEnd</code> 等の通信関数が失敗した場合。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>walmethod-&gt;ops-&gt;write</code> は単なるファイル書き込みではなく、圧縮やtar変換を含む可能性があるため、直接的なファイルシステム操作と混同しないこと。</li>
+<li><code>still_sending</code> はモジュール内の静的変数であり、本関数内での状態遷移に依存している。</li>
+</ul></body></html>

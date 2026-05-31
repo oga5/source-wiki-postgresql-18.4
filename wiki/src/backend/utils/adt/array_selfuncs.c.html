@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/array_selfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/array_selfuncs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのクエリプランナが、配列型に対する演算子（<code>@&gt;</code>、<code>&lt;@</code>、<code>&amp;&amp;</code>）の選択率（Selectivity）を推定するための関数群を提供します。統計情報（MCELEM: 最頻要素、DECHIST: 要素数ヒストグラム）を活用し、配列の包含関係や重複に関するコスト見積もりの精度を向上させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、配列型特有の統計的推論を担います。<code>selfuncs.c</code> が提供する汎用的な選択率推定機能に対し、配列特有のデータ構造（<code>ArrayType</code>）と演算子セマンティクスを補完する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**選択率の推定**: 配列演算子に対する <code>Selectivity</code>（0.0〜1.0）の算出。</li>
+<li>**統計情報の活用**: <code>pg_statistic</code> から MCELEM や要素数ヒストグラムを抽出し、確率モデルに基づいて推定値を計算。</li>
+<li>**デフォルト値の提供**: 統計情報が不足している場合に、定数（<code>DEFAULT_CONTAIN_SEL</code> 等）を用いたフォールバックを行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>scalararraysel_containment</code>: <code>ANY</code>/<code>ALL</code> 演算子の選択率を配列包含として推定するエントリポイント。</li>
+<li><code>arraycontsel</code>: 配列演算子（<code>@&gt;</code> 等）の制限選択率を計算するメイン関数。</li>
+<li><code>mcelem_array_selec</code>: 統計情報を用いて配列の包含・重複を計算する中核関数。</li>
+<li><code>mcelem_array_contained_selec</code>: <code>&lt;@</code> 演算子に対し、要素数ヒストグラムを用いた高度な補正を行う関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>calc_arraycontsel</code></li>
+<li><code>calc_distr</code></li>
+<li><code>calc_hist</code></li>
+<li><code>element_compare</code></li>
+<li><code>find_next_mcelem</code></li>
+<li><code>float_compare_desc</code></li>
+<li><code>floor_log2</code></li>
+<li><code>mcelem_array_contain_overlap_selec</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>arraycontsel</code> がプランナから呼び出され、対象が定数配列かどうかを確認。 2. **統計抽出**: <code>calc_arraycontsel</code> が <code>pg_statistic</code> から MCELEM（最頻要素）と DECHIST（要素数ヒストグラム）を取得。 3. **前処理**: 配列定数をデコンストラクトし、ソートして重複を除去。 4. **推定計算**:</p>
+<ul>
+<li><code>@&gt;</code> や <code>&amp;&amp;</code> の場合: 各要素の出現確率を独立と仮定して積算。</li>
+<li><code>&lt;@</code> の場合: 要素数ヒストグラムを用いて、独立性の仮定を補正（<code>calc_distr</code> や <code>calc_hist</code> を使用）。</li>
+<p>5. **結果の統合**: <code>stanullfrac</code>（NULL率）を考慮し、最終的な選択率を返却。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/selfuncs.h</code>: 選択率推定の共通インターフェース。</li>
+<li><code>utils/array.h</code>: 配列操作用 API。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュと比較関数の取得。</li>
+<li><code>catalog/pg_statistic.h</code>: 統計情報の構造定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>math.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/selfuncs.c</code>: 汎用的な選択率推定ロジック。</li>
+<li><code>src/backend/utils/adt/arrayfuncs.c</code>: 配列の基本的な操作・関数群。</li>
+<li><code>src/backend/statistics/</code>: 統計情報の収集・管理に関するサブシステム。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**独立性の仮定**: 本ファイル内の推定ロジックは、基本的に「各要素の出現は独立である」という仮定に基づいています。このため、<code>&lt;@</code> 演算子ではヒストグラムを用いた補正を行っていますが、複雑なデータ分布では誤差が生じる可能性があります。</li>
+<li>**計算コスト**: <code>EFFORT</code> マクロにより、推定計算の複雑さを制限しています。統計情報が豊富な場合、計算量が膨大にならないよう適宜近似が行われます。</li>
+<li>**デバッグ**: 統計情報がない場合、<code>DEFAULT_SEL</code> が返されます。プランナの推定値が不自然な場合は、<code>ANALYZE</code> による統計情報の更新状況を確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__scalararraysel_containment.html" target="wiki-view"><code>scalararraysel_containment</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__arraycontsel.html" target="wiki-view"><code>arraycontsel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__calc_arraycontsel.html" target="wiki-view"><code>calc_arraycontsel</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__mcelem_array_selec.html" target="wiki-view"><code>mcelem_array_selec</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__mcelem_array_contain_overlap_selec.html" target="wiki-view"><code>mcelem_array_contain_overlap_selec</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__mcelem_array_contained_selec.html" target="wiki-view"><code>mcelem_array_contained_selec</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__calc_hist.html" target="wiki-view"><code>calc_hist</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__calc_distr.html" target="wiki-view"><code>calc_distr</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__floor_log2.html" target="wiki-view"><code>floor_log2</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__find_next_mcelem.html" target="wiki-view"><code>find_next_mcelem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__element_compare.html" target="wiki-view"><code>element_compare</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__array_selfuncs_c__float_compare_desc.html" target="wiki-view"><code>float_compare_desc</code></a></li>
+</ul></body></html>

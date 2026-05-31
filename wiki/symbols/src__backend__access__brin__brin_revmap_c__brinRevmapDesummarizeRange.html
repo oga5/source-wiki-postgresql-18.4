@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_revmap_c__brinRevmapDesummarizeRange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>brinRevmapDesummarizeRange</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_revmap.c:322</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたヒープブロック範囲に対応するBRINインデックスの要約情報を削除（desummarize）し、リバースレンジマップ（revmap）およびインデックスページの状態を整合させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>bool brinRevmapDesummarizeRange(Relation idxrel, BlockNumber heapBlk)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>idxrel</code>: 対象のBRINインデックスリレーション。</li>
+<li><code>heapBlk</code>: 要約解除対象のヒープブロック番号。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 処理が正常に完了した場合は <code>true</code>。対象ページが既に通常のページではない等の理由で再試行が必要な場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は <code>ShareUpdateExclusiveLock</code> を保持している必要がある。</li>
+<li>revmapページおよびインデックスページは、整合性が保たれている必要がある（不整合時はエラーをスロー）。</li>
+<li>処理対象のインデックスページは <code>BRIN_IS_REGULAR_PAGE</code> であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>brinRevmapInitialize</code> でrevmapの状態を初期化する。 2. <code>revmap_get_blkno</code> で対象ヒープブロックに対応するrevmapページを特定する。存在しない場合は終了する。 3. <code>brinLockRevmapPageForUpdate</code> でrevmapページを排他ロックし、対応するインデックスタプルへのポインタ（TID）を取得する。 4. TIDが無効な場合は終了する。 5. インデックスページを読み込み、<code>BRIN_IS_REGULAR_PAGE</code> であるか確認する。そうでない場合は <code>false</code> を返す。 6. インデックスページ内のオフセットが有効か検証し、無効な場合はエラーを報告する。 7. クリティカルセクションを開始し、以下を実行する：</p>
+<ul>
+<li><code>brinSetHeapBlockItemptr</code> でrevmap上のTIDを無効化する。</li>
+<li><code>PageIndexTupleDeleteNoCompact</code> でインデックスページからタプルを削除する。</li>
+<li>WALが必要な場合、<code>XLOG_BRIN_DESUMMARIZE</code> レコードを書き込む。</li>
+<p>8. バッファのロックを解除し、<code>brinRevmapTerminate</code> でリソースを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/brin/brin.c:1561</code></li>
+<li>**呼び出し先**: </li>
+<li><code>brinRevmapInitialize</code>, <code>brinRevmapTerminate</code></li>
+<li><code>revmap_get_blkno</code>, <code>brinLockRevmapPageForUpdate</code></li>
+<li><code>brinSetHeapBlockItemptr</code></li>
+<li><code>ReadBuffer</code>, <code>LockBuffer</code>, <code>UnlockReleaseBuffer</code></li>
+<li><code>PageIndexTupleDeleteNoCompact</code></li>
+<li><code>XLogInsert</code> (WAL記録時)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BrinRevmap</code>: revmapのキャッシュ状態を保持。</li>
+<li><code>RevmapContents</code>: revmapページ内のTID配列構造。</li>
+<li><code>xl_brin_desummarize</code>: WAL記録用の構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**インデックス破損**: <code>regOffset</code> がページ内の最大オフセットを超えている、または <code>ItemId</code> が使用されていない場合、<code>ERRCODE_INDEX_CORRUPTED</code> でエラーとなる。</li>
+<li>**再試行**: 対象ページが通常のBRINページ構造を維持していない場合、<code>false</code> を返して呼び出し元に制御を戻す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、クラッシュや中断によって残存したプレースホルダタプルを削除する役割も担う。</li>
+<li>WAL記録時には <code>XLogRegisterBuffer</code> を使用してrevmapとインデックスページの両方を保護している。</li>
+</ul></body></html>

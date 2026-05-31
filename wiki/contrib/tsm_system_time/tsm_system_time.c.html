@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/tsm_system_time/tsm_system_time.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/tsm_system_time/tsm_system_time.c</h1>
+<h2>概要</h2>
+<p><code>tsm_system_time.c</code> は、PostgreSQL の <code>TABLESAMPLE SYSTEM_TIME</code> メソッドを実装するソースファイルです。このメソッドは、指定された時間制限内で可能な限り多くの行をランダムにサンプリングするために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>tsm_system_time</code> モジュールの唯一のソースであり、PostgreSQL のテーブルサンプリング API (<code>tsmapi.h</code>) に準拠したハンドラを提供します。クエリ実行時にテーブルスキャンを制御するプラグインとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**サンプリング戦略の提供**: 指定された時間内に収まるよう、リレーション全体を網羅するブロックサンプリングアルゴリズムを実装する。</li>
+<li>**コスト見積もり**: プランナに対して、時間制限に基づいたスキャン対象ページ数とタプル数の概算を提示する。</li>
+<li>**スキャン状態の管理**: <code>SystemTimeSamplerData</code> を用いて、スキャンの進捗、時間経過、およびブロック選択のステップサイズを保持する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>tsm_system_time_handler</code>: <code>TABLESAMPLE</code> メソッドの登録用エントリポイント。<code>TsmRoutine</code> 構造体を初期化し、各コールバック関数を割り当てる。</li>
+<li><code>SystemTimeSamplerData</code>: サンプリングの実行状態を保持する構造体。</li>
+<li><code>system_time_nextsampleblock</code>: 次に読み込むブロックを決定する。線形合同法的なアプローチでブロックを巡回する。</li>
+<li><code>system_time_nextsampletuple</code>: 現在のブロック内のタプルを順次返す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>gcd</code></li>
+<li><code>random_relative_prime</code></li>
+<li><code>system_time_beginsamplescan</code></li>
+<li><code>system_time_initsamplescan</code></li>
+<li><code>system_time_samplescangetsamplesize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tsm_system_time_handler</code> が呼ばれ、メソッドのメタデータが設定される。 2. **プランニング**: <code>system_time_samplescangetsamplesize</code> が実行され、指定時間から読み取り可能なページ数が推定される。 3. **実行開始**: <code>system_time_beginsamplescan</code> でシード値と時間制限がセットされる。 4. **スキャンループ**:</p>
+<ul>
+<li><code>system_time_nextsampleblock</code> が呼び出される。初回のみランダムな開始位置とステップサイズを計算し、以降は時間経過を監視しながら次のブロックを選択する。</li>
+<li><code>system_time_nextsampletuple</code> がブロック内の全タプルを順次返す。</li>
+<p>5. **終了**: 時間制限に達するか、全ブロックを走査し終えると <code>InvalidBlockNumber</code> を返しスキャンを終了する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tsmapi.h</code>: テーブルサンプリング API の定義。</li>
+<li><code>utils/sampling.h</code>: サンプリング用の乱数生成ユーティリティ。</li>
+<li><code>optimizer/optimizer.h</code>: プランナによるコスト見積もり用関数。</li>
+<li><code>postgres.h</code>, <code>math.h</code>, <code>miscadmin.h</code>, <code>catalog/pg_type.h</code>, <code>utils/spccache.h</code>: 基本的な型定義、数学関数、およびシステム管理用ヘッダ。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/tablesample/</code>: テーブルサンプリングの基盤フレームワーク。</li>
+<li><code>contrib/tsm_system_rows/</code>: 類似のサンプリングメソッド（行数指定）。</li>
+<li><code>src/include/access/tsmapi.h</code>: 実装すべき <code>TsmRoutine</code> インターフェースの定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**非決定性**: このメソッドは時間依存であるため、同じクエリでも実行ごとに結果が異なる（<code>repeatable_across_queries = false</code>）。</li>
+<li>**コスト見積もりの精度**: <code>system_time_samplescangetsamplesize</code> 内のコスト計算は、ページコストをミリ秒に換算するというヒューリスティックな手法をとっており、あくまで概算である点に注意してください。</li>
+<li>**線形探索**: ブロック選択には、リレーションの全ブロックを網羅するために、<code>nblocks</code> と互いに素な <code>step</code> を用いた線形探索アルゴリズムが採用されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__SystemTimeSamplerData.html" target="wiki-view"><code>SystemTimeSamplerData</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__tsm_system_time_handler.html" target="wiki-view"><code>tsm_system_time_handler</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__system_time_samplescangetsamplesize.html" target="wiki-view"><code>system_time_samplescangetsamplesize</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__system_time_initsamplescan.html" target="wiki-view"><code>system_time_initsamplescan</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__system_time_beginsamplescan.html" target="wiki-view"><code>system_time_beginsamplescan</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__system_time_nextsampleblock.html" target="wiki-view"><code>system_time_nextsampleblock</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__system_time_nextsampletuple.html" target="wiki-view"><code>system_time_nextsampletuple</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__gcd.html" target="wiki-view"><code>gcd</code></a></li>
+<li><a href="../../symbols/contrib__tsm_system_time__tsm_system_time_c__random_relative_prime.html" target="wiki-view"><code>random_relative_prime</code></a></li>
+</ul></body></html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistscan_c__gistrescan.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistrescan</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistscan.c:126</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックススキャンの状態をリセットし、新しい検索条件（ScanKey）や順序付け（OrderBy）を適用してスキャンを再開する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void gistrescan(IndexScanDesc scan, ScanKey key, int nkeys, ScanKey orderbys, int norderbys)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>scan</code>: スキャン状態を保持する <code>IndexScanDesc</code> 構造体。</li>
+<li><code>key</code>: 新しい検索条件（<code>ScanKey</code>）。<code>NULL</code> の場合は更新しない。</li>
+<li><code>nkeys</code>: 検索条件の数（無視される）。</li>
+<li><code>orderbys</code>: 新しい順序付け条件（<code>ScanKey</code>）。<code>NULL</code> の場合は更新しない。</li>
+<li><code>norderbys</code>: 順序付け条件の数（無視される）。</li>
+<li>**出力**: なし（副作用として <code>scan</code> 内部の状態が更新される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>scan-&gt;opaque</code> は <code>GISTScanOpaque</code> 型としてキャスト可能であること。</li>
+<li>インデックススキャンの初回実行時、<code>so-&gt;queueCxt</code> は <code>so-&gt;giststate-&gt;scanCxt</code> と一致していること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検索キューの管理**:</p>
+<ul>
+<li>初回呼び出し時は既存の <code>scanCxt</code> を使用。2回目以降は専用の <code>queueCxt</code> を作成またはリセットし、メモリ効率を最適化する。</li>
+<p>2. **インデックス専用スキャンの初期化**:</p>
+<li><code>xs_want_itup</code> が真かつ未初期化の場合、タプル記述子と専用メモリコンテキストを作成する。</li>
+<p>3. **ヒープの再構築**:</p>
+<li><code>pairingheap_allocate</code> を用いて、距離計算関数 <code>pairingheap_GISTSearchItem_cmp</code> を指定した新しい検索キューを生成する。</li>
+<p>4. **スキャンキーの更新**:</p>
+<li><code>key</code> が提供された場合、<code>fmgr_info_copy</code> を使用して <code>Consistent</code> サポート関数をバインドする。既存の <code>fn_extra</code> は再スキャン後も保持される。</li>
+<p>5. **順序付けキーの更新**:</p>
+<li><code>orderbys</code> が提供された場合、<code>Distance</code> サポート関数をバインドする準備を行う。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gist/gist.c</code> 内の <code>amrescan</code> インターフェース経由で呼び出される。</li>
+<li>**呼び出し先**: <code>AllocSetContextCreate</code>, <code>MemoryContextReset</code>, <code>MemoryContextSwitchTo</code>, <code>pairingheap_allocate</code>, <code>fmgr_info_copy</code>, <code>CreateTemplateTupleDesc</code> 等のメモリ管理およびサポート関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GISTScanOpaque</code>: スキャン中の検索キューやメモリコンテキストを保持する内部構造体。</li>
+<li><code>IndexScanDesc</code>: PostgreSQLの標準的なインデックススキャン記述子。</li>
+<li><code>pairingheap</code>: 検索順序を制御するための優先度付きキュー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>key</code> が <code>NULL</code> の場合、検索条件の更新はスキップされる。</li>
+<li><code>sk_flags</code> に <code>SK_ISNULL</code> が含まれ、かつ <code>SK_SEARCHNULL</code> 等が指定されていない場合、<code>so-&gt;qual_ok</code> が <code>false</code> に設定され、検索結果が空になることが示唆される。</li>
+<li>複数回の再スキャンが発生する場合、古い <code>queueCxt</code> はリセットされ、メモリの断片化を抑制する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>nkeys</code> および <code>norderbys</code> 引数は無視されるため、実際のデータ数は <code>scan</code> 構造体から取得すること。</li>
+<li><code>fn_extra</code> の保持処理は、<code>Consistent</code> 関数がキャッシュを利用している場合に重要となる。</li>
+<li>メモリコンテキストの切り替え（<code>scanCxt</code> と <code>queueCxt</code>）は、スキャンを繰り返す際のオーバーヘッドを最小化するための設計である。</li>
+</ul></body></html>

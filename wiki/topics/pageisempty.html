@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pageisempty.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PageIsEmpty</h1>
+<h2>概念</h2>
+<p><code>PageIsEmpty</code> は、PostgreSQLのストレージ管理において、特定のバッファページ（<code>PageData</code>）にデータ（ラインポインタ）が一切格納されていない「空」の状態であるかどうかを判定するための仕組みです。</p>
+<p>汎用的なページ管理層（<code>storage/bufpage.h</code>）で提供されるインライン関数 <code>PageIsEmpty</code> のほか、GiSTアクセスメソッド固有の判定用マクロ/関数と推測される <code>PAGE_IS_EMPTY</code>（<code>access/gist_private.h</code>）が存在します。</p>
+<h2>なぜ重要か</h2>
+<p>ページが空であるかを迅速に判定することは、インデックス（GIN、GiST、SP-GiST、Hash）やテーブル（Heap）のバキューム処理（<code>vacuumlazy.c</code>）、ページ追加・更新処理、WAL再生（<code>ginxlog.c</code>、<code>gistxlog.c</code>）などの様々なパスにおいて、不要な処理をスキップし、適切な状態遷移を確認するために重要です。パフォーマンスが重視されるパスで使用されるため、インライン関数として効率的に実装されています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include/storage</code></li>
+<li><code>module:src/include/access</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/storage/bufpage.h#PageIsEmpty</code>**</li>
+<p>ページヘッダーの <code>pd_lower</code> フィールドを検査し、ページ内にラインポインタが一つも配置されていない（＝データが格納されていない）ことを判定するインライン関数。</p>
+<li>**<code>symbol:src/include/access/gist_private.h#PAGE_IS_EMPTY</code>**</li>
+<p>GiSTインデックスの文脈で定義されている、空ページ判定に関連するエンティティ（詳細な実装仕様は提供されたコンテキストからは不明）。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **呼び出し**: バキューム処理（<code>vacuumlazy.c</code>）や各種アクセスメソッド（GIN、GiST、SP-GiST、Hashなど）の処理中に、対象ページが空であるかを確認するために <code>PageIsEmpty(page)</code> が呼び出されます。 2. **判定**: ページヘッダー（<code>PageHeaderData</code>）の <code>pd_lower</code>（ラインポインタ配列の末尾を示す位置）が、ヘッダーサイズ（<code>SizeOfPageHeaderData</code>）以下であるかを比較します。 3. **結果の返却**: <code>pd_lower</code> がヘッダーサイズ以下であれば、ラインポインタが1つも存在しないため <code>true</code>（空）を返し、そうでなければ <code>false</code> を返します。</p>
+<p>※ <code>PAGE_IS_EMPTY</code> と <code>PageIsEmpty</code> がどのように連携しているか、あるいはGiST内部でどのように使い分けられているかといった詳細なエンドツーエンドのフローは、提供されたコンテキストからは不明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の前提**: <code>PageIsEmpty</code> を適用するページは、事前に <code>PageInit</code> 等によって初期化されている必要があります。</li>
+<li>**ポインタの有効性**: 引数として渡される <code>page</code> は、有効な <code>PageData</code> 構造体を指していなければなりません。</li>
+<li>**<code>pd_lower</code> の意味**: ページヘッダー内の <code>pd_lower</code> は、ページ内の空き領域の開始位置（ラインポインタ配列の末尾）を正確に示している必要があります。</li>
+</ul>
+<p>※ <code>PAGE_IS_EMPTY</code> に関する不変条件は、提供されたコンテキストからは不明です。</p>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**未初期化ページへの適用**: ページが初期化されていない場合、<code>pd_lower</code> の値が不定であるため、<code>PageIsEmpty</code> の判定結果は信頼できません。このため、実務上は <code>PageIsNew</code> と組み合わせてページの状態を確認することが推奨されます。</li>
+<li>**NULLポインタの引き渡し**: <code>page</code> が <code>NULL</code> の場合、未定義の動作（セグメンテーションフォールトなど）を引き起こす可能性があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/storage/bufpage.h</code>：<code>PageIsEmpty</code> の定義、および <code>PageData</code> / <code>PageHeaderData</code> の構造。</li>
+<li><code>src/include/access/gist_private.h</code>：<code>PAGE_IS_EMPTY</code> の定義とGiSTにおける利用方法。</li>
+</ul></body></html>

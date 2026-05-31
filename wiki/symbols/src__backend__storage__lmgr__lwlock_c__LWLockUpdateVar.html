@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LWLockUpdateVar</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/lmgr/lwlock.c:1731</code></li>
+</ul>
+<h2>目的</h2>
+<p>LWLock が保護する共有変数（<code>valptr</code>）をアトミックに更新し、その変数の変更を待機しているプロセスを起床させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>lock</code>: 更新対象の LWLock へのポインタ。</li>
+<li><code>valptr</code>: 更新対象の 64 ビット共有変数へのポインタ。</li>
+<li><code>val</code>: <code>valptr</code> に書き込む新しい値。</li>
+<li>出力: なし（副作用として共有メモリの状態変更とプロセスの起床を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し側は、対象の <code>lock</code> を排他モード（<code>LW_EXCLUSIVE</code>）で保持していなければならない（<code>lock-&gt;state</code> に <code>LW_VAL_EXCLUSIVE</code> フラグが立っていることが <code>Assert</code> で検証される）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pg_atomic_exchange_u64</code> を使用し、メモリバリアを伴って <code>valptr</code> を <code>val</code> に更新する。 2. <code>LWLockWaitListLock</code> を取得し、ロックの待機リストを保護する。 3. 待機リストを走査し、<code>LW_WAIT_UNTIL_FREE</code> モードで待機しているプロセスを特定する。 4. 特定したプロセスを待機リストから削除し、一時的な起床リスト（<code>wakeup</code>）へ移動させる。各プロセスの状態を <code>LW_WS_PENDING_WAKEUP</code> に更新する。 5. <code>LWLockWaitListUnlock</code> を呼び出し、待機リストの保護を解除する。 6. 起床リスト内の各プロセスに対し、<code>pg_write_barrier</code> を実行した上で状態を <code>LW_WS_NOT_WAITING</code> に戻し、<code>PGSemaphoreUnlock</code> を呼び出してプロセスを起床させる。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/access/transam/xlog.c</code> 内の WAL 挿入ロック管理処理などで確認されている。</li>
+<li>呼び出し先: <code>LWLockWaitListLock</code>, <code>LWLockWaitListUnlock</code>, <code>proclist</code> 操作関数群（<code>proclist_init</code>, <code>proclist_foreach_modify</code>, <code>proclist_delete</code>, <code>proclist_push_tail</code>）、<code>GetPGProcByNumber</code>, <code>PGSemaphoreUnlock</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LWLock</code>: ロック本体および待機リスト（<code>waiters</code>）を保持。</li>
+<li><code>PGPROC</code>: 待機中のプロセス情報を保持する構造体。</li>
+<li><code>proclist_head</code>: 待機プロセスを管理する双方向リスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>呼び出し時に排他ロックを保持していない場合、<code>Assert</code> により異常終了する。</li>
+<li>待機リストが空の場合、変数の更新のみを行い、起床処理はスキップされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>LWLock</code> の状態と連動した変数更新を行うための特殊なインターフェースである。</li>
+<li><code>pg_atomic_exchange_u64</code> によるフルバリアが保証されているため、変数の更新は必ず起床処理の前に完了する。</li>
+<li><code>LW_WAIT_UNTIL_FREE</code> 以外の待機モードを持つプロセスは、この関数では起床対象とならない点に注意すること。</li>
+</ul></body></html>

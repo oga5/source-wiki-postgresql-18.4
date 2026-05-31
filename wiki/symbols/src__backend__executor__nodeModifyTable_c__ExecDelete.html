@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeModifyTable_c__ExecDelete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecDelete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeModifyTable.c:1571</code></li>
+</ul>
+<h2>目的</h2>
+<p>テーブル（またはパーティション）に対する行削除操作を実行する。トリガー処理、外部テーブル（FDW）連携、および同時実行制御（EPQ: EvalPlanQual）を伴う削除ロジックを統括する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecDelete(ModifyTableContext *context, ResultRelInfo *resultRelInfo, ItemPointer tupleid, HeapTuple oldtuple, bool processReturning, bool changingPart, bool canSetTag, TM_Result *tmresult, bool *tupleDeleted, TupleTableSlot **epqreturnslot)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>context</code>: 実行コンテキスト（<code>ModifyTableContext</code>）。</li>
+<li><code>resultRelInfo</code>: ターゲットリレーション情報。</li>
+<li><code>tupleid</code>: 削除対象タプルの物理位置（<code>ItemPointer</code>）。</li>
+<li><code>oldtuple</code>: 削除対象のタプルデータ。</li>
+<li>**出力**: </li>
+<li>戻り値: 処理されたタプルを保持する <code>TupleTableSlot</code>、または削除がスキップされた場合は <code>NULL</code>。</li>
+<li><code>tmresult</code>: テーブルアクセスメソッドによる操作結果（<code>TM_Result</code>）。</li>
+<li><code>tupleDeleted</code>: 削除が成功したかを示すフラグ。</li>
+<li><code>epqreturnslot</code>: EPQ処理時に更新後のタプルを返すためのスロット。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ExecDeletePrologue</code> が正常終了していること。</li>
+<li>外部テーブルの場合、<code>ri_FdwRoutine</code> が定義されていること。</li>
+<li><code>TM_SelfModified</code> が発生した場合、現在のコマンドによる二重削除は無視されるが、トリガーによる変更が絡む場合はエラーとなる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **前処理**: <code>ExecDeletePrologue</code> を呼び出し、BEFORE ROW トリガーを実行する。 2. **トリガー/FDW分岐**:</p>
+<ul>
+<li><code>INSTEAD OF</code> トリガーが存在する場合、それを実行し、不要であれば終了する。</li>
+<li>外部テーブルの場合、<code>ExecForeignDelete</code> を呼び出し、FDW に削除を委譲する。</li>
+<p>3. **削除実行**:</p>
+<li><code>ExecDeleteAct</code> を呼び出し、ストレージ層で削除を実行する。</li>
+<li><code>TM_Result</code> に基づき、同時更新（<code>TM_Updated</code>）や自己更新（<code>TM_SelfModified</code>）をハンドリングする。</li>
+<p>4. **同時実行制御 (EPQ)**:</p>
+<li>他セッションによる更新が検出された場合、<code>EvalPlanQual</code> を用いて最新状態での再評価を行う。</li>
+<p>5. **後処理**: 必要に応じて <code>epqreturnslot</code> に結果を格納し、呼び出し元へ戻る。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeModifyTable.c</code> 内のメイン実行ループ（<code>ExecModifyTable</code> 等）。</li>
+<li>**呼び出し先**: </li>
+<li><code>ExecDeletePrologue</code>, <code>ExecDeleteAct</code></li>
+<li><code>ExecIRDeleteTriggers</code></li>
+<li><code>EvalPlanQualBegin</code>, <code>EvalPlanQual</code>, <code>EvalPlanQualSlot</code></li>
+<li><code>table_tuple_lock</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ModifyTableContext</code>: 実行状態を保持。</li>
+<li><code>ResultRelInfo</code>: ターゲットテーブルのメタデータとトリガー情報。</li>
+<li><code>TupleTableSlot</code>: タプルデータの受け渡しに使用。</li>
+<li><code>TM_Result</code>: テーブルアクセスメソッドの操作結果ステータス。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**シリアライズ失敗**: <code>IsolationUsesXactSnapshot()</code> 下で同時更新が発生した場合、<code>ERRCODE_T_R_SERIALIZATION_FAILURE</code> を送出。</li>
+<li>**トリガー違反**: <code>TM_SelfModified</code> 時に現在のコマンドと異なる CID で変更が行われている場合、<code>ERRCODE_TRIGGERED_DATA_CHANGE_VIOLATION</code> を送出。</li>
+<li>**Qual不一致**: EPQ 実行後にタプルが条件を満たさなくなった場合、<code>NULL</code> を返して終了。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>nodeModifyTable.c</code> の中核であり、パーティションルーティングや FDW 連携と密接に関係している。</li>
+<li><code>TM_SelfModified</code> のハンドリングは、トリガーとクエリの相互作用による複雑なケースを想定しているため、変更時は注意が必要。</li>
+<li><code>ExecDeletePrologue</code>, <code>ExecDeleteAct</code>, <code>ExecDeleteEpilogue</code> といったサブ関数への分割が進んでいるため、ロジックの修正は各サブ関数を確認すること。</li>
+</ul></body></html>

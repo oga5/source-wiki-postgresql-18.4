@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/ltree/_ltree_gist.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/ltree/_ltree_gist.c</h1>
+<h2>概要</h2>
+<p><code>_ltree_gist.c</code> は、<code>ltree[]</code>（ltree 型の配列）に対する GiST インデックスのサポートを実装するファイルです。単一の <code>ltree</code> を扱う <code>ltree_gist.c</code> とは異なり、配列内の全要素を包含するシグネチャ（ビットベクトル）の管理と、それを用いたインデックス検索の最適化を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/ltree</code> モジュールにおけるインデックス層の一部であり、GiST インデックスのメソッドインターフェース（<code>compress</code>, <code>union</code>, <code>picksplit</code>, <code>consistent</code> 等）を配列型に対して提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**シグネチャ生成**: 配列内の各 <code>ltree</code> パスから CRC32 ハッシュを計算し、ビットベクトルへマッピングする。</li>
+<li>**インデックス構築**: GiST インデックスのノード分割（<code>picksplit</code>）およびペナルティ計算（<code>penalty</code>）によるツリーのバランス維持。</li>
+<li>**検索最適化**: <code>consistent</code> 関数を通じた、ビットベクトルによる高速なフィルタリング（偽陽性を許容するインデックス検索）。</li>
+<li>**設定管理**: インデックスオプション（<code>siglen</code>）の定義と検証。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インデックスメソッド（GiST API）</h3>
+<ul>
+<li><code>_ltree_compress</code>: 配列データをインデックス用の <code>ltree_gist</code> 形式へ変換。</li>
+<li><code>_ltree_union</code>: 複数のインデックスエントリを統合し、共通のビットベクトルを生成。</li>
+<li><code>_ltree_penalty</code>: インデックス挿入時のコスト計算（ハミング距離を使用）。</li>
+<li><code>_ltree_picksplit</code>: インデックスノードの分割アルゴリズム。</li>
+<li><code>_ltree_consistent</code>: クエリ条件とインデックスキーの照合。</li>
+</ul>
+<h3>内部ロジック・ヘルパー</h3>
+<ul>
+<li><code>hashing</code>: <code>ltree</code> パスの各レベルを CRC32 でハッシュ化し、ビットベクトルにセットする。</li>
+<li><code>hemdist</code>: 2つの <code>ltree_gist</code> 間のハミング距離を計算。</li>
+<li><code>gist_te</code>, <code>gist_qe</code>, <code>gist_qtxt</code>: それぞれ <code>ltree</code>, <code>lquery</code>, <code>ltxtquery</code> に対するビットベクトル照合ロジック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LtreeSignature</code></li>
+<li><code>SPLITCOST</code></li>
+<li><code>checkcondition_bit</code></li>
+<li><code>comparecost</code></li>
+<li><code>gist_qe</code></li>
+<li><code>gist_qtxt</code></li>
+<li><code>gist_te</code></li>
+<li><code>hashing</code></li>
+<li><code>hemdist</code></li>
+<li><code>hemdistsign</code></li>
+<li><code>sizebitvec</code></li>
+<li><code>unionkey</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **圧縮**: <code>_ltree_compress</code> が配列を走査し、各要素のパスを <code>hashing</code> でビットベクトルに集約します。 2. **検索**: <code>_ltree_consistent</code> が呼び出されると、戦略番号（<code>StrategyNumber</code>）に応じて適切な <code>gist_</code> 系関数へディスパッチされます。 3. **照合**: <code>gist_</code> 系関数は、クエリの各要素がビットベクトル内に存在するかを <code>GETBIT</code> で確認します。ビットが立っていない場合は即座に <code>false</code> を返し、インデックス走査をスキップします。 4. **再チェック**: すべての <code>consistent</code> 処理は <code>*recheck = true</code> を設定します。これはビットベクトルによる判定が「包含の可能性がある」という近似値であるため、ヒープ上の実データでの再検証が必要であることを示します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist.h</code>: GiST インデックスの基本構造。</li>
+<li><code>ltree.h</code>: <code>ltree</code>, <code>lquery</code>, <code>ltree_gist</code> 構造体定義。</li>
+<li><code>crc32.h</code>: パスハッシュ計算用。</li>
+<li><code>port/pg_bitutils.h</code>: ビット操作（<code>pg_popcount</code> 等）。</li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/stratnum.h</code></li>
+<li><code>math.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ltree_gist.c</code>: 単一 <code>ltree</code> 型の GiST 実装。</li>
+<li><code>ltree_op.c</code>: <code>ltree</code> 型の演算ロジック。</li>
+<li><code>lquery_op.c</code>: <code>lquery</code> のパターンマッチングロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>palloc</code> を多用しており、GiST インデックスのライフサイクル（<code>GISTENTRY</code>）に依存します。</li>
+<li>**インデックスの性質**: 本実装は「偽陽性」を許容するインデックスです。ビットベクトルはハッシュ衝突により、実際には一致しないデータも「一致する可能性がある」と判定します。そのため、<code>consistent</code> 関数は常に <code>recheck</code> を要求します。</li>
+<li>**制約**: 配列は1次元である必要があります。多次元配列が渡された場合はエラーとなります。</li>
+<li>**省略された詳細**: <code>WISH_F</code> マクロによるペナルティ調整の数学的根拠や、<code>picksplit</code> におけるヒューリスティックな分割コスト計算の詳細は、PostgreSQL の GiST インデックスの一般的な実装慣習に基づいています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__hashing.html" target="wiki-view"><code>hashing</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__unionkey.html" target="wiki-view"><code>unionkey</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__sizebitvec.html" target="wiki-view"><code>sizebitvec</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__hemdistsign.html" target="wiki-view"><code>hemdistsign</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__hemdist.html" target="wiki-view"><code>hemdist</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__SPLITCOST.html" target="wiki-view"><code>SPLITCOST</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__comparecost.html" target="wiki-view"><code>comparecost</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__gist_te.html" target="wiki-view"><code>gist_te</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__LtreeSignature.html" target="wiki-view"><code>LtreeSignature</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__checkcondition_bit.html" target="wiki-view"><code>checkcondition_bit</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__gist_qtxt.html" target="wiki-view"><code>gist_qtxt</code></a></li>
+<li><a href="../../symbols/contrib__ltree___ltree_gist_c__gist_qe.html" target="wiki-view"><code>gist_qe</code></a></li>
+</ul></body></html>

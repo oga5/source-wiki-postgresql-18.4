@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__execIndexing_c__check_exclusion_or_unique_constraint.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>check_exclusion_or_unique_constraint</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/execIndexing.c:704</code></li>
+</ul>
+<h2>目的</h2>
+<p>テーブルへのタプル挿入時、指定されたインデックスに基づいて一意性制約または排他制約の違反を検出する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool check_exclusion_or_unique_constraint(
+    Relation heap, Relation index, IndexInfo *indexInfo,
+    ItemPointer tupleid, const Datum *values, const bool *isnull,
+    EState *estate, bool newIndex, CEOUC_WAIT_MODE waitMode,
+    bool violationOK, ItemPointer conflictTid
+)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 対象リレーション（<code>heap</code>, <code>index</code>）、インデックス情報、挿入対象のキー値（<code>values</code>, <code>isnull</code>）、実行状態（<code>estate</code>）、待機モード（<code>waitMode</code>）等。</li>
+<li>**出力**: 制約違反がなければ <code>true</code> を返し、違反がある場合は呼び出し元の設定に応じてエラーを投げるか、競合情報を <code>conflictTid</code> に格納して <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ii_WithoutOverlaps</code> が設定されている場合、空の範囲（empty range/multirange）の挿入を禁止するチェックが先行する。</li>
+<li><code>ii_NullsNotDistinct</code> が偽の場合、入力値に <code>NULL</code> が含まれると制約チェックは即座にパスする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **制約情報の特定**: <code>indexInfo</code> から排他制約または一意性制約の演算子・戦略を取得する。 2. **空範囲チェック**: <code>WITHOUT OVERLAPS</code> 制約がある場合、<code>ExecWithoutOverlapsNotEmpty</code> を呼び出し、空の範囲が含まれていないか検証する。 3. **スキャン準備**: <code>DirtySnapshot</code> を使用して、未コミットのタプルを含むインデックススキャンを初期化する。 4. **スキャン実行**: インデックスをスキャンし、挿入対象のキー値と一致する既存タプルを検索する。 5. **自己除外**: 挿入対象のタプル自身（<code>tupleid</code>）は競合判定から除外する。 6. **再チェック**: 損失のあるインデックススキャン（lossy scan）の場合は <code>index_recheck_constraint</code> を用いて再検証を行う。 7. **競合処理**: 競合が見つかった場合、トランザクションの可視性に応じて待機処理（<code>waitMode</code> に従う）またはエラー処理を行う。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/execIndexing.c</code> 内の <code>ExecCheckIndexConstraints</code> 等から呼び出される。</li>
+<li>**呼び出し先**: <code>index_beginscan</code>, <code>index_rescan</code>, <code>index_getnext_slot</code>, <code>ExecWithoutOverlapsNotEmpty</code>, <code>index_recheck_constraint</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexInfo</code>: インデックスのメタデータと制約情報。</li>
+<li><code>CEOUC_WAIT_MODE</code>: 排他制約チェック時の待機動作を制御する列挙型。</li>
+<li><code>SnapshotData</code>: 可視性判定に使用するスナップショット。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**デッドロック**: 競合する他トランザクションの終了を待機する際、デッドロックが発生する可能性がある。</li>
+<li>**損失のあるスキャン**: <code>index_scan-&gt;xs_recheck</code> が真の場合、インデックスの不完全な一致を補完するための再チェックが必須となる。</li>
+<li>**NULL値**: <code>ii_NullsNotDistinct</code> の設定により、<code>NULL</code> の扱いが異なる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>INSERT ... ON CONFLICT</code> の競合検出ロジックの中核を担う。</li>
+<li>競合検出時に <code>retry</code> ラベルへ戻ることで、待機後の再スキャンを実現している。</li>
+<li>呼び出し元との詳細な依存関係は、<code>src/backend/executor/execIndexing.c</code> 内の他の関数との連携を考慮すること。</li>
+</ul></body></html>

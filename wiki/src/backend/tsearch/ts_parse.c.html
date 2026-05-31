@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tsearch/ts_parse.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tsearch/ts_parse.c</h1>
+<h2>概要</h2>
+<p><code>ts_parse.c</code> は、PostgreSQL の全文検索（tsearch）機能におけるテキスト解析と正規化の核となる実装です。入力されたテキストをトークンに分割し、設定された辞書（Dictionary）を通じて語彙（Lexeme）へと変換する一連のプロセスを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tsearch</code> サブシステムにおいて、生のテキストを検索可能な <code>tsvector</code> や <code>headline</code> 形式へ変換するための「パイプライン」として機能します。パーサー（<code>wparser.c</code> 等）が生成したトークンを受け取り、辞書キャッシュ（<code>ts_cache.h</code>）を利用して正規化を行うブリッジの役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**テキストのトークン化と正規化**: パーサーから得られたトークンを辞書で処理し、検索に適した語彙に変換する。</li>
+<li>**辞書チェーンの管理**: 複数の辞書を順次適用し、単語が正規化されるまで、あるいは辞書が使い果たされるまで処理を継続する。</li>
+<li>**ヘッドライン生成のサポート**: 検索結果のハイライト表示（Headline）に必要な単語の抽出と、クエリとのマッチング判定を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>LexizeData</code>: 辞書処理の現在の状態（辞書チェーン、作業中のトークンリスト、一時的な結果）を保持する構造体。</li>
+<li><code>parsetext</code>: 入力テキストを解析し、<code>ParsedText</code> 構造体に語彙を格納するメイン関数。</li>
+<li><code>LexizeExec</code>: 辞書チェーンを走査し、単語を正規化するコアロジック。</li>
+<li><code>hlparsetext</code>: ヘッドライン生成用にテキストを解析し、クエリとのマッチング情報を付与する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>LPLAddTail</code></li>
+<li><code>LPLRemoveHead</code></li>
+<li><code>LexizeAddLemm</code></li>
+<li><code>LexizeInit</code></li>
+<li><code>ListParsedLex</code></li>
+<li><code>ParsedLex</code></li>
+<li><code>RemoveHead</code></li>
+<li><code>moveToWaste</code></li>
+<li><code>setCorrLex</code></li>
+<li><code>setNewTmpRes</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>parsetext</code> が <code>LexizeInit</code> を呼び出し、設定（<code>TSConfigCacheEntry</code>）に基づいた辞書処理環境を準備します。 2. **トークン抽出**: <code>prstoken</code> を呼び出し、入力テキストから順次トークンを取得します。 3. **辞書適用**: <code>LexizeExec</code> がトークンを辞書に渡します。辞書が「次の単語も必要（<code>getnext</code>）」と判断した場合、<code>LexizeData</code> 内のスタックにトークンを積み上げ、複数単語を跨ぐ正規化（シソーラス等）を可能にします。 4. **結果格納**: 正規化された語彙は <code>ParsedText</code> 構造体にコピーされ、最終的にインデックスや検索結果として利用されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な PostgreSQL 型定義とマクロ。</li>
+<li><code>tsearch/ts_cache.h</code>: 辞書やパーサーの設定キャッシュへのアクセス。</li>
+<li><code>tsearch/ts_utils.h</code>: 全文検索用のユーティリティ関数とデータ構造。</li>
+<li><code>varatt.h</code>: 可変長データ型の処理。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tsearch/wparser.c</code>: トークン分割の具体的なロジック。</li>
+<li><code>src/backend/tsearch/dict.c</code>: 辞書インターフェースの定義と呼び出し。</li>
+<li><code>src/backend/tsearch/to_tsany.c</code>: <code>to_tsvector</code> 等の SQL 関数から本ファイルの関数を呼び出すインターフェース。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**辞書チェーンの挙動**: <code>LexizeExec</code> は、辞書が単語を認識できない場合や、複数の単語を組み合わせて正規化する場合（シソーラスなど）に複雑な状態遷移を行います。デバッグ時は <code>LexizeData</code> の <code>towork</code>（作業中）と <code>waste</code>（処理済み）リストの状態変化を追うのが有効です。</li>
+<li>**メモリ管理**: <code>LexizeExec</code> 内では <code>palloc</code> が頻繁に使用されます。特に <code>tmpRes</code> や <code>lastRes</code> を介したメモリの受け渡しがあるため、リークには注意が必要です。</li>
+<li>**制限事項**: <code>MAXSTRLEN</code> を超える単語は、<code>IGNORE_LONGLEXEME</code> マクロの設定に応じて無視されるかエラーとなります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__ParsedLex.html" target="wiki-view"><code>ParsedLex</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__ListParsedLex.html" target="wiki-view"><code>ListParsedLex</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LexizeData.html" target="wiki-view"><code>LexizeData</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LexizeInit.html" target="wiki-view"><code>LexizeInit</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LPLAddTail.html" target="wiki-view"><code>LPLAddTail</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LPLRemoveHead.html" target="wiki-view"><code>LPLRemoveHead</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LexizeAddLemm.html" target="wiki-view"><code>LexizeAddLemm</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__RemoveHead.html" target="wiki-view"><code>RemoveHead</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__setCorrLex.html" target="wiki-view"><code>setCorrLex</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__moveToWaste.html" target="wiki-view"><code>moveToWaste</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__setNewTmpRes.html" target="wiki-view"><code>setNewTmpRes</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__ts_parse_c__LexizeExec.html" target="wiki-view"><code>LexizeExec</code></a></li>
+</ul></body></html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/dshash-table.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>dshash_table</h1>
+<h2>概念</h2>
+<p><code>dshash_table</code> は、動的共有メモリ（DSA: Dynamic Shared Area）領域上に構築される、プロセス間で共有可能な並行オープンハッシュテーブルを表現する構造体です。</p>
+<p>ヘッダーファイル（<code>dshash.h</code>）においては内部メンバが非公開の不透明な構造体（opaque type）として定義されており、ソースファイル（<code>dshash.c</code>）においてバックエンドローカルな状態を保持する具体的な構造体が定義されています。</p>
+<h2>なぜ重要か</h2>
+<ul>
+<li>**プロセス間共有と並行性**: 複数のプロセスから安全に並行アクセス可能なハッシュテーブルを提供します。内部的にパーティション分割された <code>LWLock</code> を使用することで、アクセス競合を最小化します。</li>
+<li>**動的スケーラビリティ**: テーブルの負荷状況に応じて、動的にバケットの再配置（リサイズ）を行うことができます。</li>
+<li>**カプセル化**: 不透明な構造体として定義されているため、利用側は内部の実装詳細（共有メモリポインタの解決やロック管理など）を意識せずに操作できます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/lib</code></li>
+<li><code>module:src/include/lib</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/lib/dshash.h#dshash_table</code>**</li>
+<p>外部モジュールに公開される不透明な構造体定義（<code>typedef struct dshash_table dshash_table;</code>）。ハッシュテーブルのハンドルとして機能します。</p>
+<li>**<code>symbol:src/backend/lib/dshash.c#dshash_table</code>**</li>
+<p>バックエンドローカルな状態を保持する具体的な構造体。DSA領域へのポインタ（<code>area</code>）、パラメータ（<code>params</code>）、共有メモリ上の制御ブロック（<code>control</code>）、ローカルにキャッシュされたバケットポインタ（<code>buckets</code>）などを保持します。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>ハッシュテーブルの作成・アタッチから破棄に至る完全なライフサイクルの全容は、提供されたコンテキストからは未検証です。しかし、テーブル操作時の一連の流れは以下のように定義されています。</p>
+<p>1. **操作の受付**: <code>dshash_find</code> や <code>dshash_find_or_insert</code> などのAPIに <code>dshash_table</code> のポインタが渡されます。 2. **バケットポインタの検証**: <code>ensure_valid_bucket_pointers</code> を呼び出し、他プロセスによってハッシュテーブルがリサイズされていないかを確認します。リサイズが検知された場合は、ローカルの <code>buckets</code> ポインタを最新の状態に更新します。 3. **パーティションロックの取得**: 操作対象のキーに対応するパーティションの <code>LWLock</code> を取得します。 4. **バケット内操作**: <code>find_in_bucket</code> や <code>insert_into_bucket</code> などの内部関数を通じて、共有メモリ上の要素（<code>dshash_table_item</code>）の検索・挿入・削除を行います。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**直接ポインタの禁止**: 共有メモリ上のデータにアクセスする際、プロセス固有の直接的な絶対メモリポインタを保持し続けてはならず、必ず <code>dsa_pointer</code> を介してアクセスする必要があります。</li>
+<li>**ロックの取得順序**: デッドロックを防止するため、複数のパーティションロックを同時に取得する必要がある場合は、必ずパーティション番号の昇順で取得しなければなりません。</li>
+<li>**関数ポインタの再指定**: ハッシュ関数や比較関数などの関数ポインタはプロセス間で共有できないため、各プロセスがテーブルにアタッチする際に再指定する必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**頻繁なリサイズによるボトルネック**: テーブルのリサイズ（<code>resize</code>）時には、すべてのパーティションのロックを同時に取得する必要があります。そのため、頻繁にリサイズが発生する設計になっていると、システム全体のパフォーマンスが著しく低下します。</li>
+<li>**シーケンシャルスキャン中のブロッキング**: シーケンシャルスキャン（<code>dshash_seq_status</code> を使用）の実行中は、対象パーティションのロックが保持され続けます。長時間のスキャン処理は、他プロセスによる並行操作を長時間ブロックする原因になります。</li>
+<li>**不透明型への直接アクセス**: <code>dshash_table</code> の内部メンバは <code>dshash.c</code> 内に隠蔽されているため、外部から直接アクセスすることはできません。必ず提供されている API を介して操作する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li>**<code>src/include/lib/dshash.h</code>**: 外部向けAPIの宣言、および <code>dshash_table</code> の不透明型としての定義を確認できます。</li>
+<li>**<code>src/backend/lib/dshash.c</code>**: <code>struct dshash_table</code> の具体的なメンバ定義、およびリサイズやバケット操作などの内部アルゴリズムの実装を確認できます。</li>
+</ul></body></html>

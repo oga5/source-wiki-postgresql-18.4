@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__test__modules__worker_spi__worker_spi_c__worker_spi_main.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>worker_spi_main</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/test/modules/worker_spi/worker_spi.c:133</code></li>
+</ul>
+<h2>目的</h2>
+<p>バックグラウンドワーカーとして動作し、データベース接続の確立、SPIを用いた定期的な集計クエリの実行、およびシグナル処理を行うメインループを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void worker_spi_main(Datum main_arg)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>main_arg</code> (Datum型): ワーカーのインデックス番号。<code>MyBgworkerEntry-&gt;bgw_extra</code> からデータベースOID、ロールOID、フラグ情報を取得します。</li>
+<li>**出力**: なし（無限ループ内でプロセス終了まで実行）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>BackgroundWorkerUnblockSignals()</code> が呼び出されるまでシグナルはブロックされている必要があります。</li>
+<li>SPIを使用するため、<code>StartTransactionCommand()</code> と <code>CommitTransactionCommand()</code> でトランザクションを明示的に制御する必要があります。</li>
+<li><code>WaitLatch</code> を使用して待機し、<code>CHECK_FOR_INTERRUPTS()</code> を定期的に呼び出すことで、Postmasterの終了や設定変更（SIGHUP）に即座に応答する必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>bgw_extra</code> から接続情報を読み取り、シグナルハンドラ（<code>SIGHUP</code>, <code>SIGTERM</code>）を設定し、シグナルをアンブロックします。 2. **接続**: <code>BackgroundWorkerInitializeConnection</code> 等を用いてデータベースセッションを確立します。 3. **セットアップ**: <code>initialize_worker_spi</code> を呼び出し、対象テーブルを準備します。 4. **メインループ**:</p>
+<ul>
+<li><code>WaitLatch</code> で <code>worker_spi_naptime</code> 分だけ待機します。</li>
+<li><code>ConfigReloadPending</code> が真であれば設定を再読み込みします。</li>
+<li>トランザクションを開始し、<code>SPI_connect</code> を経由して集計クエリ（DELETE/UPDATE）を実行します。</li>
+<li>実行結果をログ出力し、<code>SPI_finish</code> とトランザクションコミットを行います。</li>
+<li><code>pgstat_report_activity</code> で状態を更新します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: バックグラウンドワーカーの起動プロセス（<code>postmaster</code>）。ソースコード内では <code>worker_spi_main</code> という文字列名で参照されています。</li>
+<li>**呼び出し先**: <code>initialize_worker_spi</code>, <code>BackgroundWorkerInitializeConnection</code>, <code>WaitLatch</code>, <code>SPI_execute</code>, <code>StartTransactionCommand</code>, <code>CommitTransactionCommand</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>worktable</code>: スキーマ名とテーブル名を保持する構造体。</li>
+<li><code>MyBgworkerEntry</code>: バックグラウンドワーカーの登録情報を保持するグローバル変数。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>SPI_execute</code> が期待した結果（<code>SPI_OK_UPDATE_RETURNING</code>）を返さない場合、<code>elog(FATAL)</code> によりプロセスが異常終了します。</li>
+<li><code>SIGTERM</code> を受信するとループを脱出し、プロセスが終了します。</li>
+<li><code>WaitLatch</code> の <code>WL_EXIT_ON_PM_DEATH</code> フラグにより、Postmasterが終了した場合は即座にプロセスが終了します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>usleep</code> 等の直接的な待機処理は避け、必ず <code>WaitLatch</code> を使用してください。</li>
+<li><code>SPI</code> 実行時は <code>SetCurrentStatementStartTimestamp()</code> を適切に呼び出し、トランザクションスナップショットを管理してください。</li>
+<li>メモリ割り当てはプロセス終了時に解放されますが、長時間実行されるためメモリリークには注意が必要です。</li>
+</ul></body></html>

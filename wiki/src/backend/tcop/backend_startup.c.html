@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tcop/backend_startup.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tcop/backend_startup.c</h1>
+<h2>概要</h2>
+<p><code>backend_startup.c</code> は、PostgreSQLのバックエンドプロセスが起動した直後の初期化フェーズを担うモジュールです。Postmasterからフォークされた直後のプロセスが、クライアントとの通信を確立し、認証を開始するまでの準備を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tcop</code> モジュールにおいて、本ファイルは「接続の入り口」として機能します。<code>postgres.c</code> がクエリ処理のメインループを担当するのに対し、本ファイルはそれ以前の「通信プロトコルのネゴシエーション」と「接続情報の収集」に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続初期化**: クライアントソケットの準備と、接続状態（SSL/GSSAPI）のネゴシエーション。</li>
+<li>**スタートアップパケットの解析**: クライアントから送られる接続パラメータ（DB名、ユーザー名、GUC設定など）の抽出。</li>
+<li>**接続拒否の判定**: データベースの状態（リカバリ中、シャットダウン中など）に基づいた早期終了処理。</li>
+<li>**接続ログの管理**: <code>log_connections</code> GUCに基づいた接続イベントの記録。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BackendMain</code>: バックエンドプロセスのエントリポイント。</li>
+<li><code>BackendInitialize</code>: 接続初期化のメインロジック。</li>
+<li><code>ProcessStartupPacket</code>: クライアントからのスタートアップパケットを解析し、接続パラメータを <code>Port</code> 構造体に格納する。</li>
+<li><code>log_connections</code>: 接続ログの出力を制御するビットフラグ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ProcessCancelRequestPacket</code></li>
+<li><code>ProcessSSLStartup</code></li>
+<li><code>SendNegotiateProtocolVersion</code></li>
+<li><code>StartupPacketTimeoutHandler</code></li>
+<li><code>assign_log_connections</code></li>
+<li><code>check_log_connections</code></li>
+<li><code>process_startup_packet_die</code></li>
+<li><code>validate_log_connections_options</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起動**: <code>BackendMain</code> が呼び出され、<code>BackendInitialize</code> へ移行。 2. **初期化**: <code>pq_init</code> で通信層を初期化し、<code>SIGTERM</code>/<code>SIGALRM</code>（タイムアウト）ハンドラを設定。 3. **ネゴシエーション**: <code>ProcessSSLStartup</code> および <code>ProcessStartupPacket</code> を通じて、SSL/GSSAPIの有無やプロトコルバージョンを決定。 4. **検証**: データベースの状態（<code>CAC_state</code>）を確認し、接続不可であれば <code>FATAL</code> エラーで終了。 5. **引き継ぎ**: 成功後、<code>PostgresMain</code> を呼び出し、クエリ処理フェーズへ制御を移す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq/libpq-be.h</code>: バックエンド側の通信プロトコル定義。</li>
+<li><code>postmaster/postmaster.h</code>: Postmasterとの連携用定義。</li>
+<li><code>tcop/backend_startup.h</code>: 共有データ構造（<code>BackendStartupData</code>, <code>ConnectionTiming</code>）の定義。</li>
+<li><code>utils/timeout.h</code>: 接続タイムアウト処理用。</li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>libpq/libpq.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tcop/postgres.c</code>: 本ファイルの処理完了後に呼び出されるメイン処理。</li>
+<li><code>src/backend/libpq/pqcomm.c</code>: 低レベルな通信処理（<code>pq_getbytes</code> 等）の実装。</li>
+<li><code>src/include/tcop/tcopprot.h</code>: プロトコル関連の定数定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**共有メモリの制約**: <code>BackendInitialize</code> 内では、まだ <code>InitProcess()</code> が呼ばれていないため、共有メモリへのアクセスは厳禁です。この制約により、エラー発生時に <code>proc_exit</code> ではなく <code>_exit(1)</code> を使用して安全に終了させています。</li>
+<li>**タイムアウト**: 悪意のあるクライアントが接続を占有するのを防ぐため、スタートアップパケットの受信には厳格なタイムアウトが適用されます。</li>
+<li>**GUCフック**: <code>log_connections</code> の設定変更は、<code>check_log_connections</code> と <code>assign_log_connections</code> を通じて安全に行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__BackendMain.html" target="wiki-view"><code>BackendMain</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__BackendInitialize.html" target="wiki-view"><code>BackendInitialize</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__ProcessSSLStartup.html" target="wiki-view"><code>ProcessSSLStartup</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__ProcessStartupPacket.html" target="wiki-view"><code>ProcessStartupPacket</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__ProcessCancelRequestPacket.html" target="wiki-view"><code>ProcessCancelRequestPacket</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__SendNegotiateProtocolVersion.html" target="wiki-view"><code>SendNegotiateProtocolVersion</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__process_startup_packet_die.html" target="wiki-view"><code>process_startup_packet_die</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__StartupPacketTimeoutHandler.html" target="wiki-view"><code>StartupPacketTimeoutHandler</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__validate_log_connections_options.html" target="wiki-view"><code>validate_log_connections_options</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__check_log_connections.html" target="wiki-view"><code>check_log_connections</code></a></li>
+<li><a href="../../../symbols/src__backend__tcop__backend_startup_c__assign_log_connections.html" target="wiki-view"><code>assign_log_connections</code></a></li>
+</ul></body></html>

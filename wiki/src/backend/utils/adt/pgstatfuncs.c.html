@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/pgstatfuncs.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/pgstatfuncs.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の統計情報システム（<code>pgstat</code>）が収集したデータを、SQL インターフェース（システムビューや関数）を通じてユーザーに提供するためのバックエンド実装です。統計情報の取得、リセット、および特定のバックエンドやオブジェクトに関する詳細な状態情報の変換を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/pgstat/</code> サブシステムと SQL レイヤーの仲介役です。<code>pgstat</code> が共有メモリやローカルメモリに保持している統計構造体を、SQL の <code>Datum</code> 型や <code>Tuple</code> 形式に変換して返却します。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計情報の公開**: テーブル、インデックス、関数、データベース、バックエンド、WAL、レプリケーションスロット等の統計情報を SQL 関数として提供。</li>
+<li>**権限管理**: <code>HAS_PGSTAT_PERMISSIONS</code> マクロを用い、統計情報へのアクセス権限（<code>pg_read_all_stats</code> ロールまたは対象オブジェクトの所有者）を検証。</li>
+<li>**統計情報のリセット**: 統計カウンターの初期化・リセット処理のディスパッチ。</li>
+<li>**データ変換**: 内部の統計構造体（<code>PgStat_StatTabEntry</code> 等）から SQL で利用可能な型（<code>int64</code>, <code>float8</code>, <code>timestamptz</code>）へのマッピング。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>統計取得関数（マクロ生成）</h3>
+<ul>
+<li><code>PG_STAT_GET_RELENTRY_INT64</code>: テーブル統計（<code>analyze_count</code> 等）を <code>int64</code> で取得する関数群を生成。</li>
+<li><code>PG_STAT_GET_RELENTRY_FLOAT8</code>: 時間統計（<code>total_vacuum_time</code> 等）を <code>float8</code> で取得する関数群を生成。</li>
+<li><code>PG_STAT_GET_DBENTRY_INT64</code>: データベース統計（<code>xact_commit</code> 等）を <code>int64</code> で取得する関数群を生成。</li>
+</ul>
+<h3>バックエンド・アクティビティ関連</h3>
+<ul>
+<li><code>pg_stat_get_activity</code>: 全バックエンドの稼働状況（PID, 状態, 待機イベント, クエリ等）を <code>tuplestore</code> に格納して返却。</li>
+<li><code>pg_stat_get_progress_info</code>: <code>VACUUM</code> や <code>CREATE INDEX</code> などの進行状況を報告。</li>
+<li><code>pg_stat_get_backend_subxact</code>: 特定バックエンドのサブトランザクション情報を取得。</li>
+</ul>
+<h3>I/O および WAL 統計</h3>
+<ul>
+<li><code>pg_stat_get_io</code>: 全バックエンドタイプ別の I/O 統計を構築。</li>
+<li><code>pg_stat_get_wal</code>: WAL 関連の統計情報を構築。</li>
+</ul>
+<h3>管理・リセット</h3>
+<ul>
+<li><code>pg_stat_reset_shared</code>: クラスタ全体の共有統計（<code>bgwriter</code>, <code>checkpointer</code> 等）をリセット。</li>
+<li><code>pg_stat_reset_single_table_counters</code>: 特定テーブルの統計をリセット。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PG_STAT_GET_DBENTRY_FLOAT8_MS</code></li>
+<li><code>PG_STAT_GET_DBENTRY_INT64</code></li>
+<li><code>PG_STAT_GET_FUNCENTRY_FLOAT8_MS</code></li>
+<li><code>PG_STAT_GET_RELENTRY_TIMESTAMPTZ</code></li>
+<li><code>PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS</code></li>
+<li><code>PG_STAT_GET_XACT_RELENTRY_INT64</code></li>
+<li><code>io_stat_col</code></li>
+<li><code>pg_backend_pid</code></li>
+<li><code>pg_stat_get_activity</code></li>
+<li><code>pg_stat_get_backend_dbid</code></li>
+<li><code>pg_stat_get_backend_pid</code></li>
+<li><code>pg_stat_get_progress_info</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **リクエスト**: SQL 関数が呼び出されると、<code>pgstat_fetch_stat_*</code> 系関数を呼び出し、最新の統計スナップショットを取得します。 2. **権限チェック**: <code>HAS_PGSTAT_PERMISSIONS</code> を使用し、呼び出し元が統計情報を閲覧可能か判定します。権限がない場合、機密情報（クエリ文字列やクライアントアドレス等）は NULL またはマスクされた値に置換されます。 3. **変換**: <code>tuplestore_putvalues</code> を使用して、結果セットを構築します。<code>pg_stat_get_activity</code> のようなセットを返す関数は <code>InitMaterializedSRF</code> で初期化されたコンテキストを使用します。 4. **返却**: 構築された <code>Datum</code> または <code>HeapTuple</code> を SQL エンジンへ返却します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>pgstat.h</code>: 統計情報の構造体定義とアクセス関数の提供。</li>
+<li><code>funcapi.h</code>: SRF（Set Returning Functions）のサポート。</li>
+<li><code>storage/proc.h</code>, <code>storage/procarray.h</code>: バックエンドプロセス情報の取得。</li>
+<li><code>utils/builtins.h</code>: 組み込み関数定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlogprefetcher.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgworker.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/pgstat/</code>: 統計情報の収集・集計・永続化を行う本体。</li>
+<li><code>src/include/pgstat.h</code>: 統計情報のデータ構造定義。</li>
+<li><code>src/backend/catalog/pg_proc.dat</code>: 本ファイルで定義された関数の SQL インターフェース登録。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>tuplestore</code> を使用する関数は、<code>multi_call_memory_ctx</code> を利用してメモリを管理しています。</li>
+<li>**権限の境界**: <code>pg_stat_get_activity</code> 等では、権限がない場合に一部の列を NULL にする処理がハードコードされています。セキュリティ要件の変更時はここを確認してください。</li>
+<li>**スナップショット**: <code>pgstat_fetch_stat_*</code> は、呼び出しのたびに最新の統計スナップショットを読み込みます。高頻度な呼び出しはパフォーマンスに影響を与える可能性があります。</li>
+<li>**省略された詳細**: 本ファイルは統計情報の「表示」に特化しており、統計情報の「収集」ロジック（<code>pgstat_report_*</code> 等）は <code>src/backend/pgstat/</code> 配下の各ファイルに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_RELENTRY_TIMESTAMPTZ.html" target="wiki-view"><code>PG_STAT_GET_RELENTRY_TIMESTAMPTZ</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_FUNCENTRY_FLOAT8_MS.html" target="wiki-view"><code>PG_STAT_GET_FUNCENTRY_FLOAT8_MS</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__pg_stat_get_progress_info.html" target="wiki-view"><code>pg_stat_get_progress_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__pg_stat_get_activity.html" target="wiki-view"><code>pg_stat_get_activity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__pg_backend_pid.html" target="wiki-view"><code>pg_backend_pid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__pg_stat_get_backend_pid.html" target="wiki-view"><code>pg_stat_get_backend_pid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__pg_stat_get_backend_dbid.html" target="wiki-view"><code>pg_stat_get_backend_dbid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_DBENTRY_INT64.html" target="wiki-view"><code>PG_STAT_GET_DBENTRY_INT64</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_DBENTRY_FLOAT8_MS.html" target="wiki-view"><code>PG_STAT_GET_DBENTRY_FLOAT8_MS</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__io_stat_col.html" target="wiki-view"><code>io_stat_col</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_XACT_RELENTRY_INT64.html" target="wiki-view"><code>PG_STAT_GET_XACT_RELENTRY_INT64</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__pgstatfuncs_c__PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS.html" target="wiki-view"><code>PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS</code></a></li>
+</ul></body></html>

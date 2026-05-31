@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__posix_sema_c__PGReserveSemaphores.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PGReserveSemaphores</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/posix_sema.c:195</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のセマフォサブシステムを初期化し、プロセス間同期に必要なリソースを確保します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void PGReserveSemaphores(int maxSemas)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>maxSemas</code> (int) - 確保するセマフォの最大数。</li>
+<li>**出力**: なし（副作用としてグローバル変数の設定とメモリ確保を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>DataDir</code> が有効であり、<code>stat()</code> システムコールが成功すること。</li>
+<li><code>USE_NAMED_POSIX_SEMAPHORES</code> の定義有無により、メモリ確保先（ヒープまたは共有メモリ）が分岐する。</li>
+<li>共有メモリを使用する場合、スピンロックが未準備であるため <code>ShmemAllocUnlocked()</code> を使用する必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>DataDir</code> の inode 番号を取得し、セマフォキー検索のシードとして設定する（衝突回避およびクラッシュ後のクリーンアップ用）。 2. <code>USE_NAMED_POSIX_SEMAPHORES</code> が定義されている場合、<code>maxSemas</code> 分の <code>sem_t *</code> をヒープ領域に確保する。 3. 未定義の場合、<code>ShmemAllocUnlocked</code> を使用して共有メモリ上にセマフォ領域を確保する。 4. グローバル変数 <code>numSems</code> を 0 に、<code>maxSems</code> を <code>maxSemas</code> に、<code>nextSemKey</code> を inode 番号に初期化する。 5. <code>on_shmem_exit</code> を登録し、プロセス終了時に <code>ReleaseSemaphores</code> が実行されるようにする。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/storage/ipc/ipci.c</code> 内の <code>PGReserveSemaphores(numSemas);</code> からの呼び出しが確認されている。</li>
+<li>**呼び出し先**: <code>stat</code>, <code>malloc</code> (または <code>ShmemAllocUnlocked</code>), <code>on_shmem_exit</code>, <code>ereport</code>, <code>elog</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGSemaphore</code> (共有メモリ上のセマフォ配列)</li>
+<li><code>mySemPointers</code> (名前付きセマフォ使用時のポインタ配列)</li>
+<li><code>statbuf</code> (データディレクトリの inode 取得用)</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>stat(DataDir, ...)</code> が失敗した場合: <code>FATAL</code> エラーでプロセスを終了する。</li>
+<li><code>malloc</code> が失敗した場合: <code>PANIC</code> エラーでプロセスを終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>EXEC_BACKEND</code> 環境下では名前付きセマフォと共存できない制約がある。</li>
+<li><code>nextSemKey</code> の初期化に inode を使用することで、同一ディレクトリ内の古いセマフォリソースの検出とクリーンアップを容易にしている。</li>
+</ul></body></html>

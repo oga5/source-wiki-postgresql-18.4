@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__utils__catcache_h__CatCache.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CatCache</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/utils/catcache.h:44</code></li>
+</ul>
+<h2>目的</h2>
+<p>システムカタログへのアクセスを高速化するため、メモリ上にシステムテーブルの行（タプル）を保持するキャッシュ構造体。インデックススキャンを回避し、存在確認および部分一致検索を効率化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct catcache {
+    int id;
+    int cc_nbuckets;
+    TupleDesc cc_tupdesc;
+    dlist_head *cc_bucket;
+    CCHashFN cc_hashfunc[CATCACHE_MAXKEYS];
+    CCFastEqualFN cc_fastequal[CATCACHE_MAXKEYS];
+    int cc_keyno[CATCACHE_MAXKEYS];
+    int cc_nkeys;
+    int cc_ntup;
+    int cc_nlist;
+    int cc_nlbuckets;
+    dlist_head *cc_lbucket;
+    const char *cc_relname;
+    Oid cc_reloid;
+    Oid cc_indexoid;
+    bool cc_relisshared;
+    slist_node cc_next;
+    ScanKeyData cc_skey[CATCACHE_MAXKEYS];
+    /* CATCACHE_STATS 有効時のみ統計用メンバが存在 */
+} CatCache;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 検索キー（<code>ScanKeyData</code>）、ハッシュ関数、等価比較関数。</li>
+<li>**出力**: キャッシュヒット時は <code>CatCTup</code>（タプル）または <code>CatCList</code>（リスト）、ミス時はシステムテーブルからの読み込みを経てキャッシュへ登録。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対応するシステムテーブルのインデックスが一意（Unique）であることを前提とする。</li>
+<li>キャッシュは <code>CacheMemoryContext</code> 上で管理される。</li>
+<li>参照カウントの管理が必須であり、<code>ReleaseCatCache</code> の呼び出し漏れはメモリリークの原因となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **検索**: ハッシュ値からバケットを特定し、エントリを探索。 2. **ヒット**: 参照カウントをインクリメントして返却。 3. **ミス**: システムテーブルをインデックススキャンし、取得したタプルをキャッシュに登録。 4. **無効化**: システムテーブル更新時に <code>CatCacheInvalidate</code> を呼び出し、該当エントリを「dead」とマーク。参照カウントがゼロになった時点で解放。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/utils/cache/catcache.c</code> 内の <code>SearchCatCacheInternal</code>、<code>SearchCatCacheMiss</code> 等が本構造体を参照・操作する。</li>
+<li>**呼び出し先**: <code>access/htup.h</code>（<code>HeapTuple</code>）、<code>access/skey.h</code>（<code>ScanKeyData</code>）、<code>lib/ilist.h</code>（<code>dlist</code>）、<code>utils/relcache.h</code>（<code>TupleDesc</code>）の各機能を利用。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CatCTup</code>: 個別のキャッシュエントリ（正・負のキャッシュを保持）。</li>
+<li><code>CatCList</code>: 部分キー検索の結果リスト。</li>
+<li><code>CatCacheHeader</code>: キャッシュ全体の管理ヘッダ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**キャッシュミス**: 存在しないオブジェクトに対する検索は「負のキャッシュ」として記録され、再検索を防止する。</li>
+<li>**メモリ管理**: 参照カウントの不整合により、不要なエントリがメモリに残留する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>CATCACHE_STATS</code> を定義してコンパイルすると、統計情報メンバが構造体末尾に追加される。ABI 互換性を維持するため、これらは必ず構造体の末尾に配置すること。</li>
+<li>キャッシュの無効化ロジックは <code>src/backend/utils/cache/inval.c</code> に依存している。</li>
+</ul></body></html>

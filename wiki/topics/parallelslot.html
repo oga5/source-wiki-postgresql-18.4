@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/parallelslot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelSlot</h1>
+<h2>概念</h2>
+<p><code>ParallelSlot</code> は、PostgreSQLのフロントエンドツールおよびユーティリティ（<code>pg_dump</code>、<code>pg_restore</code>、<code>pg_amcheck</code> など）において、並列処理を管理するために用いられる構造体です。</p>
+<p>この名前を持つ構造体には、役割の異なる2つの定義が存在します。</p>
+<p>1. **フロントエンド共通の接続管理 (<code>src/include/fe_utils/parallel_slot.h</code>)**: 並列処理用のデータベース接続（<code>PGconn</code>）を保持し、クエリ実行状態（<code>inUse</code>）や結果処理用のコールバック（<code>handler</code>）を管理するコンテナ。 2. **<code>pg_dump</code>/<code>pg_restore</code> 内部のワーカー管理 (<code>src/bin/pg_dump/parallel.c</code>)**: 並列処理を実行する各ワーカープロセスまたはスレッドの状態（<code>workerStatus</code>）、通信用パイプ、および識別情報（<code>pid</code> や <code>hThread</code>）を保持する構造体。</p>
+<h2>なぜ重要か</h2>
+<p>フロントエンドツールがデータベースに対して並列にクエリを実行したり、ダンプ/リストア処理を複数のワーカーに分散して高速化したりする際に、各並列実行コンテキストの状態、通信、および接続を安全かつ効率的に追跡・制御するために不可欠なデータ構造だからです。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_dump</code></li>
+<li><code>module:src/include/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/bin/pg_dump/parallel.c#ParallelSlot</code> : <code>pg_dump</code> 内でワーカープロセス/スレッドの状態や通信パイプを管理する具体的な構造体定義。</li>
+<li><code>symbol:src/bin/pg_dump/parallel.h#ParallelSlot</code> : <code>parallel.c</code> 外に対して不透明ポインタ（opaque struct）として開示される宣言。</li>
+<li><code>symbol:src/include/fe_utils/parallel_slot.h#ParallelSlot</code> : フロントエンド共通で <code>PGconn</code> 接続と結果ハンドラを管理する構造体定義。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **<code>fe_utils</code> 接続管理の流れ**:</p>
+<ul>
+<li><code>ParallelSlotArray</code> 内で複数の <code>ParallelSlot</code> が管理されます。</li>
+<li>各スロットは <code>PGconn</code> を保持し、クエリ発行時に <code>inUse</code> が設定され、結果処理用の <code>handler</code> と <code>handler_context</code> が登録されます。</li>
+<li>クエリ結果が返されると、登録された <code>handler</code> コールバックが実行されます。</li>
+<p>2. **<code>pg_dump</code> ワーカー管理の流れ**:</p>
+<li>リーダープロセスは <code>DispatchJobForTocEntry</code> を通じてジョブを割り当て、パイプ経由でコマンドを送信します。</li>
+<li>ワーカーは <code>RunWorker</code> ループ内でパイプを監視し、リーダーからの指示に従って <code>ArchiveHandle</code> を使用した処理を実行します。</li>
+<li>処理完了後、ワーカーはパイプ経由で結果を返送し、リーダーが <code>ListenToWorkers</code> でこれを回収します。</li>
+</ul>
+<p>※なお、これら2つの <code>ParallelSlot</code> 構造体がシステム全体でどのように相互作用し、統合された単一の制御フローを形成しているかという詳細なエンドツーエンドの連携フローは、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**<code>pg_dump</code> 側**:</li>
+<li><code>workerStatus</code> が <code>WRKR_WORKING</code> の場合のみ、<code>callback</code> および <code>callback_data</code> が有効です。</li>
+<li><code>parallel.h</code> で定義される <code>ParallelSlot</code> は不透明ポインタであり、その内部メンバへの直接アクセスは <code>parallel.c</code> 内に限定されなければなりません。</li>
+<li>**<code>fe_utils</code> 側**:</li>
+<li><code>connection</code> に対してコマンドやクエリを発行する前に、必要に応じて <code>handler</code> および <code>handler_context</code> を登録する必要があります。未設定の場合、これらは <code>NULL</code> である必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**プラットフォーム依存の制限**:</li>
+<li>Windows環境では <code>fork</code> が利用できないため、スレッドとソケットを用いたパイプエミュレーション（<code>pgpipe</code>）に依存します。また、<code>MAXIMUM_WAIT_OBJECTS</code> の制限により、並列数は最大 64 に制限され、これに伴い <code>ParallelSlot</code> の配列サイズも制限されます。</li>
+<li>Windows環境では <code>FD_SETSIZE</code> の制限が並列接続数に影響を与えるため、スロット数設計時に注意が必要です。</li>
+<li>**メモリ・リソース管理**:</li>
+<li><code>fe_utils</code> の <code>handler</code> 内での <code>PQclear</code> の実行有無など、呼び出し元とハンドラ間での結果解放の責務分担に注意する必要があります。</li>
+<li>シグナルハンドラ内での <code>ParallelSlot</code> へのアクセスは制限されており、安全な関数のみを使用する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/fe_utils/parallel_slot.h</code> : フロントエンド共通の接続・コールバック管理構造体の定義。</li>
+<li><code>src/bin/pg_dump/parallel.h</code> : <code>pg_dump</code> における不透明ポインタとしての宣言。</li>
+<li><code>src/bin/pg_dump/parallel.c</code> : <code>pg_dump</code> におけるワーカー管理構造体の具体的なメンバ定義や、パイプ通信・スレッド制御の実装。</li>
+</ul></body></html>

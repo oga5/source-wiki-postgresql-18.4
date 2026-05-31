@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/catcache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/catcache.c</h1>
+<h2>概要</h2>
+<p><code>catcache.c</code> は、PostgreSQLのシステムカタログに対する低レベルなキャッシュエンジンです。システムカタログのタプルをハッシュテーブル形式でメモリ上に保持し、ディスクI/Oを回避することでメタデータアクセスの高速化を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールにおける「基盤層」です。<code>syscache.c</code> が提供する高レベルな検索APIの下位で動作し、キャッシュエントリのライフサイクル管理、ハッシュ計算、および無効化（Invalidation）処理を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ管理**: <code>CatCache</code> 構造体によるハッシュテーブルの管理と、エントリ（<code>CatCTup</code>）のLRU的な配置。</li>
+<li>**検索と構築**: キャッシュミス時のカタログスキャンと、メモリ上へのエントリ構築（遅延初期化）。</li>
+<li>**整合性維持**: <code>inval.c</code> からの通知に基づき、無効化されたエントリを特定・削除する。</li>
+<li>**リソース管理**: <code>ResourceOwner</code> を用いた参照カウントの追跡と、トランザクション終了時の安全な解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理構造</h3>
+<ul>
+<li><code>CatCache</code>: 個別のカタログキャッシュを管理するメイン構造体。ハッシュバケット、キー定義、統計情報を含む。</li>
+<li><code>CatCTup</code>: キャッシュされた個別のタプル。<code>refcount</code> を持ち、<code>dead</code> フラグで無効化状態を管理。</li>
+<li><code>CatCList</code>: 複数タプルを返す検索（<code>SearchCatCacheList</code>）の結果を保持するリスト構造。</li>
+</ul>
+<h3>検索・操作</h3>
+<ul>
+<li><code>SearchCatCache</code> / <code>SearchCatCacheInternal</code>: 指定されたキーでキャッシュを検索し、ミス時はカタログをスキャン。</li>
+<li><code>SearchCatCacheList</code>: 複数タプルを返す検索を実行し、結果をリストとしてキャッシュ。</li>
+<li><code>ReleaseCatCache</code> / <code>ReleaseCatCacheList</code>: 参照カウントを減らし、不要になったエントリを解放。</li>
+</ul>
+<h3>無効化・初期化</h3>
+<ul>
+<li><code>CatCacheInvalidate</code>: 特定のハッシュ値を持つエントリを無効化（<code>dead</code>フラグ付与または削除）。</li>
+<li><code>CatalogCacheInitializeCache</code>: キャッシュの遅延初期化。リレーションのタプル記述子（<code>TupleDesc</code>）を取得し、ハッシュ関数をバインド。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CatCInProgress</code></li>
+<li><code>CatCacheFreeKeys</code></li>
+<li><code>CatalogCacheCreateEntry</code></li>
+<li><code>CatalogCacheInitializeCache</code></li>
+<li><code>ConditionalCatalogCacheInitializeCache</code></li>
+<li><code>CreateCacheMemoryContext</code></li>
+<li><code>InitCatCache</code></li>
+<li><code>InitCatCachePhase2</code></li>
+<li><code>ResetCatalogCache</code></li>
+<li><code>ResetCatalogCaches</code></li>
+<li><code>ResetCatalogCachesExt</code></li>
+<li><code>ResourceOwnerRememberCatCacheRef</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>SearchCatCacheInternal</code> がハッシュ値を計算し、<code>CatCache</code> のバケットを走査。 2. **ミス時**: <code>SearchCatCacheMiss</code> がカタログをスキャン（<code>systable_beginscan</code>）。 3. **構築**: <code>CatalogCacheCreateEntry</code> がタプルをメモリにコピーし、必要に応じてTOASTを展開。 4. **無効化**: <code>CatCacheInvalidate</code> が呼ばれると、該当ハッシュ値を持つエントリを走査。参照カウントが0であれば即時削除、そうでなければ <code>dead</code> フラグを立てて後続の解放を待つ。 5. **リソース追跡**: <code>ResourceOwner</code> 経由で参照を記憶し、<code>ResOwnerReleaseCatCache</code> がクリーンアップを保証。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <code>genam.h</code>, <code>heaptoast.h</code>, <code>table.h</code> 等（カタログスキャンとTOAST展開）。</li>
+<li><code>catalog/</code>: <code>pg_type.h</code> 等（システムカタログ定義）。</li>
+<li><code>utils/</code>: <code>inval.h</code>（無効化通知）、<code>memutils.h</code>（メモリコンテキスト）、<code>resowner.h</code>（リソース管理）。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/resowner.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/catcache.h</code>: キャッシュ構造体の定義。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: 本ファイルの機能をラップした公開API。</li>
+<li><code>src/backend/utils/cache/inval.c</code>: キャッシュ無効化メッセージの送受信ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: キャッシュエントリは <code>CacheMemoryContext</code> に割り当てられます。これはトランザクションを跨いで生存するため、参照カウント（<code>refcount</code>）による管理が必須です。</li>
+<li>**インバリアント**: キャッシュキーとして使用される属性は <code>NOT NULL</code> である必要があります。</li>
+<li>**パフォーマンス**: <code>chareqfast</code> 等の高速な比較関数が実装されており、頻出する型（int4, name等）の検索コストを最小化しています。</li>
+<li>**注意点**: <code>CatCacheInvalidate</code> はハッシュ値のみでマッチングを行うため、稀に「偽陽性」の無効化が発生しますが、これはキャッシュの整合性を保つための許容されたトレードオフです。</li>
+<li>**省略された詳細**: <code>CATCACHE_STATS</code> が定義されている場合の統計収集ロジックは、デバッグ用途が主であるため、本概要では詳細な統計計算フローを省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__CatCInProgress.html" target="wiki-view"><code>CatCInProgress</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__ResourceOwnerRememberCatCacheRef.html" target="wiki-view"><code>ResourceOwnerRememberCatCacheRef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__CreateCacheMemoryContext.html" target="wiki-view"><code>CreateCacheMemoryContext</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__ResetCatalogCache.html" target="wiki-view"><code>ResetCatalogCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__ResetCatalogCaches.html" target="wiki-view"><code>ResetCatalogCaches</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__ResetCatalogCachesExt.html" target="wiki-view"><code>ResetCatalogCachesExt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__InitCatCache.html" target="wiki-view"><code>InitCatCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__ConditionalCatalogCacheInitializeCache.html" target="wiki-view"><code>ConditionalCatalogCacheInitializeCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__CatalogCacheInitializeCache.html" target="wiki-view"><code>CatalogCacheInitializeCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__InitCatCachePhase2.html" target="wiki-view"><code>InitCatCachePhase2</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__CatalogCacheCreateEntry.html" target="wiki-view"><code>CatalogCacheCreateEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__catcache_c__CatCacheFreeKeys.html" target="wiki-view"><code>CatCacheFreeKeys</code></a></li>
+</ul></body></html>

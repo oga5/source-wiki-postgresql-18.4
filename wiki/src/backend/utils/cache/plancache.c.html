@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/plancache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/plancache.c</h1>
+<h2>概要</h2>
+<p><code>plancache.c</code> は、PostgreSQLにおけるクエリ計画のキャッシュ管理を行う中核モジュールです。SQLクエリの解析・書き換え・最適化という高コストな処理を繰り返さないよう、<code>CachedPlanSource</code>（クエリのソース）と <code>CachedPlan</code>（実行計画）をメモリ上に保持します。また、スキーマ変更（DDL）に伴うキャッシュ無効化（Invalidation）を追跡し、必要に応じて再解析・再計画をトリガーします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> モジュールの一部として、システムカタログの変更イベント（<code>sinval</code>）を監視し、プランナやエグゼキュータが使用するキャッシュの整合性を保証します。</p>
+<h2>責務</h2>
+<ul>
+<li>**計画のライフサイクル管理**: クエリの解析から計画生成、保存、破棄までのプロセスを管理。</li>
+<li>**汎用 vs カスタム計画の選択**: パラメータ値に依存しない「汎用計画」と、特定のパラメータ値に最適化された「カスタム計画」のどちらを使用するかをコストベースで判断。</li>
+<li>**キャッシュ無効化の追跡**: リレーション、関数、型などの依存関係を追跡し、カタログ更新時に該当するキャッシュを無効化。</li>
+<li>**リソース管理**: <code>ResourceOwner</code> を介した参照カウント管理により、メモリリークや不正な解放を防止。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理構造体</h3>
+<ul>
+<li><code>CachedPlanSource</code>: クエリのソース（解析済みツリー等）を保持。永続化可能。</li>
+<li><code>CachedPlan</code>: 生成された実行計画。参照カウントで管理される。</li>
+<li><code>CachedExpression</code>: 単純なスカラー式のキャッシュ。</li>
+</ul>
+<h3>主要な公開関数</h3>
+<ul>
+<li><code>InitPlanCache</code>: キャッシュ無効化コールバックの登録。</li>
+<li><code>CreateCachedPlan</code> / <code>CompleteCachedPlan</code>: キャッシュエントリの生成と初期化。</li>
+<li><code>GetCachedPlan</code>: 実行計画の取得（汎用/カスタムの判断を含む）。</li>
+<li><code>SaveCachedPlan</code>: キャッシュをバックエンドの生存期間中保持するよう昇格。</li>
+<li><code>DropCachedPlan</code>: キャッシュの明示的な破棄。</li>
+</ul>
+<h3>内部管理用</h3>
+<ul>
+<li><code>saved_plan_list</code>: 永続化された <code>CachedPlanSource</code> のリスト。</li>
+<li><code>choose_custom_plan</code>: 汎用/カスタム計画の選択ロジック。</li>
+<li><code>RevalidateCachedQuery</code>: 無効化されたクエリの再解析・再計画。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CompleteCachedPlan</code></li>
+<li><code>CreateCachedPlan</code></li>
+<li><code>CreateCachedPlanForQuery</code></li>
+<li><code>CreateOneShotCachedPlan</code></li>
+<li><code>DropCachedPlan</code></li>
+<li><code>FreeCachedExpression</code></li>
+<li><code>InitPlanCache</code></li>
+<li><code>ResetPlanCache</code></li>
+<li><code>ResourceOwnerForgetPlanCacheRef</code></li>
+<li><code>ResourceOwnerRememberPlanCacheRef</code></li>
+<li><code>SaveCachedPlan</code></li>
+<li><code>SetPostRewriteHook</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **取得要求**: <code>GetCachedPlan</code> が呼び出されると、まず <code>RevalidateCachedQuery</code> でクエリの有効性を確認。 2. **無効化チェック**: 無効であれば、<code>extract_query_dependencies</code> で依存関係を再構築し、解析・書き換えをやり直す。 3. **計画生成**: <code>choose_custom_plan</code> がコスト見積もりに基づき、汎用計画を再利用するか、<code>BuildCachedPlan</code> で新規カスタム計画を作成するかを決定。 4. **ロック管理**: <code>AcquirePlannerLocks</code> / <code>AcquireExecutorLocks</code> を使用し、計画実行に必要なリレーションのロックをトランザクションの整合性を保ちながら取得。 5. **無効化イベント**: <code>PlanCacheRelCallback</code> 等が <code>sinval</code> を受け取り、<code>saved_plan_list</code> を走査して該当する <code>CachedPlanSource</code> を無効化。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>, <code>optimizer/optimizer.h</code>: 計画生成と依存関係抽出。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化イベントの受信。</li>
+<li><code>utils/resowner.h</code>: 参照カウントの安全な管理。</li>
+<li><code>parser/analyze.h</code>, <code>rewrite/rewriteHandler.h</code>: クエリの解析と書き換え。</li>
+<li><code>access/transam.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>tcop/pquery.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rls.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/plancache.h</code>: 公開インターフェースとデータ構造定義。</li>
+<li><code>src/backend/utils/cache/inval.c</code>: キャッシュ無効化メッセージの基盤。</li>
+<li><code>src/backend/tcop/pquery.c</code>: キャッシュされた計画の実行フロー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>CachedPlanSource</code> は専用の <code>MemoryContext</code> を持ち、<code>SaveCachedPlan</code> を呼ぶと <code>CacheMemoryContext</code> 配下に移動します。<code>one-shot</code> キャッシュは呼び出し元のコンテキストを直接利用するため、寿命管理に注意が必要です。</li>
+<li>**再検証のタイミング**: <code>RevalidateCachedQuery</code> は、キャッシュが有効であっても、ロック取得の競合を防ぐために再チェックを行う設計になっています。</li>
+<li>**省略された詳細**: 本ファイルは複雑なコスト見積もりロジック（<code>cached_plan_cost</code>）を含みますが、その詳細な計算式はヒューリスティックであり、将来的に最適化される余地があります。</li>
+<li>**注意点**: <code>StmtPlanRequiresRevalidation</code> が false を返す場合（例: トランザクション制御コマンド）、キャッシュの無効化処理はスキップされます。これは、ロールバック等の実行が中断されたトランザクション内でも必要になるためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__ResourceOwnerRememberPlanCacheRef.html" target="wiki-view"><code>ResourceOwnerRememberPlanCacheRef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__ResourceOwnerForgetPlanCacheRef.html" target="wiki-view"><code>ResourceOwnerForgetPlanCacheRef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__InitPlanCache.html" target="wiki-view"><code>InitPlanCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__CreateCachedPlan.html" target="wiki-view"><code>CreateCachedPlan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__CreateCachedPlanForQuery.html" target="wiki-view"><code>CreateCachedPlanForQuery</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__CreateOneShotCachedPlan.html" target="wiki-view"><code>CreateOneShotCachedPlan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__CompleteCachedPlan.html" target="wiki-view"><code>CompleteCachedPlan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__SetPostRewriteHook.html" target="wiki-view"><code>SetPostRewriteHook</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__SaveCachedPlan.html" target="wiki-view"><code>SaveCachedPlan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__DropCachedPlan.html" target="wiki-view"><code>DropCachedPlan</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__FreeCachedExpression.html" target="wiki-view"><code>FreeCachedExpression</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__plancache_c__ResetPlanCache.html" target="wiki-view"><code>ResetPlanCache</code></a></li>
+</ul></body></html>

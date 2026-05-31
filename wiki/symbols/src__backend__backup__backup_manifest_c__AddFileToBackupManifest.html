@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__backup__backup_manifest_c__AddFileToBackupManifest.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AddFileToBackupManifest</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/backup/backup_manifest.c:101</code></li>
+</ul>
+<h2>目的</h2>
+<p>バックアップ・マニフェスト（JSON形式）に対し、個別のファイル情報を追加します。ファイルパス、サイズ、最終更新時刻、およびチェックサム情報を記録し、バックアップの整合性検証を可能にします。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void AddFileToBackupManifest(backup_manifest_info *manifest, Oid spcoid,
+                             const char *pathname, size_t size, pg_time_t mtime,
+                             pg_checksum_context *checksum_ctx)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>manifest</code>: マニフェスト生成状態を保持する構造体。</li>
+<li><code>spcoid</code>: テーブルスペースOID（指定時はパス解決に使用）。</li>
+<li><code>pathname</code>: ファイルのパス。</li>
+<li><code>size</code>: ファイルサイズ。</li>
+<li><code>mtime</code>: 最終更新時刻。</li>
+<li><code>checksum_ctx</code>: チェックサム計算コンテキスト。</li>
+<li>**出力**: なし（副作用として <code>manifest</code> が保持する一時ファイルにJSONエントリを追記）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>IsManifestEnabled(manifest)</code> が真であること。</li>
+<li>マニフェストはUTF-8で記録されるため、パス名がUTF-8として不正な場合はエンコード処理が行われる。</li>
+<li>マニフェスト内の各ファイルエントリはJSONオブジェクトとして記述され、カンマで区切られる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **パスの正規化**: <code>spcoid</code> が有効な場合、パスをテーブルスペースディレクトリ配下の相対パスに変換する。 2. **JSON構築**: <code>StringInfo</code> を使用してJSONエントリを生成する。</p>
+<ul>
+<li>初回エントリ以外には先行するカンマと改行を挿入する。</li>
+<li>パス名がUTF-8として妥当か判定し、必要に応じて <code>Encoded-Path</code> として16進数エンコードを行う。</li>
+<li>サイズおよびGMT形式の最終更新時刻をJSONに追加する。</li>
+<p>3. **チェックサム処理**: <code>checksum_ctx</code> が有効な場合、<code>pg_checksum_final</code> で値を確定させ、アルゴリズム名と共に16進数文字列として追加する。 4. **書き込み**: <code>AppendStringToManifest</code> を呼び出し、構築したJSON文字列を一時ファイルへ出力する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/backup/basebackup.c</code> (バックアップのメインループ内)</li>
+<li>**呼び出し先**:</li>
+<li><code>IsManifestEnabled</code></li>
+<li><code>initStringInfo</code>, <code>appendStringInfo</code>, <code>appendStringInfoChar</code>, <code>appendStringInfoString</code></li>
+<li><code>escape_json_with_len</code>, <code>hex_encode</code></li>
+<li><code>pg_verify_mbstr</code>, <code>pg_strftime</code>, <code>pg_gmtime</code></li>
+<li><code>pg_checksum_final</code>, <code>pg_checksum_type_name</code></li>
+<li><code>AppendStringToManifest</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>backup_manifest_info</code>: マニフェスト生成のメタデータ（<code>first_file</code> フラグや一時ファイルへの参照を保持）。</li>
+<li><code>pg_checksum_context</code>: チェックサム計算の状態管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>pg_checksum_final</code> が失敗した場合、<code>elog(ERROR)</code> により処理を中断する。</li>
+<li>パス名がUTF-8として不正かつ <code>force_encode</code> が指定されていない場合、自動的にエンコード処理へフォールバックする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はメモリリークを防ぐため、最後に <code>pfree(buf.data)</code> を実行している。</li>
+<li>JSONの構文（カンマの制御）は <code>manifest-&gt;first_file</code> フラグに依存しているため、このフラグの状態を外部から変更しないこと。</li>
+</ul></body></html>

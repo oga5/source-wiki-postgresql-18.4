@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_checksums/pg_checksums.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_checksums/pg_checksums.c</h1>
+<h2>概要</h2>
+<p><code>pg_checksums.c</code> は、オフライン状態の PostgreSQL データディレクトリに対して、ページレベルのチェックサムの検証、有効化、または無効化を行うコマンドラインツールです。</p>
+<h2>モジュール内での役割</h2>
+<p>本ファイルは <code>src/bin/pg_checksums</code> モジュールの唯一のソースであり、クラスタ全体のデータファイルに対する一括処理を担います。<code>pg_control</code> ファイルの状態を確認し、データディレクトリ内の全リレーションファイルを走査してチェックサムの計算・検証・書き込みを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**クラスタ状態の検証**: 処理対象のクラスタが正常にシャットダウンされているか、バージョンやブロックサイズが互換性を持つかを確認します。</li>
+<li>**ファイル走査**: <code>global</code>、<code>base</code>、<code>pg_tblspc</code> ディレクトリを再帰的に探索し、対象ファイルを特定します。</li>
+<li>**チェックサム処理**: ページ単位でチェックサムを計算し、検証（<code>CHECK</code>）またはヘッダーへの書き込み（<code>ENABLE</code>）を実行します。</li>
+<li>**進捗管理**: <code>--progress</code> オプション指定時に、全データサイズを事前計算し、処理状況を標準エラー出力に表示します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PgChecksumMode</code>: 実行モード（<code>CHECK</code>, <code>DISABLE</code>, <code>ENABLE</code>）を定義する列挙型。</li>
+<li><code>scan_directory()</code>: データディレクトリを再帰的に走査し、各ファイルを処理する関数。</li>
+<li><code>scan_file()</code>: 個別のデータファイルを開き、ブロック単位でチェックサム計算と書き込みを行う関数。</li>
+<li><code>ControlFile</code>: クラスタのメタデータを保持する <code>ControlFileData</code> 構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>exclude_list_item</code></li>
+<li><code>main</code></li>
+<li><code>progress_report</code></li>
+<li><code>scan_directory</code></li>
+<li><code>scan_file</code></li>
+<li><code>skipfile</code></li>
+<li><code>usage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: 引数を解析し、<code>DataDir</code> を特定。<code>get_controlfile()</code> でクラスタの状態を読み込みます。 2.  **事前チェック**: クラスタが停止状態であることを確認し、モードに応じた実行可否を判定します。 3.  **走査**: <code>scan_directory()</code> を呼び出し、ファイルシステムを探索します。</p>
+<ul>
+<li><code>showprogress</code> が有効な場合、まず全サイズを計算（<code>sizeonly=true</code>）し、その後に実際の処理（<code>sizeonly=false</code>）を行います。</li>
+<p>4.  **処理**: <code>scan_file()</code> 内で <code>read()</code> によりページを読み込み、<code>pg_checksum_page()</code> で計算。<code>ENABLE</code> モード時は <code>write()</code> でヘッダーを更新します。 5.  **永続化**: 変更完了後、<code>sync_pgdata()</code> でディレクトリを同期し、最後に <code>update_controlfile()</code> でチェックサムバージョンを更新します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
+<li><code>common/controldata_utils.h</code>: <code>pg_control</code> ファイルの読み書き用。</li>
+<li><code>common/file_utils.h</code>: ディレクトリ同期等のファイル操作用。</li>
+<li><code>storage/checksum.h</code> / <code>storage/checksum_impl.h</code>: チェックサム計算のコアロジック。</li>
+<li><code>storage/bufpage.h</code>: ページヘッダー構造の定義。</li>
+<li><code>common/logging.h</code></li>
+<li><code>common/relpath.h</code></li>
+<li><code>dirent.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>pg_getopt.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/bin/pg_basebackup/</code>: 類似のディレクトリ走査ロジックや進捗表示の参考元。</li>
+<li><code>src/include/catalog/pg_control.h</code>: <code>ControlFileData</code> 構造体の定義元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**安全性の確保**: 本ツールは必ずクラスタが停止している状態で実行してください。稼働中のクラスタに対して実行すると、チェックサム不整合やデータ破損の誤検知を招きます。</li>
+<li>**進捗表示の仕組み**: 進捗表示を有効にすると、ディレクトリ走査が2回行われます。大規模なクラスタでは処理時間が倍増するため注意が必要です。</li>
+<li>**除外リスト**: <code>skip[]</code> 配列で定義されたファイル（<code>pg_control</code> 等）はチェックサム検証の対象外となります。新しいシステムファイルを追加する際はここを更新する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__PgChecksumMode.html" target="wiki-view"><code>PgChecksumMode</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__usage.html" target="wiki-view"><code>usage</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__exclude_list_item.html" target="wiki-view"><code>exclude_list_item</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__progress_report.html" target="wiki-view"><code>progress_report</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__skipfile.html" target="wiki-view"><code>skipfile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__scan_file.html" target="wiki-view"><code>scan_file</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__scan_directory.html" target="wiki-view"><code>scan_directory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_checksums__pg_checksums_c__main.html" target="wiki-view"><code>main</code></a></li>
+</ul></body></html>

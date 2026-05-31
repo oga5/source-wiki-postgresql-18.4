@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/shm-toc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shm_toc</h1>
+<h2>概念</h2>
+<p><code>shm_toc</code>（Table of Contents）は、動的共有メモリ（DSM）セグメントを論理的な領域に分割し、一意のキー（<code>uint64</code>）を用いて共有メモリ内のデータ構造を安全に参照・管理するための「目次」機能を提供するデータ構造です。</p>
+<p>共有メモリはプロセスごとに異なる仮想アドレスにマッピングされる可能性があるため、絶対アドレスではなく、セグメント先頭からの相対オフセットを用いて各領域のアドレスを解決する仕組みを持っています。</p>
+<h2>なぜ重要か</h2>
+<p>並列クエリ、並列インデックス構築（BRIN、GIN、B-Tree）、並列VACUUMなどの並列処理において、リーダープロセスと複数のワーカープロセス間で共有メモリ内のメッセージキュー（<code>shm_mq</code>）や実行コンテキストを安全かつ一貫した方法で受け渡し・検索するために不可欠です。</p>
+<p>ロックフリーな検索をサポートし、メモリバリア（<code>pg_write_barrier</code> / <code>pg_read_barrier</code>）を利用することで、スピンロックによる競合を最小限に抑えた効率的なデータアクセスを実現します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code>（目次の作成・管理の実装）</li>
+<li><code>module:src/include/storage</code>（<code>shm_toc</code> 構造体およびインターフェースの定義）</li>
+<li><code>module:src/include/access</code>（並列実行ワーカーなどのアクセス制御定義）</li>
+<li><code>module:src/include/foreign</code>（外部データラッパ API での参照）</li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/ipc/shm_toc.c#shm_toc</code>** (構造体)</li>
+<p>動的共有メモリの目次情報を保持する構造体。マジックナンバー、排他制御用のスピンロック、総バイト数、割り当て済みバイト数、エントリ数、および可変長のエントリ配列（<code>shm_toc_entry</code>）を保持します。</p>
+<li>**<code>symbol:src/backend/storage/ipc/shm_toc.c#shm_toc_create</code>** (関数)</li>
+<p>共有メモリセグメントの先頭に <code>shm_toc</code> 構造体を初期化し、マジックナンバーの設定やスピンロックの初期化を行います。</p>
+<li>**<code>symbol:src/include/access/parallel.h#shm_toc</code>** (typedef)</li>
+<p>並列ワーカーのメイン関数（<code>parallel_worker_main_type</code>）の引数などで使用される、<code>shm_toc</code> 構造体へのポインタ型です。</p>
+<li>**<code>symbol:src/include/storage/shm_toc.h#shm_toc</code>** (typedef)</li>
+<p>外部モジュール向けに不透明型（opaque type）として定義された <code>shm_toc</code> です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: リーダープロセスが動的共有メモリ（DSM）セグメントを確保し、その先頭アドレスに対して <code>shm_toc_create</code> を呼び出して <code>shm_toc</code> を初期化します。 2. **メモリ確保と登録**: リーダープロセスは <code>shm_toc_allocate</code> を用いてセグメント内から必要なメモリ領域を切り出し、<code>shm_toc_insert</code> を用いて一意のキーと切り出した領域の相対オフセットを紐付けて登録します。 3. **ワーカーの起動と参照**: 並列ワーカープロセスが起動すると、共有メモリセグメント（<code>dsm_segment</code>）と <code>shm_toc</code> へのポインタが引数として渡されます。 4. **検索**: ワーカープロセス（またはリーダープロセス）は <code>shm_toc_lookup</code> を呼び出し、キーを指定して対応する共有メモリ領域のアドレスを取得し、メッセージキュー（<code>shm_mq</code>）や実行コンテキストにアクセスします。</p>
+<p>*※なお、<code>shm_toc_allocate</code>、<code>shm_toc_insert</code>、<code>shm_toc_lookup</code> の具体的なC言語レベルのシグネチャや、FDW（<code>fdwapi.h</code>）における具体的な利用フローの詳細は、提供されたコンテキストからは直接示されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**相対オフセットによる管理**: 共有メモリはプロセスごとにマッピングされる仮想アドレスが異なる可能性があるため、<code>shm_toc</code> 内のエントリには絶対アドレスではなく、セグメント先頭からの相対オフセットが格納されなければなりません。</li>
+<li>**メモリの衝突防止**: <code>shm_toc</code> のエントリ配列（<code>toc_entry</code>）はセグメントの先頭から後方へ向かって成長し、割り当てられたメモリ領域（<code>toc_allocated_bytes</code>）はセグメントの末尾から前方へ向かって切り出されます。これらが衝突しないように管理されます。</li>
+<li>**アライメントの保証**: 割り当てられるメモリサイズやアドレスは、<code>BUFFERALIGN</code>（または <code>BUFFERALIGN_DOWN</code>）を用いてアライメント調整されていなければなりません。</li>
+<li>**メモリ解放の不可能性**: 一度確保したメモリ領域を個別に動的解放する機能は提供されておらず、セグメント全体の解放まで保持されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**スケーラビリティの制限**: <code>shm_toc</code> は多数のキー（数千〜数万個など）を管理するようには設計されていません（数十個程度を想定）。多数のオブジェクトを管理する必要がある場合は、<code>shm_toc</code> には単一のルート構造体のみを登録し、その構造体の内部で個別のオブジェクトを管理する設計にする必要があります。</li>
+<li>**ロックフリー検索とメモリバリア**: <code>shm_toc_lookup</code> はスピンロックを取得せずに（ロックフリーで）エントリを走査するため、<code>shm_toc_insert</code> でのエントリ追加時には <code>pg_write_barrier</code>、検索時には <code>pg_read_barrier</code> によるメモリ整合性の確保が必須です。これらを無視して構造体を直接変更すると、並行アクセス時に一貫性のないデータを読み込む危険性があります。</li>
+<li>**初期化とアタッチの混同**: 新規にセグメントをセットアップする場合は <code>shm_toc_create</code> を使用しますが、既存のセグメントに接続する場合は <code>shm_toc_attach</code> を使用する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/shm_toc.c</code> (スピンロック、メモリバリア、および <code>shm_toc_create</code> の実装詳細)</li>
+<li><code>src/include/storage/shm_toc.h</code> (不透明型 <code>shm_toc</code> の定義、<code>shm_toc_estimator</code> などの関連構造体)</li>
+<li><code>src/include/access/parallel.h</code> (並列ワーカーメイン関数での <code>shm_toc</code> の利用定義)</li>
+<li><code>src/include/foreign/fdwapi.h</code> (FDW APIにおける <code>shm_toc</code> の参照)</li>
+</ul></body></html>

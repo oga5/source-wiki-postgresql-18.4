@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__replication__walsender_private_h__WalSndCtlData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>WalSndCtlData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/replication/walsender_private.h:84</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQLの全WAL Senderプロセスを統括するグローバルな共有メモリ構造体です。同期レプリケーションの待機キュー管理、スタンバイの状態追跡、およびプロセス間通知のための同期プリミティブを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct {
+    dlist_head      SyncRepQueue[NUM_SYNC_REP_WAIT_MODE];
+    XLogRecPtr      lsn[NUM_SYNC_REP_WAIT_MODE];
+    bits8           sync_standbys_status;
+    ConditionVariable wal_flush_cv;
+    ConditionVariable wal_replay_cv;
+    ConditionVariable wal_confirm_rcv_cv;
+    WalSnd          walsnds[FLEXIBLE_ARRAY_MEMBER];
+} WalSndCtlData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 同期レプリケーション待機中のバックエンドによるキュー登録、WAL Senderによる状態更新、チェックポインターによる <code>sync_standbys_status</code> の更新。</li>
+<li>**出力**: 同期レプリケーションの待機解除通知（Condition Variable経由）、各WAL Senderの状態保持。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>SyncRepQueue</code>、<code>lsn</code>、<code>sync_standbys_status</code> へのアクセスは <code>SyncRepLock</code> による保護が必要です。</li>
+<li><code>walsnds</code> 配列は共有メモリ上に確保され、<code>FLEXIBLE_ARRAY_MEMBER</code> を用いて可変長で定義されています。</li>
+<li>待機中のバックエンドは設定ファイルの再読み込みを安全に行えないため、<code>sync_standbys_status</code> はチェックポインターによって更新されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **同期レプリケーション管理**: <code>SyncRepQueue</code> を用いて、コミット完了を待機するバックエンドを管理します。 2. **通知メカニズム**: <code>ConditionVariable</code>（<code>wal_flush_cv</code>, <code>wal_replay_cv</code>, <code>wal_confirm_rcv_cv</code>）を介して、WALのフラッシュやリプレイ、受信確認が発生した際に待機中のプロセスを起床させます。 3. **状態保持**: <code>walsnds</code> 配列により、個々のWAL Senderプロセスの実行状態を追跡します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walsender.c</code>（初期化および操作）、<code>src/backend/replication/syncrep.c</code>（同期レプリケーション制御）。</li>
+<li>**呼び出し先**: <code>ConditionVariable</code> 関連関数、<code>dlist</code> 操作関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>WalSnd</code>: 個々のWAL Senderの状態を保持する構造体。</li>
+<li><code>SyncRepQueue</code>: 同期レプリケーションの待機リスト。</li>
+<li><code>ConditionVariable</code>: プロセス間同期のためのプリミティブ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>walsnds</code> は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、構造体全体のサイズは実行時に <code>offsetof(WalSndCtlData, walsnds)</code> を用いて計算する必要があります。</li>
+<li>共有メモリ上の構造体であるため、排他制御（スピンロック等）を欠いたアクセスはデータ破損を招きます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本構造体は <code>walsender.c</code> の内部実装を共有メモリ経由で公開するものです。直接的な外部APIではないため、変更時は <code>syncrep.c</code> への影響を考慮してください。</li>
+<li><code>sync_standbys_status</code> のフラグ定義は同ヘッダーファイル内の定数に依存しています。</li>
+</ul></body></html>

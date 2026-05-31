@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/buffer/bufmgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/buffer/bufmgr.c</h1>
+<h2>概要</h2>
+<p><code>bufmgr.c</code> は PostgreSQL のバッファマネージャのメインエントリポイントであり、共有メモリ上のバッファプールとプロセスローカルなバッファの管理を統括します。ディスク上のページをメモリに読み込み、ピン留め（Pin）し、必要に応じてダーティページのフラッシュや置換を行うための中心的なインターフェースを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p>バッファ管理サブシステムにおける「司令塔」です。<code>buf_table.c</code>（ハッシュ検索）、<code>freelist.c</code>（置換戦略）、<code>localbuf.c</code>（一時テーブル管理）といった下位モジュールを呼び出し、上位レイヤー（アクセスメソッド等）からの要求を調整します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ライフサイクル管理**: <code>ReadBuffer</code> 等を通じたページのピン留め・解放、およびトランザクション終了時のリソースクリーンアップ。</li>
+<li>**I/O 実行**: 同期および非同期 I/O（AIO）の開始と完了待ち、エラーハンドリング。</li>
+<li>**バッファ状態遷移**: ページの読み込み、ゼロ初期化、ダーティフラグの管理、およびチェックポイント時のフラッシュ制御。</li>
+<li>**並行性制御**: バッファヘッダーのロック管理、およびピン留めによるページ保護。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクル・アクセス</h3>
+<ul>
+<li><code>ReadBuffer()</code> / <code>ReadBufferExtended()</code>: ページをバッファに読み込み、ピン留めして返すメイン関数。</li>
+<li><code>ReleaseBuffer()</code>: バッファのピンを解放する。</li>
+<li><code>MarkBufferDirty()</code>: ページが変更されたことを記録し、将来のフラッシュ対象とする。</li>
+<li><code>LockBuffer()</code> / <code>LockBufferForCleanup()</code>: バッファの内容に対するロック制御。</li>
+</ul>
+<h3>I/O 制御</h3>
+<ul>
+<li><code>StartReadBuffers()</code> / <code>WaitReadBuffers()</code>: 非同期 I/O を活用した複数ブロックの読み込み制御。</li>
+<li><code>FlushBuffer()</code>: 特定のバッファを物理的にディスクへ書き出す。</li>
+<li><code>BufferSync()</code>: チェックポイント時に全ダーティバッファをフラッシュする。</li>
+</ul>
+<h3>内部管理・状態</h3>
+<ul>
+<li><code>PrivateRefCountArray</code> / <code>PrivateRefCountHash</code>: バックエンドごとのピン留め状況を追跡する構造。</li>
+<li><code>BufferDesc</code>: バッファのメタデータ（タグ、状態フラグ、参照カウント）を保持する共有メモリ上の構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AtEOXact_Buffers</code></li>
+<li><code>AtProcExit_Buffers</code></li>
+<li><code>BufferAlloc</code></li>
+<li><code>CkptTsStatus</code></li>
+<li><code>CreateAndCopyRelationData</code></li>
+<li><code>InitBufferManagerAccess</code></li>
+<li><code>PinBuffer_Locked</code></li>
+<li><code>PrivateRefCountEntry</code></li>
+<li><code>ReadBuffer_common</code></li>
+<li><code>ReservePrivateRefCountEntry</code></li>
+<li><code>SMgrSortArray</code></li>
+<li><code>WritebackContextInit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **要求**: <code>ReadBuffer</code> が呼ばれると、<code>BufferAlloc</code> がハッシュテーブルを検索。 2. **ヒット時**: 既存のバッファをピン留めして終了。 3. **ミス時**: <code>GetVictimBuffer</code> で置換候補を選定し、<code>smgr</code> を介してディスクから読み込む。 4. **I/O**: <code>StartReadBuffers</code> が非同期 I/O を開始し、<code>WaitReadBuffers</code> で完了を待機。この際、<code>PgAioHandle</code> を通じて状態が管理される。 5. **クリーンアップ**: <code>ResourceOwner</code> がトランザクション終了時にピンを自動解放し、リークを防ぐ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/buf_internals.h</code>: バッファヘッダーや状態フラグの定義。</li>
+<li><code>storage/bufmgr.h</code>: 公開 API 定義。</li>
+<li><code>storage/aio.h</code>: 非同期 I/O フレームワーク。</li>
+<li><code>storage/smgr.h</code>: ストレージマネージャ（物理 I/O）。</li>
+<li><code>utils/resowner.h</code>: リソース管理（ピンの自動解放）。</li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/pg_tablespace_d.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>catalog/storage_xlog.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>lib/binaryheap.h</code></li>
+<li><code>lib/sort_template.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/read_stream.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>freelist.c</code>: バッファ置換アルゴリズム（クロック掃引）。</li>
+<li><code>buf_table.c</code>: ページタグからバッファ ID への高速検索。</li>
+<li><code>localbuf.c</code>: 一時テーブル専用のバッファ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: バッファのピン留めは <code>ResourceOwner</code> によって管理されます。手動で <code>ReleaseBuffer</code> を呼び出すのが基本ですが、エラー発生時には <code>ResourceOwner</code> が自動的にピンを解放します。</li>
+<li>**ロックの階層**: バッファヘッダーのロック（スピンロック）と、バッファ内容のロック（LWLock）は別物です。<code>LockBufHdr</code> は短時間のみ保持してください。</li>
+<li>**非同期 I/O**: 本ファイルは AIO 統合の最前線にあります。<code>StartReadBuffers</code> などの新しい API は、将来的なパフォーマンス向上のために設計されています。</li>
+<li>**未実装・浅い部分**: <code>FlushRelationBuffers</code> 等の全バッファスキャンは、大規模なバッファプールでは非常に低速です。これらはパフォーマンスクリティカルなパスでは使用されない前提で実装されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__PrivateRefCountEntry.html" target="wiki-view"><code>PrivateRefCountEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__CkptTsStatus.html" target="wiki-view"><code>CkptTsStatus</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__SMgrSortArray.html" target="wiki-view"><code>SMgrSortArray</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__ReservePrivateRefCountEntry.html" target="wiki-view"><code>ReservePrivateRefCountEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__ReadBuffer_common.html" target="wiki-view"><code>ReadBuffer_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__BufferAlloc.html" target="wiki-view"><code>BufferAlloc</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__PinBuffer_Locked.html" target="wiki-view"><code>PinBuffer_Locked</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__AtEOXact_Buffers.html" target="wiki-view"><code>AtEOXact_Buffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__InitBufferManagerAccess.html" target="wiki-view"><code>InitBufferManagerAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__AtProcExit_Buffers.html" target="wiki-view"><code>AtProcExit_Buffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__CreateAndCopyRelationData.html" target="wiki-view"><code>CreateAndCopyRelationData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__buffer__bufmgr_c__WritebackContextInit.html" target="wiki-view"><code>WritebackContextInit</code></a></li>
+</ul></body></html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/proc.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/proc.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの関数（プロシージャ）オブジェクトに対するSELinuxアクセス制御を実装するソースファイルです。関数の作成、削除、属性変更、実行、およびラベル変更時の権限チェックを担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> サブシステムの一部として、<code>pg_proc</code> カタログに対する操作をフックし、SELinuxのポリシーに基づいたセキュリティ決定を強制します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ライフサイクル管理**: 関数の作成時（<code>post_create</code>）にデフォルトのセキュリティラベルを計算・付与し、削除時（<code>drop</code>）に権限を検証する。</li>
+<li>**属性変更の監視**: <code>ALTER FUNCTION</code> 等による名前空間の変更や属性変更（<code>setattr</code>）時の権限チェック。</li>
+<li>**実行制御**: 関数呼び出し時の <code>execute</code> 権限の検証。</li>
+<li>**ラベル管理**: <code>SECURITY LABEL</code> コマンドによる関数のラベル付け（<code>relabel</code>）の制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_proc_post_create</code>: 新規関数作成時に呼び出され、SELinuxコンテキストを計算してラベルを適用する。</li>
+<li><code>sepgsql_proc_execute</code>: 関数実行時に呼び出され、<code>db_procedure:{execute}</code> 権限を検証する。</li>
+<li><code>sepgsql_proc_setattr</code>: 関数定義変更時に、<code>proleakproof</code> 属性の変更などを検知し、必要な権限をチェックする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>sepgsql_proc_drop</code></li>
+<li><code>sepgsql_proc_relabel</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **権限チェック**: 各関数は <code>sepgsql_avc_check_perms</code> または <code>sepgsql_avc_check_perms_label</code> を呼び出し、SELinuxのAVC（Access Vector Cache）を介してポリシー判定を行います。 2. **カタログ参照**: <code>systable_beginscan</code> や <code>SearchSysCache1</code> を使用して、対象関数の現在の状態（名前空間、名前、引数型など）を取得します。 3. **ラベル計算**: <code>sepgsql_compute_create</code> を使用し、クライアントのコンテキストと親名前空間のコンテキストから、新規オブジェクトのデフォルトラベルを導出します。 4. **監査**: <code>getObjectIdentity</code> を用いて、ログ出力用のオブジェクト識別子を生成し、権限拒否時に詳細な監査情報を残します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQLの基本定義。</li>
+<li><code>catalog/pg_proc.h</code>: <code>pg_proc</code> カタログ構造体。</li>
+<li><code>sepgsql.h</code>: SE-PostgreSQLの共通定義とAVCインターフェース。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュアクセス。</li>
+<li><code>commands/seclabel.h</code>: セキュリティラベル操作用API。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/sepgsql/schema.c</code>: 名前空間（スキーマ）レベルの権限チェック。</li>
+<li><code>contrib/sepgsql/uavc.c</code>: AVC（アクセスベクタキャッシュ）の管理と低レベルな権限判定。</li>
+<li><code>contrib/sepgsql/label.c</code>: セキュリティラベルの取得・計算ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは <code>pg_proc</code> カタログに対するフックとして機能します。PostgreSQLのコアコードから呼び出されることを前提としています。</li>
+<li><code>sepgsql_proc_post_create</code> 内で <code>SnapshotSelf</code> を使用しているのは、トランザクション内で作成されたばかりのタプルを可視化するためです。</li>
+<li><code>proleakproof</code> 属性の変更は、セキュリティ上の重要度が高いため、<code>SEPG_DB_PROCEDURE__INSTALL</code> 権限を要求する設計になっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__proc_c__sepgsql_proc_post_create.html" target="wiki-view"><code>sepgsql_proc_post_create</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__proc_c__sepgsql_proc_drop.html" target="wiki-view"><code>sepgsql_proc_drop</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__proc_c__sepgsql_proc_relabel.html" target="wiki-view"><code>sepgsql_proc_relabel</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__proc_c__sepgsql_proc_setattr.html" target="wiki-view"><code>sepgsql_proc_setattr</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__proc_c__sepgsql_proc_execute.html" target="wiki-view"><code>sepgsql_proc_execute</code></a></li>
+</ul></body></html>

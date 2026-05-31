@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgxlog_c__spgRedoAddLeaf.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>spgRedoAddLeaf</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/spgist/spgxlog.c:73</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiSTインデックスにおけるリーフタプルの追加または置換操作をWALリプレイ時に再現する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void spgRedoAddLeaf(XLogReaderState *record)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>XLogReaderState *record</code>（リプレイ対象のWALレコード）</li>
+<li>**出力**: なし（副作用としてインデックスページを更新）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>record</code> から取得されるリーフタプルはアライメントされていないため、アクセス時には <code>memcpy</code> によるコピーが必要。</li>
+<li>WALリプレイ中であるため、親ノードの更新よりも先にリーフページの更新を行うことが許容される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. WALレコードから <code>spgxlogAddLeaf</code> 構造体とリーフタプルデータを抽出する。 2. <code>xldata-&gt;newPage</code> が真の場合、<code>SpGistInitBuffer</code> で新規ページを初期化する。それ以外の場合は <code>XLogReadBufferForRedo</code> で既存ページを取得する。 3. ページに対して以下のいずれかの操作を実行する:</p>
+<ul>
+<li>**新規追加**: <code>addOrReplaceTuple</code> を使用してタプルを挿入し、必要に応じてヘッドタプルのチェーンリンクを更新する。</li>
+<li>**置換**: <code>PageIndexTupleDelete</code> で既存のDEADタプルを削除し、<code>PageAddItem</code> で新しいタプルを挿入する。</li>
+<p>4. ページにLSNを書き込み、バッファをダーティとしてマークする。 5. <code>xldata-&gt;offnumParent</code> が有効な場合、親ページを読み込み、<code>spgUpdateNodeLink</code> を用いてダウンリンクを更新する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>spg_redo</code>（<code>src/backend/access/spgist/spgxlog.c:944</code>）</li>
+<li>**呼び出し先**: <code>XLogRecGetData</code>, <code>XLogInitBufferForRedo</code>, <code>SpGistInitBuffer</code>, <code>XLogReadBufferForRedo</code>, <code>addOrReplaceTuple</code>, <code>PageGetItem</code>, <code>PageGetItemId</code>, <code>PageIndexTupleDelete</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>, <code>XLogRecGetBlockTag</code>, <code>spgUpdateNodeLink</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgxlogAddLeaf</code>: WALレコードのペイロード構造。</li>
+<li><code>SpGistLeafTupleData</code>: リーフタプルのヘッダー情報。</li>
+<li><code>SpGistInnerTuple</code>: 親ノードのタプル構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageAddItem</code> が指定されたオフセットに挿入できなかった場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>親ノードの更新時に <code>offnumParent</code> が <code>InvalidOffsetNumber</code> の場合は更新をスキップする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>リプレイ関数内では、スタンバイサーバーでの読み取り整合性を保つため、子ページ（リーフ）の更新を優先的に完了させる必要がある。</li>
+<li>タプルデータはアライメントされていないため、直接キャストせず必ず <code>memcpy</code> を介してアクセスすること。</li>
+</ul></body></html>

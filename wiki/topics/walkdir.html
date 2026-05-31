@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/walkdir.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>walkdir</h1>
+<h2>概念</h2>
+<p><code>walkdir</code> は、指定されたディレクトリツリーを再帰的に走査し、各ファイルおよびディレクトリに対して指定されたアクション（<code>fsync</code> など）を実行するための関数です。PostgreSQLのソースコード内では、フロントエンド用（<code>src/common/file_utils.c</code>）とバックエンド用（<code>src/backend/storage/file/fd.c</code>）で異なる実装が存在します。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのクラッシュリカバリやデータの永続性を保証するためには、データディレクトリ内のファイルだけでなく、ディレクトリ自体のメタデータも確実にディスクに同期（<code>fsync</code>）する必要があります。<code>walkdir</code> は、ディレクトリツリー全体を走査して漏れなく同期処理などのアクションを適用するための共通基盤を提供します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/file</code></li>
+<li><code>module:src/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/common/file_utils.c#walkdir</code>（フロントエンド版の実装）</li>
+<li><code>symbol:src/backend/storage/file/fd.c#walkdir</code>（バックエンド版の実装）</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>フロントエンド版（<code>src/common/file_utils.c</code>）における処理の流れは以下の通りです。</p>
+<p>1. **除外チェック**: 指定された <code>exclude_dir</code> と現在の <code>path</code> が一致する場合、処理を即座に終了します。 2. **ディレクトリのオープン**: <code>opendir</code> を使用して対象ディレクトリを開きます。 3. **エントリの走査**: <code>readdir</code> でエントリを順次読み込み、<code>.</code> および <code>..</code> はスキップします。 4. **型判定とアクション実行**: <code>get_dirent_type</code> を用いてエントリの型を判定します。</p>
+<ul>
+<li><code>PGFILETYPE_REG</code> (通常ファイル) の場合: 指定された <code>action</code> 関数を実行します。</li>
+<li><code>PGFILETYPE_DIR</code> (ディレクトリ) の場合: 再帰的に <code>walkdir</code> を呼び出します。</li>
+<li>その他の型は無視します。</li>
+<p>5. **ディレクトリのクローズ**: <code>closedir</code> でディレクトリを閉じます。 6. **自己同期**: 最後に、ディレクトリ自身に対して <code>action</code> を実行します（ディレクトリメタデータの永続化を保証するため）。</p>
+</ul>
+<p>なお、バックエンド版（<code>src/backend/storage/file/fd.c</code>）の <code>walkdir</code> を含めた全体的なエンドツーエンドの統合フローや、呼び出し元（<code>pre_sync_fname</code> や <code>datadir_fsync_fname</code> など）との詳細な連携フローの全貌は、現時点の提供情報からは未解明です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**ディレクトリのオープン可能性**: <code>path</code> で指定されたディレクトリは正常にオープン可能でなければなりません。</li>
+<li>**アクション関数の戻り値**: 渡される <code>action</code> 関数は、成功時に <code>0</code> を返すことが期待されます。</li>
+<li>**ディレクトリメタデータの永続化**: 個別のファイル同期だけでは不十分なため、走査の最後に必ずディレクトリ自身に対しても <code>action</code> を実行し、メタデータの永続化を保証します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**フロントエンドとバックエンドの実装差異**: <code>src/common/file_utils.c</code> の <code>walkdir</code> はフロントエンド用であり、<code>src/backend/storage/file/fd.c</code> にあるバックエンド版の <code>walkdir</code> とは実装が異なります。これらを混同しないよう注意が必要です。</li>
+<li>**エラーハンドリング**: ディレクトリのオープン失敗や読み込み中のエラーが発生した場合、関数は <code>pg_log_error</code> を出力して終了しますが、呼び出し元へのエラー伝播やリカバリの挙動には注意が必要です。</li>
+<li>**バッファサイズ制限**: 内部で <code>subpath</code> の生成に <code>MAXPGPATH * 2</code> のバッファサイズが使用されているため、極端に長いパスを扱う際には境界条件に留意する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/common/file_utils.c</code>（フロントエンド版 <code>walkdir</code> の実装）</li>
+<li><code>src/backend/storage/file/fd.c</code>（バックエンド版 <code>walkdir</code> の実装および呼び出し元）</li>
+</ul></body></html>

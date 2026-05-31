@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtpreprocesskeys.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtpreprocesskeys.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、B-tree インデックススキャンにおける「スキャンキー（ScanKey）」の前処理を担います。ユーザーが指定した検索条件（クエリの <code>WHERE</code> 句など）を、インデックスの物理構造に最適化された形式へ変換し、冗長な条件の排除や矛盾の検出、およびスキップスキャン（Skip Scan）用の補助キー生成を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムにおいて、<code>nbtsearch.c</code> が実行するインデックス検索の直前に呼び出される最適化レイヤーです。インデックスの演算子クラス（OpClass）の定義に基づき、スキャンキーを正規化することで、検索アルゴリズムが効率的にツリーを降下・走査できるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャンキーの正規化**: インデックスのソート順（DESC/ASC）や NULLS FIRST/LAST に合わせて、演算子戦略（StrategyNumber）を補正・反転させる。</li>
+<li>**冗長性の排除と矛盾検出**: 複数のスキャンキーを比較し、最も制約の強いキーを残して冗長なものを削除する。矛盾する条件（例: <code>x=1 AND x&gt;2</code>）を検出し、スキャンを早期終了させる。</li>
+<li>**スキップスキャン最適化**: インデックスの先行カラムに等価条件がない場合、スキップスキャン用の配列キーを自動生成し、検索効率を向上させる。</li>
+<li>**配列スキャンキーの処理**: <code>ANY</code> 句などの配列条件を分解・ソート・重複排除し、インデックスの走査順序と同期させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><code>BTScanKeyPreproc</code>: 前処理中のスキャンキーの状態を保持する一時構造体。</li>
+<li><code>BTSortArrayContext</code>: 配列要素のソートやマージ時に使用する比較関数情報と照合順序（Collation）のコンテキスト。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>_bt_preprocess_keys</code>: 本ファイルのメインエントリーポイント。スキャンキーの変換、冗長排除、必須フラグ（<code>SK_BT_REQFWD</code> 等）の付与を行う。</li>
+<li><code>_bt_fix_scankey_strategy</code>: インデックスの <code>indoption</code> に基づき、戦略番号の補正や IS NULL/NOT NULL の処理を行う。</li>
+<li><code>_bt_mark_scankey_required</code>: スキャン継続に必須なキーを特定し、フラグを付与する。</li>
+<li><code>_bt_preprocess_array_keys</code>: 配列スキャンキーの分解と、スキップスキャン用キーの生成を行う。</li>
+<li><code>_bt_compare_scankey_args</code>: 2つのスキャンキーを比較し、どちらがより制約的かを判定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>BTScanKeyPreproc</code></li>
+<li><code>BTSortArrayContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_bt_preprocess_keys</code> が呼び出され、<code>BTScanOpaque</code> を通じてスキャン状態を初期化。 2. **配列処理**: <code>_bt_preprocess_array_keys</code> が配列条件を分解し、必要に応じてスキップスキャン用のキーを挿入。 3. **正規化と冗長排除**:</p>
+<ul>
+<li><code>_bt_fix_scankey_strategy</code> で各キーをインデックスの物理順序に適合させる。</li>
+<li><code>_bt_compare_scankey_args</code> を用いて、属性ごとに最も制約の強いキーを選択し、冗長なキーを排除。</li>
+<p>4. **必須フラグ付与**: <code>_bt_mark_scankey_required</code> により、スキャン終了条件判定に必要なキーにフラグを立てる。 5. **最終化**: <code>_bt_preprocess_array_keys_final</code> で、配列キーとスキャンキーの参照関係を再マッピングし、最適化を完了する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree の基本構造とスキャンキー定義。</li>
+<li><code>utils/array.h</code>: 配列の分解と操作。</li>
+<li><code>utils/lsyscache.h</code>: オペレータファミリやプロシージャのカタログ検索。</li>
+<li><code>utils/memutils.h</code>: スキャンライフサイクル内のメモリ管理。</li>
+<li><code>common/int.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>nbtsearch.c</code>: 本ファイルで前処理されたキーを使用して実際のインデックス走査を行う。</li>
+<li><code>nbtutils.c</code>: インデックス AM の共通基盤関数。</li>
+<li><code>nbtcompare.c</code>: 比較ロジックの低レベル実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 前処理されたキーは <code>so-&gt;arrayContext</code>（スキャンライフサイクル）に保持されます。<code>btrescan</code> 時の再利用を考慮し、元の <code>scan-&gt;keyData</code> を破壊しない設計になっています。</li>
+<li>**スキップスキャン**: 本ファイルはスキップスキャンのロジック（<code>SK_BT_SKIP</code>）を内包しており、インデックスの先行カラムが欠落している場合に自動的に補完キーを生成します。</li>
+<li>**制約**: 演算子クラスが不完全（クロスタイプ演算子が不足している）な場合、冗長排除や矛盾検出が完全に行われないことがありますが、検索の正当性は維持されます。</li>
+<li>**未実装**: 行比較（RowCompare）の複雑なケースにおける冗長排除は、現在の実装では限定的です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtpreprocesskeys_c__BTScanKeyPreproc.html" target="wiki-view"><code>BTScanKeyPreproc</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtpreprocesskeys_c__BTSortArrayContext.html" target="wiki-view"><code>BTSortArrayContext</code></a></li>
+</ul></body></html>

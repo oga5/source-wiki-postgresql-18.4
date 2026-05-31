@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/user.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/user.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるロール（旧称：ユーザー）の作成、変更、削除、およびロール間のメンバーシップ管理（GRANT/REVOKE）を担うコマンド実装ファイルです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、データベースの認証・認可基盤である <code>pg_authid</code> および <code>pg_auth_members</code> カタログを操作する中心的な役割を果たします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロール管理**: <code>CREATE ROLE</code>, <code>ALTER ROLE</code>, <code>DROP ROLE</code>, <code>RENAME ROLE</code> の実行。</li>
+<li>**メンバーシップ管理**: <code>GRANT</code> / <code>REVOKE</code> によるロール間の継承関係や権限付与の管理。</li>
+<li>**権限チェック**: ロール操作に必要な特権（<code>CREATEROLE</code> 属性や <code>ADMIN OPTION</code>）の検証。</li>
+<li>**依存関係の解決**: ロール削除時の依存オブジェクトチェックや、メンバーシップ取り消し時の再帰的な権限剥奪（CASCADE処理）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>CreateRole</code>, <code>AlterRole</code>, <code>DropRole</code>: 主要なDDLコマンドの実行関数。</li>
+<li><code>GrantRole</code>: ロールメンバーシップの付与・剥奪を行う関数。</li>
+<li><code>AddRoleMems</code>, <code>DelRoleMems</code>: メンバーシップ更新の内部ロジック。</li>
+<li><code>RevokeRoleGrantAction</code>: 権限剥奪時の再帰的なアクションを定義する列挙型。</li>
+<li><code>GrantRoleOptions</code>: <code>GRANT</code> 時に指定されるオプション（ADMIN, INHERIT, SET）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AlterRoleSet</code></li>
+<li><code>DropOwnedObjects</code></li>
+<li><code>InitGrantRoleOptions</code></li>
+<li><code>ReassignOwnedObjects</code></li>
+<li><code>RenameRole</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL実行**: 各関数は <code>ParseState</code> を受け取り、<code>stmt</code> ノードからオプションを抽出します。 2. **権限検証**: <code>superuser()</code> や <code>has_createrole_privilege()</code> を用いて操作の可否を判定します。 3. **カタログ更新**: <code>pg_authid</code> や <code>pg_auth_members</code> を <code>table_open</code> で開き、<code>CatalogTupleInsert</code> / <code>Update</code> / <code>Delete</code> を実行します。 4. **再帰的処理**: <code>DelRoleMems</code> は <code>plan_recursive_revoke</code> を呼び出し、依存関係を辿って権限剥奪の影響範囲を計算します。 5. **フック**: <code>check_password_hook</code> や <code>InvokeObjectPostCreateHook</code> を通じて、外部モジュールやシステムイベントへの通知を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>pg_authid.h</code>, <code>pg_auth_members.h</code>, <code>pg_database.h</code> 等。</li>
+<li>**アクセス層**: <code>access/table.h</code>, <code>access/genam.h</code> (カタログ操作用)。</li>
+<li>**ユーティリティ**: <code>utils/acl.h</code>, <code>utils/syscache.h</code> (権限・キャッシュ管理)。</li>
+<li>**その他**: <code>libpq/crypt.h</code> (パスワード暗号化)。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_db_role_setting.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>commands/user.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/commands/user.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/catalog/dependency.c</code>: 共有オブジェクトの依存関係管理。</li>
+<li><code>src/backend/utils/adt/acl.c</code>: ロール権限やACLの基本ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰的REVOKE**: <code>plan_recursive_revoke</code> は、権限の連鎖（ADMIN OPTIONの継承）を考慮した複雑なロジックです。CASCADE指定時の挙動を理解する際はここが重要です。</li>
+<li>**ロック**: ロール操作時は <code>LockSharedObject</code> を使用して、並行実行による循環参照や競合を防いでいます。</li>
+<li>**セキュリティ**: 本ファイルは認証の根幹に関わるため、権限チェックのロジックは非常に厳格です。特に <code>superuser</code> 属性の変更や、<code>pg_</code> で始まる予約済みロール名の扱いに注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__user_c__RevokeRoleGrantAction.html" target="wiki-view"><code>RevokeRoleGrantAction</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__GrantRoleOptions.html" target="wiki-view"><code>GrantRoleOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__CreateRole.html" target="wiki-view"><code>CreateRole</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__AlterRole.html" target="wiki-view"><code>AlterRole</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__AlterRoleSet.html" target="wiki-view"><code>AlterRoleSet</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__DropRole.html" target="wiki-view"><code>DropRole</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__RenameRole.html" target="wiki-view"><code>RenameRole</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__GrantRole.html" target="wiki-view"><code>GrantRole</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__DropOwnedObjects.html" target="wiki-view"><code>DropOwnedObjects</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__ReassignOwnedObjects.html" target="wiki-view"><code>ReassignOwnedObjects</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__AddRoleMems.html" target="wiki-view"><code>AddRoleMems</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__user_c__InitGrantRoleOptions.html" target="wiki-view"><code>InitGrantRoleOptions</code></a></li>
+</ul></body></html>

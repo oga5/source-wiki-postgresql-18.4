@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/backup/backup_manifest.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/backup/backup_manifest.c</h1>
+<h2>概要</h2>
+<p>バックアップ取得時に生成される「バックアップ・マニフェスト」の構築と送信を担うモジュールです。マニフェストは、バックアップに含まれる全ファイルの一覧、サイズ、チェックサム、およびWAL（Write-Ahead Log）の範囲情報を記録したJSON形式のファイルであり、バックアップの整合性検証に不可欠です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/backup</code> サブシステムにおいて、バックアップのメタデータ管理を担当します。<code>basebackup</code> プロセスがファイルストリームを生成する際、並行して本モジュールの関数を呼び出すことで、バックアップ内容のカタログを作成します。</p>
+<h2>責務</h2>
+<ul>
+<li>**マニフェストの構築**: 一時ファイル（<code>BufFile</code>）を使用して、JSON形式のマニフェストを逐次生成します。</li>
+<li>**整合性情報の記録**: 各ファイルのパス、サイズ、最終更新時刻、および指定されたアルゴリズムによるチェックサムを記録します。</li>
+<li>**WAL範囲の追跡**: バックアップの復旧に必要なWALのタイムラインとLSN範囲を計算・記録します。</li>
+<li>**自己検証**: マニフェストファイル自体の改ざんを検知するため、SHA-256によるマニフェスト全体のチェックサムを末尾に付与します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>backup_manifest_info</code>: マニフェスト生成の状態を保持する構造体。</li>
+<li><code>InitializeBackupManifest</code>: 生成プロセスの初期化とJSONヘッダーの書き込み。</li>
+<li><code>AddFileToBackupManifest</code>: 個別ファイルの情報をマニフェストに追加。</li>
+<li><code>AddWALInfoToBackupManifest</code>: WALのタイムライン履歴を解析し、範囲情報を追加。</li>
+<li><code>SendBackupManifest</code>: 一時ファイルからマニフェストを読み出し、<code>bbsink</code> を通じてクライアントへ送信。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AppendStringToManifest</code></li>
+<li><code>FreeBackupManifest</code></li>
+<li><code>IsManifestEnabled</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>InitializeBackupManifest</code> で一時ファイルとSHA-256コンテキストを作成。 2.  **データ追加**: ファイルの書き出しやWALの確定ごとに、<code>AddFileToBackupManifest</code> や <code>AddWALInfoToBackupManifest</code> が呼ばれ、JSON文字列が一時ファイルに追記されます。同時に、その文字列がSHA-256コンテキストでハッシュ計算されます。 3.  **終了処理**: <code>SendBackupManifest</code> が呼ばれると、マニフェスト全体のチェックサムを計算してJSONを閉じ、一時ファイルを巻き戻して <code>bbsink</code> インターフェース経由でストリーム送信します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>backup/backup_manifest.h</code>: 公開インターフェースの定義。</li>
+<li><code>backup/basebackup_sink.h</code>: バックアップデータの送信先抽象化レイヤー。</li>
+<li><code>utils/json.h</code>: JSONエスケープ処理。</li>
+<li><code>access/xlog.h</code> / <code>access/timeline.h</code>: WALおよびタイムライン情報の取得。</li>
+<li><code>storage/buffile.h</code>: 一時的なバッファファイル操作。</li>
+<li><code>common/relpath.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/backup/basebackup.c</code>: バックアップのメインループ。ここから各ファイル処理のタイミングで本モジュールが呼び出されます。</li>
+<li><code>src/backend/backup/basebackup_sink.c</code>: <code>bbsink</code> の実装。マニフェストの最終的な出力先を制御します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**JSON生成**: <code>AppendToManifest</code> マクロと <code>AppendStringToManifest</code> 関数が、マニフェスト構築の基盤です。JSONの構文（カンマの有無など）は、<code>first_file</code> フラグ等で手動制御されている点に注意してください。</li>
+<li>**チェックサム**: ファイルごとのチェックサムアルゴリズムは設定可能ですが、マニフェスト自体のチェックサムは常にSHA-256で固定されています。</li>
+<li>**一時ファイル**: マニフェストはメモリ上に保持せず、<code>BufFile</code> を介してディスク（一時ファイル）に書き出されます。これは大規模なバックアップでファイル数が膨大になることを想定しているためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__IsManifestEnabled.html" target="wiki-view"><code>IsManifestEnabled</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__InitializeBackupManifest.html" target="wiki-view"><code>InitializeBackupManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__FreeBackupManifest.html" target="wiki-view"><code>FreeBackupManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__AddFileToBackupManifest.html" target="wiki-view"><code>AddFileToBackupManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__AddWALInfoToBackupManifest.html" target="wiki-view"><code>AddWALInfoToBackupManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__SendBackupManifest.html" target="wiki-view"><code>SendBackupManifest</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__backup_manifest_c__AppendStringToManifest.html" target="wiki-view"><code>AppendStringToManifest</code></a></li>
+</ul></body></html>

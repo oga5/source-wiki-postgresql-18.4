@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgcrypto/pgp-pgsql.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgcrypto/pgp-pgsql.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのSQLインターフェースと<code>pgcrypto</code>モジュールのPGP暗号化/復号化エンジンを接続するラッパー層です。SQL関数として公開されているPGP関連機能の入り口であり、PostgreSQLのデータ型（<code>text</code>, <code>bytea</code>）と内部的なPGP処理の間でデータの変換と引数の解析を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pgcrypto</code>サブシステムにおいて、ユーザーがSQLから呼び出す関数群を定義しています。コアとなる暗号化アルゴリズムやPGPプロトコル処理は<code>pgp-*.c</code>や<code>px.c</code>に委譲し、本ファイルはPostgreSQLのメモリ管理や文字コード変換、関数呼び出し規約（<code>PG_FUNCTION_ARGS</code>）への適合に専念します。</p>
+<h2>責務</h2>
+<ul>
+<li>**SQLインターフェースの提供**: 暗号化、復号化、Armor変換、キーID抽出を行うSQL関数の実装。</li>
+<li>**データ変換**: <code>text</code>型と<code>bytea</code>型の相互変換、およびデータベースエンコーディングとUTF-8間の文字コード変換。</li>
+<li>**引数解析**: PGP処理の挙動を制御するオプション文字列（例: <code>cipher-algo=aes</code>）のパースと検証。</li>
+<li>**リソース管理**: PostgreSQLのメモリコンテキスト内でのバッファ確保と、機密情報を含むメモリの安全なクリア（<code>clear_and_pfree</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>encrypt_internal</code> / <code>decrypt_internal</code>: 暗号化・復号化処理の共通ロジックを担う内部関数。</li>
+<li><code>parse_args</code>: ユーザーから渡された設定文字列を解析し、<code>PGP_Context</code>に反映させる。</li>
+<li><code>pgp_sym_encrypt_*</code> / <code>pgp_pub_encrypt_*</code>: ユーザーが直接呼び出すSQL関数群。</li>
+<li><code>pg_armor</code> / <code>pg_dearmor</code>: PGP Armor形式のエンコード・デコード関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_expect</code></li>
+<li><code>clear_and_pfree</code></li>
+<li><code>convert_charset</code></li>
+<li><code>convert_from_utf8</code></li>
+<li><code>convert_to_utf8</code></li>
+<li><code>debug_expect</code></li>
+<li><code>downcase_convert</code></li>
+<li><code>fill_expect</code></li>
+<li><code>pgp_armor_headers_state</code></li>
+<li><code>set_arg</code></li>
+<li><code>show_debug</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **関数呼び出し**: SQL関数が呼び出されると、<code>PG_GETARG_*</code>マクロで引数を取得します。 2. **初期化**: <code>init_work</code>が呼び出され、<code>PGP_Context</code>の作成とオプション引数の解析が行われます。 3. **データ変換**: 必要に応じて<code>convert_to_utf8</code>等でエンコーディングを調整し、<code>MBuf</code>（メモリバッファ）にデータをロードします。 4. **処理実行**: <code>pgp_encrypt</code>または<code>pgp_decrypt</code>を呼び出し、結果を<code>MBuf</code>に書き出します。 5. **終了処理**: <code>mbuf_steal_data</code>で結果を取り出し、<code>pfree</code>で一時メモリを解放して結果を返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>funcapi.h</code>: PostgreSQLのコア機能および関数定義用。</li>
+<li><code>pgp.h</code>, <code>px.h</code>: PGP暗号化エンジンおよび共通暗号化ライブラリのインターフェース。</li>
+<li><code>mbuf.h</code>: PGP処理で利用されるメモリバッファ管理。</li>
+<li><code>mb/pg_wchar.h</code>: 文字コード変換用。</li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pgp.c</code>: PGPプロトコルの高レベルな実装。</li>
+<li><code>px.c</code>: 暗号化アルゴリズムやハッシュ関数を提供する低レベルライブラリ。</li>
+<li><code>pgp-armor.c</code>: Armor形式の処理ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルはビジネスロジックではなく、主に「接着剤」としての役割を果たします。PGPの仕様や暗号アルゴリズムの詳細を追いたい場合は、<code>pgp.c</code>や<code>px.c</code>を参照してください。</li>
+<li><code>clear_and_pfree</code>は、機密情報（鍵や平文）がメモリ上に残らないようゼロクリアしてから解放する重要な関数です。</li>
+<li><code>debug_expect</code>構造体は、テスト目的で暗号化設定を検証するために使用されます。通常の運用では意識する必要はありません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__convert_charset.html" target="wiki-view"><code>convert_charset</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__convert_from_utf8.html" target="wiki-view"><code>convert_from_utf8</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__convert_to_utf8.html" target="wiki-view"><code>convert_to_utf8</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__clear_and_pfree.html" target="wiki-view"><code>clear_and_pfree</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__debug_expect.html" target="wiki-view"><code>debug_expect</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__fill_expect.html" target="wiki-view"><code>fill_expect</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__check_expect.html" target="wiki-view"><code>check_expect</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__show_debug.html" target="wiki-view"><code>show_debug</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__set_arg.html" target="wiki-view"><code>set_arg</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__downcase_convert.html" target="wiki-view"><code>downcase_convert</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__parse_args.html" target="wiki-view"><code>parse_args</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__pgp-pgsql_c__pgp_armor_headers_state.html" target="wiki-view"><code>pgp_armor_headers_state</code></a></li>
+</ul></body></html>

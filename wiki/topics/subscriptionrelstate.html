@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/subscriptionrelstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SubscriptionRelState</h1>
+<h2>概念</h2>
+<p><code>SubscriptionRelState</code> は、PostgreSQL の論理レプリケーションにおいて、特定のサブスクリプションと個々のテーブル（リレーション）の紐付け状態（同期フェーズや進捗を示す LSN など）をメモリ上で管理するための構造体、およびそれに関連する状態管理の仕組みです。</p>
+<h2>なぜ重要か</h2>
+<p>論理レプリケーションでは、サブスクリプション全体だけでなく、個々のテーブル単位で同期の進捗（LSN）や現在の同期フェーズ（<code>state</code>）を追跡する必要があります。<code>SubscriptionRelState</code> 構造体や <code>GetSubscriptionRelState</code> 関数は、メモリ上での状態保持や、システムカタログ（<code>pg_subscription_rel</code>）からの状態取得を仲介し、正確なテーブル同期プロセスの制御を可能にするために重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/catalog</code></li>
+<li><code>module:src/include/catalog</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>SubscriptionRelState</code>** (<code>symbol:src/include/catalog/pg_subscription_rel.h#SubscriptionRelState</code>)</li>
+<p>メモリ上でサブスクリプションとリレーションの紐付け状態（リレーション OID、LSN、同期フェーズ）を保持する構造体。</p>
+<li>**<code>GetSubscriptionRelState</code>** (<code>symbol:src/backend/catalog/pg_subscription.c#GetSubscriptionRelState</code>)</li>
+<p>特定のサブスクリプションとテーブルの組み合わせにおける、現在の同期状態（<code>srsubstate</code>）と最終更新 LSN を <code>pg_subscription_rel</code> カタログ（および <code>SUBSCRIPTIONRELMAP</code> システムキャッシュ）から取得する関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **状態の更新と保持**: テーブル同期プロセス（<code>tablesync.c</code>）において、同期フェーズの遷移や進捗の更新時に <code>SubscriptionRelState</code> のインスタンスが生成・更新され、メモリ上での状態保持やプロセス間通信に利用されます。 2. **状態の参照**: <code>GetSubscriptionRelState</code> が呼び出されると、以下の流れでカタログから状態が取得されます。</p>
+<ul>
+<li><code>SubscriptionRelRelationId</code> に対して <code>AccessShareLock</code> を取得し、競合を回避します。</li>
+<li><code>SUBSCRIPTIONRELMAP</code> システムキャッシュを <code>relid</code> と <code>subid</code> で検索します。</li>
+<li>タプルが存在しない場合、LSN に <code>InvalidXLogRecPtr</code> を設定し、<code>SUBREL_STATE_UNKNOWN</code> を返します。</li>
+<li>タプルが存在する場合、<code>srsubstate</code> から状態を取得し、<code>srsublsn</code> 属性から LSN を取得して返します。</li>
+<li>キャッシュタプルを解放し、リレーションをクローズします。</li>
+</ul>
+<p>※なお、状態遷移の全体的なエンドツーエンドのフロー（どのタイミングでどの状態に遷移するかなど）の全容は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**LSN の追跡**: <code>SubscriptionRelState</code> の <code>lsn</code> フィールドは、同期の進捗を追跡する <code>XLogRecPtr</code> 型（<code>access/xlogdefs.h</code> で定義）です。</li>
+<li>**状態値の範囲**: <code>state</code> フィールドは、永続化される状態（<code>i</code>, <code>d</code>, <code>f</code>, <code>s</code>, <code>r</code>）またはプロセス間通信専用の非永続状態（<code>w</code>, <code>c</code>）のいずれかを取ります。</li>
+<li>**存在しないマッピングへの対応**: <code>GetSubscriptionRelState</code> において、指定された <code>subid</code> と <code>relid</code> のマッピングがカタログに存在しない場合は、エラーを発生させずに <code>SUBREL_STATE_UNKNOWN</code> を返し、LSN に <code>InvalidXLogRecPtr</code> を設定します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**永続化形式との混同**: <code>SubscriptionRelState</code> はメモリ内管理用の構造体であり、システムカタログ <code>pg_subscription_rel</code> の物理的な永続化形式である <code>FormData_pg_subscription_rel</code> と混同しないよう注意が必要です。</li>
+<li>**LSN への直接アクセス**: <code>lsn</code> フィールドは <code>CATALOG_VARLEN</code> マクロの影響を受ける可能性があるため、直接アクセスするのではなく、提供されている API 経由で操作することが推奨されます。</li>
+<li>**未定義の状態値**: <code>state</code> に未定義の文字が設定された場合の挙動や、状態遷移の完全なバリデーションルールは、提供された情報からは未検証です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/catalog/pg_subscription_rel.h</code> (<code>SubscriptionRelState</code> 構造体の定義)</li>
+<li><code>src/backend/catalog/pg_subscription.c</code> (<code>GetSubscriptionRelState</code> 関数の実装)</li>
+</ul></body></html>

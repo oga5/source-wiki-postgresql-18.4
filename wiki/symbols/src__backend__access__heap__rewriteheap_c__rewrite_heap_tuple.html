@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__rewriteheap_c__rewrite_heap_tuple.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>rewrite_heap_tuple</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/access/heap/rewriteheap.c:340</code></li>
+</ul>
+<h2>目的</h2>
+<p>テーブル再構築（<code>VACUUM FULL</code> や <code>CLUSTER</code> 等）において、古いヒープから新しいヒープへタプルをコピーし、更新チェーン（<code>ctid</code>）の整合性を維持しながら書き込む。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void rewrite_heap_tuple(RewriteState state, HeapTuple old_tuple, HeapTuple new_tuple)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>state</code>: 再構築状態を管理する <code>RewriteState</code> 構造体。</li>
+<li><code>old_tuple</code>: コピー元のタプル。</li>
+<li><code>new_tuple</code>: 書き込み対象の新しいタプル（コピー先）。</li>
+<li>**出力**: なし（副作用として新しいヒープへの書き込みおよび内部ハッシュテーブルの更新を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は対象テーブルに対して <code>AccessExclusiveLock</code> を保持している必要がある。</li>
+<li><code>state-&gt;rs_cxt</code> メモリコンテキストが適切に設定されていること。</li>
+<li><code>new_tuple</code> の可視性情報は <code>old_tuple</code> から引き継がれるが、HOT（Heap Only Tuple）関連のステータスビットは意図的にクリアされる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: <code>old_tuple</code> の可視性情報を <code>new_tuple</code> にコピーし、<code>heap_freeze_tuple</code> を呼び出してタプルの凍結処理を行う。 2. **更新チェーンの解決**:</p>
+<ul>
+<li>タプルが更新チェーンの一部である場合、<code>rs_old_new_tid_map</code> を検索する。</li>
+<li>既に新しい位置が判明していれば <code>ctid</code> を更新して書き込む。</li>
+<li>未判明であれば <code>rs_unresolved_tups</code> に一時保存し、処理を中断する。</li>
+<p>3. **書き込みと連鎖処理**:</p>
+<li><code>raw_heap_insert</code> を用いて新しいヒープへ書き込む。</li>
+<li><code>logical_rewrite_heap_tuple</code> を呼び出し、論理デコーディング用のマッピングを記録する。</li>
+<li>挿入したタプルが更新チェーンの「B」側である場合、対応する「A」側が <code>rs_unresolved_tups</code> に存在すれば、それを取り出して <code>ctid</code> を修正し、再帰的に書き込みを行う（ループ処理）。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/heapam_handler.c:2402</code></li>
+<li>**呼び出し先**:</li>
+<li><code>heap_freeze_tuple</code></li>
+<li><code>hash_search</code> (<code>rs_old_new_tid_map</code>, <code>rs_unresolved_tups</code> 操作)</li>
+<li><code>raw_heap_insert</code></li>
+<li><code>logical_rewrite_heap_tuple</code></li>
+<li><code>heap_copytuple</code> / <code>heap_freetuple</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>RewriteStateData</code>: 再構築中の状態管理。</li>
+<li><code>OldToNewMapping</code>: 更新チェーンの TID マッピング。</li>
+<li><code>UnresolvedTup</code>: 未解決の更新チェーンタプル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: 更新チェーンが非常に長く、未解決タプルが大量に滞留した場合、メモリ不足に陥る可能性がある。</li>
+<li>**論理デコーディング**: 論理レプリケーションが有効な場合、マッピングファイルが <code>pg_logical/mappings</code> に生成されるため、ディスク容量や権限の影響を受ける。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>t_infomask2</code> の HOT ステータスビットは意図的にクリアされている。将来的にこれらを保持する必要があるか検討が必要。</li>
+<li>更新チェーンの解決にはインメモリハッシュテーブルを使用しているため、巨大なテーブルの再構築時はメモリ消費量に注意すること。</li>
+</ul></body></html>

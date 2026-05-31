@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__tcop__postgres_c__SocketBackend.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SocketBackend</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/tcop/postgres.c:352</code></li>
+</ul>
+<h2>目的</h2>
+<p>フロントエンド（クライアント）から送信されたメッセージタイプを識別し、その内容を読み取って後続の処理へ渡すためのインターフェースを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static int SocketBackend(StringInfo inBuf)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>inBuf</code> (<code>StringInfo</code>) - 受信したメッセージ本体を格納するためのバッファ。</li>
+<li>**出力**: <code>int</code> - 受信したメッセージタイプコード（<code>PqMsg_*</code> 定数）、または接続終了時の <code>EOF</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し時に <code>HOLD_CANCEL_INTERRUPTS()</code> が実行され、メッセージ読み取り中の割り込みを抑制します。</li>
+<li>正常終了時には <code>RESUME_CANCEL_INTERRUPTS()</code> が呼ばれ、割り込み許可状態が復元されます。</li>
+<li>プロトコルバージョン3を前提としており、すべてのメッセージにはタイプコードの直後に長さ情報が含まれている必要があります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>pq_startmsgread()</code> を呼び出し、フロントエンドからのメッセージ読み取りを開始します。 2. <code>pq_getbyte()</code> でメッセージタイプコードを取得します。 3. <code>EOF</code> の場合、トランザクション状態を確認し、必要に応じてエラー報告を行い終了します。 4. メッセージタイプに基づき、<code>maxmsglen</code>（許容最大長）を設定し、<code>doing_extended_query_message</code> フラグを更新します。</p>
+<ul>
+<li><code>PqMsg_Query</code> 等は <code>PQ_LARGE_MESSAGE_LIMIT</code>、<code>PqMsg_Sync</code> 等は <code>PQ_SMALL_MESSAGE_LIMIT</code> を適用します。</li>
+<li>不明なタイプコードの場合は <code>FATAL</code> エラーを発生させます。</li>
+<p>5. <code>pq_getmessage()</code> を呼び出し、<code>inBuf</code> にメッセージ本体を読み込みます。 6. 成功時にメッセージタイプコードを返します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/tcop/postgres.c</code> 内のメインループ（行486付近）。</li>
+<li>**呼び出し先**: </li>
+<li><code>pq_startmsgread</code>, <code>pq_getbyte</code>, <code>pq_getmessage</code>（通信プロトコル層）</li>
+<li><code>IsTransactionState</code>（トランザクション管理）</li>
+<li><code>ereport</code>（エラー報告）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>StringInfo</code>: 通信バッファを管理する構造体。</li>
+<li><code>PqMsg_*</code>: フロントエンドからのメッセージタイプを定義する定数群。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**EOF**: クライアントの切断。トランザクションが開いている場合は <code>COMMERROR</code> を報告します。</li>
+<li>**プロトコル違反**: 未定義のメッセージタイプを受信した場合、<code>FATAL</code> エラーとしてプロセスを終了します。</li>
+<li>**メッセージ長超過**: <code>pq_getmessage</code> が失敗した場合、<code>EOF</code> を返します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>postgres.c</code> のメインループの一部であり、プロトコル同期の維持に責任を持ちます。</li>
+<li><code>doing_extended_query_message</code> フラグの管理は、エラー発生時のスキップ処理（<code>ignore_till_sync</code>）と密接に関連しています。</li>
+<li>メッセージタイプごとの <code>maxmsglen</code> の設定は、メモリ枯渇を防ぐための重要な防御的実装です。</li>
+</ul></body></html>

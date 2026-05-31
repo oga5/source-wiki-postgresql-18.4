@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/prev-executorfinish.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>prev_ExecutorFinish</h1>
+<h2>概念</h2>
+<p><code>prev_ExecutorFinish</code> は、PostgreSQL のクエリ実行終了フェーズ（<code>ExecutorFinish</code>）を拡張機能がフックする際に、以前に登録されていたフック関数（またはデフォルトのハンドラ）へのポインタを一時的に退避・保持しておくための静的グローバル変数（関数ポインタ）です。</p>
+<p>これにより、複数の拡張機能が同じ <code>ExecutorFinish_hook</code> を競合することなく、連鎖的（チェーン状）に呼び出すことが可能になります。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQL は、クエリ実行の終了処理をカスタマイズするためのグローバルなフックポイントとして <code>ExecutorFinish_hook</code> を提供しています。</p>
+<p>もし拡張機能がこのグローバル変数を単純に自前の関数で上書きしてしまうと、先にロードされていた他の拡張機能のフックが実行されなくなってしまいます。<code>prev_ExecutorFinish</code> を用いて以前のフックポインタを保存し、自前の処理の前後でそれを呼び出すことで、複数の拡張機能（例: クエリの実行計画を記録する <code>auto_explain</code> と、実行統計を記録する <code>pg_stat_statements</code>）を安全に共存させることができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/auto_explain</code></li>
+<li><code>module:contrib/pg_stat_statements</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/auto_explain/auto_explain.c#prev_ExecutorFinish</code></li>
+<li><code>symbol:contrib/pg_stat_statements/pg_stat_statements.c#prev_ExecutorFinish</code></li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **モジュールの初期化 (<code>_PG_init</code>)**: 拡張機能がロードされる際、現在の <code>ExecutorFinish_hook</code> の値を <code>prev_ExecutorFinish</code> に退避させ、<code>ExecutorFinish_hook</code> に自モジュールのカスタムフック関数を登録します。 2. **クエリ実行終了時**: PostgreSQL コアが <code>ExecutorFinish</code> を実行すると、現在 <code>ExecutorFinish_hook</code> に登録されているカスタムフック関数が呼び出されます。 3. **フックの連鎖呼び出し**: 呼び出されたカスタムフック関数内で、自モジュールの処理（ログ出力や統計情報の更新など）を行うとともに、退避しておいた <code>prev_ExecutorFinish</code> が指す関数（以前に登録された別の拡張機能のフック、またはデフォルトの処理）を呼び出します。</p>
+<p>※なお、複数の拡張機能がロードされている場合、実際のエンドツーエンドの呼び出し順序は <code>postgresql.conf</code> の <code>shared_preload_libraries</code> に指定されたモジュールのロード順序に依存します。具体的なロード順序や、個々の実行コンテキストにおける詳細な制御フローは、実行時の構成によって動的に決定されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**フックの退避と復元**:</li>
+<p><code>ExecutorFinish_hook</code> を上書きする前に、必ず現在の値を <code>prev_ExecutorFinish</code> に保存しなければなりません。</p>
+<li>**チェーンの継続**:</li>
+<p>自モジュールのフック関数内において、<code>prev_ExecutorFinish</code> が指す関数ポインタが <code>NULL</code> でない限り、その関数を必ず呼び出さなければなりません。これを怠ると、フックチェーンが途切れ、他の拡張機能が動作しなくなります。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**ロード順序への依存**:</li>
+<p><code>shared_preload_libraries</code> でのロード順序によって、どの拡張機能の <code>prev_ExecutorFinish</code> がどの関数を指すかが決定されます。特定の順序でしか動作しないような暗黙の依存関係を作らないよう注意が必要です。</p>
+<li>**アンロード時の不整合**:</li>
+<p>モジュールが動的にアンロードされる場合（<code>_PG_fini</code> など）、<code>ExecutorFinish_hook</code> を <code>prev_ExecutorFinish</code> に戻す必要がありますが、アンロードの順序がロードの逆順でない場合、フックチェーンが破損し、最悪の場合 dangling pointer によるクラッシュを引き起こす可能性があります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/auto_explain/auto_explain.c</code></li>
+<li><code>contrib/pg_stat_statements/pg_stat_statements.c</code></li>
+</ul></body></html>

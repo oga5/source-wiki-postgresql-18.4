@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/page/bufpage.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/page/bufpage.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのストレージエンジンにおける「スロット付きページ（Slotted Page）」の物理的な操作を担う中心的なファイルです。8KBの固定長ブロックを、ヘッダー、アイテムID配列、タプルデータ、および特殊領域（Special Space）として管理するための低レベルなAPIを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/storage/bufpage.h</code> で定義されたページ構造を操作する実装層です。バッファマネージャが管理する共有メモリ上のページに対し、タプルの挿入、削除、断片化解消（デフラグ）、および整合性検証（チェックサム）を行うためのインターフェースを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ページ初期化**: <code>PageInit</code> による空き領域管理情報のセットアップ。</li>
+<li>**アイテム管理**: タプルの挿入 (<code>PageAddItemExtended</code>)、削除 (<code>PageIndexTupleDelete</code> 等) および上書き。</li>
+<li>**断片化解消**: <code>PageRepairFragmentation</code> によるページ内の空き領域の再統合（デフラグ）。</li>
+<li>**整合性保護**: 読み込み時の <code>PageIsVerified</code> および書き込み時のチェックサム計算 (<code>PageSetChecksumCopy</code> 等)。</li>
+<li>**領域計算**: ページ内の空き領域サイズの算出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ページ初期化・検証</h3>
+<ul>
+<li><code>PageInit</code>: ページヘッダーを初期化し、空き領域ポインタをリセットする。</li>
+<li><code>PageIsVerified</code>: ページ読み込み時にチェックサムとヘッダーの整合性を検証する。</li>
+</ul>
+<h3>アイテム操作（挿入・削除）</h3>
+<ul>
+<li><code>PageAddItemExtended</code>: タプルをページに挿入する。必要に応じてアイテムID配列のシフトや空き領域の確認を行う。</li>
+<li><code>PageIndexTupleDelete</code>: インデックスページからタプルを削除し、アイテムID配列を詰める。</li>
+<li><code>PageIndexMultiDelete</code>: 複数のタプルを効率的に削除する。</li>
+<li><code>PageIndexTupleOverwrite</code>: 既存のタプルを新しいデータで置き換える。</li>
+</ul>
+<h3>ユーティリティ・断片化解消</h3>
+<ul>
+<li><code>PageRepairFragmentation</code>: 削除済みタプルによる隙間を詰め、<code>pd_lower</code>/<code>pd_upper</code> を再計算する。</li>
+<li><code>compactify_tuples</code>: <code>PageRepairFragmentation</code> 等から呼ばれる、タプル移動の核心ロジック。</li>
+<li><code>PageGetFreeSpace</code> 系: ページ内の空き領域を計算する（ヒープ用、インデックス用等のバリエーションあり）。</li>
+</ul>
+<h3>チェックサム管理</h3>
+<ul>
+<li><code>PageSetChecksumCopy</code>: 共有バッファ上のページをコピーし、チェックサムを計算して返す。</li>
+<li><code>PageSetChecksumInplace</code>: 排他制御下にあるプライベートメモリ上のページに対してチェックサムを計算する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PageAddItemExtended</code></li>
+<li><code>PageGetExactFreeSpace</code></li>
+<li><code>PageGetFreeSpace</code></li>
+<li><code>PageGetFreeSpaceForMultipleTuples</code></li>
+<li><code>PageGetHeapFreeSpace</code></li>
+<li><code>PageIndexMultiDelete</code></li>
+<li><code>PageIndexTupleDelete</code></li>
+<li><code>PageIndexTupleDeleteNoCompact</code></li>
+<li><code>PageInit</code></li>
+<li><code>PageIsVerified</code></li>
+<li><code>itemIdCompact</code></li>
+<li><code>itemIdCompactData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入フロー**: <code>PageAddItemExtended</code> が呼び出されると、まず <code>pd_lower</code> と <code>pd_upper</code> を確認し、挿入可能か判定する。必要であれば <code>memmove</code> でアイテムID配列をシフトし、タプルデータを <code>pd_upper</code> 側から逆方向にコピーする。 2. **削除・デフラグフロー**: <code>PageRepairFragmentation</code> は、ページ内の全アイテムIDをスキャンし、有効なタプルを <code>itemIdCompactData</code> 配列に収集する。その後、<code>compactify_tuples</code> が <code>memmove</code> または一時バッファ経由の <code>memcpy</code> を用いてタプルをページ末尾に詰め、<code>pd_upper</code> を更新する。 3. **チェックサムフロー**: <code>PageSetChecksumCopy</code> は、共有メモリ上のページが他プロセスによって変更されるのを防ぐため、一度 <code>pageCopy</code> にコピーしてから計算を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型およびアサーション。</li>
+<li><code>access/htup_details.h</code>, <code>access/itup.h</code>: タプル構造の解釈。</li>
+<li><code>storage/checksum.h</code>: ページチェックサム計算。</li>
+<li><code>utils/memutils.h</code>: メモリ確保（<code>palloc</code> 等）。</li>
+<li><code>access/xlog.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/bufpage.h</code>: ページヘッダー構造体 <code>PageHeaderData</code> の定義。</li>
+<li><code>src/backend/storage/page/itemptr.c</code>: <code>ItemPointer</code>（TID）操作のユーティリティ。</li>
+<li><code>src/backend/storage/page/checksum.c</code>: チェックサム計算の実装詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: ページは <code>PageHeader</code>（先頭）から始まり、<code>ItemId</code> 配列が前方から、タプルデータが後方から（<code>pd_upper</code>に向かって）配置されます。このため、タプルはページ内で物理的に移動可能です。</li>
+<li>**エラーハンドリング**: <code>PageAddItemExtended</code> 内では <code>ereport(ERROR)</code> が禁止されています。これは、バッファマネージャがロックを保持した状態で呼び出されることが多いため、PANICまたは戻り値による制御が求められます。</li>
+<li>**断片化解消のコスト**: <code>PageRepairFragmentation</code> は高コストな操作です。頻繁な呼び出しはパフォーマンスに影響するため、VACUUMやHOT（Heap Only Tuple）更新のタイミングで適切に制御されています。</li>
+<li>**省略された詳細**: 本ファイル内の <code>compactify_tuples</code> における <code>presorted</code>（ソート済み）判定の最適化ロジックは、ページ内のタプル配置が挿入順序を維持している場合に非常に高速に動作するよう設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageInit.html" target="wiki-view"><code>PageInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageIsVerified.html" target="wiki-view"><code>PageIsVerified</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageAddItemExtended.html" target="wiki-view"><code>PageAddItemExtended</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__itemIdCompactData.html" target="wiki-view"><code>itemIdCompactData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__itemIdCompact.html" target="wiki-view"><code>itemIdCompact</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageGetFreeSpace.html" target="wiki-view"><code>PageGetFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageGetFreeSpaceForMultipleTuples.html" target="wiki-view"><code>PageGetFreeSpaceForMultipleTuples</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageGetExactFreeSpace.html" target="wiki-view"><code>PageGetExactFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageGetHeapFreeSpace.html" target="wiki-view"><code>PageGetHeapFreeSpace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageIndexTupleDelete.html" target="wiki-view"><code>PageIndexTupleDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageIndexMultiDelete.html" target="wiki-view"><code>PageIndexMultiDelete</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__page__bufpage_c__PageIndexTupleDeleteNoCompact.html" target="wiki-view"><code>PageIndexTupleDeleteNoCompact</code></a></li>
+</ul></body></html>

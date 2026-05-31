@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/string-to-uuid.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>string_to_uuid</h1>
+<h2>概念</h2>
+<p><code>string_to_uuid</code> は、PostgreSQLにおいて文字列形式のUUIDを解析・変換し、内部的なUUID表現に格納するための静的（<code>static</code>）関数です。</p>
+<p>PostgreSQLのソースコード内には、役割や依存ライブラリが異なる2つの同名関数が存在します。 1. **コア実装 (<code>src/backend/utils/adt/uuid.c</code>)**: PostgreSQLコアのUUIDデータ型（<code>pg_uuid_t</code>）への変換を行う関数。 2. **拡張モジュール実装 (<code>contrib/uuid-ossp/uuid-ossp.c</code>)**: OSSP UUIDライブラリの内部表現（<code>uuid_t</code>）への変換を行う関数。</p>
+<h2>なぜ重要か</h2>
+<p>UUIDはデータベースにおいて一意識別子として広く利用されます。外部から入力された様々な形式のUUID文字列（標準的なハイフン区切り形式や、中括弧 <code>{}</code> で囲まれた形式など）を、システム内部で効率的に扱えるバイナリ形式（16バイト構造体）に安全かつ正確に変換・検証する役割を担っているため重要です。</p>
+<p>また、コアの組み込みUUID型と、外部ライブラリに依存する拡張モジュール（<code>uuid-ossp</code>）のそれぞれで、適切な構造体に適合させるための変換処理を提供しています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/uuid-ossp</code></li>
+<li><code>module:src/backend/utils/adt</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:contrib/uuid-ossp/uuid-ossp.c#string_to_uuid</code></li>
+<li>OSSP UUIDライブラリの <code>uuid_t</code> 構造体へ変換する静的関数。</li>
+<li><code>symbol:src/backend/utils/adt/uuid.c#string_to_uuid</code></li>
+<li>PostgreSQLコアの <code>pg_uuid_t</code> 構造体へ変換する静的関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>SQLクエリのパースからこれら関数が呼び出されるまでの完全なエンドツーエンドの呼び出しフローは、提供されたコンテキストからは明らかになっていません。ただし、各モジュール内での部分的な流れは以下の通りです。</p>
+<ul>
+<li>**コア側 (<code>src/backend/utils/adt/uuid.c</code>)**:</li>
+<p>1. <code>uuid_in</code> などのSQL型変換関数（呼び出し元）から呼び出されます。 2. 入力文字列の先頭に <code>{</code> があるかを確認し、16バイト分（<code>UUID_LEN</code>）のループで2文字ずつ16進数として読み取ります。 3. 特定のバイト位置でハイフン（<code>-</code>）をスキップします。 4. <code>{</code> で開始した場合は末尾に <code>}</code> があることを確認し、余分な文字がないか検証します。 5. 構文エラーが発生した場合は <code>ereturn</code> マクロを介してエラーを報告します。</p>
+</ul>
+<ul>
+<li>**拡張モジュール側 (<code>contrib/uuid-ossp/uuid-ossp.c</code>)**:</li>
+<p>1. モジュール内の関数から呼び出されます。 2. OSSP UUIDライブラリの <code>uuid_import</code> を呼び出し、入力文字列を <code>uuid_t</code> オブジェクトにインポートします。 3. 戻り値が <code>UUID_RC_OK</code> でない場合、<code>pguuid_complain</code> を呼び出してエラーを報告します。</p>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**コア側 (<code>src/backend/utils/adt/uuid.c</code>)**:</li>
+<li>入力文字列 <code>source</code> はヌル終端文字列でなければなりません。</li>
+<li>変換結果は正確に16バイトのデータとして <code>pg_uuid_t</code> に格納されます。</li>
+<li>文字列が <code>{</code> で開始された場合、末尾は必ず <code>}</code> で閉じられていなければなりません。</li>
+<li>ハイフンは特定のバイト位置でのみスキップが許容されます。</li>
+</ul>
+<ul>
+<li>**拡張モジュール側 (<code>contrib/uuid-ossp/uuid-ossp.c</code>)**:</li>
+<li>OSSP UUIDライブラリの <code>uuid_import</code> が成功することを前提とします。失敗した場合は必ず <code>pguuid_complain</code> によるエラー処理（例外送出など）が行われます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**:</li>
+<p><code>src/backend/utils/adt/uuid.c</code> と <code>contrib/uuid-ossp/uuid-ossp.c</code> にある <code>string_to_uuid</code> は、名前は同じですがシグネチャも内部実装も依存するデータ構造（<code>pg_uuid_t</code> vs <code>uuid_t</code>）も異なります。これらは互いに独立した <code>static</code> 関数です。</p>
+<li>**フォーマット違反によるエラー**:</li>
+<p>コア側の実装では、16進数以外の文字が含まれている場合、中括弧 <code>{}</code> が閉じられていない場合、または文字列の末尾に余分な文字が残っている場合に構文エラー（<code>ERRCODE_INVALID_TEXT_REPRESENTATION</code>）となります。</p>
+<li>**ビルド依存性**:</li>
+<p><code>contrib/uuid-ossp</code> 側の関数は、ビルド環境で OSSP UUID ライブラリが有効化されている場合にのみ機能します。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>contrib/uuid-ossp/uuid-ossp.c</code></li>
+<li>OSSP UUID 依存の変換実装および <code>pguuid_complain</code> などのエラー処理。</li>
+<li><code>src/backend/utils/adt/uuid.c</code></li>
+<li>PostgreSQL コアの組み込み UUID 変換実装、および呼び出し元である <code>uuid_in</code> などの関数。</li>
+</ul></body></html>

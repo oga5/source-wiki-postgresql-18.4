@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/sort/tuplesort.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/sort/tuplesort.c</h1>
+<h2>概要</h2>
+<p><code>tuplesort.c</code> は、PostgreSQL における汎用的なソートエンジンの中心モジュールです。メモリ制限（<code>work_mem</code>）内でのクイックソートと、制限を超えた場合の外部マージソートを自動的に切り替えて実行します。並列クエリ実行時には、複数のワーカープロセスが生成したソート済みランをリーダープロセスが統合する機能も提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/sort</code> サブシステムにおけるメインエンジンです。データ型ごとの比較・シリアライズロジック（<code>tuplesortvariants.c</code>）や、低レベルなディスクI/O（<code>logtape.c</code>）を呼び出し、ソートのライフサイクル全体を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ソート状態管理**: <code>Tuplesortstate</code> を通じたソートの全フェーズ（初期化、投入、ソート、取得、終了）の管理。</li>
+<li>**メモリ・ディスクの動的切り替え**: <code>work_mem</code> を基準としたメモリ内ソートから外部ソートへの移行。</li>
+<li>**外部マージソート**: バランス型 k-way マージアルゴリズムによる大規模データセットのソート。</li>
+<li>**並列ソートの調整**: 共有メモリ（<code>Sharedsort</code>）を用いたワーカー間の同期と、リーダーによる最終マージの実行。</li>
+<li>**リソース最適化**: スラブアロケータによるメモリ断片化の抑制と、プリフェッチによるI/O効率化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>Tuplesortstate</code>: ソート処理の全状態を保持する不透明な構造体。</li>
+<li><code>TupSortStatus</code>: ソートの進行状況（<code>TSS_INITIAL</code>, <code>TSS_BUILDRUNS</code>, <code>TSS_FINALMERGE</code> 等）。</li>
+</ul>
+<h3>ライフサイクル・操作</h3>
+<ul>
+<li><code>tuplesort_begin_common()</code>: ソート処理の開始。メモリコンテキストの作成と初期化。</li>
+<li><code>tuplesort_puttuple_common()</code>: タプルの投入。メモリ制限チェックと必要に応じた外部ソートへの移行。</li>
+<li><code>tuplesort_performsort()</code>: ソートの実行（クイックソートまたはマージソートの開始）。</li>
+<li><code>tuplesort_gettuple_common()</code>: ソート済みタプルの取得。</li>
+<li><code>tuplesort_end()</code>: リソースの解放。</li>
+</ul>
+<h3>内部ヘルパー・マクロ</h3>
+<ul>
+<li><code>COMPARETUP</code>, <code>WRITETUP</code>, <code>READTUP</code>: <code>SortSupport</code> を介した抽象化されたタプル操作。</li>
+<li><code>USEMEM</code>, <code>LACKMEM</code>: メモリ使用量の追跡と制限チェック。</li>
+<li><code>IS_SLAB_SLOT</code>, <code>RELEASE_SLAB_SLOT</code>: スラブアロケータによるメモリ再利用。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Sharedsort</code></li>
+<li><code>SlabSlot</code></li>
+<li><code>TupSortStatus</code></li>
+<li><code>Tuplesortstate</code></li>
+<li><code>qsort_tuple_int32_compare</code></li>
+<li><code>qsort_tuple_signed_compare</code></li>
+<li><code>qsort_tuple_unsigned_compare</code></li>
+<li><code>tuplesort_attach_shared</code></li>
+<li><code>tuplesort_begin_common</code></li>
+<li><code>tuplesort_free</code></li>
+<li><code>tuplesort_get_stats</code></li>
+<li><code>tuplesort_reset</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>tuplesort_begin_common</code> でメモリコンテキストと <code>Tuplesortstate</code> を構築。 2. **投入**: <code>tuplesort_puttuple_common</code> がタプルを <code>memtuples</code> 配列に蓄積。<code>work_mem</code> を超えると <code>inittapes</code> を呼び出し、<code>TSS_BUILDRUNS</code> 状態へ移行。 3. **ラン生成**: <code>dumptuples</code> がメモリ内のタプルをクイックソートし、一時ファイル（論理テープ）へ書き出す。 4. **マージ**: <code>mergeruns</code> が各テープの先頭タプルをヒープに保持し、k-way マージを実行。 5. **取得**: <code>tuplesort_gettuple_common</code> がソート済みデータを順次返す。<code>TSS_FINALMERGE</code> 状態では、マージをオンザフライで実行しながらタプルを供給する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/sort_template.h</code>: クイックソートおよびヒープソートのテンプレート実装。</li>
+<li><code>utils/logtape.h</code>: 外部ソート用の一時ファイルI/O管理。</li>
+<li><code>utils/sortsupport.h</code>: 高速な比較ロジックの提供。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pg_trace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/shmem.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/tuplesort.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>tuplesortvariants.c</code>: データ型ごとの具体的な比較・入出力実装。</li>
+<li><code>logtape.c</code>: 物理ファイル上の論理テープ管理。</li>
+<li><code>tuplestore.c</code>: ソート不要な一時格納用モジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>Tuplesortstate</code> は <code>maincontext</code> と <code>sortcontext</code> を持ち、タプルは <code>tuplecontext</code> で管理されます。<code>tuplesort_end</code> 呼び出しによりこれらは一括解放されます。</li>
+<li>**スラブアロケータ**: マージフェーズでは <code>palloc/pfree</code> のオーバーヘッドを避けるため、固定サイズの <code>SlabSlot</code> を再利用します。</li>
+<li>**並列ソート**: リーダープロセスはワーカーの終了を待機し、ワーカーが生成したテープを <code>LogicalTapeImport</code> で取り込んで最終マージを行います。</li>
+<li>**省略**: 本ファイル内の <code>qsort_tuple_*</code> などのテンプレート展開部分は、比較ロジックのインライン化によるパフォーマンス最適化を目的としています。詳細な比較アルゴリズムは <code>sortsupport.c</code> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__SlabSlot.html" target="wiki-view"><code>SlabSlot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__TupSortStatus.html" target="wiki-view"><code>TupSortStatus</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__Tuplesortstate.html" target="wiki-view"><code>Tuplesortstate</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__Sharedsort.html" target="wiki-view"><code>Sharedsort</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__qsort_tuple_unsigned_compare.html" target="wiki-view"><code>qsort_tuple_unsigned_compare</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__qsort_tuple_signed_compare.html" target="wiki-view"><code>qsort_tuple_signed_compare</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__qsort_tuple_int32_compare.html" target="wiki-view"><code>qsort_tuple_int32_compare</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__tuplesort_begin_common.html" target="wiki-view"><code>tuplesort_begin_common</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__tuplesort_free.html" target="wiki-view"><code>tuplesort_free</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__tuplesort_reset.html" target="wiki-view"><code>tuplesort_reset</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__tuplesort_get_stats.html" target="wiki-view"><code>tuplesort_get_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__sort__tuplesort_c__tuplesort_attach_shared.html" target="wiki-view"><code>tuplesort_attach_shared</code></a></li>
+</ul></body></html>

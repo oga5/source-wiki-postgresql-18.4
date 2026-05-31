@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gin/ginutil.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gin/ginutil.c</h1>
+<h2>概要</h2>
+<p><code>ginutil.c</code> は、PostgreSQL の GIN (Generalized Inverted Index) アクセス手法における共通ユーティリティ関数群を提供します。インデックスの初期化、メタページの管理、タプルからのキー抽出、およびインデックス構築時の統計情報更新など、GIN サブシステム全体で利用される低レベルな補助機能を担います。</p>
+<h2>モジュール内での役割</h2>
+<p>GIN モジュールにおける「基盤層」として機能します。他のファイル（<code>gininsert.c</code>, <code>ginget.c</code> など）がインデックスの論理的な操作を行う際、ページレイアウトの初期化や、インデックスキーの正規化・比較といった共通処理を本ファイルに依存しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス初期化**: <code>ginhandler</code> によるアクセスメソッドの登録と、<code>initGinState</code> による実行時状態（<code>GinState</code>）の構築。</li>
+<li>**ページ管理**: 新規バッファの確保 (<code>GinNewBuffer</code>) およびメタページや各ページタイプの初期化。</li>
+<li>**キー操作**: インデックス対象データからのキー抽出 (<code>ginExtractEntries</code>) と、それらのソート・重複排除。</li>
+<li>**統計管理**: メタページを介したインデックス統計情報の読み書き。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ginhandler</code>: GIN インデックスのコールバック関数テーブルを定義するエントリポイント。</li>
+<li><code>initGinState</code>: インデックスの演算クラス（OpClass）情報をキャッシュし、比較や抽出関数を準備する。</li>
+<li><code>GinNewBuffer</code>: FSM (Free Space Map) を利用して空きページを確保する。</li>
+<li><code>ginExtractEntries</code>: ユーザーデータをインデックス可能なキーの配列に変換し、正規化を行う。</li>
+<li><code>GinMetaPageData</code>: GIN インデックスのメタページ構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GinInitBuffer</code></li>
+<li><code>GinInitMetabuffer</code></li>
+<li><code>GinInitPage</code></li>
+<li><code>cmpEntriesArg</code></li>
+<li><code>ginCompareAttEntries</code></li>
+<li><code>ginCompareEntries</code></li>
+<li><code>gintuple_get_attrnum</code></li>
+<li><code>gintuple_get_key</code></li>
+<li><code>keyEntryData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ginhandler</code> が呼び出されると、<code>IndexAmRoutine</code> が構築され、GIN がサポートする操作（挿入、スキャン、バキューム等）が登録されます。 2. **状態構築**: <code>initGinState</code> がインデックスの属性ごとに OpClass のサポート関数（比較、抽出等）を <code>FmgrInfo</code> としてキャッシュし、実行時のオーバーヘッドを削減します。 3. **キー抽出**: <code>ginExtractEntries</code> は、ユーザーから渡された値を OpClass の <code>extractValue</code> 関数で分解し、必要に応じてソートと重複排除を行い、インデックスに格納可能な形式に変換します。 4. **ページ操作**: <code>GinNewBuffer</code> は FSM からブロック番号を取得し、<code>ReadBuffer</code> でピン留めした後に <code>GinInitPage</code> 等でページヘッダーを初期化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GIN 内部のデータ構造とマクロ定義。</li>
+<li><code>access/ginxlog.h</code>: WAL 記録用の構造体。</li>
+<li><code>storage/indexfsm.h</code>: 空き領域管理（FSM）へのアクセス。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュと比較関数の検索。</li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/index_selfuncs.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>gininsert.c</code>: <code>ginExtractEntries</code> を利用してインデックス挿入を行う。</li>
+<li><code>ginget.c</code>: <code>GinState</code> を利用してスキャン時のキー比較を行う。</li>
+<li><code>ginbulk.c</code>: インデックス構築時の統計更新で本ファイルの関数を利用。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>initGinState</code> で割り当てられるデータは <code>CurrentMemoryContext</code> に依存するため、呼び出し元のコンテキストに注意してください。</li>
+<li>**メタページ**: <code>GinInitMetabuffer</code> 内で <code>pd_lower</code> を手動設定しているのは、WAL 圧縮時にメタデータが消失するのを防ぐための重要な実装です。</li>
+<li>**ソート処理**: <code>ginExtractEntries</code> 内の <code>qsort_arg</code> は、キー数が多い場合にボトルネックとなる可能性があります。小規模なキーセットに対しては最適化の余地がある箇所です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__ginhandler.html" target="wiki-view"><code>ginhandler</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__initGinState.html" target="wiki-view"><code>initGinState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__gintuple_get_attrnum.html" target="wiki-view"><code>gintuple_get_attrnum</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__gintuple_get_key.html" target="wiki-view"><code>gintuple_get_key</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__GinNewBuffer.html" target="wiki-view"><code>GinNewBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__GinInitPage.html" target="wiki-view"><code>GinInitPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__GinInitBuffer.html" target="wiki-view"><code>GinInitBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__GinInitMetabuffer.html" target="wiki-view"><code>GinInitMetabuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__ginCompareEntries.html" target="wiki-view"><code>ginCompareEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__ginCompareAttEntries.html" target="wiki-view"><code>ginCompareAttEntries</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__keyEntryData.html" target="wiki-view"><code>keyEntryData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gin__ginutil_c__cmpEntriesArg.html" target="wiki-view"><code>cmpEntriesArg</code></a></li>
+</ul></body></html>

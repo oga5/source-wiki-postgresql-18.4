@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeTidscan_c__TidListEval.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TidListEval</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeTidscan.c:133</code></li>
+</ul>
+<h2>目的</h2>
+<p>クエリ内の <code>ctid</code> 関連式（<code>OpExpr</code>, <code>ScalarArrayOpExpr</code>, <code>CurrentOfExpr</code>）を評価し、スキャン対象となる物理的な <code>ItemPointer</code>（TID）のリストを構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void TidListEval(TidScanState *tidstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>TidScanState *tidstate</code>（スキャン状態および式リストを保持する構造体）</li>
+<li>**出力**: なし（副作用として <code>tidstate</code> 内の <code>tss_TidList</code>, <code>tss_NumTids</code>, <code>tss_TidPtr</code> を更新する）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tidstate-&gt;tss_tidexprs</code> に有効な式リストが格納されていること。</li>
+<li><code>table_beginscan_tid</code> が未実行の場合、本関数内で実行され <code>ss_currentScanDesc</code> が初期化される。</li>
+<li><code>CurrentOfExpr</code> が含まれる場合、他の式との OR 条件は存在しないこと（アサーションにより保証）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **スキャン開始**: <code>ss_currentScanDesc</code> が未初期化であれば、<code>table_beginscan_tid</code> を呼び出し遅延初期化を行う。 2. **TID 抽出**: <code>tss_tidexprs</code> を走査し、各式の型に応じて以下を実行する。</p>
+<ul>
+<li>**単一値**: <code>ExecEvalExprSwitchContext</code> で評価し、<code>table_tuple_tid_valid</code> で有効性を確認してリストに追加。</li>
+<li>**配列**: <code>deconstruct_array_builtin</code> で展開し、各要素の有効性を確認してリストに追加。</li>
+<li>**CurrentOf**: <code>execCurrentOf</code> を呼び出し、カーソルに関連付けられた TID を取得。</li>
+<p>3. **動的拡張**: リストの容量が不足した場合は <code>repalloc</code> で領域を拡張する。 4. **後処理**:</p>
+<li><code>numTids &gt; 1</code> の場合、<code>qsort</code> と <code>qunique</code> を用いて TID をソートし、重複を除去する（OR 演算の正当性と効率的な I/O を保証）。</li>
+<li>結果を <code>tidstate</code> に格納し、スキャンポインタ <code>tss_TidPtr</code> を <code>-1</code> に初期化する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeTidscan.c</code> 内の <code>TidNext</code>（初回実行時）。</li>
+<li>**呼び出し先**: <code>table_beginscan_tid</code>, <code>ExecEvalExprSwitchContext</code>, <code>table_tuple_tid_valid</code>, <code>deconstruct_array_builtin</code>, <code>execCurrentOf</code>, <code>qsort</code>, <code>qunique</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>TidScanState</code>: スキャン状態を保持するメイン構造体。</li>
+<li><code>TidExpr</code>: 評価対象の式を保持する構造体。</li>
+<li><code>ItemPointerData</code>: 物理的なタプル位置を示すデータ構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**無効な TID**: <code>table_tuple_tid_valid</code> が偽を返す TID は無視される。</li>
+<li>**NULL 値**: 式の評価結果が NULL の場合はスキップされる。</li>
+<li>**空の結果**: 抽出された TID が存在しない場合、<code>tss_NumTids</code> は 0 となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は初回実行時にのみ呼び出される遅延評価の仕組みをとっている。</li>
+<li>TID リストのソートは、物理的なブロック順序でのアクセスを促し、I/O 効率を向上させるために重要である。</li>
+<li><code>CurrentOfExpr</code> は他の式と混在できない仕様であるため、変更を加える際は注意が必要。</li>
+</ul></body></html>

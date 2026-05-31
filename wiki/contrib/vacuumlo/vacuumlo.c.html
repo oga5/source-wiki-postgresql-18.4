@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/vacuumlo/vacuumlo.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/vacuumlo/vacuumlo.c</h1>
+<h2>概要</h2>
+<p><code>vacuumlo.c</code> は、PostgreSQL データベース内に存在する「孤立したラージオブジェクト（LO）」を特定し、削除するためのコマンドラインユーティリティです。データベース内のどのテーブルからも参照されていない LO を検出し、クリーンアップを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/vacuumlo</code> モジュールの唯一のソースファイルであり、クライアントサイドの実行バイナリ <code>vacuumlo</code> を構成します。libpq を利用してデータベースサーバーと通信し、SQL を介してオブジェクトの参照関係を解析します。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続管理**: 指定されたデータベースへの接続と認証（パスワードプロンプト対応）。</li>
+<li>**孤立 LO の特定**: </li>
+<li>一時テーブル <code>vacuum_l</code> を作成し、全 LO の OID を格納。</li>
+<li>データベース内の全テーブルを走査し、<code>oid</code> または <code>lo</code> 型の列を持つテーブルを特定。</li>
+<li>参照されている LO を一時テーブルから削除し、残ったものを「孤立」と判定。</li>
+<li>**安全な削除**: トランザクション単位で <code>lo_unlink</code> を実行し、指定された制限数ごとにコミットを行うことで、ロックテーブルの枯渇を防ぐ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>vacuumlo()</code>: データベースごとの処理を実行するメイン関数。</li>
+<li><code>struct _param</code>: 実行オプション（ホスト、ポート、ユーザー、トランザクション制限など）を保持する構造体。</li>
+<li><code>main()</code>: コマンドライン引数の解析と、対象データベースごとの <code>vacuumlo()</code> 呼び出しを制御。</li>
+<li><code>BUFSIZE</code>: SQL 文構築用のバッファサイズ（1024）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>_param</code></li>
+<li><code>main</code></li>
+<li><code>trivalue</code></li>
+<li><code>usage</code></li>
+<li><code>vacuumlo</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>main</code> が引数を解析し、<code>_param</code> を設定。 2. **接続**: <code>vacuumlo</code> が <code>PQconnectdbParams</code> で接続を確立。 3. **一時テーブル作成**: <code>pg_largeobject_metadata</code>（または <code>pg_largeobject</code>）から全 LO を取得し、<code>vacuum_l</code> に格納。 4. **参照チェック**: <code>pg_class</code> 等をクエリし、<code>oid</code>/<code>lo</code> 型の列を持つ全テーブルを特定。各テーブルに対して <code>DELETE FROM vacuum_l WHERE lo IN (...)</code> を実行し、参照されている LO を一時テーブルから除外。 5. **削除実行**: 残った LO をカーソルでフェッチし、<code>lo_unlink</code> で削除。<code>transaction_limit</code> に達するごとに <code>COMMIT</code>/<code>BEGIN</code> を繰り返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>: データベース接続および SQL 実行用。</li>
+<li><code>getopt_long.h</code> / <code>pg_getopt.h</code>: コマンドライン引数解析用。</li>
+<li><code>common/logging.h</code>: 標準的なログ出力用。</li>
+<li><code>catalog/pg_class_d.h</code>: システムカタログ定義。</li>
+<li><code>common/connect.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>termios.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/large_object/</code>: サーバーサイドのラージオブジェクト管理機能。</li>
+<li><code>src/interfaces/libpq/</code>: データベース接続および通信プロトコル。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**トランザクション制限**: <code>transaction_limit</code> はデフォルトで 1000 です。これは一度のトランザクションで大量のロックを保持し、共有メモリのロックテーブルを溢れさせないための重要な安全策です。</li>
+<li>**システムテーブルの除外**: 参照チェックの際、<code>pg_</code> で始まるスキーマは無視されます。これにより、システムカタログや一時テーブル自体が誤って解析対象になることを防いでいます。</li>
+<li>**ドライラン**: <code>-n</code> オプションを使用すると、実際の削除を行わずに削除対象の LO 数を確認できます。本番環境で実行する前に推奨されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__vacuumlo__vacuumlo_c__trivalue.html" target="wiki-view"><code>trivalue</code></a></li>
+<li><a href="../../symbols/contrib__vacuumlo__vacuumlo_c___param.html" target="wiki-view"><code>_param</code></a></li>
+<li><a href="../../symbols/contrib__vacuumlo__vacuumlo_c__vacuumlo.html" target="wiki-view"><code>vacuumlo</code></a></li>
+<li><a href="../../symbols/contrib__vacuumlo__vacuumlo_c__usage.html" target="wiki-view"><code>usage</code></a></li>
+<li><a href="../../symbols/contrib__vacuumlo__vacuumlo_c__main.html" target="wiki-view"><code>main</code></a></li>
+</ul></body></html>

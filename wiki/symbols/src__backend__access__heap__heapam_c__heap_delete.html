@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__heap__heapam_c__heap_delete.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>heap_delete</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/heap/heapam.c:2772</code></li>
+</ul>
+<h2>目的</h2>
+<p>ヒープテーブル内の指定されたタプルを論理的に削除する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TM_Result heap_delete(Relation relation, ItemPointer tid, CommandId cid, 
+                      Snapshot crosscheck, bool wait, TM_FailureData *tmfd, 
+                      bool changingPart)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relation</code>: 対象のテーブルリレーション。</li>
+<li><code>tid</code>: 削除対象タプルの物理位置（TID）。</li>
+<li><code>cid</code>: 現在のコマンドID。</li>
+<li><code>crosscheck</code>: 可視性チェック用のスナップショット。</li>
+<li><code>wait</code>: 他のトランザクションによるロック競合時に待機するかどうか。</li>
+<li><code>tmfd</code>: 失敗時の詳細情報を格納する構造体。</li>
+<li><code>changingPart</code>: パーティション変更中かどうかのフラグ。</li>
+<li>**出力**:</li>
+<li><code>TM_Result</code>: 削除操作の結果（成功、不可視、競合など）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>tid</code> は有効であること。</li>
+<li>TOAST 処理のために適切なスナップショットが利用可能であること。</li>
+<li>並列モード（Parallel Mode）実行中ではないこと。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 対象タプルを含むページをバッファに読み込み、排他ロックを取得する。 2. ページが「全可視（All-Visible）」であれば、可視性マップ（VM）をピン留めする。 3. <code>HeapTupleSatisfiesUpdate</code> を呼び出し、タプルの可視性と更新可能性を判定する。 4. タプルが他トランザクションによってロックされている場合（<code>TM_BeingModified</code>）:</p>
+<ul>
+<li><code>wait</code> が真であれば、<code>heap_acquire_tuplock</code> でタプルロックを取得し、競合するトランザクションの終了を待機する。</li>
+<li>待機後、タプルの状態が変化した可能性があるため、必要に応じて再試行（<code>goto l1</code>）を行う。</li>
+<p>5. 削除対象が不可視である場合はエラーを報告する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/heap/heapam_handler.c</code>: <code>heap_delete</code> インターフェース経由。</li>
+<li><code>src/backend/access/heap/heapam.c</code>: 内部的な再帰的呼び出しや関連処理。</li>
+<li>**呼び出し先**:</li>
+<li><code>HeapTupleSatisfiesUpdate</code>, <code>LockBuffer</code>, <code>visibilitymap_pin</code>, <code>heap_acquire_tuplock</code>, <code>MultiXactIdWait</code>, <code>XactLockTableWait</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Relation</code>: テーブル定義。</li>
+<li><code>ItemPointer</code>: タプルの物理位置。</li>
+<li><code>TM_Result</code>: 操作結果の列挙型。</li>
+<li><code>Buffer</code>: ページバッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**並列モードエラー**: 並列操作中に呼び出された場合、<code>ERRCODE_INVALID_TRANSACTION_STATE</code> でエラー。</li>
+<li>**不可視タプル**: 削除対象が現在のスナップショットから不可視の場合、<code>ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE</code> でエラー。</li>
+<li>**競合**: 他のトランザクションがタプルをロックしている場合、<code>wait</code> が偽であれば競合を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>START_CRIT_SECTION()</code> を含むクリティカルセクションの開始前段階のロジックを含みます。</li>
+<li><code>goto l1</code> による再試行ループは、バッファロックの解放と再取得を伴うため、デッドロックや競合状態の回避において重要です。</li>
+<li>ページが「全可視」から変化した場合の再試行ロジックは、I/O をまたいだロック保持を避けるための設計です。</li>
+</ul></body></html>

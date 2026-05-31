@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__walsender_c__CreateReplicationSlot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CreateReplicationSlot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/replication/walsender.c:1190</code></li>
+</ul>
+<h2>目的</h2>
+<p>クライアントからのリクエストに基づき、物理または論理レプリケーションスロットを作成し、必要に応じてスロット情報の永続化やスナップショットの生成・エクスポートを行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void CreateReplicationSlot(CreateReplicationSlotCmd *cmd);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>CreateReplicationSlotCmd *cmd</code>（スロット名、プラグイン名、一時的フラグ、スナップショット操作等の設定を含む構造体）。</li>
+<li>**出力**: なし（関数内で <code>DestRemoteSimple</code> を用いて結果をクライアントへ送信する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>MyReplicationSlot</code> が <code>NULL</code> であること（既にスロットを保持していないこと）。</li>
+<li>論理レプリケーションの場合、<code>CheckLogicalDecodingRequirements()</code> を満たすこと。</li>
+<li>スナップショット操作（<code>CRS_USE_SNAPSHOT</code>）を行う場合、トランザクションブロック内であること、<code>REPEATABLE READ</code> 隔離レベルであること、読み取り専用トランザクションであること、クエリ実行前であること、サブトランザクションでないことが必須。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **オプション解析**: <code>parseCreateReplSlotOptions</code> でコマンド引数を解析。 2. **物理スロット作成**: <code>ReplicationSlotCreate</code> を呼び出し、必要に応じて <code>ReplicationSlotReserveWal</code> で WAL を予約し、ディスクへ保存。 3. **論理スロット作成**:</p>
+<ul>
+<li><code>ReplicationSlotCreate</code> で一時的またはエフェメラルなスロットを作成。</li>
+<li><code>CreateInitDecodingContext</code> でデコーディングコンテキストを初期化。</li>
+<li><code>DecodingContextFindStartpoint</code> で開始地点を特定。</li>
+<li>スナップショット操作（エクスポートまたは使用）を実行。</li>
+<li><code>FreeDecodingContext</code> でコンテキストを解放し、永続スロットの場合は <code>ReplicationSlotPersist</code> で保存。</li>
+<p>4. **結果送信**: 作成されたスロット名、整合性ポイント（LSN）、スナップショット名、プラグイン名を含むタプルを構築し、<code>DestRemoteSimple</code> を介してクライアントへ送信。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/walsender.c</code> 内のコマンドディスパッチャ（<code>exec_replication_command</code> 等）から呼び出される。</li>
+<li>**呼び出し先**: <code>ReplicationSlotCreate</code>, <code>ReplicationSlotReserveWal</code>, <code>CreateInitDecodingContext</code>, <code>DecodingContextFindStartpoint</code>, <code>SnapBuildExportSnapshot</code>, <code>SnapBuildInitialSnapshot</code>, <code>RestoreTransactionSnapshot</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>CreateReplicationSlotCmd</code>: コマンド引数。</li>
+<li><code>ReplicationSlot</code>: 共有メモリ上のスロット状態。</li>
+<li><code>LogicalDecodingContext</code>: 論理デコード用コンテキスト。</li>
+<li><code>TupleDesc</code>: 送信データの構造定義。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>トランザクション状態の不整合（<code>SNAPSHOT &#x27;use&#x27;</code> 時の制約違反）により <code>ereport(ERROR)</code> が発生する。</li>
+<li>スロット名が重複している場合や、論理デコードの前提条件を満たさない場合にエラーとなる。</li>
+<li>一時的スロットはエラー発生時に自動的に破棄される設計となっている。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は物理と論理の両方のスロット作成を担うため、条件分岐が複雑である。</li>
+<li>論理レプリケーションの初期化プロセス（<code>DecodingContextFindStartpoint</code>）は時間がかかる可能性があるため、タイムアウト処理の無効化（<code>last_reply_timestamp = 0</code>）が行われている点に注意。</li>
+<li><code>pg_basebackup</code> 等の外部ツールから呼び出される <code>CreateReplicationSlot</code>（<code>src/bin/pg_basebackup/streamutil.c</code> 等）とは別の関数であることに留意すること。</li>
+</ul></body></html>

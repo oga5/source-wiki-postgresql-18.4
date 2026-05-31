@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeHash_c__MultiExecParallelHash.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MultiExecParallelHash</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeHash.c:218</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ハッシュ結合におけるハッシュテーブル構築フェーズを、複数のバックエンド間で同期・協調して実行する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void MultiExecParallelHash(HashState *node)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>HashState *node</code>（ハッシュ結合の実行状態を保持するノード構造体）。</li>
+<li>**出力**: なし（副作用として共有メモリ上のハッシュテーブル構築およびディスクへのバッチ書き出しを行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>hashtable</code> が初期化済みであること。</li>
+<li><code>Barrier</code>（<code>build_barrier</code>）の状態に基づき、各ワーカーが現在の構築フェーズを正しく認識していること。</li>
+<li><code>PHJ_BUILD_ALLOCATE</code> フェーズ以降で呼び出されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **同期**: <code>build_barrier</code> を使用して、全ワーカーがハッシュテーブル構築の各段階（メモリ確保、ハッシュ計算、バッチ処理）で同期する。 2. **動的拡張**: 必要に応じて <code>ExecParallelHashIncreaseNumBatches</code> および <code>ExecParallelHashIncreaseNumBuckets</code> を呼び出し、バッチ数やバケット数を動的に拡張する。 3. **タプル挿入**: 子ノードからタプルを取得し、ハッシュ値を計算して共有ハッシュテーブルへ挿入する。メモリ制限を超過したタプルはバッチファイルへ書き出す。 4. **終了処理**: 全ワーカーがタプル処理を完了した後、共有カウンタをマージし、バッチファイルを閉じる。 5. **状態固定**: 最終的に <code>pstate-&gt;growth</code> を <code>PHJ_GROWTH_DISABLED</code> に設定し、バッチ構成を固定する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: ソースコード内の明示的な呼び出し元は提供されていません。</li>
+<li>**呼び出し先**:</li>
+<li><code>BarrierArriveAndWait</code>, <code>BarrierAttach</code>, <code>BarrierDetach</code></li>
+<li><code>ExecParallelHashIncreaseNumBatches</code>, <code>ExecParallelHashIncreaseNumBuckets</code></li>
+<li><code>ExecParallelHashEnsureBatchAccessors</code>, <code>ExecParallelHashTableInsert</code>, <code>ExecParallelHashMergeCounters</code></li>
+<li><code>ExecProcNode</code>, <code>ExecEvalExprSwitchContext</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>HashState</code>: 実行ノードの状態。</li>
+<li><code>HashJoinTable</code>: ハッシュ結合の全状態を保持する主要構造体。</li>
+<li><code>ParallelHashJoinState</code>: 並列処理用の共有状態。</li>
+<li><code>Barrier</code>: 並列実行の同期プリミティブ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メモリ不足**: <code>work_mem</code> を超える場合、バッチ数を増やしてディスクへスピルする。</li>
+<li>**スキュー**: 頻出値によるスキューが発生した場合、バッチ処理の効率が低下する可能性がある。</li>
+<li>**同期待ち**: 他のワーカーが処理を完了するまで <code>BarrierArriveAndWait</code> で待機するため、ワーカー間の処理負荷の偏りが全体の待機時間となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は並列処理の核心部であり、<code>Barrier</code> のフェーズ遷移が非常に重要です。</li>
+<li><code>nbatch &gt; 1</code> の場合、<code>BufFile</code> を介したディスクI/Oが発生するため、パフォーマンス監視の対象としてください。</li>
+<li><code>ExecParallelHashIncreaseNumBatches</code> が呼び出されると、既存タプルの再パーティショニングが発生し、実行コストが急増します。</li>
+</ul></body></html>

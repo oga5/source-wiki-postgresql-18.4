@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeBitmapHeapscan_c__BitmapShouldInitializeSharedState.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>BitmapShouldInitializeSharedState</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeBitmapHeapscan.c:419</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列ビットマップヒープスキャンにおいて、共有状態の初期化が必要かどうかを判定し、必要に応じて初期化プロセスを同期させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool BitmapShouldInitializeSharedState(ParallelBitmapHeapState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ParallelBitmapHeapState *pstate</code>（並列実行時の共有状態構造体）</li>
+<li>**出力**: <code>bool</code> 型。呼び出し元が共有状態の初期化を担当すべき場合は <code>true</code>、それ以外（既に初期化済み、または他プロセスが初期化中）の場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は有効な共有メモリ上の構造体を指していること。</li>
+<li><code>pstate-&gt;mutex</code> を用いた排他制御により、<code>pstate-&gt;state</code> の遷移が保護されていること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. 無限ループ内で <code>pstate-&gt;mutex</code> を取得し、現在の <code>pstate-&gt;state</code> を確認する。 2. 状態が <code>BM_INITIAL</code> であれば、<code>BM_INPROGRESS</code> に更新してループを抜け、<code>true</code> を返す（初期化担当の確定）。 3. 状態が <code>BM_INPROGRESS</code> の場合、<code>ConditionVariableSleep</code> を呼び出し、リーダープロセスによる状態更新を待機する。 4. 状態がそれ以外（初期化完了など）であればループを抜け、<code>false</code> を返す。 5. ループ終了後、<code>ConditionVariableCancelSleep</code> を呼び出して待機状態を解除する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/nodeBitmapHeapscan.c</code> 内の並列スキャン実行ロジック（<code>BitmapTableScanSetup</code> 等からの参照が確認されている）。</li>
+<li>**呼び出し先**: <code>SpinLockAcquire</code>, <code>SpinLockRelease</code>, <code>ConditionVariableSleep</code>, <code>ConditionVariableCancelSleep</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelBitmapHeapState</code>: 並列ビットマップスキャンの共有状態を保持する構造体。</li>
+<li><code>SharedBitmapState</code>: <code>BM_INITIAL</code> や <code>BM_INPROGRESS</code> などの状態値を定義する列挙型。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>共有メモリの競合が発生した場合、<code>ConditionVariable</code> による待機が発生し、デッドロックを避けるために適切なリーダープロセスの進行が前提となる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は並列ワーカー間の同期の要です。<code>ConditionVariable</code> の使用箇所であるため、待機イベント <code>WAIT_EVENT_PARALLEL_BITMAP_SCAN</code> の発生状況を監視する際は注意してください。</li>
+</ul></body></html>

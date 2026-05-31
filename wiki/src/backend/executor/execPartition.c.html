@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execPartition.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execPartition.c</h1>
+<h2>概要</h2>
+<p>パーティションテーブルに対するデータ操作（INSERT/UPDATE/MERGE）時の「タプルルーティング」と、クエリ実行時の「実行時パーティションプルーニング」をサポートするモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> の一部として、パーティション化されたテーブルへのアクセスを抽象化します。プランナーが生成した計画に基づき、実行時に適切なパーティションを特定し、必要に応じてタプルの変換や制約チェックを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプルルーティング**: 挿入対象のタプルがどのパーティションに属するかを特定し、必要に応じて <code>ResultRelInfo</code> をオンデマンドで初期化・管理する。</li>
+<li>**実行時プルーニング**: クエリ実行中にパラメータ値が確定した際、不要なパーティション（サブプラン）を動的に除外する。</li>
+<li>**メタデータ管理**: パーティション階層の探索、属性マッピング（親テーブルとパーティション間の型変換）、および制約チェックの実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>PartitionTupleRouting</code>: ルーティングに必要な情報を保持するメイン構造体。</li>
+<li><code>PartitionDispatchData</code>: パーティション階層の各レベルにおけるルーティング情報を保持。</li>
+<li><code>ExecSetupPartitionTupleRouting</code>: ルーティング環境の初期化。</li>
+<li><code>ExecFindPartition</code>: タプルから適切なパーティション（<code>ResultRelInfo</code>）を特定する中心的な関数。</li>
+<li><code>ExecDoInitialPruning</code>: 実行開始時に不要なパーティションを特定する。</li>
+<li><code>ExecFindMatchingSubPlans</code>: 実行時にパラメータに基づいて有効なサブプランを特定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreatePartitionPruneState</code></li>
+<li><code>ExecInitPartitionDispatchInfo</code></li>
+<li><code>ExecInitPartitionExecPruning</code></li>
+<li><code>ExecInitPartitionInfo</code></li>
+<li><code>ExecInitRoutingInfo</code></li>
+<li><code>InitExecPartitionPruneContexts</code></li>
+<li><code>InitPartitionPruneContext</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ルーティング**: <code>ExecFindPartition</code> が呼ばれると、<code>PartitionDispatch</code> を辿りながらパーティションキーを抽出し、<code>get_partition_for_tuple</code> で対象パーティションを特定します。未初期化のパーティションであれば <code>ExecInitPartitionInfo</code> で <code>ResultRelInfo</code> を生成します。 2. **プルーニング**: <code>ExecDoInitialPruning</code> が実行開始時に呼ばれ、<code>PartitionPruneState</code> を作成します。その後、パラメータが変化するたびに <code>ExecFindMatchingSubPlans</code> が再帰的に呼ばれ、有効なサブプランのビットマップを更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/tableam.h</code>, <code>catalog/partition.h</code>: テーブルアクセスおよびカタログ情報。</li>
+<li><code>partitioning/partprune.h</code>, <code>partitioning/partbounds.h</code>: プルーニングロジックと境界情報の管理。</li>
+<li><code>executor/nodeModifyTable.h</code>: <code>ModifyTableState</code> への依存。</li>
+<li><code>utils/partcache.h</code>: リレーションキャッシュからのパーティション情報取得。</li>
+<li><code>access/table.h</code></li>
+<li><code>executor/execPartition.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rls.h</code></li>
+<li><code>utils/ruleutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/execPartition.h</code>: 公開インターフェースとデータ構造の定義。</li>
+<li><code>src/backend/partitioning/</code>: パーティションの境界計算や記述子作成のロジック。</li>
+<li><code>src/backend/executor/nodeModifyTable.c</code>: ルーティング結果を利用して実際に挿入を行うノード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**オンデマンド初期化**: <code>ResultRelInfo</code> はルーティング時に初めて必要になった時点で生成されます。これは大量のパーティションを持つテーブルでのオーバーヘッドを抑えるためです。</li>
+<li>**キャッシュ**: <code>get_partition_for_tuple</code> には <code>PARTITION_CACHED_FIND_THRESHOLD</code> を用いたキャッシュ機構があり、連続するタプルが同じパーティションに属する場合の探索を高速化します。</li>
+<li>**再帰的構造**: パーティションがさらにパーティション化されている（サブパーティション）場合、<code>PartitionDispatch</code> が再帰的にリンクされ、階層を降りて探索します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__PartitionTupleRouting.html" target="wiki-view"><code>PartitionTupleRouting</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__PartitionDispatchData.html" target="wiki-view"><code>PartitionDispatchData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecSetupPartitionTupleRouting.html" target="wiki-view"><code>ExecSetupPartitionTupleRouting</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecFindPartition.html" target="wiki-view"><code>ExecFindPartition</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionInfo.html" target="wiki-view"><code>ExecInitPartitionInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitRoutingInfo.html" target="wiki-view"><code>ExecInitRoutingInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionDispatchInfo.html" target="wiki-view"><code>ExecInitPartitionDispatchInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecDoInitialPruning.html" target="wiki-view"><code>ExecDoInitialPruning</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionExecPruning.html" target="wiki-view"><code>ExecInitPartitionExecPruning</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__CreatePartitionPruneState.html" target="wiki-view"><code>CreatePartitionPruneState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__InitPartitionPruneContext.html" target="wiki-view"><code>InitPartitionPruneContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__InitExecPartitionPruneContexts.html" target="wiki-view"><code>InitExecPartitionPruneContexts</code></a></li>
+</ul></body></html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__common__toast_internals_c__toast_delete_datum.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>toast_delete_datum</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: 関数</li>
+<li>**定義箇所**: <code>src/backend/access/common/toast_internals.c:384</code></li>
+</ul>
+<h2>目的</h2>
+<p>外部ストレージ（TOASTテーブル）に保存されている巨大な属性値（チャンク）を、指定された <code>valueid</code> に基づいて物理的に削除する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void toast_delete_datum(Relation rel, Datum value, bool is_speculative)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 親テーブルのリレーション（TOASTテーブルの特定に使用）。</li>
+<li><code>value</code>: 削除対象のデータ（<code>varlena</code> 形式の外部ポインタを含む）。</li>
+<li><code>is_speculative</code>: 推測的挿入（speculative insertion）の成否に関連するフラグ。</li>
+<li>**出力**: なし（副作用としてTOASTテーブルからレコードが削除される）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>value</code> が <code>VARATT_IS_EXTERNAL_ONDISK</code> であること。外部ディスク上に存在しないデータの場合、本関数は何もせず即座に復帰する。</li>
+<li>トランザクション内で呼び出されること（<code>get_toast_snapshot()</code> が有効なスナップショットを返す必要がある）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>value</code> から <code>va_toastrelid</code> および <code>va_valueid</code> を抽出する。 2. <code>table_open</code> で対象のTOASTテーブルを <code>RowExclusiveLock</code> で開く。 3. <code>toast_open_indexes</code> を使用して、TOASTテーブルのインデックス群を特定・オープンする。 4. <code>ScanKeyInit</code> で <code>va_valueid</code> をキーとして設定する。 5. <code>systable_beginscan_ordered</code> を用いて、該当する全チャンクをスキャンする。 6. スキャンで見つかった各タプルに対し、<code>is_speculative</code> が真であれば <code>heap_abort_speculative</code> を、偽であれば <code>simple_heap_delete</code> を実行して削除する。 7. スキャンを終了し、インデックスおよびTOASTテーブルをクローズする（ロックはトランザクション終了まで保持される）。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/access/table/toast_helper.c</code> (複数箇所)</li>
+<li>**呼び出し先**:</li>
+<li><code>table_open</code>, <code>table_close</code></li>
+<li><code>toast_open_indexes</code>, <code>toast_close_indexes</code></li>
+<li><code>ScanKeyInit</code></li>
+<li><code>systable_beginscan_ordered</code>, <code>systable_getnext_ordered</code>, <code>systable_endscan_ordered</code></li>
+<li><code>get_toast_snapshot</code></li>
+<li><code>heap_abort_speculative</code> または <code>simple_heap_delete</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>varatt_external</code>: 外部保存されたデータのポインタ構造体。</li>
+<li><code>Relation</code>: テーブルおよびインデックスの管理構造体。</li>
+<li><code>SysScanDesc</code>: システムテーブルスキャンの状態管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>外部ディスク上に存在しないデータが渡された場合、処理はスキップされる。</li>
+<li>ロック取得やスキャン中にエラーが発生した場合、トランザクションの異常終了に伴いロールバックされる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はTOASTテーブルの物理的な削除を担うため、インデックスの整合性を維持するために <code>toast_open_indexes</code> で取得した有効なインデックスを使用している。</li>
+<li>削除後もロックを保持することで、同時実行される <code>REINDEX</code> 等の操作との競合を制御している。</li>
+</ul></body></html>

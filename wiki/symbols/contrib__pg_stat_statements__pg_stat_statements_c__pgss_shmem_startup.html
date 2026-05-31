@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_shmem_startup.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgss_shmem_startup</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pg_stat_statements/pg_stat_statements.c:510</code></li>
+</ul>
+<h2>目的</h2>
+<p>共有メモリの初期化、ハッシュテーブルの作成、およびサーバー起動時の統計情報の永続ファイルからの読み込みを行う。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void pgss_shmem_startup(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>入力: なし（グローバル変数 <code>pgss_max</code> 等を参照）</li>
+<li>出力: なし（共有メモリ上の <code>pgss</code> および <code>pgss_hash</code> を初期化）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>AddinShmemInitLock</code> を介した排他制御下で実行される。</li>
+<li>共有メモリの初期化は、他のプロセスが稼働していないタイミングで行われることを前提としている。</li>
+<li><code>pgss_save</code> が真の場合、<code>PGSS_DUMP_FILE</code> から統計を読み込む。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **フックの連鎖**: <code>prev_shmem_startup_hook</code> が存在する場合は実行する。 2. **共有メモリ確保**: <code>pgssSharedState</code> 構造体を共有メモリ上に確保し、初回起動時のみ初期値（ロック、統計リセット時刻等）を設定する。 3. **ハッシュテーブル作成**: <code>pgss_hash</code> を初期化する。 4. **終了フック登録**: ポストマスター配下でない場合、終了時に <code>pgss_shmem_shutdown</code> が呼ばれるよう登録する。 5. **統計復元**:</p>
+<ul>
+<li>既に初期化済み（<code>found</code> が真）であれば終了する。</li>
+<li><code>PGSS_TEXT_FILE</code> を初期化し、<code>PGSS_DUMP_FILE</code> が存在すれば内容を読み込む。</li>
+<li>ファイルから読み取った各エントリを <code>entry_alloc</code> でハッシュテーブルに再構築し、カウンタ情報を復元する。</li>
+<li>最後にグローバル統計を読み込み、一時ファイルを閉じる。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>shmem_startup_hook</code> に登録され、PostgreSQL の起動プロセスから呼び出される。</li>
+<li>呼び出し先: <code>prev_shmem_startup_hook</code>, <code>ShmemInitStruct</code>, <code>ShmemInitHash</code>, <code>on_shmem_exit</code>, <code>AllocateFile</code>, <code>entry_alloc</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgssSharedState</code>: 共有メモリ上のグローバル状態管理構造体。</li>
+<li><code>pgssHashKey</code>: ハッシュテーブルのキー。</li>
+<li><code>pgssEntry</code>: ハッシュテーブルの各エントリ。</li>
+<li><code>pgssGlobalStats</code>: 全体統計情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>AllocateFile</code> が失敗した場合、エラー処理へ遷移する。</li>
+<li>ファイルヘッダーやバージョンが一致しない場合、データ破損とみなしてエラー処理へ遷移する。</li>
+<li><code>PG_VALID_BE_ENCODING</code> チェックに失敗した場合、データエラーとして処理される。</li>
+<li><code>pgss_save</code> が偽の場合、統計の読み込みをスキップする。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_stat_statements</code> のライフサイクルの起点となる。</li>
+<li><code>PGSS_DUMP_FILE</code> の読み込み処理において、<code>buffer</code> の動的リサイズ（<code>repalloc</code>）が行われるため、メモリ管理に注意すること。</li>
+<li>読み込み時に <code>IS_STICKY</code> なエントリはスキップされる仕様となっている。</li>
+</ul></body></html>

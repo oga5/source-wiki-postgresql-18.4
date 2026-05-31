@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/wait-on-slots.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>wait_on_slots</h1>
+<h2>概念</h2>
+<p><code>wait_on_slots</code> は、PostgreSQL のクライアントツールおよびユーティリティにおいて、複数のデータベース接続（スロット）を非同期に監視し、I/O 準備が整った接続を特定して処理を進めるための内部待機ループ関数です。</p>
+<p>この関数は、役割や対象とするデータ構造が異なる2つのモジュールでそれぞれ同名の <code>static</code> 関数として実装されています。 1. **<code>pg_upgrade</code> のタスク管理用** (<code>src/bin/pg_upgrade/task.c</code>) 2. **フロントエンド共通ユーティリティの並列スロット管理用** (<code>src/fe_utils/parallel_slot.c</code>)</p>
+<h2>なぜ重要か</h2>
+<p>複数のデータベース接続を並行して処理する際、ブロッキング I/O による遅延を避け、効率的に処理を進行させる必要があります。<code>wait_on_slots</code> は、<code>select()</code>（または内部の <code>select_loop</code>）を用いた I/O 多重化により、準備が整ったソケットからのみデータを読み書き・処理することで、シングルスレッド環境下でも効率的な非同期・並行処理を実現するために重要な役割を果たしています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/bin/pg_upgrade</code></li>
+<li><code>module:src/fe_utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/bin/pg_upgrade/task.c#wait_on_slots</code>**</li>
+<p><code>UpgradeTaskSlot</code> 配列を監視し、準備が整ったスロットの <code>ready</code> フラグを <code>true</code> に更新する静的関数。</p>
+<li>**<code>symbol:src/fe_utils/parallel_slot.c#wait_on_slots</code>**</li>
+<p><code>ParallelSlotArray</code> を監視し、<code>PQconsumeInput</code> や <code>PQgetResult</code> を用いて結果を消費・処理する静的関数。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>2つの実装で処理の流れが異なります。</p>
+<h3>1. <code>src/bin/pg_upgrade/task.c</code> の流れ</h3>
+<p>1. **初期化**: 全スロットの <code>ready</code> フラグを <code>false</code> に初期化します。 2. **ソケット登録**: <code>FREE</code> 状態以外の各スロットから <code>PQsocket()</code> でソケットを取得し、<code>select_mode</code> に応じて <code>input</code> または <code>output</code> の <code>fd_set</code> に追加します。 3. **待機**: <code>select_loop()</code> を呼び出し、いずれかのソケットが準備完了になるまで待機します。 4. **フラグ更新**: 待機終了後、準備完了したスロットの <code>ready</code> フラグを <code>true</code> に設定します。 *※ 呼び出し元の並列実行ループの全体像や、<code>ready</code> になった後の具体的なタスク処理の全貌（エンドツーエンドの完全な流れ）は、提供されたコンテキストからは特定されていません。*</p>
+<h3>2. <code>src/fe_utils/parallel_slot.c</code> の流れ</h3>
+<p>1. **呼び出し**: <code>ParallelSlotsGetIdle</code> などの呼び出し元から、空きスロットを確保する際やビジー状態の監視時に呼び出されます。 2. **ソケット登録と待機**: 全スロットのソケットを <code>fd_set</code> に登録し、<code>select_loop</code> を呼び出して入力を待機します。この際、<code>SetCancelConn</code> / <code>ResetCancelConn</code> を用いてキャンセル処理が統合されます。 3. **入力消費**: <code>select()</code> が入力を検知したスロットに対し、<code>PQconsumeInput</code> を実行します。 4. **結果取得ループ**: <code>PQisBusy</code> が偽になるまで <code>PQgetResult</code> をループし、結果を消費します。 5. **結果処理**: <code>processQueryResult</code> を呼び出して各結果を処理します。 6. **状態遷移**: 結果が <code>NULL</code> になった場合、そのスロットをアイドル状態（<code>inUse = false</code>）に設定し、ハンドラをクリアします。 *※ 呼び出し元に制御が戻った後の、アプリケーション全体における最終的なデータフローの全貌は、提供されたコンテキストからは特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<h3><code>src/bin/pg_upgrade/task.c</code> における不変条件</h3>
+<ul>
+<li><code>slots</code> 配列は常に有効なメモリ領域を指していなければなりません。</li>
+<li><code>process_slot()</code> が呼び出されるたびに、前回の <code>wait_on_slots()</code> で <code>ready</code> とマークされたスロットの処理が完了している必要があります。</li>
+<li><code>FREE</code> 状態のスロットは、処理すべきデータベースが存在しないものとして無視されます。</li>
+</ul>
+<h3><code>src/fe_utils/parallel_slot.c</code> における不変条件</h3>
+<ul>
+<li><code>sa-&gt;slots[i].connection</code> が <code>NULL</code> でない（接続済みである）必要があります。</li>
+<li>呼び出し時に、少なくとも1つの有効な接続が存在しなければなりません。</li>
+<li>シングルスレッド環境での実行を前提としています。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>src/bin/pg_upgrade/task.c</code> と <code>src/fe_utils/parallel_slot.c</code> に同名の <code>static</code> 関数が存在するため、コードリーディングやデバッグの際に対象の実装を取り違えないよう注意が必要です。</li>
+<li>**ファイルディスクリプタ数の制限**: <code>src/fe_utils/parallel_slot.c</code> では <code>select()</code> を使用しているため、ファイルディスクリプタ数が <code>FD_SETSIZE</code> を超えないようにする必要があります（特に Windows 環境で注意が必要です）。</li>
+<li>**エラーハンドリングの差異**: </li>
+<li><code>pg_upgrade</code> 側では、<code>PQsocket()</code> や <code>select_loop()</code> が失敗すると <code>pg_fatal</code> によりプロセス全体が即座に異常終了します。</li>
+<li><code>fe_utils</code> 側では、エラー発生時に <code>false</code> を返して呼び出し元にエラーを伝播します。</li>
+<li>**ハンドラの実装依存**: <code>fe_utils</code> 側では <code>processQueryResult</code> の戻り値が全体の成否を決定するため、登録するハンドラの実装に不備があると、予期せず処理全体が失敗（<code>false</code> を返却）する原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/bin/pg_upgrade/task.c</code> の <code>wait_on_slots</code> 実装およびその呼び出し元ループ</li>
+<li><code>src/fe_utils/parallel_slot.c</code> の <code>wait_on_slots</code> 実装および <code>ParallelSlotsGetIdle</code></li>
+</ul></body></html>

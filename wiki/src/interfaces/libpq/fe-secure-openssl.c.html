@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-secure-openssl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-secure-openssl.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、<code>libpq</code> における OpenSSL を用いたセキュア通信（TLS/SSL）の実装を提供します。接続の初期化、証明書検証、暗号化通信の I/O 抽象化を担い、PostgreSQL クライアントが安全にサーバーと通信するための基盤となります。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> のセキュリティ層の一部であり、<code>fe-secure.c</code> が提供する汎用的なセキュリティインターフェースの OpenSSL 固有の実装です。<code>PGconn</code> 構造体と密接に連携し、ソケット通信を TLS でラップします。</p>
+<h2>責務</h2>
+<ul>
+<li>**SSL コンテキスト管理**: <code>SSL_CTX</code> の生成、証明書・秘密鍵の読み込み、プロトコルバージョンの制御。</li>
+<li>**TLS ハンドシェイク**: <code>open_client_SSL</code> による接続確立と、SNI/ALPN の設定。</li>
+<li>**I/O 抽象化**: OpenSSL の <code>BIO</code> メソッドをカスタマイズし、<code>libpq</code> の非ブロッキング I/O と統合。</li>
+<li>**証明書検証**: ホスト名と証明書の照合（SAN/CN の確認）、CRL チェック。</li>
+<li>**エラーハンドリング**: OpenSSL エラーキューの管理と、<code>PGconn</code> へのエラーメッセージ転送。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>接続・I/O 操作</h3>
+<ul>
+<li><code>pgtls_open_client</code>: SSL 接続の初期化とハンドシェイクを開始するエントリーポイント。</li>
+<li><code>pgtls_read</code> / <code>pgtls_write</code>: <code>SSL_read</code>/<code>SSL_write</code> をラップし、エラーコードを <code>libpq</code> の期待する形式に変換。</li>
+<li><code>pgtls_close</code>: SSL オブジェクトと関連リソース（証明書、エンジン）の解放。</li>
+</ul>
+<h3>証明書・検証</h3>
+<ul>
+<li><code>pgtls_verify_peer_name_matches_certificate_guts</code>: ホスト名と証明書の照合ロジック。</li>
+<li><code>pgtls_get_peer_certificate_hash</code>: サーバー証明書のハッシュ値を取得（SCRAM 認証等で使用）。</li>
+</ul>
+<h3>設定・フック</h3>
+<ul>
+<li><code>PQsetSSLKeyPassHook_OpenSSL</code>: クライアント証明書のパスワード取得用フックを設定。</li>
+<li><code>initialize_SSL</code>: <code>PGconn</code> の設定に基づき <code>SSL_CTX</code> を構築する内部関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PQdefaultSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQgetSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQgetssl</code></li>
+<li><code>PQsetSSLKeyPassHook_OpenSSL</code></li>
+<li><code>PQsslAttribute</code></li>
+<li><code>PQsslAttributeNames</code></li>
+<li><code>PQsslStruct</code></li>
+<li><code>PQssl_passwd_cb</code></li>
+<li><code>SSL_CTX_keylog_cb</code></li>
+<li><code>SSLerrfree</code></li>
+<li><code>SSLerrmessage</code></li>
+<li><code>pgtls_get_peer_certificate_hash</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pgtls_open_client</code> が呼ばれると <code>initialize_SSL</code> が実行され、<code>SSL_CTX</code> が作成されます。ここで証明書ファイルや鍵が読み込まれ、<code>SSL_set_bio</code> によりカスタム <code>BIO</code> が設定されます。 2. **I/O フロー**: <code>pgtls_read</code>/<code>write</code> は OpenSSL の <code>SSL_read</code>/<code>write</code> を呼び出します。OpenSSL は内部でカスタム <code>BIO</code> (<code>pgconn_bio_read</code>/<code>write</code>) を経由して、<code>libpq</code> の低レベルソケット関数を呼び出します。 3. **エラー処理**: <code>ERR_clear_error</code> でキューをクリアしてから操作を行い、失敗時は <code>SSL_get_error</code> で詳細を判定して <code>conn-&gt;errorMessage</code> に書き込みます。 4. **終了**: <code>pgtls_close</code> が呼ばれると、<code>SSL_shutdown</code> を経て <code>SSL_free</code> が実行され、リソースが解放されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**OpenSSL**: <code>&lt;openssl/ssl.h&gt;</code>, <code>&lt;openssl/x509v3.h&gt;</code> 等。</li>
+<li>**libpq 内部**: <code>libpq-int.h</code> (<code>PGconn</code> 定義), <code>fe-secure-common.h</code>。</li>
+<li>**システム**: <code>pthread.h</code> (スレッドセーフな <code>BIO</code> メソッド管理用)。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>common/openssl.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe-auth.h</code></li>
+<li><code>libpq-fe.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>openssl/conf.h</code></li>
+<li><code>openssl/engine.h</code></li>
+<li><code>openssl/ssl.h</code></li>
+<li><code>openssl/x509v3.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>pthread-win32.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>fe-secure.c</code>: セキュリティ層の抽象化レイヤー。</li>
+<li><code>fe-connect.c</code>: 接続状態マシン (<code>PQconnectPoll</code>) の呼び出し元。</li>
+<li><code>be-secure-openssl.c</code>: サーバー側（PostgreSQL バックエンド）の OpenSSL 実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>SSL_CTX</code> は接続ごとに作成され、<code>SSL</code> オブジェクト作成後に即座に解放されます（OpenSSL の参照カウントにより維持されます）。</li>
+<li>**スレッド安全性**: <code>ssl_config_mutex</code> は <code>BIO_METHOD</code> の初期化を保護するために使用されます。</li>
+<li>**BIO の役割**: OpenSSL 標準のソケット BIO ではなく、<code>libpq</code> 独自の BIO を使用することで、<code>SIGPIPE</code> の抑制や詳細なエラーログ出力を実現しています。</li>
+<li>**未実装・浅い部分**: 証明書検証のコールバック (<code>verify_cb</code>) は現在デフォルトの検証をそのまま受け入れる実装となっており、詳細なログ出力は行われません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__pgtls_get_peer_certificate_hash.html" target="wiki-view"><code>pgtls_get_peer_certificate_hash</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__SSL_CTX_keylog_cb.html" target="wiki-view"><code>SSL_CTX_keylog_cb</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__SSLerrmessage.html" target="wiki-view"><code>SSLerrmessage</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__SSLerrfree.html" target="wiki-view"><code>SSLerrfree</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQgetssl.html" target="wiki-view"><code>PQgetssl</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQsslStruct.html" target="wiki-view"><code>PQsslStruct</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQsslAttributeNames.html" target="wiki-view"><code>PQsslAttributeNames</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQsslAttribute.html" target="wiki-view"><code>PQsslAttribute</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQdefaultSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQdefaultSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQgetSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQgetSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQsetSSLKeyPassHook_OpenSSL.html" target="wiki-view"><code>PQsetSSLKeyPassHook_OpenSSL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-secure-openssl_c__PQssl_passwd_cb.html" target="wiki-view"><code>PQssl_passwd_cb</code></a></li>
+</ul></body></html>

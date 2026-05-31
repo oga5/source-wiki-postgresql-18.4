@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/varchar.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/varchar.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLの組み込みデータ型である <code>char(n)</code> (BpChar) および <code>varchar(n)</code> の実装を提供します。これらの型は、指定された最大長を持つ可変長文字列として扱われます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールにおいて、文字列型の中核を担います。<code>text</code> 型とバイナリ互換性を持ちつつ、挿入時の長さ制限や空白埋め（padding）といった特定のセマンティクスを適用する役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**型変換と検証**: <code>input</code>/<code>output</code> 関数および <code>typmod</code>（型修飾子）の検証。</li>
+<li>**セマンティクス適用**: <code>char(n)</code> における末尾空白の扱い（比較時の無視など）や、<code>varchar(n)</code> の長さ制限の強制。</li>
+<li>**比較・ハッシュ演算**: ロケールを考慮した比較関数や、末尾空白を無視するハッシュ関数の提供。</li>
+<li>**プランナサポート**: <code>varchar</code> 型の長さ変換における不要な処理の最適化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>bpcharin</code> / <code>varcharin</code>: 文字列から内部表現への変換。</li>
+<li><code>bpchar</code> / <code>varchar</code>: 型キャスト関数。指定長への切り詰めや空白埋めを行う。</li>
+<li><code>bpchartruelen</code>: 末尾の空白を除いた「真の長さ」を計算するユーティリティ。</li>
+<li><code>bpchareq</code> / <code>bpcharcmp</code>: ロケールを考慮した比較関数。</li>
+<li><code>hashbpchar</code>: 末尾空白を無視するハッシュ関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>anychar_typmodin</code></li>
+<li><code>anychar_typmodout</code></li>
+<li><code>bpchar_input</code></li>
+<li><code>bpchar_larger</code></li>
+<li><code>bpchar_name</code></li>
+<li><code>bpchar_smaller</code></li>
+<li><code>bpchar_sortsupport</code></li>
+<li><code>char_bpchar</code></li>
+<li><code>check_collation_set</code></li>
+<li><code>name_bpchar</code></li>
+<li><code>varchar_input</code></li>
+<li><code>varchar_support</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: <code>bpchar_input</code> / <code>varchar_input</code> が文字列を受け取り、<code>atttypmod</code> に基づいて長さを検証します。長すぎる場合はエラーを投げるか、末尾が空白であれば切り詰めます。 2. **変換**: <code>bpchar</code> / <code>varchar</code> 関数が、既存のデータに対してキャスト（長さ変更）を適用します。 3. **比較**: <code>bpchareq</code> 等は <code>bcTruelen</code> を呼び出し、末尾の空白を無視した状態で <code>varstr_cmp</code> を用いてロケール依存の比較を行います。 4. **ハッシュ**: <code>hashbpchar</code> は、ロケールが非決定的な場合、<code>pg_strnxfrm</code> を用いて正規化してからハッシュ値を計算します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>utils/varlena.h</code>: 可変長データ（varlena）の操作。</li>
+<li><code>utils/pg_locale.h</code>: ロケール依存の文字列比較・変換。</li>
+<li><code>mb/pg_wchar.h</code>: マルチバイト文字の長さ計算。</li>
+<li><code>catalog/pg_type.h</code>: 型定義。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>libpq/pqformat.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/text.c</code>: <code>text</code> 型の実装。<code>varchar</code> は多くの処理をこれに委譲しています。</li>
+<li><code>src/backend/utils/adt/varlena.c</code>: <code>varlena</code> 型の汎用的な操作関数群。</li>
+<li><code>src/backend/utils/adt/like.c</code>: <code>LIKE</code> パターンマッチング関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>char(n)</code> と <code>varchar(n)</code> は内部的には <code>varlena</code> 構造体ですが、<code>text</code> 型とは異なり、挿入時に末尾の空白埋めや切り詰めが発生します。</li>
+<li>比較関数において、<code>deterministic</code> なロケール（Cロケールなど）ではビット単位の比較を行い、それ以外では <code>strcoll</code> 相当の処理を行うことでパフォーマンスを最適化しています。</li>
+<li><code>bpchar</code> の比較において、末尾の空白を無視する仕様は SQL 標準に準拠していますが、実装上は <code>bcTruelen</code> による事前計算が重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__anychar_typmodin.html" target="wiki-view"><code>anychar_typmodin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__anychar_typmodout.html" target="wiki-view"><code>anychar_typmodout</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__bpchar_input.html" target="wiki-view"><code>bpchar_input</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__char_bpchar.html" target="wiki-view"><code>char_bpchar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__bpchar_name.html" target="wiki-view"><code>bpchar_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__name_bpchar.html" target="wiki-view"><code>name_bpchar</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__varchar_input.html" target="wiki-view"><code>varchar_input</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__varchar_support.html" target="wiki-view"><code>varchar_support</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__check_collation_set.html" target="wiki-view"><code>check_collation_set</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__bpchar_sortsupport.html" target="wiki-view"><code>bpchar_sortsupport</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__bpchar_larger.html" target="wiki-view"><code>bpchar_larger</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__varchar_c__bpchar_smaller.html" target="wiki-view"><code>bpchar_smaller</code></a></li>
+</ul></body></html>

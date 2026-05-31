@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/method_io_uring.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/method_io_uring.c</h1>
+<h2>概要</h2>
+<p>Linux の <code>io_uring</code> インターフェースを利用した非同期 I/O (AIO) 実装を提供します。PostgreSQL のバックエンドプロセスごとに <code>io_uring</code> インスタンスを割り当て、高効率な I/O 処理を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/aio</code> サブシステムにおける I/O メソッドの実装の一つです。<code>IoMethodOps</code> 構造体を通じて、汎用的な AIO インターフェースと <code>io_uring</code> 特有の低レイヤー処理を橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**リソース管理**: バックエンドごとの <code>io_uring</code> コンテキストの初期化と共有メモリ管理。</li>
+<li>**I/O 投入**: <code>PgAioHandle</code> を <code>io_uring</code> の Submission Queue Entry (SQE) に変換し、カーネルへ発行。</li>
+<li>**完了処理**: Completion Queue (CQ) からのイベント回収と、対応する <code>PgAioHandle</code> の状態更新。</li>
+<li>**排他制御**: 複数バックエンドが他者の完了イベントを処理する際の競合防止（<code>completion_lock</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgaio_uring_ops</code>: <code>IoMethodOps</code> 実装。AIO サブシステムがこのメソッドを呼び出すためのエントリポイント。</li>
+<li><code>PgAioUringContext</code>: バックエンドごとの <code>io_uring</code> インスタンスとロックを保持する構造体。</li>
+<li><code>pgaio_uring_submit</code>: I/O をキューに投入するメイン関数。</li>
+<li><code>pgaio_uring_wait_one</code>: 特定の I/O 完了を待機する同期ポイント。</li>
+<li><code>pgaio_uring_drain_locked</code>: 完了キューをスキャンし、保留中の I/O を処理するヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PgAioUringCaps</code></li>
+<li><code>pgaio_uring_check_capabilities</code></li>
+<li><code>pgaio_uring_completion_error_callback</code></li>
+<li><code>pgaio_uring_context_shmem_size</code></li>
+<li><code>pgaio_uring_init_backend</code></li>
+<li><code>pgaio_uring_procs</code></li>
+<li><code>pgaio_uring_ring_shmem_size</code></li>
+<li><code>pgaio_uring_shmem_init</code></li>
+<li><code>pgaio_uring_shmem_size</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>pgaio_uring_shmem_init</code> が起動時に全バックエンド分の <code>PgAioUringContext</code> を共有メモリ上に確保します。 2. **投入**: <code>pgaio_uring_submit</code> が <code>PgAioHandle</code> を受け取り、<code>io_uring_get_sqe</code> で取得したスロットに I/O 情報を書き込み、<code>io_uring_submit</code> でカーネルへ通知します。 3. **待機・回収**: <code>pgaio_uring_wait_one</code> は、対象の I/O が完了するまで <code>completion_lock</code> を取得し、<code>io_uring_wait_cqes</code> でカーネルからの通知を待ちます。完了イベントは <code>pgaio_uring_drain_locked</code> を経由して <code>pgaio_io_process_completion</code> に渡されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>liburing.h</code>: <code>io_uring</code> API の利用。</li>
+<li><code>storage/aio_internal.h</code>: 内部的な AIO 構造体と状態管理。</li>
+<li><code>storage/shmem.h</code>, <code>storage/lwlock.h</code>: 共有メモリとロック管理。</li>
+<li><code>sys/mman.h</code>, <code>unistd.h</code>: メモリマッピングとページサイズ取得。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/aio.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>utils/wait_event.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/aio.c</code>: AIO サブシステムのメインエントリ。</li>
+<li><code>src/backend/storage/aio/method_sync.c</code>: 同期 I/O を用いる代替メソッド。</li>
+<li><code>src/backend/storage/aio/method_worker.c</code>: ワーカープロセスを用いる代替メソッド。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの重要性**: <code>completion_lock</code> は、あるバックエンドが忙しい場合に他のバックエンドが代わりに完了処理を行うために必須です。</li>
+<li>**カーネル機能の probe**: <code>pgaio_uring_check_capabilities</code> は、カーネルが <code>io_uring_queue_init_mem</code> をサポートしているか実行時に判定します。これにより、不要なメモリマッピングを回避しパフォーマンスを最適化しています。</li>
+<li>**注意点**: <code>io_uring</code> を使用する場合、<code>ulimit -n</code> (ファイルディスクリプタ制限) が十分に高い値である必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__PgAioUringCaps.html" target="wiki-view"><code>PgAioUringCaps</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_procs.html" target="wiki-view"><code>pgaio_uring_procs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_check_capabilities.html" target="wiki-view"><code>pgaio_uring_check_capabilities</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_context_shmem_size.html" target="wiki-view"><code>pgaio_uring_context_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_ring_shmem_size.html" target="wiki-view"><code>pgaio_uring_ring_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_shmem_size.html" target="wiki-view"><code>pgaio_uring_shmem_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_shmem_init.html" target="wiki-view"><code>pgaio_uring_shmem_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_init_backend.html" target="wiki-view"><code>pgaio_uring_init_backend</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_submit.html" target="wiki-view"><code>pgaio_uring_submit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_completion_error_callback.html" target="wiki-view"><code>pgaio_uring_completion_error_callback</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_drain_locked.html" target="wiki-view"><code>pgaio_uring_drain_locked</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__method_io_uring_c__pgaio_uring_wait_one.html" target="wiki-view"><code>pgaio_uring_wait_one</code></a></li>
+</ul></body></html>

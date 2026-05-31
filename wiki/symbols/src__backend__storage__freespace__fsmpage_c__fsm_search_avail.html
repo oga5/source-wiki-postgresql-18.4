@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__freespace__fsmpage_c__fsm_search_avail.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>fsm_search_avail</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/freespace/fsmpage.c:157</code></li>
+</ul>
+<h2>目的</h2>
+<p>FSM（空き領域マップ）ページ内において、指定された空き容量（<code>minvalue</code>）以上の空きを持つスロットを効率的に探索する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int fsm_search_avail(Buffer buf, uint8 minvalue, bool advancenext, bool exclusive_lock_held)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>buf</code>: 検索対象のFSMページバッファ。</li>
+<li><code>minvalue</code>: 検索する最小の空き容量。</li>
+<li><code>advancenext</code>: 探索後に <code>fp_next_slot</code> を進めるかどうか。</li>
+<li><code>exclusive_lock_held</code>: 現在排他ロックを保持しているかを示すフラグ。</li>
+<li>**出力**:</li>
+<li>条件を満たすスロット番号（0以上）。条件を満たすスロットが見つからない場合は <code>-1</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は、対象のバッファに対して少なくとも共有ロックを保持している必要がある。</li>
+<li>ページ内のバイナリツリー構造が整合していること（破損時は内部で再構築される）。</li>
+<li>ルートノード（<code>fp_nodes[0]</code>）の値が <code>minvalue</code> 未満であれば、探索は即座に終了する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期チェック**: ルートノードを確認し、条件を満たすリーフが存在しない場合は <code>-1</code> を返す。 2. **探索開始**: <code>fp_next_slot</code> をヒントとして探索を開始する。 3. **探索三角形の拡大**: <code>parentof(rightneighbor(nodeno))</code> を辿ることで、右方向へ移動しつつ親ノードへ登り、探索範囲を対数時間で拡大する。 4. **降下**: 条件を満たすノードに到達後、左の子ノードを優先してリーフレベルまで降下する。 5. **破損検知と修復**: 降下中に期待値と実際の値が一致しない（torn page）場合、<code>fsm_rebuild_page</code> を呼び出してページを再構築し、探索をリトライする。 6. **ポインタ更新**: 探索終了後、<code>fp_next_slot</code> を更新する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/storage/freespace/freespace.c</code> 内の関数（<code>fsm_search_avail</code> を呼び出し、FSM 全体の管理を行う）。</li>
+<li>**呼び出し先**:</li>
+<li><code>parentof</code>, <code>rightneighbor</code>, <code>leftchild</code>（マクロ）</li>
+<li><code>fsm_rebuild_page</code>（破損検知時）</li>
+<li><code>LockBuffer</code>, <code>BufferGetTag</code>, <code>elog</code>, <code>MarkBufferDirtyHint</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>FSMPage</code>: ページ内のノード配列（<code>fp_nodes</code>）およびヒント情報（<code>fp_next_slot</code>）を保持する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**破損ページ**: ページが部分的に書き込まれた状態（torn page）の場合、<code>fsm_rebuild_page</code> を実行して修復を試みる。</li>
+<li>**スロットなし**: 条件を満たすスロットが存在しない場合、<code>-1</code> を返す。</li>
+<li>**ラップアラウンド**: <code>fp_next_slot</code> がページ末尾に達した場合、適切にラップアラウンドして探索を継続する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>fp_next_slot</code> はあくまで探索のヒントであり、厳密な順序を保証するものではない。</li>
+<li>更新を伴う操作ではない場合でも、<code>fp_next_slot</code> の更新は共有ロック下で行われる可能性がある。</li>
+<li>破損検知時の <code>fsm_rebuild_page</code> はコストが高いため、発生頻度を監視すること。</li>
+</ul></body></html>

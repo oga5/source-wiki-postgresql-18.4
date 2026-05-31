@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/generic_xlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/generic_xlog.c</h1>
+<h2>概要</h2>
+<p><code>generic_xlog.c</code> は、PostgreSQLにおける「汎用的なWAL（Write-Ahead Logging）レコード」を生成・適用するためのフレームワークを提供します。特定のデータ構造（インデックスやヒープなど）に依存せず、ページ単位の変更を差分（デルタ）として記録・再生する仕組みを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、このファイルはWAL生成の抽象化レイヤーとして機能します。個別のリソースマネージャ（rmgr）が複雑なWALロジックを自前で実装する代わりに、本モジュールのAPIを利用することで、ページ変更の差分計算やログ記録を簡素化できます。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALレコードの構築**: 複数のバッファに対する変更をアトミックに記録するための状態管理。</li>
+<li>**差分計算**: 変更前後のページイメージを比較し、変更箇所のみを抽出するデルタ圧縮。</li>
+<li>**WAL適用（Redo）**: 障害復旧時に、記録されたデルタをページに適用して状態を再現する。</li>
+<li>**整合性維持**: ページ内の「ホール（pd_lowerとpd_upperの間）」のゼロクリアなど、物理的なページ状態の不一致を防ぐ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GenericXLogState</code>: 構築中のWALレコードの状態を保持する構造体。</li>
+<li><code>GenericXLogStart()</code>: 汎用WALレコードの構築を開始する。</li>
+<li><code>GenericXLogRegisterBuffer()</code>: 変更対象のバッファを登録し、編集可能なページイメージを取得する。</li>
+<li><code>GenericXLogFinish()</code>: 変更を確定し、WALレコードを書き込んでバッファをダーティにする。</li>
+<li><code>generic_redo()</code>: リカバリ時に呼び出され、デルタを適用する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GenericXLogAbort</code></li>
+<li><code>GenericXLogFinish</code></li>
+<li><code>GenericXLogPageData</code></li>
+<li><code>GenericXLogRegisterBuffer</code></li>
+<li><code>GenericXLogStart</code></li>
+<li><code>applyPageRedo</code></li>
+<li><code>computeDelta</code></li>
+<li><code>computeRegionDelta</code></li>
+<li><code>generic_mask</code></li>
+<li><code>generic_redo</code></li>
+<li><code>writeFragment</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>GenericXLogStart</code> で状態を初期化。 2. **登録と編集**: <code>GenericXLogRegisterBuffer</code> でバッファを登録し、返されたページイメージを直接編集する。 3. **終了**: <code>GenericXLogFinish</code> が呼び出されると、以下の処理が実行される：</p>
+<ul>
+<li>編集後のイメージと元のイメージを比較し、<code>computeDelta</code> で差分を計算。</li>
+<li>差分を <code>XLogRegisterBufData</code> でWALレコードに登録。</li>
+<li><code>XLogInsert</code> でWALを書き込み、各バッファのLSNを更新。</li>
+<p>4. **リカバリ**: <code>generic_redo</code> がWALレコードを読み込み、<code>applyPageRedo</code> を通じて各ページにデルタを適用する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な型定義とマクロ。</li>
+<li><code>access/bufmask.h</code>: ページマスク処理（チェックサムやLSNの除外）。</li>
+<li><code>access/generic_xlog.h</code>: 公開API定義。</li>
+<li><code>access/xlogutils.h</code>: WAL関連のユーティリティ関数。</li>
+<li><code>miscadmin.h</code>: システム管理用定数。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/access/generic_xlog.h</code>: 本ファイルのヘッダー。APIのシグネチャが定義されている。</li>
+<li><code>src/backend/access/transam/xloginsert.c</code>: WALレコードの実際の挿入処理を行う下位レイヤー。</li>
+<li><code>src/backend/access/transam/xlogreader.c</code>: リカバリ時にWALレコードを解析する際に利用される。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**デルタ圧縮**: 本モジュールは、変更が少ない場合にページ全体を記録するのではなく、差分のみを記録することでWALサイズを削減します。<code>MATCH_THRESHOLD</code> 以下の変更はマージされるため、効率的な圧縮が行われます。</li>
+<li>**クリティカルセクション**: <code>GenericXLogFinish</code> 内の変更適用は <code>START_CRIT_SECTION()</code> で保護されており、この間はエラーが発生しても中断できないようになっています。</li>
+<li>**ホール処理**: ページ内の <code>pd_lower</code> から <code>pd_upper</code> までの領域は、再利用可能な空き領域であり、WAL適用時には常にゼロクリアされる必要があります。これは、異なる環境でページを再構築した際に、ゴミデータによる不一致を防ぐためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogPageData.html" target="wiki-view"><code>GenericXLogPageData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogState.html" target="wiki-view"><code>GenericXLogState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__writeFragment.html" target="wiki-view"><code>writeFragment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__computeRegionDelta.html" target="wiki-view"><code>computeRegionDelta</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__computeDelta.html" target="wiki-view"><code>computeDelta</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogStart.html" target="wiki-view"><code>GenericXLogStart</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogRegisterBuffer.html" target="wiki-view"><code>GenericXLogRegisterBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogFinish.html" target="wiki-view"><code>GenericXLogFinish</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__GenericXLogAbort.html" target="wiki-view"><code>GenericXLogAbort</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__applyPageRedo.html" target="wiki-view"><code>applyPageRedo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__generic_redo.html" target="wiki-view"><code>generic_redo</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__generic_xlog_c__generic_mask.html" target="wiki-view"><code>generic_mask</code></a></li>
+</ul></body></html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ParallelBackupStart</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_dump/parallel.c:898</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>pg_dump</code> または <code>pg_restore</code> における並列処理を開始し、指定された数のワーカープロセス（またはスレッド）を生成・初期化する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>ParallelState *ParallelBackupStart(ArchiveHandle *AH)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>ArchiveHandle *AH</code>（アーカイブのハンドル。<code>numWorkers</code> プロパティが 0 より大きい必要がある）。</li>
+<li>**出力**: <code>ParallelState *</code>（並列実行状態を管理する構造体へのポインタ）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>AH-&gt;public.numWorkers &gt; 0</code> であること。</li>
+<li><code>numWorkers</code> が 1 の場合は、ワーカー生成を行わず <code>ParallelState</code> を作成して即座に返却する。</li>
+<li>ワーカー生成前に <code>fflush(NULL)</code> を呼び出し、stdio の状態を静止させる必要がある。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>ParallelState</code> 構造体を割り当て、ワーカー数分の <code>TocEntry</code> 配列と <code>ParallelSlot</code> 配列を初期化する。 2. Windows 環境では <code>getThreadLocalPQExpBuffer</code> を設定する。 3. <code>shutdown_info.pstate</code> に生成した <code>pstate</code> を登録し、終了ハンドラがワーカーをクリーンアップできるようにする。 4. リーダー接続のクエリキャンセル情報を一時的に無効化し、子プロセスへの継承を防ぐ。 5. 指定された数のワーカーをループで生成する:</p>
+<ul>
+<li>各ワーカー用に2つのパイプ（リーダー・ワーカー間通信用）を作成する。</li>
+<li>Unix系では <code>fork()</code> を使用し、子プロセス内で <code>RunWorker</code> を実行する。</li>
+<li>Windows系では <code>_beginthreadex</code> を使用し、<code>init_spawned_worker_win32</code> を経由してワーカーを開始する。</li>
+<p>6. 全ワーカー生成後、リーダー側で <code>SIGPIPE</code> を無視する設定を行い、クエリキャンセル情報を再確立し、<code>set_cancel_pstate</code> を呼び出してシグナルハンドラがワーカーへシグナルを転送できるようにする。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/bin/pg_dump/pg_backup_archiver.c</code></li>
+<li><code>src/bin/pg_dump/pg_backup_directory.c</code></li>
+<li>**呼び出し先**:</li>
+<li><code>pg_malloc</code>, <code>pg_malloc0</code>, <code>pg_fatal</code></li>
+<li><code>pgpipe</code></li>
+<li><code>RunWorker</code> (Unix系)</li>
+<li><code>_beginthreadex</code> (Windows系)</li>
+<li><code>set_archive_cancel_info</code>, <code>set_cancel_pstate</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ParallelState</code>: 並列実行の全体管理構造体。</li>
+<li><code>ParallelSlot</code>: 各ワーカーの通信パイプやプロセス/スレッドIDを保持。</li>
+<li><code>ArchiveHandle</code>: アーカイブの構成情報。</li>
+<li><code>WorkerInfo</code>: Windows環境でワーカーへ引数を渡すための一時構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>numWorkers</code> が 1 の場合、並列化処理をスキップして正常終了する。</li>
+<li>パイプ作成（<code>pgpipe</code>）に失敗した場合、<code>pg_fatal</code> によりプロセスが異常終了する。</li>
+<li><code>fork()</code> に失敗した場合、<code>pg_fatal</code> によりプロセスが異常終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>Windows環境では <code>fork</code> が存在しないため、スレッドとソケットを用いたパイプエミュレーションが行われている。</li>
+<li>シグナルハンドラが子プロセスに継承されないよう、<code>signal_info.pstate</code> の設定タイミングに注意が必要。</li>
+<li><code>closesocket</code> を使用して、不要になったパイプのファイル記述子を適切に閉じることでリソースリークを防いでいる。</li>
+</ul></body></html>

@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_dump/parallel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_dump/parallel.c</h1>
+<h2>概要</h2>
+<p><code>parallel.c</code> は、<code>pg_dump</code> および <code>pg_restore</code> における並列処理の基盤を提供します。リーダープロセスが複数のワーカー（Unix ではプロセス、Windows ではスレッド）を管理し、パイプ経由でジョブをディスパッチして結果を収集する仕組みを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_backup_archiver.c</code> がアーカイブ全体の制御を行うのに対し、本ファイルは「並列実行の抽象化」に特化しています。アーカイブ形式に依存しない汎用的なジョブスケジューリングと、プラットフォーム固有の並列プリミティブ（<code>fork</code>/<code>pipe</code> vs <code>_beginthreadex</code>/<code>socket</code>）の差異を吸収します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス/スレッド管理**: ワーカーの起動、監視、および終了処理。</li>
+<li>**通信層**: リーダーとワーカー間のコマンド・応答メッセージの送受信（パイプ/ソケット抽象化）。</li>
+<li>**ジョブスケジューリング**: アイドル状態のワーカーの特定と、タスクの割り当て。</li>
+<li>**シグナル/割り込み処理**: ユーザーによる中断（Ctrl+C）時の安全な終了と、ワーカーへのキャンセル通知。</li>
+<li>**デッドロック回避**: ワーカースレッド/プロセスによるテーブルロック時の競合検出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>並列状態管理</h3>
+<ul>
+<li><code>ParallelState</code>: 並列処理全体の実行状態を保持する構造体。</li>
+<li><code>ParallelSlot</code>: 各ワーカーのステータス、パイプ、識別子（PID/ThreadID）を管理する内部構造体。</li>
+<li><code>T_WorkerStatus</code>: ワーカーの状態（<code>WRKR_IDLE</code>, <code>WRKR_WORKING</code> 等）。</li>
+</ul>
+<h3>ライフサイクル管理</h3>
+<ul>
+<li><code>ParallelBackupStart</code>: ワーカーを生成し、並列処理を開始する。</li>
+<li><code>ParallelBackupEnd</code>: 全ワーカーを終了させ、リソースを解放する。</li>
+<li><code>DispatchJobForTocEntry</code>: 特定の <code>TocEntry</code> に対するジョブをアイドル中のワーカーに割り当てる。</li>
+</ul>
+<h3>通信・制御</h3>
+<ul>
+<li><code>WaitForCommands</code>: ワーカー側のメインループ。リーダーからのコマンドを待機・実行する。</li>
+<li><code>WaitForWorkers</code>: リーダー側の待機ループ。ワーカーからの完了通知を待つ。</li>
+<li><code>getMessageFromLeader</code> / <code>sendMessageToWorker</code>: 通信チャネルの抽象化関数。</li>
+</ul>
+<h3>シグナル・エラー処理</h3>
+<ul>
+<li><code>set_archive_cancel_info</code>: キャンセル用接続情報を設定し、割り込みハンドラを初期化する。</li>
+<li><code>ShutdownWorkersHard</code>: 異常終了時にワーカーを強制停止させる。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DumpSignalInformation</code></li>
+<li><code>GetMyPSlot</code></li>
+<li><code>ParallelBackupEnd</code></li>
+<li><code>ParallelBackupStart</code></li>
+<li><code>ParallelSlot</code></li>
+<li><code>RunWorker</code></li>
+<li><code>ShutdownInformation</code></li>
+<li><code>ShutdownWorkersHard</code></li>
+<li><code>T_WorkerStatus</code></li>
+<li><code>WaitForTerminatingWorkers</code></li>
+<li><code>WorkerInfo</code></li>
+<li><code>getThreadLocalPQExpBuffer</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ParallelBackupStart</code> が <code>ParallelState</code> を作成し、<code>pgpipe</code> で通信路を確保後、<code>fork</code> または <code>_beginthreadex</code> でワーカーを生成。 2. **ディスパッチ**: <code>DispatchJobForTocEntry</code> が <code>GetIdleWorker</code> で空きスロットを探し、<code>buildWorkerCommand</code> で生成した文字列を <code>sendMessageToWorker</code> で送信。 3. **実行**: ワーカーは <code>WaitForCommands</code> で待機し、コマンドを受信すると <code>AH-&gt;WorkerJobDumpPtr</code> 等を呼び出す。 4. **応答**: ワーカーは <code>buildWorkerResponse</code> で結果を構築し、<code>sendMessageToLeader</code> で返信。 5. **収集**: リーダーは <code>ListenToWorkers</code> でパイプを監視し、応答を受信するとコールバックを実行してスロットを <code>WRKR_IDLE</code> に戻す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド共通定義。</li>
+<li><code>sys/select.h</code>, <code>sys/wait.h</code>, <code>signal.h</code>, <code>unistd.h</code>: Unix 系プロセス制御。</li>
+<li><code>parallel.h</code>: 公開インターフェース定義。</li>
+<li><code>pg_backup_utils.h</code>: 共通ユーティリティ。</li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>pg_backup_archiver.c</code>: 本モジュールの主要なクライアント。<code>ArchiveHandle</code> を通じてジョブの実行実体を保持。</li>
+<li><code>pg_dump.c</code> / <code>pg_restore.c</code>: 並列処理の開始・終了をトリガーするメインモジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>ParallelState</code> および <code>ParallelSlot</code> はリーダープロセスが所有・管理します。ワーカーは <code>CloneArchive</code> によって <code>ArchiveHandle</code> のコピーを保持し、独立したデータベース接続を使用します。</li>
+<li>**Windows 固有の制約**: Windows では <code>WaitForMultipleObjects</code> の制限（<code>MAXIMUM_WAIT_OBJECTS</code>）により、最大ジョブ数が制限されます。また、パイプの代わりにソケットを使用して <code>select()</code> を実現しています。</li>
+<li>**シグナルハンドラ**: 本ファイル内のシグナルハンドラは、<code>PQcancel</code> を使用してデータベースバックエンドに直接キャンセルを要求します。これは非同期シグナル安全性を考慮した設計です。</li>
+<li>**未実装・浅い部分**: <code>buildWorkerCommand</code> 等のメッセージフォーマットは現在単純な文字列ですが、将来的にアーカイブ形式ごとの拡張を許容する設計になっています。現在は <code>TocEntry</code> ID の受け渡しのみに限定されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__T_WorkerStatus.html" target="wiki-view"><code>T_WorkerStatus</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelSlot.html" target="wiki-view"><code>ParallelSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__WorkerInfo.html" target="wiki-view"><code>WorkerInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ShutdownInformation.html" target="wiki-view"><code>ShutdownInformation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__DumpSignalInformation.html" target="wiki-view"><code>DumpSignalInformation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__GetMyPSlot.html" target="wiki-view"><code>GetMyPSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__getThreadLocalPQExpBuffer.html" target="wiki-view"><code>getThreadLocalPQExpBuffer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ShutdownWorkersHard.html" target="wiki-view"><code>ShutdownWorkersHard</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__WaitForTerminatingWorkers.html" target="wiki-view"><code>WaitForTerminatingWorkers</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__RunWorker.html" target="wiki-view"><code>RunWorker</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.html" target="wiki-view"><code>ParallelBackupStart</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelBackupEnd.html" target="wiki-view"><code>ParallelBackupEnd</code></a></li>
+</ul></body></html>

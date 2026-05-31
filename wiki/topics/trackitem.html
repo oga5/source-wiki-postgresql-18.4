@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/trackitem.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TrackItem</h1>
+<h2>概念</h2>
+<p><code>TrackItem</code> は、PostgreSQL の <code>ANALYZE</code> 処理（統計情報の収集）において、データ値や要素の出現頻度を追跡・集計するために使用されるデータ構造です。</p>
+<p>この構造体は、汎用的な統計計算、全文検索（<code>tsvector</code>）の語彙（lexeme）頻度測定、および配列要素の頻度測定という、異なる3つのコンテキストでそれぞれ独立して定義・利用されています。特に <code>tsvector</code> や配列の解析においては、メモリ制限内で頻出要素を特定するための **Lossy Counting (LC) アルゴリズム** のハッシュテーブルエントリとして機能します。</p>
+<h2>なぜ重要か</h2>
+<p>データベースのクエリプランナが最適な実行計画を立てるためには、正確な統計情報（頻出値など）が不可欠です。<code>TrackItem</code> は、制限されたメモリ空間の中で効率的かつ近似的に高頻度な要素（語彙や配列要素など）を追跡し、統計情報を計算・格納するための基盤となるため重要です。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/commands</code> (汎用的な <code>ANALYZE</code> 処理)</li>
+<li><code>module:src/backend/tsearch</code> (全文検索用の統計解析)</li>
+<li><code>module:src/backend/utils/adt</code> (配列型の統計解析)</li>
+</ul>
+<h2>主要エンティティ</h2>
+<p><code>TrackItem</code> は、以下の3つのファイルで個別に定義されています。</p>
+<ul>
+<li>**<code>symbol:src/backend/commands/analyze.c#TrackItem</code>**</li>
+<li>統計計算時に特定の <code>Datum</code> 値とその出現回数（<code>count</code>）をペアで保持する、最もシンプルな構造体です。</li>
+<li>**<code>symbol:src/backend/tsearch/ts_typanalyze.c#TrackItem</code>**</li>
+<li><code>tsvector</code> の統計収集用。Lossy Counting アルゴリズムに基づき、語彙の識別キー（<code>LexemeHashKey</code>）、出現頻度（<code>frequency</code>）、および最大誤差（<code>delta</code>）を保持します。</li>
+<li>**<code>symbol:src/backend/utils/adt/array_typanalyze.c#TrackItem</code>**</li>
+<li>配列要素の統計収集用。要素値（<code>Datum</code>）、出現頻度（<code>frequency</code>）、誤差許容値（<code>delta</code>）に加え、同一配列内での重複カウントを防ぐための <code>last_container</code> IDを保持します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化と格納**: <code>ANALYZE</code> 実行中、各データ型の解析関数（<code>compute_tsvector_stats</code> や <code>compute_array_stats</code> など）が呼び出され、ハッシュテーブルの要素として <code>TrackItem</code> が割り当てられます。 2. **頻度の更新と剪定**:</p>
+<ul>
+<li>値がスキャンされるたびに、対応する <code>TrackItem</code> の頻度情報が更新されます。</li>
+<li>メモリ使用量を一定以下に抑えるため、定期的に剪定関数（<code>prune_lexemes_hashtable</code> や <code>prune_element_hashtable</code>）が走り、出現頻度と誤差の和が閾値以下のエントリが削除されます。</li>
+<p>3. **ソートと格納**: 最終的に、残った <code>TrackItem</code> のポインタ配列が <code>qsort_interruptible</code> を用いてソートされ、高頻度な要素が <code>pg_statistic</code> システムカタログに格納されます。</p>
+</ul>
+<p>*注意: <code>ANALYZE</code> コマンドの全体的な起動からシステムカタログへの最終的な書き込みに至る、完全なエンドツーエンドの制御フローの詳細は、提供されたモジュールコンテキストからは完全には特定されていません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**値の比較可能性**: <code>analyze.c</code> において、<code>value</code>（<code>Datum</code>）は比較可能なデータであり、<code>count</code> は非負の整数でなければなりません。</li>
+<li>**Lossy Counting のルール**: <code>ts_typanalyze.c</code> および <code>array_typanalyze.c</code> において、<code>frequency</code> と <code>delta</code> は Manku &amp; Motwani の Lossy Counting アルゴリズムの定義に従って厳密に管理される必要があります。</li>
+<li>**重複排除**: <code>array_typanalyze.c</code> では、同一配列内の重複要素を二重カウントしないよう、<code>last_container</code> を用いた制御が維持されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名構造体の混同**: <code>TrackItem</code> は3つのファイルで個別に定義されており、それぞれ構造や用途が異なります。これらは共通のヘッダーで定義された単一の構造体ではないため、コードを変更する際は対象のファイル（モジュール）を誤らないよう注意が必要です。</li>
+<li>**メモリ不足とリーク**: <code>palloc</code> によるメモリ確保が行われるため、PostgreSQL のメモリコンテキストのルールに従う必要があります。また、剪定処理が適切に機能しない場合、ハッシュテーブルが肥大化してメモリ消費が制限を超える可能性があります。</li>
+<li>**型とハッシュ関数の不整合**: <code>Datum</code> を扱う際、比較関数やハッシュ関数との互換性が失われると、予期せぬ動作や統計情報の破損を引き起こす原因になります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/commands/analyze.c</code> — 汎用的な統計情報収集における <code>TrackItem</code> の利用方法。</li>
+<li><code>src/backend/tsearch/ts_typanalyze.c</code> — 全文検索（<code>tsvector</code>）における Lossy Counting アルゴリズムの実装。</li>
+<li><code>src/backend/utils/adt/array_typanalyze.c</code> — 配列要素に対する Lossy Counting アルゴリズムと重複排除の実装。</li>
+</ul></body></html>

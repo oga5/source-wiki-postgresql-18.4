@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/libpq/fe-lobj.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/interfaces/libpq/fe-lobj.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのラージオブジェクト（Large Object: LO）を操作するためのフロントエンドインターフェースを提供します。クライアントアプリケーションがデータベース内の巨大なバイナリデータを、ファイルシステム上のファイルのように読み書きするためのAPIを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> ライブラリの一部として、サーバー側のラージオブジェクト関数を呼び出すための抽象化レイヤーです。<code>PQfn</code>（Fastpath関数呼び出し）を利用して、サーバー上のラージオブジェクト操作関数と通信します。</p>
+<h2>責務</h2>
+<ul>
+<li>**LO操作APIの提供**: <code>lo_open</code>, <code>lo_read</code>, <code>lo_write</code>, <code>lo_lseek</code>, <code>lo_truncate</code> 等の標準的なファイル操作インターフェースの提供。</li>
+<li>**メタデータ管理**: サーバー側のラージオブジェクト関数（<code>lo_open</code>等）のOIDを初回アクセス時に取得・キャッシュする。</li>
+<li>**ファイルI/Oとの統合**: ローカルファイルとラージオブジェクト間のインポート/エクスポート機能（<code>lo_import</code>, <code>lo_export</code>）。</li>
+<li>**データ変換**: 64ビット整数のネットワークバイトオーダー変換（<code>lo_hton64</code> / <code>lo_ntoh64</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>lo_open</code>, <code>lo_close</code>, <code>lo_read</code>, <code>lo_write</code>: ラージオブジェクト操作の主要API。</li>
+<li><code>lo_import</code>, <code>lo_export</code>: ファイルシステムとデータベース間のデータ転送用高レベル関数。</li>
+<li><code>lo_initialize</code>: 接続ごとに必要なサーバー側関数のOIDを解決し、<code>PGconn</code>構造体にキャッシュする内部関数。</li>
+<li><code>LO_BUFSIZE</code>: データ転送時のバッファサイズ（8192バイト）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lo_creat</code></li>
+<li><code>lo_create</code></li>
+<li><code>lo_lseek</code></li>
+<li><code>lo_lseek64</code></li>
+<li><code>lo_tell</code></li>
+<li><code>lo_tell64</code></li>
+<li><code>lo_truncate</code></li>
+<li><code>lo_truncate64</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 各APIは内部で <code>lo_initialize</code> を呼び出します。未初期化の場合、<code>pg_proc</code> をクエリして必要な関数のOIDを取得し、<code>PGconn</code> に格納します。 2. **実行**: <code>PQfn</code> を介して引数（<code>PQArgBlock</code>）をサーバーへ送信し、サーバー側のラージオブジェクト関数を実行します。 3. **データ転送**: <code>lo_import</code>/<code>lo_export</code> は、ローカルのファイルディスクリプタとラージオブジェクトのディスクリプタ間で、<code>LO_BUFSIZE</code> 単位のループ処理を行いデータをストリーミングします。 4. **エラー処理**: サーバー側でエラーが発生した場合、<code>PQresultStatus</code> で検知し、<code>libpq</code> のエラー状態を更新して呼び出し元にエラーを返します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq-fe.h</code>, <code>libpq-int.h</code>: <code>libpq</code> のコア構造体と関数定義。</li>
+<li><code>libpq/libpq-fs.h</code>: ラージオブジェクト関連の定数定義。</li>
+<li><code>port/pg_bswap.h</code>: バイトオーダー変換用。</li>
+<li><code>fcntl.h</code>, <code>unistd.h</code>, <code>sys/stat.h</code>: ローカルファイルI/O用。</li>
+<li><code>io.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>postgres_fe.h</code></li>
+<li><code>win32.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/large_object/</code>: サーバー側のラージオブジェクト実装。</li>
+<li><code>src/interfaces/libpq/fe-exec.c</code>: <code>PQfn</code>（Fastpath）の実装元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**64ビット対応**: <code>lo_truncate64</code> や <code>lo_lseek64</code> は、古いサーバーバージョンでは存在しない可能性があるため、実行時にOIDの有無を確認するガードが入っています。</li>
+<li>**トランザクション**: ラージオブジェクト操作は現在のトランザクション内で実行されます。<code>lo_import</code> 等の途中で失敗した場合、トランザクションがアボート状態になる点に注意してください。</li>
+<li>**歴史的経緯**: <code>lo_read</code>/<code>lo_write</code> は <code>size_t</code> を引数に取りますが、内部的には <code>int32</code> にキャストされるため、非常に大きなサイズを扱う場合は注意が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_open.html" target="wiki-view"><code>lo_open</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_close.html" target="wiki-view"><code>lo_close</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_truncate.html" target="wiki-view"><code>lo_truncate</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_truncate64.html" target="wiki-view"><code>lo_truncate64</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_read.html" target="wiki-view"><code>lo_read</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_write.html" target="wiki-view"><code>lo_write</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_lseek.html" target="wiki-view"><code>lo_lseek</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_lseek64.html" target="wiki-view"><code>lo_lseek64</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_creat.html" target="wiki-view"><code>lo_creat</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_create.html" target="wiki-view"><code>lo_create</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_tell.html" target="wiki-view"><code>lo_tell</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-lobj_c__lo_tell64.html" target="wiki-view"><code>lo_tell64</code></a></li>
+</ul></body></html>

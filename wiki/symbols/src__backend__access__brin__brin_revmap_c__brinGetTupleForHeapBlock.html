@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_revmap_c__brinGetTupleForHeapBlock.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>brinGetTupleForHeapBlock</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_revmap.c:193</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたヒープブロック番号に対応するBRINインデックス内の要約タプル（<code>BrinTuple</code>）を、リバースレンジマップ（revmap）を使用して検索・取得する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>BrinTuple *brinGetTupleForHeapBlock(BrinRevmap *revmap, BlockNumber heapBlk,
+                                    Buffer *buf, OffsetNumber *off, Size *size, int mode)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>revmap</code>: アクセス対象の<code>BrinRevmap</code>構造体。</li>
+<li><code>heapBlk</code>: 検索対象のヒープブロック番号。</li>
+<li><code>buf</code>: 検索結果のタプルを含むバッファ（入出力用）。</li>
+<li><code>off</code>: タプルのオフセット番号（出力用）。</li>
+<li><code>size</code>: タプルのサイズ（出力用、不要な場合はNULL可）。</li>
+<li><code>mode</code>: バッファロックのモード（<code>BUFFER_LOCK_SHARE</code>等）。</li>
+<li>**出力**:</li>
+<li>成功時: 対象の<code>BrinTuple</code>へのポインタ。</li>
+<li>失敗時: <code>NULL</code>（該当する範囲が要約されていない、またはタプルが見つからない場合）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>heapBlk</code>は、内部でその範囲の先頭ページ番号に正規化される。</li>
+<li>revmapページが未作成の場合、検索は即座に終了し<code>NULL</code>を返す。</li>
+<li>取得したタプルの<code>bt_blkno</code>が入力の<code>heapBlk</code>と一致することが、有効なタプルであるための条件。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>heapBlk</code>を範囲の先頭ブロック番号に正規化する。 2. <code>revmap_get_blkno</code>を用いて、対応するrevmapページ番号を取得する。 3. ループ内で以下を繰り返す:</p>
+<ul>
+<li>revmapページを読み込み、<code>HEAPBLK_TO_REVMAP_INDEX</code>で該当するTID（<code>ItemPointer</code>）を特定する。</li>
+<li>TIDが指すインデックスページを読み込み、<code>BRIN_IS_REGULAR_PAGE</code>でページ種別を確認する。</li>
+<li>ページ内のオフセット<code>*off</code>にあるタプルを取得し、<code>bt_blkno</code>が一致するか検証する。</li>
+<li>一致すればそのタプルを返し、一致しなければ並行更新を想定してループを継続する。</li>
+<p>4. 整合性チェックとして、ループ内で取得したTIDが前回と同一であればインデックス破損としてエラーを投げる。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/brin/brin.c</code> 内の複数箇所（<code>brin.c:402, 422, 752, 1860, 1938</code>）。</li>
+<li>**呼び出し先**: <code>revmap_get_blkno</code>, <code>ReadBuffer</code>, <code>LockBuffer</code>, <code>PageGetContents</code>, <code>PageGetItemId</code>, <code>PageGetItem</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>BrinRevmap</code>: revmapの状態管理構造体。</li>
+<li><code>BrinTuple</code>: インデックス内の要約データ構造。</li>
+<li><code>RevmapContents</code>: revmapページ内のTID配列。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**インデックス破損**: 連続するループで同一のTIDが返された場合、<code>ERRCODE_INDEX_CORRUPTED</code>でエラー終了する。</li>
+<li>**未要約**: 指定範囲がまだ要約されていない場合、<code>NULL</code>を返す。</li>
+<li>**並行更新**: ページ取得後にタプルが見つからない場合、並行してdesummarize（要約解除）が発生したとみなし、<code>NULL</code>を返す。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は、revmapのキャッシュ（<code>rm_currBuf</code>）を利用して効率化を図っている。</li>
+<li>ページロックの取得・解放が頻繁に行われるため、ロック順序やデッドロックの可能性に注意すること。</li>
+<li><code>mode</code>引数は、呼び出し元がタプルに対してどのような操作（読み取りのみか更新か）を意図しているかに依存する。</li>
+</ul></body></html>

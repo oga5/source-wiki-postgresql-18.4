@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/cache/typcache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/cache/typcache.c</h1>
+<h2>概要</h2>
+<p><code>typcache.c</code> は、データ型のメタデータ（<code>pg_type</code> に直接含まれない情報）をメモリ上にキャッシュし、クエリ実行時のルックアップを高速化するモジュールです。特に、演算子クラス（btree/hash）、比較関数、複合型のタプル記述子（TupleDesc）、ドメイン制約、列挙型のソート順などを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> サブシステムの一部として、<code>syscache.c</code>（カタログキャッシュ）の上位層に位置します。カタログキャッシュがタプル単位のキャッシュであるのに対し、本モジュールはそれらを統合・加工した「型情報」という高レベルなオブジェクトを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型情報の集約**: <code>pg_type</code>, <code>pg_opclass</code>, <code>pg_constraint</code> 等から情報を集約し、<code>TypeCacheEntry</code> として保持。</li>
+<li>**演算子・関数の解決**: 型に応じたデフォルトの比較演算子やハッシュ関数を特定し、<code>FmgrInfo</code> をキャッシュして実行時のオーバーヘッドを削減。</li>
+<li>**複合型・ドメイン管理**: 複合型の <code>TupleDesc</code> やドメインの制約式を管理し、DDL変更時に適切に無効化。</li>
+<li>**並列クエリ対応**: <code>SharedRecordTypmodRegistry</code> を通じて、パラレルワーカー間でレコード型の定義を共有。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><code>TypeCacheHash</code>: 型OIDをキーとするメインのハッシュテーブル。</li>
+<li><code>RelIdToTypeIdCacheHash</code>: リレーションOIDから複合型OIDへのマッピング。</li>
+<li><code>TypeCacheEntry</code>: 型情報を保持する中心的な構造体。</li>
+</ul>
+<h3>ドメイン・列挙型</h3>
+<ul>
+<li><code>DomainConstraintCache</code>: ドメインの制約式（<code>Expr</code>）を保持。</li>
+<li><code>TypeCacheEnumData</code>: 列挙型のソート順序を高速比較するためのビットマップと配列。</li>
+</ul>
+<h3>レコード型（匿名型）</h3>
+<ul>
+<li><code>RecordCacheHash</code>: <code>TupleDesc</code> をキーにレコード型を検索するハッシュテーブル。</li>
+<li><code>RecordCacheArray</code>: <code>typmod</code> をインデックスとして <code>TupleDesc</code> を高速取得する配列。</li>
+<li><code>SharedRecordTypmodRegistry</code>: 並列クエリ用の共有メモリ上のレコード型レジストリ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DomainConstraintCache</code></li>
+<li><code>EnumItem</code></li>
+<li><code>InitDomainConstraintRef</code></li>
+<li><code>RecordCacheArrayEntry</code></li>
+<li><code>RecordCacheEntry</code></li>
+<li><code>RelIdToTypeIdCacheEntry</code></li>
+<li><code>SharedRecordTableEntry</code></li>
+<li><code>SharedRecordTableKey</code></li>
+<li><code>SharedRecordTypmodRegistry</code></li>
+<li><code>SharedRecordTypmodRegistryInit</code></li>
+<li><code>SharedTypmodTableEntry</code></li>
+<li><code>TypeCacheEnumData</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>lookup_type_cache(type_id, flags)</code> がエントリを検索。存在しない場合はシステムカタログから構築。 2. **遅延初期化**: <code>flags</code> で指定された情報（<code>TYPECACHE_TUPDESC</code> 等）が未ロードの場合、各 <code>load_*</code> 関数（<code>load_typcache_tupdesc</code> 等）が呼ばれ、必要なカタログ情報を取得。 3. **無効化**: <code>TypeCacheRelCallback</code> 等のコールバックが <code>inval.c</code> から呼び出され、カタログ更新時にキャッシュフラグをクリア。 4. **並列共有**: リーダープロセスが <code>SharedRecordTypmodRegistryInit</code> で共有メモリを初期化し、ワーカーが <code>SharedRecordTypmodRegistryAttach</code> で接続。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/syscache.h</code>: カタログキャッシュへのアクセス。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化イベントの受信。</li>
+<li><code>access/htup_details.h</code>: システムカタログタプルの解析。</li>
+<li><code>lib/dshash.h</code> / <code>storage/dsm.h</code>: 並列クエリ用の共有メモリ管理。</li>
+<li><code>access/hash.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/session.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_range.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lwlock.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/typcache.h</code>: 公開構造体とAPI定義。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: 基盤となるカタログキャッシュ。</li>
+<li><code>src/backend/utils/cache/relcache.c</code>: リレーション記述子の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>TypeCacheEntry</code> はバックエンドの生存期間中永続します。<code>TupleDesc</code> は参照カウント管理されますが、<code>typcache</code> 内の参照はリソースオーナーに紐付けない特殊な管理が行われます。</li>
+<li>**無効化の挙動**: <code>TCFLAGS_OPERATOR_FLAGS</code> 等のフラグをクリアすることで、次回アクセス時に再ロードを強制する仕組みです。</li>
+<li>**制約事項**: <code>record</code> 型の匿名性は、<code>typmod</code> を通じて管理されます。並列クエリ環境では、リーダーが作成した <code>typmod</code> をワーカーが共有する設計になっています。</li>
+<li>**省略された詳細**: <code>injection_point</code> や一部のデバッグ用アサーションロジックは、コードの主要な責務から外れるため詳細な説明を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RelIdToTypeIdCacheEntry.html" target="wiki-view"><code>RelIdToTypeIdCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__DomainConstraintCache.html" target="wiki-view"><code>DomainConstraintCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__EnumItem.html" target="wiki-view"><code>EnumItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__TypeCacheEnumData.html" target="wiki-view"><code>TypeCacheEnumData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RecordCacheEntry.html" target="wiki-view"><code>RecordCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistry.html" target="wiki-view"><code>SharedRecordTypmodRegistry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTableKey.html" target="wiki-view"><code>SharedRecordTableKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTableEntry.html" target="wiki-view"><code>SharedRecordTableEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedTypmodTableEntry.html" target="wiki-view"><code>SharedTypmodTableEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RecordCacheArrayEntry.html" target="wiki-view"><code>RecordCacheArrayEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__InitDomainConstraintRef.html" target="wiki-view"><code>InitDomainConstraintRef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistryInit.html" target="wiki-view"><code>SharedRecordTypmodRegistryInit</code></a></li>
+</ul></body></html>

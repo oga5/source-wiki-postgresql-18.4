@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__brin__brin_xlog_c__brin_xlog_insert_update.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>brin_xlog_insert_update</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/brin/brin_xlog.c:45</code></li>
+</ul>
+<h2>目的</h2>
+<p>BRINインデックスにおける挿入および更新操作のWALリプレイを実行し、インデックスページへのタプル追加とREVMAP（範囲マップ）の更新を統合的に管理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void brin_xlog_insert_update(XLogReaderState *record, xl_brin_insert *xlrec)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>record</code>: リプレイ対象のWALレコード状態。</li>
+<li><code>xlrec</code>: 挿入/更新操作の詳細情報を含む構造体（ヒープブロック番号、オフセット番号、範囲あたりのページ数など）。</li>
+<li>**出力**: なし（副作用としてバッファの更新とディスクへの反映を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>xlrec-&gt;heapBlk</code> と挿入される <code>BrinTuple</code> の <code>bt_blkno</code> が一致していること。</li>
+<li>REVMAPの更新時には、対象のインデックスページが有効なバッファとして取得可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ページ初期化**: <code>XLOG_BRIN_INIT_PAGE</code> フラグがある場合、<code>brin_page_init</code> を呼び出しページを初期化する。 2. **インデックスページ更新**:</p>
+<ul>
+<li><code>XLogReadBufferForRedo</code> により対象ページを取得。</li>
+<li><code>BLK_NEEDS_REDO</code> の場合、<code>PageAddItem</code> を用いてタプルをページに追加し、LSNを更新してバッファをダーティにする。</li>
+<p>3. **REVMAP更新**:</p>
+<li>インデックスページに対応するREVMAPページを読み込む。</li>
+<li><code>brinSetHeapBlockItemptr</code> を呼び出し、ヒープブロックとインデックス内のタプル位置を関連付ける。</li>
+<li>LSNを更新し、バッファをダーティにする。</li>
+<p>4. **終了処理**: 各ステップで取得したバッファを解放する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>brin_xlog_insert</code> (<code>src/backend/access/brin/brin_xlog.c:128</code>)</li>
+<li><code>brin_xlog_update</code> (<code>src/backend/access/brin/brin_xlog.c:160</code>)</li>
+<li>**呼び出し先**:</li>
+<li><code>XLogInitBufferForRedo</code>, <code>XLogReadBufferForRedo</code>, <code>BufferGetPage</code>, <code>brin_page_init</code>, <code>PageAddItem</code>, <code>PageSetLSN</code>, <code>MarkBufferDirty</code>, <code>UnlockReleaseBuffer</code>, <code>brinSetHeapBlockItemptr</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_brin_insert</code>: WALレコードのデータ構造。</li>
+<li><code>BrinTuple</code>: インデックスに格納されるタプル形式。</li>
+<li><code>Buffer</code>: PostgreSQLのバッファ管理構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>PageGetMaxOffsetNumber(page) + 1 &lt; offnum</code>: ページ内のオフセット番号が不正な場合に <code>PANIC</code> を発生させる。</li>
+<li><code>PageAddItem</code> が <code>InvalidOffsetNumber</code> を返した場合、タプル追加失敗として <code>PANIC</code> を発生させる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はREVMAPの更新を伴うため、インデックスページとREVMAPページの整合性を維持する責任がある。</li>
+<li>FSM（空き領域マップ）の更新は本関数内では行われない（ソースコード内の <code>XXX</code> コメント参照）。</li>
+</ul></body></html>

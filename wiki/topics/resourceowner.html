@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/resourceowner.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ResourceOwner</h1>
+<h2>概念</h2>
+<p><code>ResourceOwner</code> は、クエリやトランザクションの生存期間中に確保されたシステムリソース（バッファピン、ロック、キャッシュ参照、AIO ハンドル、OpenSSL ハンドルなど）を追跡し、適切なタイミングで確実に解放するためのメモリ管理・クリーンアップ機構です。リソースオーナーは親子関係による階層構造を持つことができます。</p>
+<h2>なぜ重要か</h2>
+<p>トランザクションのコミット、アボート、またはエラー発生時などに、確保されたリソースがリークすることなく、定義されたフェーズや優先度に従って確実に解放されるようにするために極めて重要です。これにより、システムの安定性とリソース管理の正確性が保証されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/resowner</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/resowner.h#ResourceOwner</code>**: リソースオーナーを表す不透明なデータ構造（<code>ResourceOwnerData</code> へのポインタ）の定義。</li>
+<li>**<code>symbol:src/backend/utils/resowner/resowner.c#ResourceOwnerCreate</code>**: 新しい <code>ResourceOwner</code> インスタンスを <code>TopMemoryContext</code> 上に生成し、階層構造に組み込む関数。</li>
+<li>**<code>symbol:src/backend/utils/resowner/resowner.c#ResourceOwnerDelete</code>**: 指定された <code>ResourceOwner</code> をメモリから解放し、階層から切り離す関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>リソースの登録から解放、そして削除に至る完全なライフサイクル全体の詳細な流れ（サブトランザクションでの伝播や具体的なエラーハンドリング時の挙動など）は、提供された情報からは完全には記述されておらず、一部未検証です。</p>
+<p>現時点で判明している部分的な流れは以下の通りです：</p>
+<p>1. **生成**: トランザクション開始時（<code>xact.c</code>）、ポータル作成時（<code>portalmem.c</code>）、またはPL/pgSQLプロシージャ実行時などに <code>ResourceOwnerCreate</code> が呼び出され、必要に応じて親オーナーとリンクされた <code>ResourceOwner</code> が生成されます。 2. **登録と追跡**: リソース確保時に <code>ResourceOwnerRemember</code> を介してリソースを登録し、内部の固定長配列やハッシュテーブルで追跡します。 3. **解放**: <code>ResourceOwnerRelease</code> が呼び出されると、定義されたフェーズ（<code>BEFORE_LOCKS</code>, <code>LOCKS</code>, <code>AFTER_LOCKS</code>）と優先度（<code>RELEASE_PRIO_*</code>）に従い、登録されたコールバックを実行してリソースを解放します。 4. **削除**: リソースが空になった後、<code>ResourceOwnerDelete</code> を呼び出します。これにより、子オーナーが再帰的に削除され、親とのリンクが解除された後、メモリが解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**削除時のカレント制限**: 削除対象の <code>owner</code> は、現在のリソースオーナー（<code>CurrentResourceOwner</code>）と同一であってはなりません（<code>ResourceOwnerDelete</code> の前提条件）。</li>
+<li>**削除時のリソース空条件**: <code>ResourceOwnerDelete</code> を呼び出す際、<code>owner</code> が保持するリソース（配列、ハッシュテーブル、ロック）はすべて解放済みでなければなりません（<code>narr == 0</code>, <code>nhash == 0</code>, <code>nlocks</code> が 0 または <code>MAX_RESOWNER_LOCKS + 1</code> であること）。</li>
+<li>**コールバックの安全性**: <code>ReleaseResource</code> コールバックは、コミットまたはアボート後に実行されるため、失敗が許されない非クリティカルなクリーンアップ処理である必要があります。</li>
+<li>**メモリコンテキスト**: 生成された <code>ResourceOwner</code> は <code>TopMemoryContext</code> に割り当てられます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**リソースリーク**: 追跡対象のリソースが適切に登録・忘却（<code>ResourceOwnerForget</code>）されない場合、リソースリークが発生します。</li>
+<li>**未解放状態での削除**: リソースが適切に解放されていない状態で <code>ResourceOwnerDelete</code> を呼び出すと、アサーション失敗による異常終了や、リソースリーク、不正なメモリ参照を引き起こす可能性があります。</li>
+<li>**スタックオーバーフロー**: 階層構造の削除は再帰的に行われるため、極端に深い階層を持つオーナーを削除する際はスタックオーバーフローに注意が必要です。</li>
+<li>**優先度設定の誤り**: 拡張機能で新しいリソース型を追加する場合、既存の <code>RELEASE_PRIO_*</code> に基づく適切な優先度を設定しなければ、解放順序の不整合を招く恐れがあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/resowner/resowner.c</code></li>
+<li><code>src/include/utils/resowner.h</code></li>
+<li><code>src/backend/utils/resowner/README</code> (ソースコード内の詳細な設計ドキュメント)</li>
+</ul></body></html>

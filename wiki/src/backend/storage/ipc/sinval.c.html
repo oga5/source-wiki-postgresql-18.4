@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/sinval.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/sinval.c</h1>
+<h2>概要</h2>
+<p><code>sinval.c</code> は、PostgreSQL の共有キャッシュ無効化（Shared Invalidation: SI）メカニズムにおける通信層を担います。バックエンド間でカタログやリレーションのキャッシュ整合性を維持するためのメッセージ送受信を制御します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールにおいて、<code>sinvaladt.c</code> が共有メモリ上のメッセージキュー管理という「データ構造」を担当するのに対し、本ファイルは「通信プロトコルとイベント処理」を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メッセージ送信**: <code>SendSharedInvalidMessages</code> を通じて、ローカルの変更を共有キューへ書き込む。</li>
+<li>**メッセージ受信**: <code>ReceiveSharedInvalidMessages</code> を通じて、共有キューからメッセージを読み込み、キャッシュ無効化関数を呼び出す。</li>
+<li>**遅延バックエンドの救済**: 処理が滞っているバックエンドに対し、<code>PROCSIG_CATCHUP_INTERRUPT</code> を用いて強制的にキャッシュ更新を促す。</li>
+<li>**再帰的処理のサポート**: キャッシュ無効化処理中に発生する再帰的な呼び出しを安全に処理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SharedInvalidMessageCounter</code>: 処理された無効化メッセージの総数。</li>
+<li><code>catchupInterruptPending</code>: 遅延バックエンドが処理すべきイベントがあることを示すフラグ。</li>
+<li><code>SendSharedInvalidMessages()</code>: メッセージを共有キューへ投入するエントリポイント。</li>
+<li><code>ReceiveSharedInvalidMessages()</code>: キューを読み込み、指定されたコールバックを実行する。</li>
+<li><code>HandleCatchupInterrupt()</code>: シグナルハンドラから呼び出され、キャッチアップを予約する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>HandleCatchupInterrupt</code></li>
+<li><code>ProcessCatchupInterrupt</code></li>
+<li><code>ReceiveSharedInvalidMessages</code></li>
+<li><code>SendSharedInvalidMessages</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **送信**: <code>CacheInvalidateHeapTuple</code> 等から呼ばれ、<code>SIInsertDataEntries</code> を経由して共有メモリ上のリングバッファにメッセージが書き込まれます。 2. **受信**: バックエンドが <code>AcceptInvalidationMessages</code> を呼び出すと、<code>ReceiveSharedInvalidMessages</code> が実行されます。 3. **再帰処理**: <code>ReceiveSharedInvalidMessages</code> 内では静的バッファを使用しており、無効化処理中に別の無効化が発生しても、スタック上のメッセージを処理し終えるまでループが継続されます。 4. **キャッチアップ**: 滞留が検知されるとシグナルが送られ、<code>HandleCatchupInterrupt</code> がラッチをセットします。その後、メインループが <code>ProcessCatchupInterrupt</code> を呼び出し、トランザクションの開始/終了を伴ってキャッシュを強制的に同期させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/sinvaladt.h</code>: 共有メモリ上のメッセージキュー操作関数群。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化のインターフェース定義。</li>
+<li><code>storage/latch.h</code>: プロセス間通知（ラッチ）用。</li>
+<li><code>access/xact.h</code>: キャッチアップ時のトランザクション制御用。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/sinval.h</code>: メッセージ構造体（<code>SharedInvalCatcacheMsg</code> 等）の定義。</li>
+<li><code>src/backend/storage/ipc/sinvaladt.c</code>: 共有メモリ上のキューの実装詳細。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰的呼び出し**: <code>ReceiveSharedInvalidMessages</code> 内の静的バッファは、無効化処理中に発生する再帰的なキャッシュ更新を安全に処理するための設計です。このロジックを理解する際は、<code>nextmsg</code> と <code>nummsgs</code> の管理に注目してください。</li>
+<li>**キャッチアップの仕組み**: キャッチアップは「遅延しているバックエンドにシグナルを送り、強制的に処理させる」という仕組みです。これにより、キューのオーバーフローによるキャッシュ全リセット（非常に高コスト）を回避しています。</li>
+<li>**シグナルハンドラ**: <code>HandleCatchupInterrupt</code> はシグナルハンドラから呼ばれるため、非常に限定的な操作しか行えません。実際の処理は必ずメインループ側の <code>ProcessCatchupInterrupt</code> で行われる点に注意してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinval_c__SendSharedInvalidMessages.html" target="wiki-view"><code>SendSharedInvalidMessages</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinval_c__ReceiveSharedInvalidMessages.html" target="wiki-view"><code>ReceiveSharedInvalidMessages</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinval_c__HandleCatchupInterrupt.html" target="wiki-view"><code>HandleCatchupInterrupt</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__sinval_c__ProcessCatchupInterrupt.html" target="wiki-view"><code>ProcessCatchupInterrupt</code></a></li>
+</ul></body></html>

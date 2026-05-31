@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pgstattuple__pgstattuple_c__pgstat_index.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pgstat_index</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pgstattuple/pgstattuple.c:536</code></li>
+</ul>
+<h2>目的</h2>
+<p>インデックスリレーションを走査し、ライブ/デッドタプルの統計情報を算出するための汎用的なループ処理を提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static Datum pgstat_index(Relation rel, BlockNumber start, pgstat_page pagefn, FunctionCallInfo fcinfo)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>rel</code>: 走査対象のインデックスリレーション。</li>
+<li><code>start</code>: 走査を開始するブロック番号。</li>
+<li><code>pagefn</code>: 各ページを処理するためのコールバック関数。</li>
+<li><code>fcinfo</code>: SQL 関数呼び出し情報。</li>
+<li>**出力**:</li>
+<li><code>Datum</code>: <code>build_pgstattuple_type</code> によって生成された、統計情報を含む複合型。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は対象リレーションに対して適切なロックを保持している必要があります。</li>
+<li><code>pagefn</code> は <code>pgstat_page</code> 型のシグネチャに従い、<code>pgstattuple_type</code> 構造体を更新する責任を持ちます。</li>
+<li>走査中は <code>AccessShareLock</code> が保持され、終了時に <code>relation_close</code> によって解放されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>GetAccessStrategy(BAS_BULKREAD)</code> を使用してバッファアクセス戦略を初期化します。 2. 無限ループ内で以下の処理を繰り返します。</p>
+<ul>
+<li><code>LockRelationForExtension</code> を用いて現在のリレーションのブロック数を取得します。</li>
+<li>現在のブロック番号 <code>blkno</code> が総ブロック数 <code>nblocks</code> に達した場合、<code>stat.table_len</code> を設定してループを終了します。</li>
+<li><code>blkno</code> から <code>nblocks</code> までページを順次走査し、各ページに対して <code>pagefn</code> を呼び出します。</li>
+<li>各ページ処理の合間に <code>CHECK_FOR_INTERRUPTS()</code> を実行し、クエリキャンセルに対応します。</li>
+<p>3. 最後に <code>relation_close</code> でリレーションを閉じ、<code>build_pgstattuple_type</code> を呼び出して結果を返却します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>contrib/pgstattuple/pgstattuple.c</code> 内の各インデックス統計関数（B-tree, Hash, GiST 用のラッパー関数から呼び出されます）。</li>
+<li>**呼び出し先**:</li>
+<li><code>GetAccessStrategy</code></li>
+<li><code>LockRelationForExtension</code> / <code>UnlockRelationForExtension</code></li>
+<li><code>RelationGetNumberOfBlocks</code></li>
+<li><code>CHECK_FOR_INTERRUPTS</code></li>
+<li><code>pagefn</code> (引数で渡された関数)</li>
+<li><code>relation_close</code></li>
+<li><code>build_pgstattuple_type</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>pgstattuple_type</code>: 統計情報を保持する構造体。</li>
+<li><code>Relation</code>: PostgreSQL のリレーション記述子。</li>
+<li><code>BufferAccessStrategy</code>: バッファ読み込み戦略。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>大規模なインデックスに対して実行した場合、全ページを物理的に読み込むため I/O 負荷が高くなります。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> により、ユーザーによるクエリキャンセルが発生した場合は処理が中断されます。</li>
+<li><code>start</code> 引数に不正なブロック番号が指定された場合の挙動は、<code>pagefn</code> の実装に依存します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は汎用的なループ構造を提供しており、特定のインデックス型（B-tree, Hash, GiST 等）に依存しない設計になっています。</li>
+<li>統計情報の集計ロジックを変更する場合は、<code>pagefn</code> に渡される <code>pgstattuple_type</code> 構造体の定義と整合性を取る必要があります。</li>
+</ul></body></html>

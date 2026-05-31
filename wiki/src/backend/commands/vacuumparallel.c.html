@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/vacuumparallel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/vacuumparallel.c</h1>
+<h2>概要</h2>
+<p><code>vacuumparallel.c</code> は、PostgreSQL の <code>VACUUM</code> 処理において、インデックスのバルク削除およびクリーンアップを並列実行するためのサポートルーチンを提供します。複数のワーカープロセスを起動し、共有メモリ（DSM）を介してインデックス統計や削除対象のタプル情報（<code>TidStore</code>）を共有することで、大規模テーブルのメンテナンス時間を短縮します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands/vacuum.c</code>（Lazy Vacuum のメインロジック）から呼び出される補助モジュールです。インデックス処理のフェーズにおいて、単一プロセスではなく並列実行が可能な場合に、その実行環境の構築と制御を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**並列実行環境の管理**: <code>ParallelVacuumState</code> の初期化、ワーカープロセスの起動、および終了処理。</li>
+<li>**共有リソースの調整**: <code>maintenance_work_mem</code> のワーカー間分配や、共有コストベースの遅延制御（<code>VacuumSharedCostBalance</code>）の管理。</li>
+<li>**インデックス処理の分散**: インデックスの並列安全性を判定し、リーダーとワーカー間でタスクを動的に割り当て。</li>
+<li>**統計情報の集約**: 各ワーカーが処理したインデックスの統計結果（<code>IndexBulkDeleteResult</code>）を DSM から回収。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ParallelVacuumState</code>: 並列 VACUUM の状態を保持するメイン構造体。</li>
+<li><code>PVShared</code>: DSM 上に配置される、全ワーカーで共有される制御情報。</li>
+<li><code>parallel_vacuum_init</code>: 並列実行の準備を行い、コンテキストを作成する。</li>
+<li><code>parallel_vacuum_bulkdel_all_indexes</code>: インデックスのバルク削除フェーズを開始する。</li>
+<li><code>parallel_vacuum_main</code>: 並列ワーカープロセスのエントリポイント。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PVIndStats</code></li>
+<li><code>PVIndVacStatus</code></li>
+<li><code>parallel_vacuum_cleanup_all_indexes</code></li>
+<li><code>parallel_vacuum_compute_workers</code></li>
+<li><code>parallel_vacuum_end</code></li>
+<li><code>parallel_vacuum_get_dead_items</code></li>
+<li><code>parallel_vacuum_process_all_indexes</code></li>
+<li><code>parallel_vacuum_reset_dead_items</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>parallel_vacuum_init</code> が <code>ParallelContext</code> を作成し、DSM 上に <code>PVShared</code> や <code>TidStore</code> を確保します。 2. **タスク割り当て**: リーダープロセスが <code>parallel_vacuum_process_all_indexes</code> を呼び出し、各インデックスのステータスを更新してワーカーを起動します。 3. **並列実行**: リーダーとワーカーは <code>parallel_vacuum_process_safe_indexes</code> を通じて、アトミックなインデックスカウンタ（<code>shared-&gt;idx</code>）をインクリメントしながら、未処理のインデックスを順次取得・処理します。 4. **同期と終了**: 全ワーカーの完了を待ち、リーダーが統計情報を回収して <code>parallel_vacuum_end</code> で DSM を解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/amapi.h</code>, <code>access/table.h</code>: インデックスおよびテーブルアクセスのための API。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理とアクセス戦略。</li>
+<li><code>commands/vacuum.h</code>: VACUUM 関連の定義と構造体。</li>
+<li><code>pgstat.h</code>: 進捗報告と統計情報。</li>
+<li><code>access/xact.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/vacuum.c</code>: 本ファイルの呼び出し元。VACUUM 全体のフローを理解するために必須。</li>
+<li><code>src/backend/access/nbtree/nbtvacuum.c</code>: インデックスごとの具体的な VACUUM 処理の実装。</li>
+<li><code>src/backend/storage/ipc/dsa.c</code>: 共有メモリ上の動的メモリ管理（<code>TidStore</code> の基盤）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**並列安全性**: すべてのインデックスが並列処理に適しているわけではありません。<code>amparallelvacuumoptions</code> を確認し、<code>min_parallel_index_scan_size</code> 以下の小さなインデックスはリーダーが単独で処理する設計になっています。</li>
+<li>**エラーハンドリング**: 並列ワーカー内でエラーが発生した場合、<code>parallel_vacuum_error_callback</code> が呼び出され、どのインデックス処理中に失敗したかが報告されます。</li>
+<li>**メモリ管理**: ワーカーは <code>maintenance_work_mem</code> を共有するため、ワーカー数に応じて自動的に分割されます。この設定は <code>PVShared</code> を通じて各ワーカーに伝達されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__PVShared.html" target="wiki-view"><code>PVShared</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__PVIndVacStatus.html" target="wiki-view"><code>PVIndVacStatus</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__PVIndStats.html" target="wiki-view"><code>PVIndStats</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__ParallelVacuumState.html" target="wiki-view"><code>ParallelVacuumState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_init.html" target="wiki-view"><code>parallel_vacuum_init</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_end.html" target="wiki-view"><code>parallel_vacuum_end</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_get_dead_items.html" target="wiki-view"><code>parallel_vacuum_get_dead_items</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_reset_dead_items.html" target="wiki-view"><code>parallel_vacuum_reset_dead_items</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_bulkdel_all_indexes.html" target="wiki-view"><code>parallel_vacuum_bulkdel_all_indexes</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_cleanup_all_indexes.html" target="wiki-view"><code>parallel_vacuum_cleanup_all_indexes</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_compute_workers.html" target="wiki-view"><code>parallel_vacuum_compute_workers</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__vacuumparallel_c__parallel_vacuum_process_all_indexes.html" target="wiki-view"><code>parallel_vacuum_process_all_indexes</code></a></li>
+</ul></body></html>

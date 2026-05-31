@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pgcrypto/openssl.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pgcrypto/openssl.c</h1>
+<h2>概要</h2>
+<p><code>openssl.c</code> は、<code>pgcrypto</code> モジュールが提供する暗号化およびハッシュ機能を OpenSSL ライブラリの <code>EVP</code> (Envelope) API を介して実装するためのラッパーです。PostgreSQL のメモリ管理およびリソース管理機構と OpenSSL のライフサイクルを統合する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pgcrypto</code> のバックエンド実装の一つであり、<code>px.h</code> で定義された抽象インターフェース（<code>PX_MD</code>, <code>PX_Cipher</code>）を OpenSSL の具体的な関数群にマッピングします。他の実装（<code>pgp-mpi-openssl.c</code> など）と連携し、PostgreSQL が提供する暗号化関数の基盤を支えています。</p>
+<h2>責務</h2>
+<ul>
+<li>**抽象化**: OpenSSL の複雑な <code>EVP</code> API を <code>pgcrypto</code> 共通のインターフェースへ変換する。</li>
+<li>**リソース管理**: <code>ResourceOwner</code> を使用し、エラー発生時やトランザクション終了時に OpenSSL のコンテキスト（<code>EVP_MD_CTX</code>, <code>EVP_CIPHER_CTX</code>）を確実に解放する。</li>
+<li>**互換性維持**: 暗号アルゴリズムのエイリアス解決や、OpenSSL のバージョン差異（FIPS モードの判定など）の吸収。</li>
+<li>**安全性**: Blowfish 等の鍵長制限チェックなど、OpenSSL の挙動を補完する検証を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>OSSLDigest</code>: ハッシュ計算用のコンテキスト構造体。<code>ResourceOwner</code> と紐付けられる。</li>
+<li><code>OSSLCipher</code>: 暗号化/復号用のコンテキスト構造体。鍵や IV の状態を保持する。</li>
+<li><code>px_find_digest()</code>: 指定された名前のハッシュアルゴリズムを検索し、初期化済みの <code>PX_MD</code> を返す。</li>
+<li><code>px_find_cipher()</code>: 指定された名前の暗号アルゴリズムを検索し、初期化済みの <code>PX_Cipher</code> を返す。</li>
+<li><code>CheckBuiltinCryptoMode()</code>: FIPS モード等の設定に基づき、組み込み暗号機能の使用可否を検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckFIPSMode</code></li>
+<li><code>ResOwnerReleaseOSSLCipher</code></li>
+<li><code>ResOwnerReleaseOSSLDigest</code></li>
+<li><code>ResourceOwnerForgetOSSLCipher</code></li>
+<li><code>ResourceOwnerForgetOSSLDigest</code></li>
+<li><code>ResourceOwnerRememberOSSLCipher</code></li>
+<li><code>ResourceOwnerRememberOSSLDigest</code></li>
+<li><code>ossl_EVP_cipher_func</code></li>
+<li><code>ossl_cipher</code></li>
+<li><code>ossl_cipher_lookup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>px_find_...</code> 関数が呼ばれると、<code>TopMemoryContext</code> 上にコンテキスト構造体（<code>OSSLDigest</code> または <code>OSSLCipher</code>）を確保し、<code>ResourceOwner</code> に登録する。 2. **操作**: <code>update</code> や <code>encrypt/decrypt</code> などのメソッドが呼ばれると、内部で <code>EVP_DigestUpdate</code> や <code>EVP_CipherUpdate</code> 等の OpenSSL 関数を呼び出す。 3. **終了**: <code>free</code> メソッドが呼ばれると、OpenSSL のコンテキストを破棄し、<code>ResourceOwner</code> から登録を解除する。 4. **異常系**: トランザクションがアボートされると、<code>ResourceOwner</code> のコールバック（<code>ResOwnerRelease...</code>）が自動的に呼び出され、メモリリークを防ぐ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL のコア定義。</li>
+<li><code>openssl/evp.h</code>, <code>openssl/crypto.h</code>: OpenSSL の主要な暗号化・ハッシュ API。</li>
+<li><code>px.h</code>: <code>pgcrypto</code> の内部抽象インターフェース。</li>
+<li><code>utils/resowner.h</code>: リソース管理（メモリリーク防止）のためのヘッダー。</li>
+<li><code>openssl/err.h</code></li>
+<li><code>openssl/rand.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/common/openssl.h</code>: OpenSSL のバージョン依存定義や共通設定。</li>
+<li><code>contrib/pgcrypto/px.c</code>: <code>px_find_digest</code> や <code>px_find_cipher</code> を呼び出す上位層のロジック。</li>
+<li><code>contrib/pgcrypto/pgp-mpi-openssl.c</code>: OpenSSL を使用した PGP 関連の MPI（多倍長整数）処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは OpenSSL の <code>EVP</code> API を直接ラップしているため、OpenSSL のバージョンアップに伴う挙動の変化（特に FIPS 関連）に注意が必要です。</li>
+<li><code>ResourceOwner</code> の使用は、PostgreSQL のエラーハンドリング（<code>elog(ERROR, ...)</code>）でスタックが巻き戻される際に、OpenSSL のコンテキストがリークするのを防ぐための必須の設計です。新しいアルゴリズムを追加する際は、必ず <code>ResourceOwner</code> への登録・解除フローを維持してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__OSSLDigest.html" target="wiki-view"><code>OSSLDigest</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResourceOwnerRememberOSSLDigest.html" target="wiki-view"><code>ResourceOwnerRememberOSSLDigest</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResourceOwnerForgetOSSLDigest.html" target="wiki-view"><code>ResourceOwnerForgetOSSLDigest</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResOwnerReleaseOSSLDigest.html" target="wiki-view"><code>ResOwnerReleaseOSSLDigest</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ossl_EVP_cipher_func.html" target="wiki-view"><code>ossl_EVP_cipher_func</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ossl_cipher.html" target="wiki-view"><code>ossl_cipher</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__OSSLCipher.html" target="wiki-view"><code>OSSLCipher</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResourceOwnerRememberOSSLCipher.html" target="wiki-view"><code>ResourceOwnerRememberOSSLCipher</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResourceOwnerForgetOSSLCipher.html" target="wiki-view"><code>ResourceOwnerForgetOSSLCipher</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ossl_cipher_lookup.html" target="wiki-view"><code>ossl_cipher_lookup</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__ResOwnerReleaseOSSLCipher.html" target="wiki-view"><code>ResOwnerReleaseOSSLCipher</code></a></li>
+<li><a href="../../symbols/contrib__pgcrypto__openssl_c__CheckFIPSMode.html" target="wiki-view"><code>CheckFIPSMode</code></a></li>
+</ul></body></html>

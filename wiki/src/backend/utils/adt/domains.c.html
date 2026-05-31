@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/domains.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/domains.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのドメイン型（既存のデータ型に制約を付与したもの）に対する入出力処理と制約検証を担うモジュールです。ドメイン型への入力値が、定義された <code>NOT NULL</code> や <code>CHECK</code> 制約を満たしているかを検証するロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内において、型システムと実行エンジンを繋ぐ役割を果たします。ドメイン型は基底型のI/O関数を再利用しますが、本ファイルはそれに加えて「制約チェック」という追加レイヤーを挿入することで、ドメインの整合性を保証します。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O関数のラップ**: 基底型の入力関数（<code>domain_in</code>, <code>domain_recv</code>）を呼び出した後、制約検証を自動的に実行する。</li>
+<li>**制約のキャッシュ**: カタログアクセスを最小化するため、<code>DomainIOData</code> 構造体を用いて制約情報や実行コンテキストをキャッシュする。</li>
+<li>**制約検証の実行**: <code>CHECK</code> 制約を <code>ExprContext</code> 上で評価し、違反時には適切なエラー情報を生成する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DomainIOData</code>: ドメインのI/O状態を保持する構造体。基底型の関数情報、制約リスト、評価用コンテキストを格納。</li>
+<li><code>domain_in</code> / <code>domain_recv</code>: ドメイン型の標準的な入力関数。SQLレベルでの型変換時に呼び出される。</li>
+<li><code>domain_check_input</code>: <code>DomainIOData</code> を用いて、値が制約を満たすか検証する内部関数。</li>
+<li><code>domain_check</code>: 既存のデータに対してドメイン制約を再検証するための公開API。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>domain_check_internal</code></li>
+<li><code>domain_check_safe</code></li>
+<li><code>domain_state_setup</code></li>
+<li><code>errdatatype</code></li>
+<li><code>errdomainconstraint</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>domain_state_setup</code> が呼び出され、<code>TypeCache</code> から基底型情報と制約情報を取得し、<code>DomainIOData</code> を構築する。 2.  **変換**: <code>domain_in</code> 等が基底型の入力関数を実行し、生の <code>Datum</code> を生成する。 3.  **検証**: <code>domain_check_input</code> が <code>DomainConstraintRef</code> を通じて制約リストを走査する。</p>
+<ul>
+<li><code>NOT NULL</code> 制約: 値が NULL かどうかを判定。</li>
+<li><code>CHECK</code> 制約: <code>ExprContext</code> を作成し、<code>ExecCheck</code> で式を評価。</li>
+<p>4.  **終了**: 検証失敗時はエラーを報告し、成功時は値を返す。<code>ReScanExprContext</code> でメモリをクリーンアップする。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/typcache.h</code>: ドメインの基底型情報や制約情報の取得に使用。</li>
+<li><code>executor/executor.h</code>: <code>CHECK</code> 制約の式評価（<code>ExecCheck</code>）に使用。</li>
+<li><code>utils/lsyscache.h</code>: 型情報の検索に使用。</li>
+<li><code>catalog/pg_type.h</code>: システムカタログの型定義構造体。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/expandeddatum.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/cache/typcache.c</code>: ドメイン制約のキャッシュ管理の実体。</li>
+<li><code>src/backend/executor/execExpr.c</code>: <code>CHECK</code> 制約の評価ロジックの基盤。</li>
+<li><code>src/backend/utils/adt/domains.c</code> の各関数は、SQLの <code>CREATE DOMAIN</code> で定義された制約を評価するために、実行時の式評価エンジンと密接に連携します。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キャッシュの生存期間**: <code>DomainIOData</code> は <code>FmgrInfo</code> の <code>fn_extra</code> に保持されます。これにより、同一の関数呼び出しが続く間はカタログ検索をスキップできます。</li>
+<li>**エラーハンドリング**: <code>escontext</code> を介したエラー報告に対応しており、<code>domain_check_safe</code> を使用することで、例外を投げずに検証結果をブール値で受け取ることが可能です。</li>
+<li>**メモリ管理**: <code>CHECK</code> 制約の評価には <code>ExprContext</code> を使用するため、メモリリークを防ぐための <code>ReScanExprContext</code> の呼び出しが重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__DomainIOData.html" target="wiki-view"><code>DomainIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_state_setup.html" target="wiki-view"><code>domain_state_setup</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_check_input.html" target="wiki-view"><code>domain_check_input</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_in.html" target="wiki-view"><code>domain_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_recv.html" target="wiki-view"><code>domain_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_check.html" target="wiki-view"><code>domain_check</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_check_safe.html" target="wiki-view"><code>domain_check_safe</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__domain_check_internal.html" target="wiki-view"><code>domain_check_internal</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__errdatatype.html" target="wiki-view"><code>errdatatype</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__domains_c__errdomainconstraint.html" target="wiki-view"><code>errdomainconstraint</code></a></li>
+</ul></body></html>

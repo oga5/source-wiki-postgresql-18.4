@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__pg_visibility__pg_visibility_c__pg_check_frozen.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_check_frozen</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/pg_visibility/pg_visibility.c:323</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたリレーションにおいて、可視性マップ（VM）の「all-frozen」ビットが立っているにもかかわらず、実際にはフリーズが必要なタプルが存在するページ（破損箇所）を特定し、そのTID（Tuple Identifier）を返す。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>Datum pg_check_frozen(PG_FUNCTION_ARGS)</code></p>
+<ul>
+<li>PostgreSQLのSRF（Set-Returning Function）として実装されている。</li>
+</ul>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PG_GETARG_OID(0)</code> により、対象リレーションのOIDを受け取る。</li>
+<li>**出力**: 破損が検出されたタプルのTID（<code>ItemPointer</code>）を順次返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>呼び出し元は <code>AccessShareLock</code> を保持している必要がある（モジュール概要より）。</li>
+<li><code>collect_corrupt_items</code> を介してリレーションの <code>relkind</code> が検証される。</li>
+<li>SRFのコンテキスト管理のため、初回呼び出し時に <code>FuncCallContext</code> が初期化される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初回呼び出し時**:</p>
+<ul>
+<li><code>SRF_FIRSTCALL_INIT()</code> でコンテキストを初期化。</li>
+<li><code>collect_corrupt_items(relid, false, true)</code> を呼び出し、リレーション全体を走査して破損タプルを収集する。第3引数 <code>true</code> はフリーズ状態のチェックを有効にするフラグである。</li>
+<li>収集結果を <code>funcctx-&gt;user_fctx</code> に格納する。</li>
+<p>2. **各呼び出し時**:</p>
+<li><code>funcctx-&gt;user_fctx</code> から収集済みデータ <code>corrupt_items</code> を取得する。</li>
+<li><code>items-&gt;next</code> が <code>items-&gt;count</code> に達するまで、保持しているTIDを順次 <code>SRF_RETURN_NEXT</code> で返す。</li>
+<p>3. **終了時**:</p>
+<li>全てのTIDを返した後、<code>SRF_RETURN_DONE</code> を返す。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: SQLインターフェース経由で呼び出される（<code>PG_FUNCTION_INFO_V1(pg_check_frozen)</code> により登録）。</li>
+<li>**呼び出し先**: </li>
+<li><code>collect_corrupt_items</code>（破損タプルの収集）</li>
+<li><code>SRF_FIRSTCALL_INIT</code>, <code>SRF_PERCALL_SETUP</code>, <code>SRF_RETURN_NEXT</code>, <code>SRF_RETURN_DONE</code>（SRF制御マクロ）</li>
+<li><code>MemoryContextSwitchTo</code>（メモリコンテキスト管理）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>corrupt_items</code>: 収集された破損タプルのTIDリストと件数を保持する構造体。</li>
+<li><code>FuncCallContext</code>: SRFの呼び出し間で状態を保持するための構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>対象リレーションがサポート外の <code>relkind</code> である場合、<code>collect_corrupt_items</code> 内でエラーが発生する可能性がある。</li>
+<li>大規模なテーブルに対して実行した場合、全ページ走査によるI/O負荷が発生する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>collect_corrupt_items</code> に処理を委譲しているため、ロジックの変更は主に <code>collect_corrupt_items</code> 側で行うこと。</li>
+<li>偽陽性を避けるため、内部では厳格なXID horizon計算が使用されている点に留意すること。</li>
+</ul></body></html>

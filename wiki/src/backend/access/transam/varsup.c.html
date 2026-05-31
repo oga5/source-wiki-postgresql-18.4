@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/varsup.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/varsup.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのトランザクションID（XID）およびオブジェクトID（OID）の生成と、それらに関連する共有メモリ上の状態管理を行うモジュールです。システム全体のID発行を一元管理し、XIDの枯渇（Wraparound）を防ぐための監視と制御を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> サブシステムにおいて、ID生成の「源泉」として機能します。他のモジュール（<code>xact.c</code> や <code>clog.c</code> など）がトランザクションを開始したり、新しいデータベースオブジェクトを作成したりする際に、このファイルが提供する関数を呼び出して一意なIDを取得します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ID生成**: 次の有効な <code>FullTransactionId</code> および <code>Oid</code> の払い出し。</li>
+<li>**Wraparound保護**: XIDの枯渇を防ぐための閾値管理と、警告・エラー送出、および自動バキュームのトリガー。</li>
+<li>**共有状態の初期化**: 共有メモリ上の <code>TransamVariables</code> 構造体の初期化と管理。</li>
+<li>**整合性維持**: ID生成時のロック制御（<code>XidGenLock</code>, <code>OidGenLock</code>）およびWALへの先行書き込み（OIDプリフェッチ）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>TransamVariables</code>: ID生成に必要な全状態（次XID、次OID、Wraparound閾値など）を保持する共有メモリ構造体。</li>
+<li><code>GetNewTransactionId()</code>: 新規トランザクション/サブトランザクション用のXIDを払い出す主要関数。</li>
+<li><code>GetNewObjectId()</code>: 新規OIDを払い出す関数。OIDの枯渇を防ぐため、一定数（<code>VAR_OID_PREFETCH</code>）をまとめて予約する。</li>
+<li><code>SetTransactionIdLimit()</code>: データベースの凍結状態に基づき、Wraparound防止のための各閾値を更新する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AdvanceNextFullTransactionIdPastXid</code></li>
+<li><code>AdvanceOldestClogXid</code></li>
+<li><code>AssertTransactionIdInAllowableRange</code></li>
+<li><code>ForceTransactionIdLimitUpdate</code></li>
+<li><code>GetNewObjectId</code></li>
+<li><code>GetNewTransactionId</code></li>
+<li><code>ReadNextFullTransactionId</code></li>
+<li><code>SetNextObjectId</code></li>
+<li><code>SetTransactionIdLimit</code></li>
+<li><code>StopGeneratingPinnedObjectIds</code></li>
+<li><code>VarsupShmemInit</code></li>
+<li><code>VarsupShmemSize</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ID取得要求**: <code>GetNewTransactionId</code> が呼ばれると、<code>XidGenLock</code> を取得します。 2. **安全確認**: 現在のXIDが <code>xidStopLimit</code> 等の閾値を超えていないかチェックし、必要に応じて警告やエラーを発生させます。 3. **ストレージ拡張**: 新しいXIDがCLOGのページ境界を跨ぐ場合、<code>ExtendCLOG</code> 等を呼び出し、必要なストレージ領域を事前に確保します。 4. **状態更新**: <code>nextXid</code> を進め、<code>ProcArray</code> に新しいXIDを登録してロックを解放します。 5. **OID生成**: <code>GetNewObjectId</code> は <code>OidGenLock</code> を使用し、<code>oidCount</code> が0になった場合にのみWALへ書き込みを行い、効率的にOIDを割り当てます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/transam.h</code>: ID関連の型定義とマクロ。</li>
+<li><code>storage/proc.h</code>: プロセスごとのXID管理（<code>MyProc</code>）。</li>
+<li><code>storage/lmgr.h</code> (間接的): <code>LWLock</code> による排他制御。</li>
+<li><code>postmaster/autovacuum.h</code>: Wraparound防止のための自動バキューム起動信号。</li>
+<li><code>access/clog.h</code></li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションのライフサイクル管理。</li>
+<li><code>src/backend/access/transam/clog.c</code>: トランザクション状態の永続化。</li>
+<li><code>src/backend/catalog/catalog.c</code>: <code>GetNewObjectId</code> を利用してカタログオブジェクトのOIDを生成する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**XIDの64bit化**: 現在のPostgreSQLでは <code>FullTransactionId</code> を使用してエポック管理を行っていますが、WALや2PCの互換性のため、内部で32bit XIDとの変換が行われている点に注意してください。</li>
+<li>**ロックの粒度**: <code>XidGenLock</code> は非常に頻繁に取得されるため、この関数内での処理は最小限に抑えられています。特に警告や信号送信時は、デッドロックを避けるために一度ロックを解放する設計になっています。</li>
+<li>**デバッグ**: <code>AssertTransactionIdInAllowableRange</code> は開発ビルドでのみ有効であり、XIDが妥当な範囲にあるかを検証する重要なデバッグツールです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__VarsupShmemSize.html" target="wiki-view"><code>VarsupShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__VarsupShmemInit.html" target="wiki-view"><code>VarsupShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__GetNewTransactionId.html" target="wiki-view"><code>GetNewTransactionId</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__ReadNextFullTransactionId.html" target="wiki-view"><code>ReadNextFullTransactionId</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__AdvanceNextFullTransactionIdPastXid.html" target="wiki-view"><code>AdvanceNextFullTransactionIdPastXid</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__AdvanceOldestClogXid.html" target="wiki-view"><code>AdvanceOldestClogXid</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__SetTransactionIdLimit.html" target="wiki-view"><code>SetTransactionIdLimit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__ForceTransactionIdLimitUpdate.html" target="wiki-view"><code>ForceTransactionIdLimitUpdate</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__GetNewObjectId.html" target="wiki-view"><code>GetNewObjectId</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__SetNextObjectId.html" target="wiki-view"><code>SetNextObjectId</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__StopGeneratingPinnedObjectIds.html" target="wiki-view"><code>StopGeneratingPinnedObjectIds</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__varsup_c__AssertTransactionIdInAllowableRange.html" target="wiki-view"><code>AssertTransactionIdInAllowableRange</code></a></li>
+</ul></body></html>

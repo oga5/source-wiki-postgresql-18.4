@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/allpaths.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/allpaths.c</h1>
+<h2>概要</h2>
+<p><code>allpaths.c</code> は、PostgreSQL プランナにおけるパス生成フェーズのメインエントリポイントです。クエリツリー（<code>Query</code>）から論理的なリレーション（<code>RelOptInfo</code>）を構築し、それらに対してスキャンや結合の物理的な実行パス（<code>Path</code>）を網羅的に生成する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>optimizer/path</code> サブシステムの中核として、各リレーションに対するパス生成の制御フローを管理します。他のファイル（<code>indxpath.c</code>, <code>joinpath.c</code> 等）が特定のパス生成アルゴリズムを実装するのに対し、本ファイルはそれらを呼び出し、リレーションごとの最適化プロセスを統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**パス生成の統括**: ベースリレーションおよび結合リレーションに対するパス生成の呼び出し。</li>
+<li>**リレーションのサイズ見積もり**: 行数（<code>rows</code>）や幅（<code>width</code>）の算出。</li>
+<li>**並列実行の判定**: <code>consider_parallel</code> フラグの管理と並列スキャンパスの生成。</li>
+<li>**サブクエリの最適化**: サブクエリへの条件式（Qual）のプッシュダウン判定と実行。</li>
+<li>**継承・パーティション管理**: <code>Append</code> リレーションに対するパス生成とパーティションごとの結合最適化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>パス生成エントリポイント</h3>
+<ul>
+<li><code>make_one_rel</code>: クエリ全体のパス生成を開始するトップレベル関数。</li>
+<li><code>set_base_rel_pathlists</code>: 全ベースリレーションに対してスキャンパスを生成。</li>
+<li><code>set_rel_pathlist</code>: 特定リレーションに対するパス生成のディスパッチャ。</li>
+</ul>
+<h3>並列・最適化制御</h3>
+<ul>
+<li><code>compute_parallel_worker</code>: 並列スキャンにおけるワーカー数を算出。</li>
+<li><code>generate_gather_paths</code>: 並列パスを統合する <code>Gather</code> / <code>Gather Merge</code> パスを生成。</li>
+<li><code>generate_partitionwise_join_paths</code>: パーティション単位での結合最適化を再帰的に実行。</li>
+</ul>
+<h3>サブクエリ・プッシュダウン</h3>
+<ul>
+<li><code>subquery_is_pushdown_safe</code>: サブクエリへの条件式プッシュダウンの安全性を検証。</li>
+<li><code>qual_is_pushdown_safe</code>: 個別の条件式がプッシュダウン可能か判定。</li>
+<li><code>remove_unused_subquery_outputs</code>: サブクエリの不要な出力列を削除（NULL化）し最適化。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>create_plain_partial_paths</code></li>
+<li><code>make_one_rel</code></li>
+<li><code>pushdown_safe_type</code></li>
+<li><code>pushdown_safety_info</code></li>
+<li><code>set_base_rel_consider_startup</code></li>
+<li><code>set_base_rel_pathlists</code></li>
+<li><code>set_base_rel_sizes</code></li>
+<li><code>set_plain_rel_pathlist</code></li>
+<li><code>set_plain_rel_size</code></li>
+<li><code>set_rel_consider_parallel</code></li>
+<li><code>set_rel_pathlist</code></li>
+<li><code>set_rel_size</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>make_one_rel</code> がベースリレーションのサイズ見積もりと並列実行可能性の判定を呼び出す。 2. **スキャンパス生成**: <code>set_rel_pathlist</code> がリレーションの種類（<code>RTE_RELATION</code>, <code>RTE_SUBQUERY</code> 等）に応じて適切な生成関数（<code>set_plain_rel_pathlist</code> 等）を呼び出す。 3. **プッシュダウン**: サブクエリの場合、<code>subquery_is_pushdown_safe</code> で安全性を確認後、<code>subquery_push_qual</code> で条件式をサブクエリ内部へ移動させる。 4. **結合探索**: <code>make_rel_from_joinlist</code> が動的計画法（<code>standard_join_search</code>）を呼び出し、結合リレーションのパスを構築する。 5. **最終化**: 各リレーションで <code>set_cheapest</code> を呼び出し、コスト最小のパスを特定する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス生成の基本インターフェース。</li>
+<li><code>optimizer/cost.h</code>: コスト計算モデル。</li>
+<li><code>optimizer/plancat.h</code>: システムカタログからの統計情報取得。</li>
+<li><code>nodes/nodeFuncs.h</code>: ノードツリーの操作。</li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/tsmapi.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/print.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/geqo.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>partitioning/partbounds.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>joinrels.c</code>: 結合順序の探索ロジック。</li>
+<li><code>joinpath.c</code>: 結合アルゴリズム（Nestloop, Hash, Merge）のパス生成。</li>
+<li><code>indxpath.c</code>: インデックススキャンパスの生成。</li>
+<li><code>costsize.c</code>: コスト見積もりの詳細ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PlannerInfo</code> 構造体を通じてクエリのライフサイクル全体でメモリが管理されます。<code>palloc</code> を多用するため、スタックオーバーフローやメモリリークには注意が必要です。</li>
+<li>**フック**: <code>set_rel_pathlist_hook</code> や <code>join_search_hook</code> が用意されており、外部プラグインによるパス生成ロジックの拡張が可能です。</li>
+<li>**制約**: 本ファイルは非常に巨大ですが、各関数は <code>set_rel_pathlist</code> のようなディスパッチャと、特定の <code>RTE</code> 型に対する処理に明確に分割されています。</li>
+<li>**未実装・浅い部分**: サブクエリへの条件式プッシュダウンにおいて、複雑な <code>LATERAL</code> 参照や一部の <code>SetOperation</code> は安全性の観点からプッシュダウンが制限されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__pushdown_safety_info.html" target="wiki-view"><code>pushdown_safety_info</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__pushdown_safe_type.html" target="wiki-view"><code>pushdown_safe_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__make_one_rel.html" target="wiki-view"><code>make_one_rel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_base_rel_consider_startup.html" target="wiki-view"><code>set_base_rel_consider_startup</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_base_rel_sizes.html" target="wiki-view"><code>set_base_rel_sizes</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_base_rel_pathlists.html" target="wiki-view"><code>set_base_rel_pathlists</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_rel_size.html" target="wiki-view"><code>set_rel_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_rel_pathlist.html" target="wiki-view"><code>set_rel_pathlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_plain_rel_size.html" target="wiki-view"><code>set_plain_rel_size</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_rel_consider_parallel.html" target="wiki-view"><code>set_rel_consider_parallel</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__set_plain_rel_pathlist.html" target="wiki-view"><code>set_plain_rel_pathlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__allpaths_c__create_plain_partial_paths.html" target="wiki-view"><code>create_plain_partial_paths</code></a></li>
+</ul></body></html>

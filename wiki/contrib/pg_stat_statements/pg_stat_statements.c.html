@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_stat_statements/pg_stat_statements.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_stat_statements/pg_stat_statements.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLクラスター全体におけるSQL文のプランニングおよび実行統計を追跡・集計する拡張機能のコア実装です。共有メモリ上のハッシュテーブルで統計を管理し、クエリテキストを外部ファイルに永続化することで、メモリ消費を抑えつつ長期間の統計保持を可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p>PostgreSQLのフック機構（<code>planner_hook</code>, <code>ExecutorRun_hook</code> 等）を介して、クエリのライフサイクル全体に介入します。クエリIDの計算、正規化、およびリソース使用量（バッファ、WAL、JIT等）の計測を透過的に行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計計測**: プランニングおよび実行フェーズでの時間、行数、バッファ、WAL、JIT統計の集計。</li>
+<li>**クエリ正規化**: 定数を <code>$n</code> に置換し、同一パターンのクエリを同一エントリーに集約。</li>
+<li>**共有メモリ管理**: 固定サイズのハッシュテーブルによる統計エントリーの管理と、メモリ不足時のLRUベースのGC。</li>
+<li>**永続化**: サーバー停止時の統計ファイルへのダンプと、起動時のロード。</li>
+<li>**外部テキスト管理**: クエリテキストを一時ファイルに格納し、ハッシュテーブルにはオフセットのみを保持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>統計管理構造体</h3>
+<ul>
+<li><code>pgssEntry</code>: ハッシュテーブルの各エントリー。統計情報（<code>Counters</code>）、クエリテキストのオフセット、ロック用スピンロックを保持。</li>
+<li><code>pgssSharedState</code>: 共有メモリ上のグローバル状態。ハッシュテーブルへのアクセス制御（<code>LWLock</code>）とGC管理用メタデータを保持。</li>
+<li><code>Counters</code>: 実行時間、バッファ、WAL、JIT等の詳細な計測値。</li>
+</ul>
+<h3>フック関数</h3>
+<ul>
+<li><code>pgss_planner</code>: プランニング時間の計測。</li>
+<li><code>pgss_ExecutorStart/Run/Finish/End</code>: 実行フェーズの統計計測とネストレベルの管理。</li>
+<li><code>pgss_ProcessUtility</code>: ユーティリティコマンド（<code>COPY</code>, <code>FETCH</code> 等）の統計計測。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><code>pgss_store</code>: 統計をハッシュテーブルに書き込むメイン関数。</li>
+<li><code>qtext_store / qtext_fetch</code>: 外部ファイルへのクエリテキスト書き込みおよび読み出し。</li>
+<li><code>entry_alloc / entry_dealloc</code>: ハッシュテーブルエントリーのライフサイクル管理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>Counters</code></li>
+<li><code>PGSSTrackLevel</code></li>
+<li><code>pgssEntry</code></li>
+<li><code>pgssGlobalStats</code></li>
+<li><code>pgssHashKey</code></li>
+<li><code>pgssSharedState</code></li>
+<li><code>pgssStoreKind</code></li>
+<li><code>pgssVersion</code></li>
+<li><code>pgss_post_parse_analyze</code></li>
+<li><code>pgss_shmem_request</code></li>
+<li><code>pgss_shmem_shutdown</code></li>
+<li><code>pgss_shmem_startup</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **フック介入**: 各フックが呼び出されると、<code>nesting_level</code> を更新し、トップレベルのクエリか判定します。 2. **計測**: <code>pgss_store</code> が呼び出され、<code>pgss-&gt;lock</code>（共有）を取得してハッシュテーブルを検索します。 3. **エントリー作成**: 未登録のクエリの場合、<code>pgss-&gt;lock</code>（排他）へ昇格し、<code>entry_alloc</code> で領域を確保。必要に応じて <code>qtext_store</code> でテキストをファイルへ書き込みます。 4. **統計更新**: <code>entry-&gt;mutex</code>（スピンロック）を取得し、<code>Counters</code> を更新してロックを解放します。 5. **GC**: メモリ上限に達すると <code>entry_dealloc</code> が呼び出され、<code>usage</code> が低いエントリーが削除されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/shmem.h</code>, <code>storage/lwlock.h</code>, <code>storage/spin.h</code>: 共有メモリとロック制御。</li>
+<li><code>executor/instrument.h</code>: 実行統計計測。</li>
+<li><code>nodes/queryjumble.h</code>: クエリの正規化とID計算。</li>
+<li><code>parser/scanner.h</code>: 定数置換のための字句解析。</li>
+<li><code>access/parallel.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>jit/jit.h</code></li>
+<li><code>math.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>tcop/utility.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/pg_stat_statements/pg_stat_statements--*.sql</code>: SQLインターフェース定義。</li>
+<li><code>src/backend/nodes/queryjumble.c</code>: クエリID計算のロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロック階層**: <code>pgss-&gt;lock</code>（LWLock）はハッシュテーブル構造を保護し、<code>entry-&gt;mutex</code>（スピンロック）は個別の <code>Counters</code> を保護します。デッドロックを避けるため、必ずこの順序で取得してください。</li>
+<li>**メモリ所有権**: クエリテキストは外部ファイルに存在し、<code>pgssEntry</code> はそのオフセットのみを保持します。ファイルは <code>pgss_shmem_shutdown</code> でダンプされ、再起動時に再構築されます。</li>
+<li>**エッジケース**: 32bit環境でのファイルサイズ制限や、GC発生時のファイル断片化への対策が <code>gc_qtexts</code> に実装されています。</li>
+<li>**制限事項**: 非常に多くのクエリが実行される環境では、<code>pg_stat_statements.max</code> の設定値が統計の欠落に直結します。また、<code>pgss_store</code> 内での排他ロック昇格は、高負荷時に競合の原因となる可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssVersion.html" target="wiki-view"><code>pgssVersion</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssStoreKind.html" target="wiki-view"><code>pgssStoreKind</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssHashKey.html" target="wiki-view"><code>pgssHashKey</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__Counters.html" target="wiki-view"><code>Counters</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssGlobalStats.html" target="wiki-view"><code>pgssGlobalStats</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssEntry.html" target="wiki-view"><code>pgssEntry</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgssSharedState.html" target="wiki-view"><code>pgssSharedState</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__PGSSTrackLevel.html" target="wiki-view"><code>PGSSTrackLevel</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_shmem_request.html" target="wiki-view"><code>pgss_shmem_request</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_shmem_startup.html" target="wiki-view"><code>pgss_shmem_startup</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_shmem_shutdown.html" target="wiki-view"><code>pgss_shmem_shutdown</code></a></li>
+<li><a href="../../symbols/contrib__pg_stat_statements__pg_stat_statements_c__pgss_post_parse_analyze.html" target="wiki-view"><code>pgss_post_parse_analyze</code></a></li>
+</ul></body></html>

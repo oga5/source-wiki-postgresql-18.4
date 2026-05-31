@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/pgxmlerrorcontext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>PgXmlErrorContext</h1>
+<h2>概念</h2>
+<p><code>PgXmlErrorContext</code> は、PostgreSQLが外部のXML処理ライブラリである <code>libxml2</code> と連携する際、<code>libxml2</code> 側で発生したエラーを安全に捕捉し、PostgreSQLの標準的なエラー報告メカニズム（<code>ereport</code>）へ引き渡すための実行コンテキストを管理する構造体です。</p>
+<p>本構造体は、公開ヘッダーである <code>src/include/utils/xml.h</code> においては具体的なメンバを隠蔽した不透明ポインタ（opaque pointer）として宣言されており、実体定義は <code>src/backend/utils/adt/xml.c</code> 内にカプセル化されています。</p>
+<h2>なぜ重要か</h2>
+<p><code>libxml2</code> はグローバルなエラーハンドラやエンティティローダーの状態に依存して動作します。PostgreSQLのマルチセッション環境や堅牢なエラーハンドリングと安全に統合するためには、XML処理の実行中だけ一時的に <code>libxml2</code> のグローバル状態を乗っ取り、処理終了後に確実に元の状態へ復元する必要があります。</p>
+<p><code>PgXmlErrorContext</code> は、この「一時的な状態の退避・復元」と「エラーメッセージの蓄積（<code>StringInfoData</code> を使用）」を一元管理することで、エラー情報の喪失を防ぎ、PostgreSQLのメモリ管理機構と調和した安全なXML処理を実現するために不可欠な役割を担っています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/adt/xml.c#PgXmlErrorContext</code>**</li>
+<p>構造体の具体的な定義。識別用の <code>magic</code> フィールド、厳密性を表す <code>PgXmlStrictness</code>、エラー発生フラグ <code>err_occurred</code>、エラーメッセージ蓄積用の <code>err_buf</code> (<code>StringInfoData</code>)、および退避された <code>libxml2</code> の元のハンドラ群（<code>saved_errfunc</code>、<code>saved_errcxt</code>、<code>saved_entityfunc</code>）を保持します。</p>
+<li>**<code>symbol:src/include/utils/xml.h#PgXmlErrorContext</code>**</li>
+<p>外部モジュール向けに公開されている不透明ポインタ（<code>typedef struct PgXmlErrorContext PgXmlErrorContext;</code>）としての定義。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: XML処理の開始時に <code>pg_xml_init</code>（または <code>pgxml_parser_init</code>）が呼び出され、<code>PgXmlErrorContext</code> が生成されます。このとき、現在の <code>libxml2</code> のエラーハンドラとエンティティローダーが <code>saved_</code> フィールドに退避され、PostgreSQL用のカスタムエラーハンドラが設定されます。 2. **エラーの捕捉**: <code>libxml2</code> によるパースや変換処理の実行中にエラーが発生すると、設定されたカスタムエラーハンドラが起動します。ハンドラは <code>err_occurred</code> を <code>true</code> に設定し、エラーメッセージを <code>err_buf</code> に蓄積します。 3. **復元と報告**: XML処理の終了時、退避されていた元のエラーハンドラおよびエンティティローダーが <code>libxml2</code> に復元されます。蓄積されたエラーは <code>xml_ereport</code> などを通じてPostgreSQLのエラーログとして出力され、最終的に <code>pg_xml_done</code> によってコンテキストが解放されます。</p>
+<p>*注意: 外部モジュール（<code>contrib/xml2/xpath.c</code> や <code>contrib/xml2/xslt_proc.c</code> など）から呼び出された際のエラー伝播の完全なライフサイクルや、ネストした呼び出しにおける詳細な挙動の全容は、提供された情報からは未だ完全には判明していません。*</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**情報の隠蔽（カプセル化）**:</li>
+<p><code>PgXmlErrorContext</code> の具体的なメンバ構成は <code>src/backend/utils/adt/xml.c</code> 内部に閉じられていなければならず、外部モジュールからは必ず提供されるインターフェース関数（<code>pgxml_parser_init</code> など）を介して操作されなければなりません。</p>
+<li>**グローバル状態の完全な復元**:</li>
+<p>XML処理の成否にかかわらず、処理の終了時には <code>saved_</code> フィールドに退避した <code>libxml2</code> の元のエラーハンドラおよびエンティティローダーが確実に復元されなければなりません。</p>
+<li>**ビルド依存性**:</li>
+<p>本構造体および関連する処理は、<code>libxml2</code> が有効な環境でビルドされている場合のみ機能します。</p>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**直接アクセスの試み**:</li>
+<p><code>PgXmlErrorContext</code> は不透明型として定義されているため、<code>xml.c</code> 以外の場所から直接構造体のメンバ（<code>err_buf</code> や <code>magic</code> など）にアクセスしようとするとコンパイルエラーになります。</p>
+<li>**状態復元の漏れ**:</li>
+<p>例外処理や早期リターン時に <code>pg_xml_done</code> による復元処理を経由しない場合、<code>libxml2</code> のグローバルハンドラがPostgreSQLのカスタムハンドラのまま残存し、その後の無関係なXML処理やセッション全体の挙動に深刻な影響を与える可能性があります。</p>
+<li>**メモリ管理の競合**:</li>
+<p><code>libxml2</code> 独自のメモリ割り当てと、PostgreSQLの <code>palloc</code>（メモリコンテキスト）による管理が混在するため、ライフサイクル管理を誤るとメモリリークや不正セグメンテーションを招く恐れがあります。</p>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/adt/xml.c</code></li>
+<p><code>PgXmlErrorContext</code> の具体的な構造体定義、および <code>pg_xml_init</code> や <code>xml_errsave</code> などのエラーハンドリングの実装詳細。</p>
+<li><code>src/include/utils/xml.h</code></li>
+<p>外部に公開されている不透明ポインタとしての宣言、および関連するインターフェース関数の定義。</p>
+</ul></body></html>

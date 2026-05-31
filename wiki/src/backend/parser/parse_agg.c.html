@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/parser/parse_agg.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/parser/parse_agg.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、SQL 解析プロセスにおける「集約関数（Aggregate）」および「ウィンドウ関数（Window Function）」のセマンティック解析を担います。構文解析後のノードに対し、型解決、配置制限の検証、および <code>GROUP BY</code> 句との整合性チェックを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> モジュールの一部として、<code>parse_expr.c</code> や <code>parse_clause.c</code> から呼び出され、集約特有の複雑な制約（ネストの禁止、<code>GROUP BY</code> への依存関係）を解決します。</p>
+<h2>責務</h2>
+<ul>
+<li>**集約・ウィンドウ関数の変換**: <code>Aggref</code> や <code>WindowFunc</code> ノードの初期化と、引数のターゲットリストへの変換。</li>
+<li>**配置制限の検証**: <code>WHERE</code> 句や <code>JOIN</code> 条件など、集約関数が許可されない場所での使用をエラーとして検出。</li>
+<li>**グループ化の整合性チェック**: <code>GROUP BY</code> 句に含まれない列が <code>SELECT</code> リスト等で使用されている場合の検証と、<code>RTE_GROUP</code> への置換。</li>
+<li>**集約サポート関数の構築**: プランナが使用する遷移関数（transfn）、シリアライズ関数等の式ツリー生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>集約・ウィンドウ関数変換</h3>
+<ul>
+<li><code>transformAggregateCall</code>: <code>Aggref</code> を完成させ、引数を直接引数と集約引数に分離し、<code>ORDER BY</code>/<code>DISTINCT</code> を処理する。</li>
+<li><code>transformWindowFuncCall</code>: <code>WindowFunc</code> を完成させ、<code>WindowDef</code> を <code>ParseState</code> に登録する。</li>
+</ul>
+<h3>検証と整合性チェック</h3>
+<ul>
+<li><code>parseCheckAggregates</code>: クエリ全体の集約とグループ化の整合性を最終確認し、グループ化された列を <code>RTE_GROUP</code> への参照に置換する。</li>
+<li><code>check_agglevels_and_constraints</code>: 集約関数がクエリのどのレベルに属するかを判定し、配置場所が妥当かチェックする。</li>
+<li><code>check_agg_arguments</code>: 集約関数の引数を走査し、ネストされた集約や不正な変数を検出する。</li>
+</ul>
+<h3>内部ユーティリティ</h3>
+<ul>
+<li><code>substitute_grouped_columns</code>: <code>GROUP BY</code> された列を <code>RTE_GROUP</code> 参照に置換する再帰的処理の入り口。</li>
+<li><code>expand_grouping_sets</code>: <code>GROUPING SETS</code> 句をフラットなリストに展開する。</li>
+<li><code>build_aggregate_transfn_expr</code>: 遷移関数の実行に必要なダミー式ツリーを構築する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>check_agg_arguments</code></li>
+<li><code>check_agg_arguments_context</code></li>
+<li><code>check_agg_arguments_walker</code></li>
+<li><code>check_agglevels_and_constraints</code></li>
+<li><code>cmp_list_len_asc</code></li>
+<li><code>cmp_list_len_contents_asc</code></li>
+<li><code>expand_groupingset_node</code></li>
+<li><code>finalize_grouping_exprs</code></li>
+<li><code>finalize_grouping_exprs_walker</code></li>
+<li><code>substitute_grouped_columns</code></li>
+<li><code>substitute_grouped_columns_context</code></li>
+<li><code>substitute_grouped_columns_mutator</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **変換フェーズ**: <code>transformAggregateCall</code> が <code>Aggref</code> を受け取り、<code>TargetEntry</code> を生成して <code>agg-&gt;args</code> に格納。<code>ORDER BY</code> や <code>DISTINCT</code> があれば <code>SortGroupClause</code> を生成。 2. **検証フェーズ**: <code>check_agglevels_and_constraints</code> が <code>ParseExprKind</code> を参照し、現在のコンテキスト（<code>WHERE</code>, <code>JOIN</code> 等）で集約が許可されているか判定。 3. **グループ化置換**: <code>parseCheckAggregates</code> が <code>GROUP BY</code> 句を解析し、<code>RTE_GROUP</code> を作成。<code>substitute_grouped_columns_mutator</code> が式ツリーを走査し、グループ化された列を <code>buildGroupedVar</code> で生成した <code>Var</code> ノード（<code>RTE_GROUP</code> を指す）に置換する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: <code>Aggref</code>, <code>WindowFunc</code>, <code>GroupingSet</code> 等のノード定義。</li>
+<li><code>catalog/</code>: <code>pg_aggregate</code>, <code>pg_type</code> 等のシステムカタログ情報。</li>
+<li><code>parser/</code>: <code>parse_node.h</code>（<code>ParseState</code> 定義）、<code>parse_coerce.h</code> 等。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/parser/parse_func.c</code>: 集約関数かどうかの初期識別を行う。</li>
+<li><code>src/backend/parser/parse_clause.c</code>: <code>GROUP BY</code> 句の解析を行う。</li>
+<li><code>src/backend/optimizer/util/clauses.c</code>: 実行時に使用される集約関数の最適化。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>copyObject</code> や <code>makeNode</code> を多用し、解析ツリーのノードを生成・複製します。<code>ParseState</code> は解析セッションを通じて生存します。</li>
+<li>**制約**: 集約関数のネストは SQL 標準および PostgreSQL の実装上禁止されています。<code>check_agg_arguments</code> がこの再帰的制約を管理します。</li>
+<li>**省略された詳細**: <code>expand_grouping_sets</code> の複雑なビット演算や、<code>cmp_list_len_contents_asc</code> などのソートロジックは、プランナ向けの補助的な実装であり、パーサのメインフローからは独立しています。</li>
+<li>**注意点**: <code>substitute_grouped_columns</code> は <code>flatten_join_alias_vars</code> を呼び出すことで、JOIN されたテーブルの別名解決を正規化してから比較を行います。この順序は重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__check_agg_arguments_context.html" target="wiki-view"><code>check_agg_arguments_context</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__substitute_grouped_columns_context.html" target="wiki-view"><code>substitute_grouped_columns_context</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__check_agglevels_and_constraints.html" target="wiki-view"><code>check_agglevels_and_constraints</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__check_agg_arguments.html" target="wiki-view"><code>check_agg_arguments</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__check_agg_arguments_walker.html" target="wiki-view"><code>check_agg_arguments_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__substitute_grouped_columns.html" target="wiki-view"><code>substitute_grouped_columns</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__substitute_grouped_columns_mutator.html" target="wiki-view"><code>substitute_grouped_columns_mutator</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__finalize_grouping_exprs.html" target="wiki-view"><code>finalize_grouping_exprs</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__finalize_grouping_exprs_walker.html" target="wiki-view"><code>finalize_grouping_exprs_walker</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__expand_groupingset_node.html" target="wiki-view"><code>expand_groupingset_node</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__cmp_list_len_asc.html" target="wiki-view"><code>cmp_list_len_asc</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_agg_c__cmp_list_len_contents_asc.html" target="wiki-view"><code>cmp_list_len_contents_asc</code></a></li>
+</ul></body></html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/expandedobjectheader.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExpandedObjectHeader</h1>
+<h2>概念</h2>
+<p><code>ExpandedObjectHeader</code> は、PostgreSQLにおいてメモリ上に展開された複雑なデータ型（配列やレコードなど）を効率的に操作・管理するための共通ヘッダ構造体です。ディスク上のフラットな形式（<code>varlena</code>）と、メモリ上の展開済み形式（Expanded Datum）の橋渡しを行い、メモリコンテキスト管理や型固有のメソッド実行を抽象化します。</p>
+<h2>なぜ重要か</h2>
+<p>TOASTされたデータや複雑なデータ構造をメモリ上で直接操作する際、毎回フラットな形式にシリアライズ・デシリアライズすると極めて非効率になります。<code>ExpandedObjectHeader</code> を用いることで、メモリ上でのインプレースな読み書き（R/W）や読み取り専用（R/O）の参照を可能にし、不要なコピーを避けてパフォーマンスを大幅に向上させることができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/include</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/utils/expandeddatum.h#ExpandedObjectHeader</code> : 構造体の詳細なメンバ定義（<code>vl_len_</code>, <code>eoh_methods</code>, <code>eoh_context</code>, <code>eoh_rw_ptr</code>, <code>eoh_ro_ptr</code>）が存在する主定義場所。</li>
+<li><code>symbol:src/include/varatt.h#ExpandedObjectHeader</code> : 物理レイアウト定義を主目的とするヘッダ。ここでは不完全型（<code>typedef struct ExpandedObjectHeader ExpandedObjectHeader;</code>）として宣言されています。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: <code>EOH_init_header</code> を呼び出し、型固有の操作関数群（<code>eoh_methods</code>）とメモリコンテキスト（<code>eoh_context</code>）をヘッダに紐付けます。 2. **操作**: 呼び出し元（<code>detoast.c</code>, <code>heaptuple.c</code>, <code>execTuples.c</code>, <code>datum.c</code> など）は、<code>eoh_rw_ptr</code> を介してコピーを作成せずにメモリ上のデータを直接操作（インプレース更新）します。 3. **読み取り専用への変換**: <code>MakeExpandedObjectReadOnly</code> を呼び出すことで、R/WポインタからR/Oポインタ（<code>eoh_ro_ptr</code>）へ切り替えることができます。 4. **永続化（フラット化）**: <code>EOH_get_flat_size</code> や <code>EA_get_flat_size</code> で必要なサイズを算出した後、<code>EOH_flatten_into</code>（または <code>EA_flatten_into</code> などの型固有実装）を経由して、メモリ上の展開形式から物理的な <code>varlena</code> 形式へ変換し、ディスク保存等に備えます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**マジックナンバーの保持**: <code>vl_len_</code> フィールドは常に <code>EOH_HEADER_MAGIC</code> を保持していなければなりません。これにより、通常の <code>varlena</code> オブジェクトと識別されます。</li>
+<li>**メモリコンテキストの生存期間**: 展開済みオブジェクトは <code>eoh_context</code> に依存しており、このコンテキストが破棄されるとオブジェクト自体も無効化されます。</li>
+<li>**アライメント**: 構造体へのアクセスは、メモリ上のアライメントが適切に考慮されている環境で行う必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不完全型によるコンパイルエラー**: <code>varatt.h</code> では不完全型として宣言されているため、<code>expandeddatum.h</code> をインクルードせずに構造体のメンバへ直接アクセスしようとするとコンパイルエラーになります。</li>
+<li>**ダングリングポインタとメモリ破壊**: <code>eoh_context</code> が既に解放されている状態でオブジェクトにアクセスすると、メモリ破壊や不正なメモリ参照が発生します。</li>
+<li>**マジックナンバー不一致**: <code>EOH_HEADER_MAGIC</code> が一致しない場合、<code>VARATT_IS_EXPANDED_HEADER</code> マクロによる判定が失敗し、展開済みオブジェクトとして正しく処理されません。</li>
+<li>**インプレース更新失敗時の整合性**: R/Wポインタを介した直接操作で処理が失敗した場合、メモリ上のデータ整合性を維持する責任は呼び出し側にあります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/expandeddatum.h</code> : 構造体の詳細なメンバ定義や共通関数（<code>EOH_init_header</code> など）の定義。</li>
+<li><code>src/include/varatt.h</code> : 物理レイアウトおよび不完全型としての宣言。</li>
+</ul></body></html>

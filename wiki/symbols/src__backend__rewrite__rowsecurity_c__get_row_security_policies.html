@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__rewrite__rowsecurity_c__get_row_security_policies.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>get_row_security_policies</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/rewrite/rowsecurity.c:97</code></li>
+</ul>
+<h2>目的</h2>
+<p>クエリのリライトフェーズにおいて、指定されたリレーション（テーブル）に対する行レベルセキュリティ（RLS）ポリシーを収集し、クエリツリーに適用すべき制約（<code>securityQuals</code> および <code>WithCheckOptions</code>）を生成する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
+                               List **securityQuals, List **withCheckOptions,
+                               bool *hasRowSecurity, bool *hasSubLinks)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>root</code>: 現在のクエリツリー。</li>
+<li><code>rte</code>: 対象となるリレーションの範囲テーブルエントリ。</li>
+<li><code>rt_index</code>: リレーションのインデックス。</li>
+<li>**出力**:</li>
+<li><code>securityQuals</code>: 読み取り制限用のクエリリスト。</li>
+<li><code>withCheckOptions</code>: 書き込み制限用の制約リスト。</li>
+<li><code>hasRowSecurity</code>: RLSが有効であるか、または環境変化による再プランが必要な場合に <code>true</code>。</li>
+<li><code>hasSubLinks</code>: 生成された制約にサブリンクが含まれる場合に <code>true</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>rte-&gt;rtekind</code> は <code>RTE_RELATION</code> である必要がある（<code>Assert</code> で検証）。</li>
+<li>対象が通常のテーブルまたはパーティションテーブルでない場合、処理は即座に終了する。</li>
+<li>RLSが有効な場合、Permissive ポリシーは <code>OR</code> で、Restrictive ポリシーは <code>AND</code> で結合される。</li>
+<li>ポリシーが存在しない場合、デフォルト拒否（always-false）の制約が追加される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 出力引数をデフォルト値（<code>NIL</code>, <code>false</code>）に設定する。 2. **RLS状態判定**: <code>check_enable_rls</code> を呼び出し、対象テーブルのRLS状態を確認する。<code>RLS_NONE_ENV</code> の場合は <code>hasRowSecurity</code> を <code>true</code> にして終了する。 3. **ポリシー取得**: <code>get_policies_for_relation</code> を使用して、コマンドタイプ（SELECT, UPDATE等）に応じたポリシーリストを取得する。 4. **制約の注入**:</p>
+<ul>
+<li><code>SELECT</code> で <code>UPDATE</code> 権限が必要な場合、先に <code>UPDATE</code> 用の <code>USING</code> ポリシーを適用する。</li>
+<li><code>SELECT</code>, <code>UPDATE</code>, <code>DELETE</code> に対して <code>add_security_quals</code> を呼び出し、読み取り制限を適用する。</li>
+<li><code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code> で <code>SELECT</code> 権限が必要な場合、追加で <code>SELECT</code> 用の <code>USING</code> ポリシーを適用する。</li>
+<li><code>INSERT</code>, <code>UPDATE</code> に対して <code>add_with_check_options</code> を呼び出し、書き込み時の整合性を検証する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/rewrite/rewriteHandler.c:2253</code></li>
+<li>**呼び出し先**:</li>
+<li><code>getRTEPermissionInfo</code></li>
+<li><code>GetUserId</code></li>
+<li><code>check_enable_rls</code></li>
+<li><code>table_open</code></li>
+<li><code>get_policies_for_relation</code></li>
+<li><code>add_security_quals</code></li>
+<li><code>add_with_check_options</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Query</code>, <code>RangeTblEntry</code>: クエリツリー構造。</li>
+<li><code>RTEPermissionInfo</code>: 権限情報。</li>
+<li><code>RowSecurityPolicy</code> (間接的): <code>get_policies_for_relation</code> を通じて参照。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>RLS_NONE</code>: RLSが設定されていない場合、何も行わずに戻る。</li>
+<li><code>RLS_NONE_ENV</code>: 環境依存でRLSが有効になる可能性がある場合、再プランフラグを立てて戻る。</li>
+<li><code>Assert</code> 違反: <code>rt_index</code> が <code>root-&gt;resultRelation</code> と一致しない場合（INSERT/UPDATE時）に発生する可能性がある。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>MERGE</code> コマンド処理時は、UPDATE/DELETE/INSERTの各ポリシーが状況に応じて適用されるため、ロジックの追跡には注意が必要。</li>
+<li>拡張モジュールによるポリシー追加は <code>get_policies_for_relation</code> 内のフック経由で行われる。</li>
+</ul></body></html>

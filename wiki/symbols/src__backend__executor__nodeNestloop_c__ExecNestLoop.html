@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeNestloop_c__ExecNestLoop.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecNestLoop</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeNestloop.c:59</code></li>
+</ul>
+<h2>目的</h2>
+<p>ネステッドループ結合（Nested Loop Join）のメインループを実行し、外部プランと内部プランからタプルを取得して結合条件およびフィルタ条件に基づいた結果タプルを生成する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecNestLoop(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code>（<code>NestLoopState</code>としてキャストされる実行ノードの状態）</li>
+<li>**出力**: 結合条件を満たす <code>TupleTableSlot*</code>。結合が完了した場合は <code>NULL</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>pstate</code> は <code>NestLoopState</code> 型としてキャスト可能であること。</li>
+<li>ループ内で <code>ResetExprContext(econtext)</code> が呼び出され、タプルごとのメモリコンテキストがリセットされる。</li>
+<li>外部タプルが更新されるたびに、内部プランに対して <code>ExecReScan</code> が実行される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **外部ループ制御**: <code>nl_NeedNewOuter</code> が真の場合、外部プランからタプルを取得する。取得できない場合は結合終了（<code>NULL</code> を返す）。 2. **パラメータ更新**: 外部タプルの値を内部プランのパラメータ（<code>PARAM_EXEC</code>）に設定し、内部プランの <code>chgParam</code> を更新する。 3. **内部スキャン**: <code>ExecReScan</code> で内部プランを再スキャンし、<code>ExecProcNode</code> で内部タプルを取得する。 4. **結合判定**:</p>
+<ul>
+<li>内部タプルが取得できた場合、<code>joinqual</code> を評価する。一致すれば <code>MatchedOuter</code> を真にし、<code>otherqual</code> を評価して投影（<code>ExecProject</code>）を行う。</li>
+<li>内部タプルが取得できない場合、外部結合（<code>LEFT JOIN</code> / <code>ANTI JOIN</code>）であれば NULL 補完を行い、<code>otherqual</code> を評価して投影を試みる。</li>
+<p>5. **ループ継続**: 条件不一致や <code>ANTI JOIN</code> のマッチング時は、次のタプル取得へ進む。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/executor/execProcnode.c</code>（<code>ExecProcNode</code> ディスパッチャ経由）</li>
+<li>**呼び出し先**: </li>
+<li><code>ExecProcNode</code>（外部・内部プランの取得）</li>
+<li><code>ExecReScan</code>（内部プランの再スキャン）</li>
+<li><code>ExecQual</code>（結合条件およびフィルタ条件の評価）</li>
+<li><code>ExecProject</code>（結果タプルの投影）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>NestLoopState</code>: 実行時の状態（<code>nl_NeedNewOuter</code>, <code>nl_MatchedOuter</code> 等）を保持。</li>
+<li><code>NestLoop</code>: プランノードの定義。</li>
+<li><code>ExprContext</code>: 式評価用のコンテキスト。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>外部プランからタプルが取得できない場合、即座に結合終了とみなす。</li>
+<li><code>LEFT JOIN</code> / <code>ANTI JOIN</code> において内部タプルが一致しない場合、NULL 補完による判定処理が行われる。</li>
+<li><code>single_match</code> が設定されている場合、最初のマッチング後に外部タプルの再取得へ移行する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>内部プランは外部タプルごとに <code>ExecReScan</code> されるため、インデックススキャン等の効率的なプランが選択されていることが重要。</li>
+<li><code>ENL1_printf</code> マクロによるデバッグ出力が各所に配置されている。</li>
+<li><code>CHECK_FOR_INTERRUPTS()</code> がループの先頭で呼び出されており、クエリの中断要求に対応している。</li>
+</ul></body></html>

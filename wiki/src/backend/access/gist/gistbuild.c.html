@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/gist/gistbuild.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/gist/gistbuild.c</h1>
+<h2>概要</h2>
+<p>GiSTインデックスの構築アルゴリズムを実装するファイルです。入力データ（ヒープタプル）からインデックスを構築するための2つの主要な戦略を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/gist</code> モジュールにおいて、インデックスの初期構築（<code>CREATE INDEX</code>）を担当します。既存のインデックス構造を維持するのではなく、空の状態から効率的にインデックスを構築することに特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**ソート済み構築 (Sorted Build):** 入力タプルをソートし、ボトムアップでインデックスページを構築します。B-treeの構築に近い効率的な手法です。</li>
+<li>**バッファリング構築 (Buffering Build):** インデックスがメモリ（キャッシュ）に収まらない場合に、中間レベルにバッファを配置してI/Oを削減するアルゴリズムです。</li>
+<li>**構築戦略の動的切り替え:** インデックスのサイズや統計情報に基づき、最適な構築モードを自動選択します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>gistbuild</code>: インデックス構築のメインエントリーポイント。</li>
+<li><code>GISTBuildState</code>: 構築中の状態（インデックス関係、メモリコンテキスト、バッファリング情報など）を保持する構造体。</li>
+<li><code>gist_indexsortbuild</code>: ソート済み構築を実行する関数。</li>
+<li><code>gistBufferingBuildInsert</code>: バッファリングモードでの挿入処理。</li>
+<li><code>GistBuildMode</code>: 構築戦略（ソート、バッファリング無効、自動、統計収集、アクティブ）を定義する列挙型。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GistSortedBuildLevelState</code></li>
+<li><code>ParentMapEntry</code></li>
+<li><code>calculatePagesPerBuffer</code></li>
+<li><code>gistInitBuffering</code></li>
+<li><code>gistInitParentMap</code></li>
+<li><code>gist_indexsortbuild_levelstate_add</code></li>
+<li><code>gist_indexsortbuild_levelstate_flush</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化:** <code>gistbuild</code> が呼び出され、<code>GISTBuildState</code> を初期化します。 2. **戦略決定:** オペレータクラスが <code>sortsupport</code> を持つ場合は <code>GIST_SORTED_BUILD</code> を選択し、それ以外は <code>GIST_BUFFERING_AUTO</code> を選択します。 3. **構築実行:**</p>
+<ul>
+<li>**ソート済み構築:** <code>tuplesort</code> を使用して全タプルをソートし、<code>gist_indexsortbuild</code> でボトムアップにページを生成します。</li>
+<li>**バッファリング構築:** <code>table_index_build_scan</code> でタプルを順次読み込み、<code>gistBuildCallback</code> を経由して挿入します。インデックスが大きくなると <code>gistInitBuffering</code> を呼び出し、バッファリングモードへ移行します。</li>
+<p>4. **終了処理:** バッファリングモードの場合、<code>gistEmptyAllBuffers</code> で残りのタプルをフラッシュし、必要に応じてWALを書き込みます。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiSTの内部構造体や定数。</li>
+<li><code>access/tuplesort.h</code>: ソート済み構築のためのソート機能。</li>
+<li><code>storage/bulk_write.h</code>: 大量書き込み時の効率化。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/tuplesort.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gist/gistbuildbuffers.c</code>: バッファリング構築で使用されるバッファ管理ロジック。</li>
+<li><code>src/backend/access/gist/gistutil.c</code>: ページ初期化やタプル操作などの共通ユーティリティ。</li>
+<li><code>src/backend/access/gist/gistsplit.c</code>: ページ分割ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは「ソート済み構築」と「バッファリング構築」という全く異なる2つのパスを含んでいます。コードを読む際は、まず <code>gistbuild</code> 関数内の条件分岐を追い、どちらのパスを通るかを明確にしてください。</li>
+<li>バッファリング構築は、インデックスが <code>effective_cache_size</code> を超える場合に有効化されます。このロジックは <code>gistBuildCallback</code> 内の統計チェックに基づいています。</li>
+<li>ソート済み構築は、多次元データなどでソート順が不完全な場合に備え、<code>picksplit</code> を使用してページを再構成する工夫がなされています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__GistBuildMode.html" target="wiki-view"><code>GistBuildMode</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__GISTBuildState.html" target="wiki-view"><code>GISTBuildState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__GistSortedBuildLevelState.html" target="wiki-view"><code>GistSortedBuildLevelState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gistbuild.html" target="wiki-view"><code>gistbuild</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gist_indexsortbuild.html" target="wiki-view"><code>gist_indexsortbuild</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gist_indexsortbuild_levelstate_add.html" target="wiki-view"><code>gist_indexsortbuild_levelstate_add</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gist_indexsortbuild_levelstate_flush.html" target="wiki-view"><code>gist_indexsortbuild_levelstate_flush</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gistInitBuffering.html" target="wiki-view"><code>gistInitBuffering</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__calculatePagesPerBuffer.html" target="wiki-view"><code>calculatePagesPerBuffer</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gistBufferingBuildInsert.html" target="wiki-view"><code>gistBufferingBuildInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__ParentMapEntry.html" target="wiki-view"><code>ParentMapEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistbuild_c__gistInitParentMap.html" target="wiki-view"><code>gistInitParentMap</code></a></li>
+</ul></body></html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeIncrementalSort.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeIncrementalSort.c</h1>
+<h2>概要</h2>
+<p><code>nodeIncrementalSort.c</code> は、入力データが既にソートキーの接頭辞（prefix）でソートされている場合に、残りのキーのみをソートすることで効率化を図る「インクリメンタルソート」を実行するエグゼキュータノードです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> におけるソート処理の一種であり、通常の <code>nodeSort.c</code> が全データをメモリまたはディスクに展開してソートするのに対し、本モジュールはストリーミング的な処理を可能にします。特に <code>LIMIT</code> 句を含むクエリにおいて、全データのソート完了を待たずに結果を早期返却する最適化に寄与します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ハイブリッドモードの管理**: </li>
+<li>最小グループサイズに達するまでは全カラムでソート（Full Sort）。</li>
+<li>接頭辞が共通する大きなグループと判断した場合は、残りのカラムのみでソート（Prefix Sort）へ切り替え。</li>
+<li>**グループ判定**: <code>isCurrentGroup</code> を用いて、入力タプルが現在のソートグループに属するかを判定。</li>
+<li>**リソース管理**: <code>tuplesort</code> を利用したメモリ/ディスクの管理と、実行統計（<code>EXPLAIN ANALYZE</code> 用）の収集。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ExecIncrementalSort</code>: ノードのメイン実行関数。状態遷移を制御。</li>
+<li><code>switchToPresortedPrefixMode</code>: Full Sort から Prefix Sort へ移行する際のロジック。</li>
+<li><code>isCurrentGroup</code>: 接頭辞キーの比較を行い、グループの境界を検出。</li>
+<li><code>INSTRUMENT_SORT_GROUP</code>: 実行統計を記録するためのマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndIncrementalSort</code></li>
+<li><code>ExecIncrementalSortEstimate</code></li>
+<li><code>ExecIncrementalSortInitializeDSM</code></li>
+<li><code>ExecIncrementalSortInitializeWorker</code></li>
+<li><code>ExecIncrementalSortRetrieveInstrumentation</code></li>
+<li><code>ExecInitIncrementalSort</code></li>
+<li><code>ExecReScanIncrementalSort</code></li>
+<li><code>instrumentSortedGroup</code></li>
+<li><code>preparePresortedCols</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitIncrementalSort</code> で状態を初期化。 2. **Full Sort モード**: <code>ExecIncrementalSort</code> が入力を受け取り、<code>fullsort_state</code> に蓄積。 3. **グループ判定**: <code>DEFAULT_MIN_GROUP_SIZE</code> を超えた時点で、<code>isCurrentGroup</code> を使用してグループの継続を確認。 4. **モード遷移**: <code>DEFAULT_MAX_FULL_SORT_GROUP_SIZE</code> を超えるか、グループ終了を検知すると、必要に応じて <code>switchToPresortedPrefixMode</code> を呼び出し、<code>prefixsort_state</code> へ移行。 5. **返却**: ソート済みのタプルを <code>tuplesort_gettupleslot</code> で順次取得し、親ノードへ返却。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本定義。</li>
+<li><code>executor/nodeIncrementalSort.h</code>: ノードの公開インターフェース。</li>
+<li><code>utils/tuplesort.h</code>: ソートアルゴリズムのコア機能。</li>
+<li><code>utils/lsyscache.h</code>: 比較演算子や関数の OID 解決。</li>
+<li><code>executor/execdebug.h</code></li>
+<li><code>miscadmin.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/sort/tuplesort.c</code>: 実際のソートアルゴリズム（クイックソート、マージソート等）の実装。</li>
+<li><code>src/backend/executor/nodeSort.c</code>: 全体ソートを行う標準ノード。</li>
+<li><code>src/include/nodes/execnodes.h</code>: <code>IncrementalSortState</code> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ノードは <code>EXEC_FLAG_BACKWARD</code> や <code>EXEC_FLAG_MARK</code> をサポートしていません。これは、インクリメンタルソートが「現在のグループ」のみを保持する設計であるためです。</li>
+<li><code>isCurrentGroup</code> は、比較コストを最小化するために、接頭辞キーの末尾から順に比較を行うよう最適化されています。</li>
+<li>統計情報の収集は、パラレルクエリ環境下では共有メモリ（DSM）を介して行われるため、<code>ExecIncrementalSortRetrieveInstrumentation</code> などの関数が重要になります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__instrumentSortedGroup.html" target="wiki-view"><code>instrumentSortedGroup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__preparePresortedCols.html" target="wiki-view"><code>preparePresortedCols</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__isCurrentGroup.html" target="wiki-view"><code>isCurrentGroup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__switchToPresortedPrefixMode.html" target="wiki-view"><code>switchToPresortedPrefixMode</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecIncrementalSort.html" target="wiki-view"><code>ExecIncrementalSort</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecInitIncrementalSort.html" target="wiki-view"><code>ExecInitIncrementalSort</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecEndIncrementalSort.html" target="wiki-view"><code>ExecEndIncrementalSort</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecReScanIncrementalSort.html" target="wiki-view"><code>ExecReScanIncrementalSort</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecIncrementalSortEstimate.html" target="wiki-view"><code>ExecIncrementalSortEstimate</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecIncrementalSortInitializeDSM.html" target="wiki-view"><code>ExecIncrementalSortInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecIncrementalSortInitializeWorker.html" target="wiki-view"><code>ExecIncrementalSortInitializeWorker</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeIncrementalSort_c__ExecIncrementalSortRetrieveInstrumentation.html" target="wiki-view"><code>ExecIncrementalSortRetrieveInstrumentation</code></a></li>
+</ul></body></html>

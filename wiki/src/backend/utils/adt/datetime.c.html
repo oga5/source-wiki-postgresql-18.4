@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/datetime.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/datetime.c</h1>
+<h2>概要</h2>
+<p><code>datetime.c</code> は、PostgreSQL における日時データ型（<code>timestamp</code>, <code>date</code>, <code>time</code>, <code>interval</code> 等）の解析、変換、および書式化を支える中核的なサポートモジュールです。SQL 文字列から内部表現への変換、タイムゾーンの計算、および Julian 日付変換などの低レベルな算術ロジックを所有しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、日時関連のデータ型実装（<code>timestamp.c</code>, <code>date.c</code> など）から呼び出される共通関数を提供します。SQL レベルの型変換関数（<code>_in</code>, <code>_out</code>）の背後にある複雑なパースロジックをカプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**日時パース**: 入力文字列のトークン化および意味解析（<code>ParseDateTime</code>, <code>DecodeDateTime</code>）。</li>
+<li>**カレンダー演算**: Julian 日付とカレンダー日付の相互変換、曜日計算。</li>
+<li>**タイムゾーン処理**: タイムゾーンオフセットの決定、DST（夏時間）境界の計算、動的タイムゾーンの解決。</li>
+<li>**間隔演算**: <code>interval</code> 型の算術処理と正規化。</li>
+<li>**書式化**: 内部表現から SQL 準拠の文字列への変換（<code>EncodeDateTime</code>, <code>EncodeInterval</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>日付・時間変換</h3>
+<ul>
+<li><code>date2j</code>, <code>j2date</code>: カレンダー日付と Julian 日付の相互変換。</li>
+<li><code>j2day</code>: Julian 日付から曜日（0-6）への変換。</li>
+</ul>
+<h3>パース・デコード</h3>
+<ul>
+<li><code>ParseDateTime</code>: 文字列をトークンと型（<code>DTK_DATE</code>, <code>DTK_TIME</code> 等）に分解。</li>
+<li><code>DecodeDateTime</code>, <code>DecodeTimeOnly</code>: トークン列を <code>struct pg_tm</code> にマッピング。</li>
+<li><code>DecodeInterval</code>: <code>interval</code> 型のパースと算術調整。</li>
+</ul>
+<h3>タイムゾーン管理</h3>
+<ul>
+<li><code>DetermineTimeZoneOffset</code>: 指定日時のタイムゾーンオフセットと DST 状態を決定。</li>
+<li><code>DecodeTimezoneAbbrev</code>: タイムゾーン略称（PST, JST 等）の解決。</li>
+<li><code>zoneabbrevtbl</code>: 構成ファイルからロードされたタイムゾーン略称テーブル。</li>
+</ul>
+<h3>内部データ構造</h3>
+<ul>
+<li><code>datetktbl</code>, <code>deltatktbl</code>: 日時キーワードおよび間隔単位の静的ルックアップテーブル。</li>
+<li><code>TzAbbrevCache</code>: タイムゾーン略称のルックアップ結果を保持するキャッシュ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AdjustDays</code></li>
+<li><code>AdjustFractDays</code></li>
+<li><code>AdjustFractMicroseconds</code></li>
+<li><code>AdjustFractYears</code></li>
+<li><code>AdjustMicroseconds</code></li>
+<li><code>AdjustMonths</code></li>
+<li><code>AdjustYears</code></li>
+<li><code>AppendSeconds</code></li>
+<li><code>AppendTimestampSeconds</code></li>
+<li><code>GetCurrentDateTime</code></li>
+<li><code>GetCurrentTimeUsec</code></li>
+<li><code>TzAbbrevCache</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: SQL 関数が文字列を <code>ParseDateTime</code> に渡す。 2. **トークン化**: <code>ParseDateTime</code> が文字列を走査し、<code>field[]</code>（文字列）と <code>ftype[]</code>（型）の配列を生成。 3. **デコード**: <code>DecodeDateTime</code> がトークン配列をループし、<code>struct pg_tm</code> に値を埋める。この際、<code>datebsearch</code> を用いてキーワードテーブルを高速検索する。 4. **調整**: <code>ValidateDate</code> や <code>Adjust*</code> 系関数（<code>AdjustMicroseconds</code> 等）が、オーバーフローチェックを行いながら値を正規化する。 5. **出力**: <code>EncodeDateTime</code> 等が <code>struct pg_tm</code> を受け取り、指定された <code>DateStyle</code> に基づいて文字列バッファに書き出す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/datetime.h</code>: 共有定義とマクロ。</li>
+<li><code>utils/tzparser.h</code>: タイムゾーン解析用構造体。</li>
+<li><code>pg_tz</code> 関連関数: タイムゾーンデータベースの操作。</li>
+<li><code>common/int.h</code>: 安全な算術演算（オーバーフローチェック）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>math.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/scansup.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/guc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/datetime.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/utils/adt/timestamp.c</code>: <code>timestamp</code> 型の具体的な実装。</li>
+<li><code>src/backend/utils/adt/date.c</code>: <code>date</code> 型の具体的な実装。</li>
+<li><code>src/backend/utils/misc/tzparser.c</code>: タイムゾーン設定ファイルの読み込み。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: <code>datebsearch</code> はバイナリサーチを利用しており、キーワードテーブルはアルファベット順にソートされている必要があります。テーブルを編集する際は注意してください。</li>
+<li>**メモリ管理**: <code>TzAbbrevCache</code> はセッション単位のキャッシュであり、<code>ClearTimeZoneAbbrevCache</code> でリセット可能です。</li>
+<li>**オーバーフロー**: 日時演算では <code>pg_add_s64_overflow</code> 等の安全な算術関数が多用されています。これは、日時が広範囲な値を取り得るためです。</li>
+<li>**省略された詳細**: タイムゾーンの内部的な <code>zic</code> 形式のバイナリ解析ロジックは <code>pg_tz</code> モジュールに委譲されており、本ファイルでは主にその結果を利用する上位ロジックに焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__TzAbbrevCache.html" target="wiki-view"><code>TzAbbrevCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__GetCurrentDateTime.html" target="wiki-view"><code>GetCurrentDateTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__GetCurrentTimeUsec.html" target="wiki-view"><code>GetCurrentTimeUsec</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AppendSeconds.html" target="wiki-view"><code>AppendSeconds</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AppendTimestampSeconds.html" target="wiki-view"><code>AppendTimestampSeconds</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustFractMicroseconds.html" target="wiki-view"><code>AdjustFractMicroseconds</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustFractDays.html" target="wiki-view"><code>AdjustFractDays</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustFractYears.html" target="wiki-view"><code>AdjustFractYears</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustMicroseconds.html" target="wiki-view"><code>AdjustMicroseconds</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustDays.html" target="wiki-view"><code>AdjustDays</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustMonths.html" target="wiki-view"><code>AdjustMonths</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__datetime_c__AdjustYears.html" target="wiki-view"><code>AdjustYears</code></a></li>
+</ul></body></html>

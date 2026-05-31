@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/foreign/foreign.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/foreign/foreign.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の外部データラッパー（FDW）、外部サーバー、ユーザーマッピング、および外部テーブルの定義をシステムカタログから取得・管理するためのサポート関数群を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/foreign</code> サブシステムの中心的な実装ファイルです。<code>foreign.h</code> で定義されたデータ構造を具体化し、プランナーやエグゼキュータが外部データソースへアクセスするために必要なメタデータやハンドラルーチンを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メタデータ取得**: システムカタログ（<code>pg_foreign_data_wrapper</code> 等）から定義情報を読み取り、メモリ上の構造体に変換する。</li>
+<li>**ハンドラ管理**: FDW のハンドラ関数を呼び出し、実行に必要な <code>FdwRoutine</code> 構造体を取得・キャッシュする。</li>
+<li>**オプション検証**: 外部サーバーやユーザーマッピングのオプションが妥当か（<code>libpq</code> 接続オプション等）を検証する。</li>
+<li>**プランナ支援**: 外部結合の EPQ（EvalPlanQual）チェック用の代替パス生成など、最適化フェーズの補助を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GetFdwRoutineForRelation</code>: 指定されたリレーションの <code>FdwRoutine</code> を取得する。リレーションキャッシュ（<code>rd_fdwroutine</code>）を利用して効率化を図る。</li>
+<li><code>GetForeignServerExtended</code> / <code>GetForeignDataWrapperExtended</code>: カタログから定義を取得する基本関数。<code>MISSING_OK</code> フラグによるエラー制御をサポート。</li>
+<li><code>GetUserMapping</code>: 特定ユーザーまたは <code>public</code> のユーザーマッピングを検索する。</li>
+<li><code>postgresql_fdw_validator</code>: 外部サーバー等のオプションが <code>libpq</code> の接続文字列として妥当か検証する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ConnectionOption</code></li>
+<li><code>GetFdwRoutine</code></li>
+<li><code>GetForeignColumnOptions</code></li>
+<li><code>GetForeignDataWrapper</code></li>
+<li><code>GetForeignDataWrapperByName</code></li>
+<li><code>GetForeignServer</code></li>
+<li><code>GetForeignServerByName</code></li>
+<li><code>GetForeignServerIdByRelId</code></li>
+<li><code>GetForeignTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **定義取得**: <code>SearchSysCache</code> を使用してシステムカタログからタプルを検索し、<code>palloc</code> で確保した構造体に値をコピーする。 2. **オプション変換**: <code>untransformRelOptions</code> を介して、カタログ内の <code>text[]</code> 形式のオプションを <code>List</code>（<code>DefElem</code> のリスト）に変換する。 3. **ハンドラ呼び出し**: <code>GetFdwRoutine</code> が FDW のハンドラ関数を <code>OidFunctionCall0</code> で実行し、外部ソース固有のコールバック関数群（<code>FdwRoutine</code>）を取得する。 4. **キャッシュ**: <code>GetFdwRoutineForRelation</code> は、一度取得した <code>FdwRoutine</code> を <code>Relation</code> 構造体にキャッシュし、以降のカタログ検索を省略する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_*.h</code>: 外部データ関連のシステムカタログ定義。</li>
+<li><code>foreign/foreign.h</code>: 公開インターフェースおよびデータ構造定義。</li>
+<li><code>utils/syscache.h</code>: 定義情報の高速検索用システムキャッシュ。</li>
+<li><code>access/reloptions.h</code>: オプションのパース・変換用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_foreign_table.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>foreign/fdwapi.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/foreign/fdwapi.h</code>: <code>FdwRoutine</code> 構造体の定義。FDW が実装すべきインターフェースが定義されている。</li>
+<li><code>src/backend/optimizer/path/</code>: 外部テーブルに対するスキャンパスや結合パスの生成ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の <code>postgresql_fdw_validator</code> は、<code>libpq</code> の接続オプションをハードコードしているため、将来的な <code>libpq</code> の仕様変更に対して脆弱です。実運用では各 FDW が独自のバリデーターを実装することが推奨されます。</li>
+<li><code>GetFdwRoutineForRelation</code> はリレーションキャッシュを利用するため、呼び出し側は返されたポインタの生存期間に注意してください。<code>makecopy = true</code> を指定することで、呼び出し側のコンテキストで安全に利用可能なコピーを取得できます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignDataWrapper.html" target="wiki-view"><code>GetForeignDataWrapper</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignDataWrapperExtended.html" target="wiki-view"><code>GetForeignDataWrapperExtended</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignDataWrapperByName.html" target="wiki-view"><code>GetForeignDataWrapperByName</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignServer.html" target="wiki-view"><code>GetForeignServer</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignServerExtended.html" target="wiki-view"><code>GetForeignServerExtended</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignServerByName.html" target="wiki-view"><code>GetForeignServerByName</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetUserMapping.html" target="wiki-view"><code>GetUserMapping</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignTable.html" target="wiki-view"><code>GetForeignTable</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignColumnOptions.html" target="wiki-view"><code>GetForeignColumnOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetFdwRoutine.html" target="wiki-view"><code>GetFdwRoutine</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__GetForeignServerIdByRelId.html" target="wiki-view"><code>GetForeignServerIdByRelId</code></a></li>
+<li><a href="../../../symbols/src__backend__foreign__foreign_c__ConnectionOption.html" target="wiki-view"><code>ConnectionOption</code></a></li>
+</ul></body></html>

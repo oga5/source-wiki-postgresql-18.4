@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/tsearch/wparser_def.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/tsearch/wparser_def.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の全文検索における「デフォルトパーサー」の実装です。入力テキストをトークン（単語、URL、メールアドレス、XMLタグなど）に分解する字句解析器と、検索結果のハイライト（Headline）生成ロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/tsearch</code> サブシステムにおいて、テキストを <code>tsvector</code> に変換する前段階の「字句解析」を担当します。<code>ts_parse.c</code> が呼び出すパーサーインターフェースの実装として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**字句解析**: 有限オートマトン（FSM）に基づき、入力文字列を定義済みのトークンカテゴリに分類する。</li>
+<li>**マルチバイト対応**: ロケールやエンコーディングを考慮した文字クラス判定。</li>
+<li>**ハイライト生成**: 検索クエリに基づき、文書内の重要な断片（Fragment）を抽出し、マークアップを付与する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>パーサー状態管理</h3>
+<ul>
+<li><code>TParser</code>: 解析の実行状態を保持するメイン構造体。入力文字列、現在の解析位置、トークン情報を管理。</li>
+<li><code>TParserState</code>: 解析器の現在の状態（TPS_Base, TPS_InWord 等）。</li>
+<li><code>TParserStateActionItem</code>: 特定の状態における文字クラスと遷移先、アクション（PUSH/POP/BINGO）を定義するテーブル。</li>
+</ul>
+<h3>トークンカテゴリ</h3>
+<ul>
+<li><code>ASCIIWORD</code>, <code>WORD_T</code>, <code>NUMWORD</code>, <code>EMAIL</code>, <code>URL_T</code>, <code>TAG_T</code> 等: 解析結果として出力されるトークンの型定義。</li>
+</ul>
+<h3>ハイライト機能</h3>
+<ul>
+<li><code>prsd_headline</code>: SQLから呼び出されるハイライト生成のメイン関数。</li>
+<li><code>hlCover</code>: クエリに合致する最小の単語範囲（Cover）を探索する関数。</li>
+<li><code>mark_hl_fragments</code> / <code>mark_hl_words</code>: 抽出した範囲に対してハイライト用のフラグを付与する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CoverPos</code></li>
+<li><code>SpecialTags</code></li>
+<li><code>TParser</code></li>
+<li><code>TParserClose</code></li>
+<li><code>TParserCopyClose</code></li>
+<li><code>TParserCopyInit</code></li>
+<li><code>TParserInit</code></li>
+<li><code>TParserPosition</code></li>
+<li><code>TParserState</code></li>
+<li><code>TParserStateAction</code></li>
+<li><code>TParserStateActionItem</code></li>
+<li><code>hlCheck</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析フロー**: <code>TParserGet</code> が現在の状態（<code>TParserState</code>）に基づき、<code>Actions</code> テーブルを走査して次の状態へ遷移します。<code>A_BINGO</code> フラグが立つとトークンが確定し、呼び出し元に返されます。 2. **状態遷移**: <code>TParserPosition</code> スタックを用いて、ネストした解析（URL内のパス解析など）を管理します。 3. **ハイライトフロー**: <code>prsd_headline</code> がクエリと文書の単語リストを受け取り、<code>TS_execute_locations</code> でマッチ位置を特定後、<code>hlCover</code> で最適な表示範囲を決定し、<code>mark_fragment</code> でマークアップ対象をマークします。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>mb/pg_wchar.h</code>: マルチバイト文字処理。</li>
+<li><code>tsearch/ts_public.h</code>, <code>tsearch/ts_type.h</code>: 全文検索用データ型定義。</li>
+<li><code>utils/pg_locale.h</code>: ロケール依存の文字判定。</li>
+<li><code>commands/defrem.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>tsearch/ts_utils.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>wctype.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>ts_parse.c</code>: 本パーサーを呼び出し、辞書チェーンを適用する上位モジュール。</li>
+<li><code>ts_utils.c</code>: 全文検索全般のユーティリティ関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>TParser</code> は <code>palloc</code> を使用して動的にメモリを確保します。<code>prsd_end</code> を通じて適切に解放する必要があります。</li>
+<li>**パフォーマンス**: <code>TParser</code> の状態遷移テーブルは静的に定義されており、非常に高速です。ただし、<code>hlCover</code> によるハイライト探索はクエリの複雑さに応じて計算量が増加します。</li>
+<li>**制限事項**: <code>p_isspecial</code> 関数において、特定の言語（デーヴァナーガリー等）の結合文字を「単語の一部」として扱うためのハードコードされたテーブルが存在します。これは将来的な Unicode バージョンアップ時に更新が必要になる可能性があります。</li>
+<li>**意図的な省略**: 本ファイル内の <code>_make_compiler_happy</code> 関数は、コンパイラの未使用関数警告を抑制するためのダミー実装であり、ロジック上の意味はありません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserState.html" target="wiki-view"><code>TParserState</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParser.html" target="wiki-view"><code>TParser</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserStateActionItem.html" target="wiki-view"><code>TParserStateActionItem</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserPosition.html" target="wiki-view"><code>TParserPosition</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserInit.html" target="wiki-view"><code>TParserInit</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserCopyInit.html" target="wiki-view"><code>TParserCopyInit</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserClose.html" target="wiki-view"><code>TParserClose</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserCopyClose.html" target="wiki-view"><code>TParserCopyClose</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__SpecialTags.html" target="wiki-view"><code>SpecialTags</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__TParserStateAction.html" target="wiki-view"><code>TParserStateAction</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__CoverPos.html" target="wiki-view"><code>CoverPos</code></a></li>
+<li><a href="../../../symbols/src__backend__tsearch__wparser_def_c__hlCheck.html" target="wiki-view"><code>hlCheck</code></a></li>
+</ul></body></html>

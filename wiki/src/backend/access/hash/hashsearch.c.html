@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/hash/hashsearch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/hash/hashsearch.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL ハッシュインデックスにおけるスキャン（検索）処理の実装です。指定されたハッシュキーに基づき、バケットおよびオーバーフローページを辿って一致するタプルを特定し、取得する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/hash</code> サブシステムにおいて、インデックススキャンの実行エンジンとして機能します。<code>hash.c</code> が提供するスキャンインターフェース（<code>hashgettuple</code> 等）から呼び出され、物理的なページ読み込みとタプルのフィルタリングを抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン実行**: インデックススキャン記述子（<code>IndexScanDesc</code>）に基づき、順方向および逆方向のスキャンを制御する。</li>
+<li>**バケット走査**: ハッシュバケットチェーン（メインバケットおよびオーバーフローページ）を横断する。</li>
+<li>**スプリット対応**: バケット分割（Split）処理中にスキャンが開始された場合、分割元・分割先の両方のバケットを適切に走査する。</li>
+<li>**タプルフィルタリング**: ハッシュキーの一致確認および <code>INDEX_MOVED_BY_SPLIT_MASK</code> 等のフラグに基づく不要タプルのスキップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>_hash_first</code>: スキャンの開始点。ハッシュキーからバケットを特定し、最初のタプルを見つける。</li>
+<li><code>_hash_next</code>: スキャン中の次のタプルを取得する。ページ境界を跨ぐ処理を含む。</li>
+<li><code>_hash_readpage</code>: 指定されたページから条件に合致するタプルを <code>HashScanOpaque</code> にロードする。</li>
+<li><code>HashScanOpaque</code>: スキャン中の状態（現在のページ、バケット、分割状態など）を保持する構造体。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_hash_first</code> がハッシュキーを計算し、<code>_hash_getbucketbuf_from_hashkey</code> で対象バケットを特定する。 2. **ページ読み込み**: <code>_hash_readpage</code> がページを読み込み、<code>_hash_load_qualified_items</code> を介して条件に合致するタプルを <code>so-&gt;currPos</code> にキャッシュする。 3. **走査**: <code>_hash_next</code> がキャッシュされたタプルを順次返し、キャッシュが尽きると <code>_hash_readnext</code> / <code>_hash_readprev</code> を呼び出して次のページへ移動する。 4. **終了**: スキャン終了時に <code>_hash_dropscanbuf</code> でバッファピンを解放する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/hash.h</code>: ハッシュインデックスの内部構造定義。</li>
+<li><code>access/relscan.h</code>: インデックススキャン用データ構造。</li>
+<li><code>storage/predicate.h</code>: 述語ロック（Predicate Locking）の管理。</li>
+<li><code>utils/rel.h</code>: リレーション記述子へのアクセス。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>hashpage.c</code>: ページレベルの操作（<code>_hash_getbuf</code>, <code>_hash_relbuf</code> 等）。</li>
+<li><code>hash.c</code>: インデックスアクセスメソッドのメインエントリポイント。</li>
+<li><code>hashutil.c</code>: ハッシュキー計算やユーティリティ関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの挙動**: ハッシュスキャンは、スキャン中ずっとバケットページをピン留めし続けることで、バケットの再編成や分割による不整合を防いでいます。</li>
+<li>**スプリット中の挙動**: バケット分割中にスキャンが重なった場合、<code>hashso_buc_populated</code> や <code>hashso_buc_split</code> フラグを用いて、分割元と分割先の両方を走査する複雑なロジックが含まれています。</li>
+<li>**全件スキャン不可**: ハッシュインデックスはハッシュキーによる特定が前提であるため、全件スキャン（Whole-index scan）はサポートされていません。</li>
+</ul></body></html>

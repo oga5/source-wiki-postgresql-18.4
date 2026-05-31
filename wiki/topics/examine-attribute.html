@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/examine-attribute.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>examine_attribute</h1>
+<h2>概念</h2>
+<p><code>examine_attribute</code> は、PostgreSQLの <code>ANALYZE</code> 処理（統計情報の収集・構築）において、特定の属性（テーブルの列、インデックス式、または拡張統計情報の式）に対する統計解析の準備と初期化を行う静的（<code>static</code>）関数です。</p>
+<p>PostgreSQLのソースコード内には、役割とシグネチャが異なる2つの同名関数が存在します。 1. **テーブル列・インデックス式用**: <code>src/backend/commands/analyze.c</code> に定義され、テーブルの列やインデックス式を対象とします。 2. **拡張統計情報の式用**: <code>src/backend/statistics/extended_stats.c</code> に定義され、拡張統計情報における式（<code>Node</code>）を対象とします。</p>
+<h2>なぜ重要か</h2>
+<p>この関数は、統計情報収集プロセスにおいて、各属性のデータ型に応じた適切な解析ロジック（<code>typanalyze</code> 関数）をバインドし、統計計算に必要なメタデータ構造体（<code>VacAttrStats</code>）を正しく初期化する役割を担います。これにより、プランナが最適な実行計画を作成するために不可欠な統計情報の正確な生成が保証されます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/commands</code></li>
+<li><code>module:src/backend/statistics</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/commands/analyze.c#examine_attribute</code>**</li>
+<li>テーブル列やインデックス式を解析するための関数。<code>Relation</code>、列番号（<code>attnum</code>）、インデックス式（<code>index_expr</code>）を受け取ります。</li>
+<li>**<code>symbol:src/backend/statistics/extended_stats.c#examine_attribute</code>**</li>
+<li>拡張統計情報（Extended Statistics）における式を解析するための関数。式を表す <code>Node</code> のみを受け取ります。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>統計情報収集における <code>examine_attribute</code> の処理フローは、対象となるコンテキストに応じて以下の2つの経路に分かれます。</p>
+<h3>1. テーブル列およびインデックス列の解析（<code>analyze.c</code>）</h3>
+<p>1. <code>do_analyze_rel</code> から呼び出されます。 2. 対象列が分析可能か（削除済み列や仮想生成列でないか、統計ターゲット <code>attstattarget</code> が0より大きいかなど）を判定します。 3. <code>pg_attribute</code> システムカタログから情報を取得し、<code>VacAttrStats</code> 構造体を確保・初期化します。 4. 型固有の <code>typanalyze</code> 関数（定義されていない場合はデフォルトの <code>std_typanalyze</code>）を呼び出して、統計計算関数（<code>compute_stats</code>）などを設定します。</p>
+<h3>2. 拡張統計情報の式解析（<code>extended_stats.c</code>）</h3>
+<p>1. <code>BuildRelationExtStatistics</code> 内のループ処理から呼び出されます。 2. 与えられた式（<code>Node *expr</code>）から型情報（OID、typmod、照合順序）を抽出します。 3. <code>TYPEOID</code> システムキャッシュから型情報を取得し、<code>VacAttrStats</code> 構造体を確保・初期化します。 4. 型固有の <code>typanalyze</code> 関数（またはデフォルトの <code>std_typanalyze</code>）を呼び出し、検証を行います。</p>
+<p>※ なお、これら2つの処理がどのように相互作用するか、あるいはシステム全体における完全なエンドツーエンドの実行フローの全容（例えば、呼び出しの正確な順序やトリガー条件など）は、提供された情報からは完全には明らかになっていません。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**共通の不変条件**:</li>
+<li>解析対象の型情報がシステムカタログ（<code>pg_type</code> など）に存在しなければならず、キャッシュルックアップに失敗した場合は <code>elog(ERROR)</code> で処理を中断します。</li>
+<li><code>typanalyze</code> 関数の実行結果が不正である場合、または <code>compute_stats</code> が設定されていない場合は、解析対象外として <code>NULL</code> を返します。</li>
+<li>**<code>analyze.c</code> 固有の不変条件**:</li>
+<li>削除済み列（<code>attisdropped</code>）および仮想生成列は分析対象外（<code>NULL</code> を返す）とします。</li>
+<li><code>attstattarget</code> が 0 の場合は分析をスキップします。</li>
+<li>**<code>extended_stats.c</code> 固有の不変条件**:</li>
+<li><code>VacAttrStats</code> の <code>attstattarget</code> は <code>-1</code> に初期化されます。</li>
+<li><code>minrows</code> が 0 以下の場合は <code>NULL</code> を返します。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名関数の混同**: <code>analyze.c</code> と <code>extended_stats.c</code> に定義されている <code>examine_attribute</code> は、シグネチャ（引数）やメモリ管理方針が異なります。これらは別個の静的関数であるため、開発やデバッグの際に混同しないよう注意が必要です。</li>
+<li>**メモリ管理の違い**: <code>analyze.c</code> 版は <code>anl_context</code> を使用してメモリ管理を行いますが、<code>extended_stats.c</code> 版では <code>anl_context</code> が <code>NULL</code> に設定されており、異なるメモリ管理方針がとられています。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/commands/analyze.c</code> の <code>examine_attribute</code> 定義および <code>do_analyze_rel</code></li>
+<li><code>src/backend/statistics/extended_stats.c</code> の <code>examine_attribute</code> 定義および <code>BuildRelationExtStatistics</code></li>
+</ul></body></html>

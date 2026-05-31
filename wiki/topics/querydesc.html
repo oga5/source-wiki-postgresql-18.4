@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/querydesc.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>QueryDesc</h1>
+<h2>概念</h2>
+<p><code>QueryDesc</code>（クエリ記述子）は、PostgreSQLのクエリ実行エンジンにおいて、実行対象の計画（<code>PlannedStmt</code>）と、その実行に必要な環境情報（スナップショット、パラメータ、出力先など）を一元管理し、実行ライフサイクル全体を通じて保持するためのパッケージ構造体です。</p>
+<h2>なぜ重要か</h2>
+<p>クエリ実行の各フェーズ（Start -&gt; Run -&gt; Finish -&gt; End）において、プランツリー、実行時パラメータ、および実行結果の出力先（<code>DestReceiver</code>）などの実行状態を一貫して維持・伝達するために不可欠です。また、実行エンジンのフック（<code>ExecutorStart_hook</code> など）や外部プラグイン（<code>auto_explain</code> や <code>pg_stat_statements</code> など）が実行コンテキストにアクセスする際の共通インターフェースとしても機能します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/tcop</code></li>
+<li><code>module:src/include/executor</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/executor/execdesc.h#QueryDesc</code> (struct)**: クエリ実行に必要な情報（計画、スナップショット、実行状態など）を保持する主要な構造体定義。</li>
+<li>**<code>symbol:src/include/executor/executor.h#QueryDesc</code> (typedef)**: 実行ライフサイクル関数等で参照される <code>QueryDesc</code> の型定義。</li>
+<li>**<code>symbol:src/backend/tcop/pquery.c#CreateQueryDesc</code> (function)**: <code>QueryDesc</code> 構造体を <code>palloc</code> により割り当て、初期化する関数。</li>
+<li>**<code>symbol:src/backend/tcop/pquery.c#FreeQueryDesc</code> (function)**: <code>QueryDesc</code> が保持するリソース（スナップショットなど）を解放し、メモリをクリーンアップする関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **生成と初期化**: <code>CreateQueryDesc</code> により <code>QueryDesc</code> 構造体が確保され、計画（<code>PlannedStmt</code>）、ソーステキスト、出力先（<code>DestReceiver</code>）、パラメータ、スナップショットなどが格納されます。この際、スナップショットは <code>RegisterSnapshot</code> により登録されます。 2. **実行準備**: <code>ExecutorStart</code> が <code>QueryDesc</code> を受け取り、クエリ全体の実行状態を表す <code>EState</code> や実行ノードツリーである <code>PlanState</code> を構築して <code>QueryDesc</code> 内に設定します。 3. **実行**: <code>ExecutorRun</code> が <code>QueryDesc</code> を参照し、プランツリーを走査して結果を <code>dest</code>（<code>DestReceiver</code>）へ渡します。 4. **解放**: クエリ実行終了後、<code>FreeQueryDesc</code> を呼び出すことで、登録されたスナップショットの解除（<code>UnregisterSnapshot</code>）および <code>QueryDesc</code> 自体のメモリ解放（<code>pfree</code>）が行われます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**スナップショットの参照管理**: <code>CreateQueryDesc</code> で登録された <code>snapshot</code> および <code>crosscheck_snapshot</code> は、<code>FreeQueryDesc</code> において <code>UnregisterSnapshot</code> により参照カウントが減らされなければなりません。</li>
+<li>**解放時の実行状態**: <code>FreeQueryDesc</code> を呼び出す際、<code>qdesc-&gt;estate</code> が <code>NULL</code> であること（実行中のクエリではないこと）が <code>Assert</code> により保証されている必要があります。したがって、必ず <code>ExecutorEnd</code> 等で実行状態が終了した後に呼び出す必要があります。</li>
+<li>**ユーティリティコマンドの制限**: ユーティリティコマンドの場合、実行エンジン（<code>ExecutorRun</code>）に渡してはならないという制約があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**不適切な初期化状態での実行**: <code>QueryDesc</code> が適切に初期化されていない状態で実行関数に渡された場合、実行エンジンは未定義の動作を引き起こす可能性があります。</li>
+<li>**実行中の解放**: 実行中のクエリに対して <code>FreeQueryDesc</code> を呼び出すことはできません（<code>qdesc-&gt;estate</code> が <code>NULL</code> でない場合は <code>Assert</code> により異常終了します）。</li>
+<li>**ユーティリティコマンドの誤用**: ユーティリティコマンドを誤って <code>ExecutorRun</code> に渡した場合の動作は未定義です。</li>
+<li>**プラグイン用領域の競合**: <code>totaltime</code> フィールドはコアシステムでは使用されずプラグイン用に予約されていますが、複数のプラグインが競合して利用する際には注意が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/executor/execdesc.h</code>: <code>QueryDesc</code> 構造体の詳細なメンバ構成。</li>
+<li><code>src/backend/tcop/pquery.c</code>: <code>CreateQueryDesc</code> および <code>FreeQueryDesc</code> の実装。</li>
+<li><code>src/include/executor/executor.h</code>: 実行エンジンにおける <code>QueryDesc</code> の型定義と関連する実行ライフサイクル関数の宣言。</li>
+</ul></body></html>

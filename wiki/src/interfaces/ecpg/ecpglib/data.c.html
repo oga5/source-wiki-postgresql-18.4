@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/ecpg/ecpglib/data.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/interfaces/ecpg/ecpglib/data.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL のクエリ結果（<code>PGresult</code>）から、ECPG アプリケーションのホスト変数へデータを転送・変換するためのコアロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>ecpglib</code> のデータ変換層として機能します。データベースから取得したテキストまたはバイナリ形式のデータを、C 言語の型（<code>int</code>, <code>double</code>, <code>numeric</code>, <code>date</code> 等）へマッピングし、必要に応じてインジケータ変数の更新やエラーハンドリングを行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**データ変換**: <code>PQgetvalue</code> で取得した値を C 言語の型へパース・変換する。</li>
+<li>**型安全性と互換性**: <code>COMPAT_MODE</code>（Informix, Oracle 等）に応じた挙動の差異を吸収する。</li>
+<li>**配列処理**: SQL 配列形式（<code>{...}</code>）のパースおよび要素ごとの展開。</li>
+<li>**バイナリ/テキスト変換**: 16 進数エンコードされた <code>bytea</code> データのデコード処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>ecpg_get_data</code>: 本ファイルのメイン関数。結果セットから指定されたホスト変数へ値をコピーする。</li>
+<li><code>garbage_left</code>: パース後の文字列に不正な残余データがないか検証する。</li>
+<li><code>check_special_value</code>: <code>NaN</code> や <code>Infinity</code> などの特殊な浮動小数点値を処理する。</li>
+<li><code>hex_decode</code> / <code>ecpg_hex_encode</code>: <code>bytea</code> 型の 16 進数変換を担う。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>array_boundary</code></li>
+<li><code>array_delimiter</code></li>
+<li><code>ecpg_hex_dec_len</code></li>
+<li><code>ecpg_hex_enc_len</code></li>
+<li><code>get_float8_infinity</code></li>
+<li><code>get_float8_nan</code></li>
+<li><code>get_hex</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <code>PQgetvalue</code> で値を取得し、<code>PQfformat</code> でバイナリかテキストかを確認。 2.  **インジケータ処理**: <code>PQgetisnull</code> を確認し、NULL であればインジケータ変数に <code>-1</code> を設定して終了。 3.  **型変換**:</p>
+<ul>
+<li>**バイナリモード**: <code>memcpy</code> で直接コピー。</li>
+<li>**テキストモード**: <code>switch</code> 文で型を判定し、<code>strtol</code>, <code>strtod</code>, <code>PGTYPES..._from_asc</code> 等を用いて変換。</li>
+<p>4.  **配列展開**: 配列の場合は <code>array_delimiter</code> や <code>array_boundary</code> を用いてループし、各要素を順次処理。 5.  **エラー/警告**: 変換失敗時は <code>ecpg_raise</code> でエラーを報告し、切り捨てが発生した場合は <code>sqlca</code> に警告を設定。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: libpq の基本定義。</li>
+<li><code>ecpglib.h</code>, <code>ecpglib_extern.h</code>: ECPG ライブラリの内部インターフェース。</li>
+<li><code>pgtypes_*.h</code>: <code>numeric</code>, <code>date</code>, <code>timestamp</code> 等の型変換用ヘッダ。</li>
+<li><code>sqlca.h</code>: SQLCA 構造体によるエラー報告。</li>
+<li><code>ecpgerrno.h</code></li>
+<li><code>ecpgtype.h</code></li>
+<li><code>math.h</code></li>
+<li><code>pgtypes_date.h</code></li>
+<li><code>pgtypes_interval.h</code></li>
+<li><code>pgtypes_numeric.h</code></li>
+<li><code>pgtypes_timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/interfaces/ecpg/ecpglib/execute.c</code>: <code>ecpg_get_data</code> を呼び出す上位層。</li>
+<li><code>src/interfaces/ecpg/pgtypeslib/</code>: <code>PGTYPES...</code> 関数群の実装元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Informix モード**: <code>INFORMIX_MODE</code> が有効な場合、数値変換エラー時にエラーを返さず NULL をセットするなどの特殊な挙動があるため注意してください。</li>
+<li>**配列の扱い**: <code>isarray</code> フラグが <code>ECPG_ARRAY_ARRAY</code> の場合、<code>{</code> で始まり <code>}</code> で終わる文字列をパースします。このロジックは複雑になりやすいため、デバッグ時は <code>pval</code> のポインタ移動を追跡するのが有効です。</li>
+<li>**メモリ管理**: <code>PGTYPESnumeric_new</code> 等でメモリを確保した場合は、必ず <code>free</code> されていることを確認してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__array_delimiter.html" target="wiki-view"><code>array_delimiter</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__array_boundary.html" target="wiki-view"><code>array_boundary</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__garbage_left.html" target="wiki-view"><code>garbage_left</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__get_float8_infinity.html" target="wiki-view"><code>get_float8_infinity</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__get_float8_nan.html" target="wiki-view"><code>get_float8_nan</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__check_special_value.html" target="wiki-view"><code>check_special_value</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__ecpg_hex_enc_len.html" target="wiki-view"><code>ecpg_hex_enc_len</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__ecpg_hex_dec_len.html" target="wiki-view"><code>ecpg_hex_dec_len</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__get_hex.html" target="wiki-view"><code>get_hex</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__hex_decode.html" target="wiki-view"><code>hex_decode</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__ecpg_hex_encode.html" target="wiki-view"><code>ecpg_hex_encode</code></a></li>
+<li><a href="../../../../symbols/src__interfaces__ecpg__ecpglib__data_c__ecpg_get_data.html" target="wiki-view"><code>ecpg_get_data</code></a></li>
+</ul></body></html>

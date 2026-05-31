@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__include__utils__snapshot_h__SnapshotData.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SnapshotData</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/include/utils/snapshot.h:138</code></li>
+</ul>
+<h2>目的</h2>
+<p>特定のトランザクションから見て、どのタプル（行）が可視であるかを判定するための基準となる情報を保持する。MVCC（多版同時実行制御）やリカバリ時の状態管理において、可視性判定の抽象化インターフェースとして機能する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct SnapshotData {
+    SnapshotType snapshot_type;
+    TransactionId xmin;
+    TransactionId xmax;
+    TransactionId *xip;
+    uint32 xcnt;
+    TransactionId *subxip;
+    int32 subxcnt;
+    bool suboverflowed;
+    bool takenDuringRecovery;
+    bool copied;
+    CommandId curcid;
+    uint32 speculativeToken;
+    struct GlobalVisState *vistest;
+    uint32 active_count;
+    uint32 regd_count;
+    pairingheap_node ph_node;
+    uint64 snapXactCompletionCount;
+} SnapshotData;</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>GetSnapshotData()</code> 等により、現在のトランザクション状態やリカバリ状態に基づいて構築される。</li>
+<li>**出力**: <code>HeapTupleSatisfiesMVCC</code> 等の可視性判定関数が本構造体を参照し、タプルの可視性を判定する。<code>SNAPSHOT_DIRTY</code> 型等の場合は、構造体が進行中のトランザクションIDを返すための出力引数として利用される。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>xmin</code> 未満のすべての XID は可視である。</li>
+<li><code>xmax</code> 以上のすべての XID は不可視である。</li>
+<li><code>xip[]</code> に含まれるすべての ID は <code>xmin &lt;= id &lt; xmax</code> を満たす。</li>
+<li><code>subxip[]</code> に含まれるすべての ID は <code>xmin</code> 以上である。</li>
+<li><code>snapshot_type</code> が <code>SNAPSHOT_MVCC</code> 以外の場合、一部のフィールド（<code>xmin</code>, <code>xmax</code> 等）は特殊な目的で再利用されるか、ゼロ値となる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>MVCC スナップショットは、<code>xmin</code> と <code>xmax</code>、および進行中のトランザクションリスト（<code>xip</code>, <code>subxip</code>）を用いてタプルの可視性を判定する。</li>
+<li><code>snapXactCompletionCount</code> を保持し、前回のスナップショット生成以降にトランザクションの完了がない場合に再計算を回避する最適化を行う。</li>
+<li>参照カウント（<code>active_count</code>, <code>regd_count</code>）によりライフサイクルを管理する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/heap/heapam.c</code>, <code>src/backend/executor/execReplication.c</code>, <code>src/backend/replication/logical/reorderbuffer.c</code> 等でインスタンス化やコピーが行われる。</li>
+<li>**呼び出し先**: <code>lib/pairingheap.h</code> の関数が <code>ph_node</code> を通じて登録済みスナップショットの管理に利用される。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SnapshotType</code>: スナップショットの動作を決定する列挙型。</li>
+<li><code>GlobalVisState</code>: <code>SNAPSHOT_NON_VACUUMABLE</code> 等でバキューム可否判定に使用される。</li>
+<li><code>pairingheap_node</code>: スナップショットマネージャーによる管理用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>subxip</code> 配列がオーバーフローした場合、<code>suboverflowed</code> フラグが <code>true</code> となる。</li>
+<li>リカバリ中に取得されたスナップショットでは <code>xip</code> が空になる場合がある。</li>
+<li>フィールドの解釈は <code>snapshot_type</code> に依存するため、型を誤認したアクセスは不正な可視性判定を招く。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>歴史的経緯によりフィールドが多いため、将来的に <code>NodeTag</code> を用いたサブクラス化が検討されている。</li>
+<li><code>xmin</code> や <code>xmax</code> は MVCC 以外でも再利用されるため、変更時は <code>HeapTupleSatisfiesDirty</code> 等への影響を考慮すること。</li>
+<li>メモリ管理は <code>snapmgr.h</code> 経由で行い、<code>active_count</code> や <code>regd_count</code> を直接操作しないこと。</li>
+</ul></body></html>

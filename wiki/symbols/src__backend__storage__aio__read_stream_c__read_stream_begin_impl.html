@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__aio__read_stream_c__read_stream_begin_impl.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>read_stream_begin_impl</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/aio/read_stream.c:537</code></li>
+</ul>
+<h2>目的</h2>
+<p><code>ReadStream</code> 構造体を初期化し、リレーションデータの効率的な先読み（Look-ahead）を行うための環境を構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static ReadStream *read_stream_begin_impl(
+    int flags,
+    BufferAccessStrategy strategy,
+    Relation rel,
+    SMgrRelation smgr,
+    char persistence,
+    ForkNumber forknum,
+    ReadStreamBlockNumberCB callback,
+    void *callback_private_data,
+    size_t per_buffer_data_size
+);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>flags</code>: ストリームの動作モード（<code>READ_STREAM_MAINTENANCE</code>, <code>READ_STREAM_USE_BATCHING</code>, <code>READ_STREAM_SEQUENTIAL</code>, <code>READ_STREAM_FULL</code>）。</li>
+<li><code>strategy</code>: バッファアクセス戦略。</li>
+<li><code>rel</code>, <code>smgr</code>: 対象リレーション情報。</li>
+<li><code>callback</code>: 次のブロック番号を取得するためのコールバック関数。</li>
+<li><code>per_buffer_data_size</code>: 各バッファに関連付ける付加データのサイズ。</li>
+<li>**出力**: 初期化済みの <code>ReadStream</code> 構造体へのポインタ。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>max_ios</code> は <code>PG_INT16_MAX</code> を超えないこと。</li>
+<li><code>max_pinned_buffers</code> は <code>GetAccessStrategyPinLimit</code> および <code>GetPinLimit</code>（または <code>GetLocalPinLimit</code>）によって制限される。</li>
+<li><code>queue_size</code> は <code>max_pinned_buffers + 1</code> であり、バッファの循環利用においてヘッドとテールの衝突を避けるための空きを確保する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **I/O 並行数の決定**: テーブルスペース設定やカタログリレーションの判定に基づき、<code>max_ios</code> を算出する。 2. **バッファ制限の計算**: <code>io_combine_limit</code> を考慮し、ピン留め可能な最大バッファ数を決定する。 3. **メモリ確保**: <code>ReadStream</code> 本体、バッファ配列、<code>InProgressIO</code> 配列、および <code>per_buffer_data</code> を単一のメモリチャンクとして <code>palloc</code> で確保する。 4. **ストリーム設定**: 同期/非同期モードの判定、コールバックの登録、および初期先読み距離（<code>distance</code>）の設定を行う。<code>READ_STREAM_FULL</code> 指定時は初期距離を最大化する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: </li>
+<li><code>read_stream_begin_relation</code></li>
+<li><code>read_stream_begin_smgr_relation</code></li>
+<li>**呼び出し先**: </li>
+<li><code>get_tablespace_maintenance_io_concurrency</code> / <code>get_tablespace_io_concurrency</code></li>
+<li><code>GetAccessStrategyPinLimit</code></li>
+<li><code>GetLocalPinLimit</code> / <code>GetPinLimit</code></li>
+<li><code>SmgrIsTemp</code></li>
+<li><code>palloc</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>ReadStream</code>: ストリームの状態を保持するメイン構造体。</li>
+<li><code>InProgressIO</code>: 進行中の I/O 操作を管理する構造体。</li>
+<li><code>BufferAccessStrategy</code>: バッファ管理の制約。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>max_ios</code> が 0 の場合、強制的に 1 に設定し、同期 I/O モードへ切り替える。</li>
+<li><code>per_buffer_data_size</code> が 0 の場合、関連データ領域は確保されない。</li>
+<li>システムのバッファ数が極端に少ない場合、<code>max_pinned_buffers</code> を最低 1 に補正する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ReadStream</code> のメモリレイアウトを決定する重要な箇所である。<code>queue_size</code> や <code>queue_overflow</code> の計算を変更する場合は、メモリ確保時のオフセット計算と <code>MAXALIGN</code> の整合性に注意すること。</li>
+<li>GUC 設定（<code>io_combine_limit</code> 等）はストリーム開始時にキャプチャされるため、ストリーム生存期間中の GUC 変更は影響しない。</li>
+</ul></body></html>

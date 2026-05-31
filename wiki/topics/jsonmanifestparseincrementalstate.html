@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/jsonmanifestparseincrementalstate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>JsonManifestParseIncrementalState</h1>
+<h2>概念</h2>
+<p><code>JsonManifestParseIncrementalState</code> は、PostgreSQLのバックアップマニフェスト（JSON形式）を分割して（インクリメンタルに）解析する際に、解析の進捗状態とチェックサム計算のコンテキストを保持するための構造体です。</p>
+<p>ヘッダーファイル <code>src/include/common/parse_manifest.h</code> では不透明な構造体（opaque struct）として宣言されており、実装ファイル <code>src/common/parse_manifest.c</code> で具体的なメンバが定義されています。</p>
+<h2>なぜ重要か</h2>
+<p>バックアップマニフェスト全体を一度にメモリに読み込むことなく、ストリーミングまたは断片（チャンク）ごとに逐次解析することを可能にします。これにより、メモリ消費を抑えつつ、マニフェスト全体の整合性検証（SHA-256などのチェックサム計算）を並行して行うことができます。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/common</code></li>
+<li><code>module:src/include/common</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li><code>symbol:src/include/common/parse_manifest.h#JsonManifestParseIncrementalState</code></li>
+<p>外部モジュールに対して非公開（不透明）として定義された構造体宣言です。</p>
+<li><code>symbol:src/common/parse_manifest.c#JsonManifestParseIncrementalState</code></li>
+<p>内部メンバ（JSON字句解析状態 <code>JsonLexContext lex</code>、JSON解析アクション <code>JsonSemAction sem</code>、チェックサム計算用コンテキスト <code>pg_cryptohash_ctx *manifest_ctx</code>）を含む具体的な構造体定義です。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: 呼び出し元（<code>src/backend/backup/basebackup_incremental.c</code>、<code>src/bin/pg_combinebackup/load_manifest.c</code>、<code>src/bin/pg_verifybackup/pg_verifybackup.c</code> など）が <code>json_parse_manifest_incremental_init</code> を呼び出し、状態を初期化します。このとき、SHA-256計算用のコンテキストなどが準備されます。 2. **逐次処理（チャンク処理）**: <code>json_parse_manifest_incremental_chunk</code> を繰り返し呼び出してJSONデータの断片を順次解析します。データはJSONパーサーへ渡されると同時に、<code>manifest_ctx</code> を通じてチェックサム計算が更新されます。解析の進捗に伴い、登録されたコールバック関数を通じてファイル情報やWAL範囲情報がアプリケーション層へ通知されます。 3. **終了処理**: 解析終了時に <code>json_parse_manifest_incremental_shutdown</code> を呼び出します。蓄積されたチェックサムを用いたマニフェスト全体の検証が実行され、解析に関連するリソースが解放されます。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**初期化の必須性**: 解析を行う前に、必ず <code>json_parse_manifest_incremental_init</code> によって適切にメモリ確保および初期化されている必要があります。</li>
+<li>**確実な解放**: <code>json_parse_manifest_incremental_init</code> で割り当てられたメモリは、解析終了後に必ず <code>json_parse_manifest_incremental_shutdown</code> を呼び出して解放する必要があります。</li>
+<li>**チェックサムの存在**: インクリメンタル解析の最終チャンクには、マニフェスト全体の整合性を検証するためのチェックサムが含まれている必要があります。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**直接アクセスの禁止**: 本構造体は不透明（opaque）として扱われるべきであり、直接メンバにアクセスせず、提供されたAPI関数を介して操作する必要があります。</li>
+<li>**メモリリーク**: 解析終了時に <code>json_parse_manifest_incremental_shutdown</code> の呼び出しを怠ると、メモリリークが発生します。</li>
+<li>**エラー時の処理停止**: 解析中にエラーが発生した場合、<code>json_manifest_parse_failure</code> が呼び出され、<code>pg_unreachable()</code> により処理が停止します（呼び出し元のコールバックからは復帰しません）。エラーは <code>JsonManifestParseContext</code> に登録された <code>error_cb</code> を通じてハンドリングされます。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/common/parse_manifest.h</code> (不透明な構造体の宣言とAPIの定義)</li>
+<li><code>src/common/parse_manifest.c</code> (構造体の詳細定義とインクリメンタル解析の実装)</li>
+</ul></body></html>

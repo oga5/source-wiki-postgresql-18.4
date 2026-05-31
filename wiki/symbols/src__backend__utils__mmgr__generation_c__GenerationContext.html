@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__mmgr__generation_c__GenerationContext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GenerationContext</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/utils/mmgr/generation.c:59</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のメモリ管理における「世代別（Generational）」メモリコンテキストを保持するための構造体です。寿命が近いオブジェクトをグループ化して管理し、FIFO 的な割り当て・解放パターンにおいてメモリの断片化を抑制しつつ効率的な再利用を実現します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>typedef struct GenerationContext
+{
+    MemoryContextData header;
+    uint32      initBlockSize;
+    uint32      maxBlockSize;
+    uint32      nextBlockSize;
+    uint32      allocChunkLimit;
+    GenerationBlock *block;
+    GenerationBlock *freeblock;
+    dlist_head  blocks;
+} GenerationContext;</code></pre>
+<h2>入力と出力</h2>
+<p>本構造体はメモリコンテキストの管理状態を保持するコンテナであり、関数ではありません。メモリ割り当て要求（<code>palloc</code> 等）のコンテキストとして使用されます。</p>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>header</code> フィールドにより <code>MemoryContext</code> インターフェースと互換性を持ちます。</li>
+<li><code>blocks</code> は <code>dlist_head</code> を用いて管理される双方向リストであり、コンテキスト内の全メモリブロックを追跡します。</li>
+<li><code>freeblock</code> は、全チャンクが解放された空のブロックを再利用目的で保持するか、該当がない場合は <code>NULL</code> となります。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**ブロック管理**: 割り当て要求に対し、現在の <code>block</code> に空きがあれば使用し、なければ <code>freeblock</code> の再利用または新規ブロックの確保を行います。</li>
+<li>**リセット**: <code>GenerationReset</code> 実行時、<code>KeeperBlock</code> 以外の全ブロックを走査し、メモリを解放または初期化します。</li>
+<li>**解放**: <code>GenerationFree</code> によりチャンクが解放され、ブロック内の全チャンクが空になった場合、そのブロックを <code>freeblock</code> として保持するか、<code>free()</code> を実行します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/replication/logical/reorderbuffer.c</code> 等で、可変長トランザクションデータの管理用として参照されています。</li>
+<li>**呼び出し先**: <code>GenerationBlock</code> 構造体（ブロック管理用）を内部で参照します。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>MemoryContextData</code>: 基底となるメモリコンテキスト情報。</li>
+<li><code>GenerationBlock</code>: メモリ割り当ての物理的な単位。</li>
+<li><code>dlist_head</code>: ブロックリスト管理用の双方向リストヘッダー。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>freeblock</code> が <code>NULL</code> の場合、新規ブロックの確保が必要です。</li>
+<li><code>KeeperBlock</code>（コンテキスト作成時に確保される最初のブロック）は、コンテキストが削除されるまで生存し、通常のブロック解放ロジックの対象外となります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本コンテキストは、割り当て順と解放順が近い場合に最適化されています。ランダムな解放が頻発する用途には適していません。</li>
+<li><code>Valgrind</code> 連携マクロが多用されているため、メモリの有効性チェックを行う際は、これらのマクロによる状態遷移に注意してください。</li>
+</ul></body></html>

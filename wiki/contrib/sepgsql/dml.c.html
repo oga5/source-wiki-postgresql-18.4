@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/sepgsql/dml.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/sepgsql/dml.c</h1>
+<h2>概要</h2>
+<p><code>dml.c</code> は、PostgreSQL の DML（Data Manipulation Language）操作に対する SELinux セキュリティ権限チェックを実装するモジュールです。SQL 文の実行時にアクセスされるテーブルやカラムが、SELinux ポリシーによって許可されているかを検証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/sepgsql</code> サブシステムにおいて、実行時（Executor）の権限検証を担当する中心的なファイルです。<code>hooks.c</code> から呼び出されるフック関数を起点として、クエリ内の各テーブルに対するアクセス権限を評価します。</p>
+<h2>責務</h2>
+<ul>
+<li>**権限チェックの実行**: <code>RTEPermissionInfo</code> を解析し、必要な SELinux 権限（SELECT, INSERT, UPDATE, DELETE）を特定して検証する。</li>
+<li>**継承関係の解決**: 親テーブルに対する権限チェックを、継承されたすべての子テーブルへ伝播させる。</li>
+<li>**カラムレベルの検証**: 行全体参照（Whole-row reference）の展開や、継承テーブル間での属性番号の不一致を補正し、個別のカラムに対する権限を検証する。</li>
+<li>**ハードコードされたポリシーの適用**: システムカタログや TOAST テーブルへの直接的な DML 操作を禁止する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>sepgsql_dml_privileges</code>: DML 権限チェックのメインエントリーポイント。</li>
+<li><code>check_relation_privileges</code>: 特定のテーブルおよびそのカラムに対する権限を検証する内部関数。</li>
+<li><code>fixup_whole_row_references</code>: 行全体参照を、テーブル内の全カラム参照へ展開する。</li>
+<li><code>fixup_inherited_columns</code>: 親テーブルの属性番号を、子テーブルの属性番号へマッピングする。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **エントリー**: <code>sepgsql_dml_privileges</code> が <code>rteperminfos</code> リストを受け取り、各エントリの権限要件を抽出します。 2. **展開**: 継承が有効な場合、<code>find_all_inheritors</code> を使用して全子テーブルの OID を取得します。 3. **補正**: <code>fixup_inherited_columns</code> を呼び出し、親と子で異なる属性番号を調整します。 4. **検証**: <code>check_relation_privileges</code> がテーブルレベルの権限をチェックし、続いて各カラムのビットマップを走査してカラムレベルの権限を <code>sepgsql_avc_check_perms</code> で検証します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本的な PostgreSQL 型とマクロ。</li>
+<li><code>catalog/</code>: <code>pg_class</code>, <code>pg_attribute</code>, <code>pg_inherits</code> 等のシステムカタログ定義。</li>
+<li><code>sepgsql.h</code>: SE-PostgreSQL 固有の定義と AVC（Access Vector Cache）インターフェース。</li>
+<li><code>utils/syscache.h</code>: システムカタログのキャッシュ検索用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/tupdesc.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/pg_attribute.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>commands/seclabel.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>nodes/bitmapset.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>contrib/sepgsql/uavc.c</code>: <code>sepgsql_avc_check_perms</code> の実装。権限チェックのキャッシュと SELinux カーネルへの問い合わせを担当。</li>
+<li><code>contrib/sepgsql/hooks.c</code>: DML フックの登録場所。</li>
+<li><code>executor/executor.h</code>: <code>RTEPermissionInfo</code> 等の実行時情報構造体。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**属性番号の扱い**: PostgreSQL の属性番号はシステム列を含むため、<code>FirstLowInvalidHeapAttributeNumber</code> を用いたオフセット計算が多用されています。ビットマップ操作時はこのオフセットに注意してください。</li>
+<li>**ハードコードされたポリシー**: <code>check_relation_privileges</code> 内の <code>IsCatalogRelationOid</code> チェックは、セキュリティ上の重要な防壁です。システムカタログの保護はポリシー設定に関わらず強制されます。</li>
+<li>**パフォーマンス**: 継承テーブルが多い場合、<code>fixup_inherited_columns</code> によるカタログ検索が繰り返されるため、大規模な継承階層ではオーバーヘッドが発生する可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__sepgsql__dml_c__fixup_whole_row_references.html" target="wiki-view"><code>fixup_whole_row_references</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__dml_c__fixup_inherited_columns.html" target="wiki-view"><code>fixup_inherited_columns</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__dml_c__check_relation_privileges.html" target="wiki-view"><code>check_relation_privileges</code></a></li>
+<li><a href="../../symbols/contrib__sepgsql__dml_c__sepgsql_dml_privileges.html" target="wiki-view"><code>sepgsql_dml_privileges</code></a></li>
+</ul></body></html>

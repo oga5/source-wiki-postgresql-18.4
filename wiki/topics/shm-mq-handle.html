@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/shm-mq-handle.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shm_mq_handle</h1>
+<h2>概念</h2>
+<p><code>shm_mq_handle</code> は、PostgreSQLの共有メモリメッセージキュー（<code>shm_mq</code>）に対して、各バックエンドプロセスが個別に保持するプロセスローカル（プライベート）なアクセス用状態管理構造体（ハンドル）です。</p>
+<p>ヘッダーファイル <code>src/include/storage/shm_mq.h</code> では不透明な構造体（opaque struct）として宣言されており、その具体的なメンバ定義は <code>src/backend/storage/ipc/shm_mq.c</code> に隠蔽されています。</p>
+<h2>なぜ重要か</h2>
+<p>共有メモリ上のメッセージキューを直接操作するのではなく、プロセスローカルな <code>shm_mq_handle</code> を介して操作することで、以下の制御が可能になります。</p>
+<ul>
+<li>**状態の個別追跡**: メッセージの断片化や再構築に必要なオフセット（<code>mqh_partial_bytes</code>）や期待されるデータ長（<code>mqh_expected_bytes</code>）などの送受信状態をプロセスごとに安全に追跡できます。</li>
+<li>**効率的な同期と遅延更新**: 共有メモリへのポインタ更新を遅延させるためのカウンタ（<code>mqh_consume_pending</code> や <code>mqh_send_pending</code>）を保持し、通信のオーバーヘッドを削減します。</li>
+<li>**リソースの統合管理**: 関連する動的共有メモリセグメント（<code>dsm_segment</code>）やバックグラウンドワーカー（<code>BackgroundWorkerHandle</code>）、メモリコンテキスト（<code>mqh_context</code>）をハンドル内で一元管理します。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/storage/ipc</code></li>
+<li><code>module:src/include/storage</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/storage/ipc/shm_mq.c#shm_mq_handle</code>**: 構造体の実体定義。共有メモリキューへのポインタ（<code>mqh_queue</code>）、ローカルバッファ（<code>mqh_buffer</code>）、各種進捗カウンタなどの詳細なメンバを保持します。</li>
+<li>**<code>symbol:src/include/storage/shm_mq.h#shm_mq_handle</code>**: 外部モジュール（<code>parallel.c</code>, <code>execParallel.c</code>, <code>tqueue.c</code>, <code>pqmq.c</code> など）向けに公開された不透明な構造体としての宣言です。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>詳細なエンドツーエンドのライフサイクル（キューの初期化から完全な破棄にいたる全フロー）は提供された情報からは完全には明らかではありませんが、以下の部分的な流れが判明しています。</p>
+<p>1. **アタッチ（初期化）**: プロセスは <code>shm_mq_attach</code> などのAPIを呼び出すことで、共有メモリ上の <code>shm_mq</code> に対応する <code>shm_mq_handle</code> を生成・取得します。 2. **メッセージ送受信**: <code>shm_mq_send</code> や <code>shm_mq_receive</code> などの公開APIにこのハンドルを渡して通信を行います。ハンドルは内部で送受信状態やバッファの進捗状況を更新します。 3. **切断検知**: 相手側プロセスが終了した場合、APIは <code>SHM_MQ_DETACHED</code> を返し、ハンドルを介した通信は継続できなくなります。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**プロセスローカル性**: <code>shm_mq_handle</code> はプロセスローカルなメモリ（<code>mqh_context</code>）上に存在し、複数のプロセス間で共有してはなりません。</li>
+<li>**単一リーダー・単一ライター制約**: 特定のハンドルは一方向の通信（送信または受信のいずれか一方）にのみ使用されます。</li>
+<li>**有効な参照**: <code>mqh_queue</code> は常に有効な共有メモリ上の <code>shm_mq</code> 構造体を指していなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**直接アクセスの禁止**: <code>shm_mq_handle</code> は不透明型として定義されているため、外部モジュールから構造体のメンバに直接アクセスすることはできません。必ず <code>shm_mq.h</code> で提供される公開APIを使用してください。</li>
+<li>**複数プロセスでの共有**: 同一のハンドルを複数のプロセスから同時に操作することはできません。</li>
+<li>**相手プロセスの消失**: 相手側プロセスが予期せず終了した場合、<code>shm_mq_receive</code> などのAPIは <code>SHM_MQ_DETACHED</code> を返します。呼び出し側はこの状態変化を適切にハンドリングする必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/storage/ipc/shm_mq.c</code> : <code>shm_mq_handle</code> の具体的な構造体定義および操作関数の実装。</li>
+<li><code>src/include/storage/shm_mq.h</code> : 不透明構造体としての宣言および公開APIの定義。</li>
+</ul></body></html>

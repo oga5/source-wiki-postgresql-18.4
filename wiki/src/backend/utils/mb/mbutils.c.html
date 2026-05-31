@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/mb/mbutils.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/mb/mbutils.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおけるマルチバイト文字エンコーディング変換のコア・ディスパッチャーです。クライアントとサーバー間のエンコーディング差異を吸収し、文字列の検証、変換、および文字境界を考慮した操作を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>mb</code> サブシステムの中心として、<code>pg_wchar.h</code> で定義された低レベルな文字処理関数と、SQLレイヤーの変換関数（<code>fmgr</code>）を橋渡しします。バックエンドのライフサイクル全体を通じて、エンコーディング設定の保持と変換関数のキャッシュを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**エンコーディング管理**: データベースおよびクライアントエンコーディングのグローバル状態管理。</li>
+<li>**変換キャッシュ**: <code>ConvProcInfo</code> を用いた変換関数のキャッシュ管理（トランザクションロールバック対応）。</li>
+<li>**変換ディスパッチ**: <code>pg_do_encoding_conversion</code> 等を通じた、適切な変換関数の選択と実行。</li>
+<li>**文字列検証**: マルチバイト文字列の妥当性チェックと、不正なバイトシーケンスの報告。</li>
+<li>**文字単位の操作**: 文字境界を保護した切り詰め（<code>mbcliplen</code>）や長さ計算。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><code>ClientEncoding</code>, <code>DatabaseEncoding</code>, <code>MessageEncoding</code>: 現在のエンコーディング設定を保持する <code>pg_enc2name</code> 構造体。</li>
+<li><code>ConvProcList</code>: 変換関数（<code>FmgrInfo</code>）をキャッシュするリスト。<code>TopMemoryContext</code> に保持されます。</li>
+</ul>
+<h3>変換関数</h3>
+<ul>
+<li><code>pg_do_encoding_conversion</code>: 一般的なエンコーディング変換。<code>palloc</code> された結果を返します。</li>
+<li><code>pg_do_encoding_conversion_buf</code>: 呼び出し元提供のバッファへ変換結果を書き込む低レベル関数。</li>
+<li><code>pg_client_to_server</code> / <code>pg_server_to_client</code>: クライアント・サーバー間の標準的な変換パス。</li>
+</ul>
+<h3>検証・ユーティリティ</h3>
+<ul>
+<li><code>pg_verify_mbstr</code>: 指定エンコーディングでの文字列妥当性検証。</li>
+<li><code>pg_mbcliplen</code>: マルチバイト文字境界を壊さずに文字列を切り詰める。</li>
+<li><code>pg_mb2wchar</code> / <code>pg_wchar2mb</code>: マルチバイト文字列とワイド文字（<code>pg_wchar</code>）間の変換。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ConvProcInfo</code></li>
+<li><code>GetDatabaseEncoding</code></li>
+<li><code>GetDatabaseEncodingName</code></li>
+<li><code>InitializeClientEncoding</code></li>
+<li><code>PG_char_to_encoding</code></li>
+<li><code>PG_encoding_to_char</code></li>
+<li><code>PrepareClientEncoding</code></li>
+<li><code>SetClientEncoding</code></li>
+<li><code>SetDatabaseEncoding</code></li>
+<li><code>SetMessageEncoding</code></li>
+<li><code>pg_get_client_encoding</code></li>
+<li><code>pg_get_client_encoding_name</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitializeClientEncoding()</code> がバックエンド起動時に呼ばれ、<code>pending_client_encoding</code> を確定させます。 2. **変換要求**: <code>pg_any_to_server()</code> 等が呼ばれると、まずキャッシュ（<code>ToServerConvProc</code> 等）を確認します。 3. **キャッシュミス**: キャッシュがない場合、<code>FindDefaultConversionProc</code> でカタログから関数を検索し、<code>ConvProcInfo</code> を作成して <code>ConvProcList</code> に追加します。 4. **実行**: <code>OidFunctionCall6</code> を通じて実際の変換関数を呼び出します。変換結果は <code>MemoryContextAllocHuge</code> で確保され、必要に応じて <code>repalloc</code> で縮小されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>mb/pg_wchar.h</code>: 文字処理の基本定義。</li>
+<li><code>utils/fmgrprotos.h</code>: 関数マネージャ経由の変換関数呼び出し。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/xact.h</code>: トランザクション状態の確認。</li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/memdebug.h</code></li>
+<li><code>utils/relcache.h</code></li>
+<li><code>varatt.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/mb/conv.c</code>: 変換ロジックの実装詳細。</li>
+<li><code>src/include/mb/pg_wchar.h</code>: エンコーディングテーブルと文字処理マクロ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 変換結果は <code>palloc</code> されます。呼び出し元は、<code>src == result</code> のケース（変換不要時）と、そうでないケース（メモリ解放が必要）を区別する必要があります。</li>
+<li>**トランザクション**: <code>pg_do_encoding_conversion</code> はカタログアクセスを伴うため、トランザクション外では呼び出せません。</li>
+<li>**UTF-8**: UTF-8からサーバーエンコーディングへの変換は、バックエンド起動時に一度だけキャッシュされます。</li>
+<li>**省略された詳細**: <code>pg_wchar_table</code> 内の各エンコーディング固有の関数（<code>mb2wchar</code> 等）の実装は、本ファイルではなく <code>conv.c</code> や各エンコーディングのソースに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__ConvProcInfo.html" target="wiki-view"><code>ConvProcInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__PrepareClientEncoding.html" target="wiki-view"><code>PrepareClientEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__SetClientEncoding.html" target="wiki-view"><code>SetClientEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__InitializeClientEncoding.html" target="wiki-view"><code>InitializeClientEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__pg_get_client_encoding.html" target="wiki-view"><code>pg_get_client_encoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__pg_get_client_encoding_name.html" target="wiki-view"><code>pg_get_client_encoding_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__SetDatabaseEncoding.html" target="wiki-view"><code>SetDatabaseEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__SetMessageEncoding.html" target="wiki-view"><code>SetMessageEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__GetDatabaseEncoding.html" target="wiki-view"><code>GetDatabaseEncoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__GetDatabaseEncodingName.html" target="wiki-view"><code>GetDatabaseEncodingName</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__PG_char_to_encoding.html" target="wiki-view"><code>PG_char_to_encoding</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__mb__mbutils_c__PG_encoding_to_char.html" target="wiki-view"><code>PG_encoding_to_char</code></a></li>
+</ul></body></html>

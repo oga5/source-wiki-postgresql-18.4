@@ -1,0 +1,136 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/catalog/heap.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/catalog/heap.c</h1>
+<h2>概要</h2>
+<p><code>heap.c</code> は、PostgreSQL におけるヒープリレーション（テーブル）の作成、削除、およびスキーマ定義の永続化を担う中核的なカタログ操作モジュールです。システムカタログ（<code>pg_class</code>, <code>pg_attribute</code>, <code>pg_type</code> 等）への直接的な書き込みを抽象化し、DDL 実行時の整合性を保証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムの一部として、<code>tablecmds.c</code> などの上位コマンド層と、<code>access/tableam.h</code> などのストレージ層の間に位置します。テーブルの物理的な作成とカタログへの登録を同期させる役割を持ちます。</p>
+<h2>責務</h2>
+<ul>
+<li>**リレーションの作成**: <code>heap_create</code> による物理ストレージの確保と、<code>heap_create_with_catalog</code> によるカタログ登録の実行。</li>
+<li>**スキーマ定義の管理**: <code>pg_attribute</code> への列定義の挿入、およびシステム属性（<code>ctid</code>, <code>xmin</code> 等）の定義管理。</li>
+<li>**制約とデフォルト値の永続化**: <code>CHECK</code> 制約や列デフォルト値の変換（cook）とカタログへの保存。</li>
+<li>**リレーションの削除**: <code>heap_drop_with_catalog</code> によるカタログエントリの削除と、依存関係のクリーンアップ。</li>
+<li>**パーティション管理**: パーティションキーや境界条件のカタログ登録。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>リレーション管理</h3>
+<ul>
+<li><code>heap_create()</code>: 物理ストレージを作成し、リレーション記述子を初期化する（カタログ登録なし）。</li>
+<li><code>heap_create_with_catalog()</code>: テーブル作成の全工程（カタログ登録、型作成、制約保存）を統括するメインエントリポイント。</li>
+<li><code>heap_drop_with_catalog()</code>: リレーションをカタログから削除する。</li>
+</ul>
+<h3>カタログ更新（低レベル）</h3>
+<ul>
+<li><code>InsertPgAttributeTuples()</code>: <code>pg_attribute</code> に列定義をバッチ挿入する。</li>
+<li><code>InsertPgClassTuple()</code>: <code>pg_class</code> にリレーション情報を挿入する。</li>
+<li><code>AddNewRelationType()</code>: テーブルに対応する複合型（<code>pg_type</code>）を作成する。</li>
+</ul>
+<h3>制約管理</h3>
+<ul>
+<li><code>AddRelationNewConstraints()</code>: 新規制約やデフォルト値を変換して保存する。</li>
+<li><code>StoreRelCheck()</code> / <code>StoreRelNotNull()</code>: 個別の制約を <code>pg_constraint</code> に登録する。</li>
+</ul>
+<h3>システム属性定義</h3>
+<ul>
+<li><code>SysAtt[]</code>: <code>ctid</code>, <code>xmin</code> などのシステム列の定義配列。</li>
+<li><code>SystemAttributeDefinition()</code>: 指定された属性番号からシステム列定義を返す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AddNewAttributeTuples</code></li>
+<li><code>CheckAttributeNamesTypes</code></li>
+<li><code>CheckAttributeType</code></li>
+<li><code>DeleteAttributeTuples</code></li>
+<li><code>DeleteRelationTuple</code></li>
+<li><code>DeleteSystemAttributeTuples</code></li>
+<li><code>InsertPgAttributeTuples</code></li>
+<li><code>InsertPgClassTuple</code></li>
+<li><code>SystemAttributeByName</code></li>
+<li><code>SystemAttributeDefinition</code></li>
+<li><code>heap_create</code></li>
+<li><code>heap_create_with_catalog</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **作成フロー**: <code>heap_create_with_catalog</code> が呼び出されると、まず <code>CheckAttributeNamesTypes</code> でスキーマの妥当性を検証します。次に <code>heap_create</code> で物理ファイルを作成し、<code>AddNewRelationTuple</code> と <code>AddNewAttributeTuples</code> でカタログを更新します。最後に <code>StoreConstraints</code> で制約を保存します。 2. **削除フロー**: <code>heap_drop_with_catalog</code> は、まず <code>CheckTableNotInUse</code> でロックを確認し、<code>RelationDropStorage</code> で物理ファイルを削除した後、<code>DeleteAttributeTuples</code> 等でカタログエントリを順次削除します。 3. **データ変換**: <code>cookDefault</code> や <code>cookConstraint</code> は、パーサーが生成した <code>Raw</code> な構文木を、カタログに保存可能な実行形式（<code>nodeToString</code> された文字列や <code>Expr</code> ツリー）に変換します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_class</code>, <code>pg_attribute</code>, <code>pg_type</code> 等のカタログ定義。</li>
+<li><code>access/</code>: <code>tableam.h</code> (テーブルアクセスメソッド), <code>storage.h</code> (物理ストレージ)。</li>
+<li><code>parser/</code>: <code>parse_expr.h</code>, <code>parse_relation.h</code> (制約の変換)。</li>
+<li><code>utils/</code>: <code>syscache.h</code> (カタログキャッシュ), <code>lsyscache.h</code> (型情報)。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>catalog/binary_upgrade.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/heap.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/partition.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_attrdef.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_foreign_table.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_partitioned_table.h</code></li>
+<li><code>catalog/pg_statistic.h</code></li>
+<li><code>catalog/pg_subscription_rel.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_collate.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/commands/tablecmds.c</code>: DDL（<code>CREATE TABLE</code>, <code>ALTER TABLE</code>）のロジック層。</li>
+<li><code>src/backend/catalog/dependency.c</code>: オブジェクト間の依存関係追跡。</li>
+<li><code>src/backend/catalog/indexing.c</code>: カタログ更新時のインデックス保守。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>InsertPgAttributeTuples</code> 等のバッチ処理では <code>TupleTableSlot</code> を使用してメモリ効率を最適化しています。</li>
+<li>**制約の変換**: <code>cookDefault</code> 等で変換された制約式は、<code>nodeToString</code> を経由して <code>pg_attrdef.adbin</code> 等に保存されます。</li>
+<li>**バイナリアップグレード**: <code>binary_upgrade_next_*</code> 変数は、<code>pg_upgrade</code> 実行時に OID を強制的に指定するために使用される特殊なフックです。</li>
+<li>**省略された詳細**: 本ファイルはカタログ操作の「実行」に特化しており、権限チェック（<code>aclchk.c</code>）や、より高次な DDL 構文解析ロジックは上位モジュールに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__SystemAttributeDefinition.html" target="wiki-view"><code>SystemAttributeDefinition</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__SystemAttributeByName.html" target="wiki-view"><code>SystemAttributeByName</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__heap_create.html" target="wiki-view"><code>heap_create</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__CheckAttributeNamesTypes.html" target="wiki-view"><code>CheckAttributeNamesTypes</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__CheckAttributeType.html" target="wiki-view"><code>CheckAttributeType</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__InsertPgAttributeTuples.html" target="wiki-view"><code>InsertPgAttributeTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__AddNewAttributeTuples.html" target="wiki-view"><code>AddNewAttributeTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__InsertPgClassTuple.html" target="wiki-view"><code>InsertPgClassTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__heap_create_with_catalog.html" target="wiki-view"><code>heap_create_with_catalog</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__DeleteRelationTuple.html" target="wiki-view"><code>DeleteRelationTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__DeleteAttributeTuples.html" target="wiki-view"><code>DeleteAttributeTuples</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__heap_c__DeleteSystemAttributeTuples.html" target="wiki-view"><code>DeleteSystemAttributeTuples</code></a></li>
+</ul></body></html>

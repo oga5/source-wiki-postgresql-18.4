@@ -1,0 +1,120 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/init/postinit.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/init/postinit.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL バックエンドプロセスの初期化プロセスを統括する中心的なファイルです。Postmaster からフォークされた直後のプロセスが、データベース接続、認証、GUC 設定、カタログキャッシュの構築など、実行可能な状態になるまでの複雑な手順を定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/init</code> モジュールにおいて、バックエンドのライフサイクルにおける「起動」と「終了」の境界を管理します。<code>miscinit.c</code> が提供する汎用的な初期化ユーティリティを利用し、Postgres のメイン処理（<code>PostgresMain</code>）へ制御を渡すための準備を完結させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**バックエンドの初期化**: <code>InitPostgres</code> を通じて、プロセスを特定のデータベースおよびユーザーコンテキストに紐付ける。</li>
+<li>**認証の実行**: クライアントからの接続要求に対し、認証プロトコルを適用する。</li>
+<li>**環境構築**: システムカタログキャッシュ、リレーションキャッシュ、ポータルマネージャ、およびタイムアウトハンドラの初期化。</li>
+<li>**設定の適用**: データベースおよびロール固有の GUC 設定（<code>pg_db_role_setting</code>）の読み込みと適用。</li>
+<li>**終了処理**: <code>ShutdownPostgres</code> による、プロセス終了時のクリーンアップ（ロック解放やトランザクションの強制終了）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>InitPostgres</code>: バックエンド起動のメインエントリーポイント。</li>
+<li><code>BaseInit</code>: データベース接続前の、ストレージや統計情報など低レイヤーの初期化。</li>
+<li><code>PerformAuthentication</code>: クライアント認証を実行し、成功するまでプロセスをブロックする。</li>
+<li><code>CheckMyDatabase</code>: データベースの接続許可、権限、ロケール設定を検証する。</li>
+<li><code>ShutdownPostgres</code>: プロセス終了時に呼び出されるコールバック関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetDatabaseTuple</code></li>
+<li><code>GetDatabaseTupleByOid</code></li>
+<li><code>IdleStatsUpdateTimeoutHandler</code></li>
+<li><code>InitializeFastPathLocks</code></li>
+<li><code>InitializeMaxBackends</code></li>
+<li><code>LockTimeoutHandler</code></li>
+<li><code>StatementTimeoutHandler</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **BaseInit**: ファイル記述子、統計情報、バッファマネージャ、ロックマネージャを初期化。 2. **InitPostgres**:</p>
+<ul>
+<li><code>ProcArray</code> への登録とシグナルハンドラのセットアップ。</li>
+<li><code>RelationCache</code> および <code>CatalogCache</code> の構築。</li>
+<li>認証（<code>PerformAuthentication</code>）の実行。</li>
+<li>データベースの存在確認と <code>MyDatabaseId</code> の設定。</li>
+<li><code>CheckMyDatabase</code> による権限チェックとロケール設定。</li>
+<li><code>process_settings</code> による GUC 設定のオーバーライド。</li>
+<li>最終的に <code>CommitTransactionCommand</code> で初期化トランザクションを終了。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**アクセス層**: <code>access/xact.h</code>, <code>access/xlog.h</code>, <code>access/tableam.h</code> 等。</li>
+<li>**カタログ**: <code>catalog/pg_database.h</code>, <code>catalog/pg_authid.h</code> 等。</li>
+<li>**ストレージ**: <code>storage/bufmgr.h</code>, <code>storage/proc.h</code>, <code>storage/lmgr.h</code> 等。</li>
+<li>**ユーティリティ**: <code>utils/syscache.h</code>, <code>utils/guc_hooks.h</code>, <code>utils/memutils.h</code> 等。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/session.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_db_role_setting.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>libpq/auth.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/sinvaladt.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>storage/sync.h</code></li>
+<li><code>tcop/backend_startup.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/pg_locale.h</code></li>
+<li><code>utils/portal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/tcop/postgres.c</code>: <code>InitPostgres</code> を呼び出した後に実行されるメインループ。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: バックエンドをフォークする親プロセス。</li>
+<li><code>src/backend/utils/init/miscinit.c</code>: ユーザーIDやディレクトリパスなどの補助的な初期化関数群。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>InitPostgres</code> は非常に多くの依存関係と副作用を持つため、呼び出し順序が極めて重要です。特にカタログキャッシュが構築される前にシステムカタログへアクセスしようとするとクラッシュします。</li>
+<li><code>EXEC_BACKEND</code> が定義されている環境（Windows 等）では、認証情報のロード方法が異なる点に注意してください。</li>
+<li>タイムアウトハンドラ（<code>StatementTimeoutHandler</code> 等）は、バックエンドの安定性を保つために不可欠なシグナル処理を提供しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__GetDatabaseTuple.html" target="wiki-view"><code>GetDatabaseTuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__GetDatabaseTupleByOid.html" target="wiki-view"><code>GetDatabaseTupleByOid</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__PerformAuthentication.html" target="wiki-view"><code>PerformAuthentication</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__CheckMyDatabase.html" target="wiki-view"><code>CheckMyDatabase</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__InitializeMaxBackends.html" target="wiki-view"><code>InitializeMaxBackends</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__InitializeFastPathLocks.html" target="wiki-view"><code>InitializeFastPathLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__BaseInit.html" target="wiki-view"><code>BaseInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__InitPostgres.html" target="wiki-view"><code>InitPostgres</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__ShutdownPostgres.html" target="wiki-view"><code>ShutdownPostgres</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__StatementTimeoutHandler.html" target="wiki-view"><code>StatementTimeoutHandler</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__LockTimeoutHandler.html" target="wiki-view"><code>LockTimeoutHandler</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__init__postinit_c__IdleStatsUpdateTimeoutHandler.html" target="wiki-view"><code>IdleStatsUpdateTimeoutHandler</code></a></li>
+</ul></body></html>

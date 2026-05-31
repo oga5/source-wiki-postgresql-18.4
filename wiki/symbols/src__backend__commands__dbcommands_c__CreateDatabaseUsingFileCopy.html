@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__commands__dbcommands_c__CreateDatabaseUsingFileCopy.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>CreateDatabaseUsingFileCopy</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/commands/dbcommands.c:550</code></li>
+</ul>
+<h2>目的</h2>
+<p>テンプレートデータベースの物理ファイルをコピーすることで、新しいデータベースを構築する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void CreateDatabaseUsingFileCopy(Oid src_dboid, Oid dst_dboid, Oid src_tsid, Oid dst_tsid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>src_dboid</code>: コピー元データベースのOID</li>
+<li><code>dst_dboid</code>: 作成するデータベースのOID</li>
+<li><code>src_tsid</code>: コピー元テーブルスペースのOID</li>
+<li><code>dst_tsid</code>: コピー先テーブルスペースのOID</li>
+<li>**出力**: なし（副作用として物理ファイルシステム上にデータベースディレクトリを作成）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>IsBinaryUpgrade</code> が真でない場合、処理の開始前および終了前に <code>RequestCheckpoint</code> を実行し、ディスク上の整合性を確保する。</li>
+<li><code>pg_tablespace</code> カタログをスキャンし、<code>GLOBALTABLESPACE_OID</code> を除くすべてのテーブルスペースディレクトリを対象とする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **事前チェックポイント**: <code>IsBinaryUpgrade</code> でない場合、全バッファをフラッシュし、保留中の削除要求を処理する。 2. **テーブルスペース走査**: <code>pg_tablespace</code> をスキャンし、各テーブルスペースのデータベースディレクトリを特定する。 3. **ディレクトリコピー**: <code>copydir()</code> を使用して、ソースからターゲットへディレクトリを再帰的にコピーする。 4. **WAL記録**: <code>XLOG_DBASE_CREATE_FILE_COPY</code> レコードを挿入し、ファイルシステム操作をWALに記録する。 5. **事後チェックポイント**: <code>IsBinaryUpgrade</code> でない場合、コミット前に再度チェックポイントを実行し、リカバリ時の不整合（未ログのファイル作成やPITR時の競合）を防止する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/commands/dbcommands.c</code> 内のデータベース作成ロジックから呼び出される。</li>
+<li>**呼び出し先**: <code>RequestCheckpoint</code>, <code>table_open</code>, <code>table_beginscan_catalog</code>, <code>heap_getnext</code>, <code>GetDatabasePath</code>, <code>copydir</code>, <code>XLogBeginInsert</code>, <code>XLogRegisterData</code>, <code>XLogInsert</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>xl_dbase_create_file_copy_rec</code>: WAL記録に使用される構造体。</li>
+<li><code>Form_pg_tablespace</code>: <code>pg_tablespace</code> カタログのタプル構造。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>stat()</code> でディレクトリが確認できない、または空の場合はスキップされる。</li>
+<li><code>copydir()</code> の失敗はエラーとして伝播する。</li>
+<li><code>IsBinaryUpgrade</code> モード時はチェックポイントをスキップする最適化が行われる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>CreateDatabaseUsingWalLog()</code> と比較して、ファイルシステムレベルのコピーを行う「安直な」戦略である。</li>
+<li>過去のリリース（8.0.3以前）で発生したリカバリ時の不整合を防ぐため、コミット前のチェックポイントが必須となっている。</li>
+<li><code>copydir()</code> はサブディレクトリの再帰的コピーを行わない仕様である点に注意すること。</li>
+</ul></body></html>

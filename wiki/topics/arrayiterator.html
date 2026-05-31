@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/arrayiterator.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ArrayIterator</h1>
+<h2>概念</h2>
+<p><code>ArrayIterator</code> は、PostgreSQLおよびその拡張モジュールにおいて、配列（<code>ArrayType</code>）の要素を順次走査・処理するための仕組みです。</p>
+<p>この概念には、コアシステムが提供する汎用的なイテレータ構造体（<code>ArrayIterator</code>）と、特定の拡張モジュール（<code>ltree</code>）内で定義されている静的なヘルパー関数（<code>array_iterator</code>）の2つの異なる実装が存在します。</p>
+<h2>なぜ重要か</h2>
+<p>配列の走査処理を抽象化し、多次元配列の処理や要素ごとのコールバック適用を簡潔に行うために重要です。</p>
+<ul>
+<li>**コアの <code>ArrayIterator</code>**: 配列のメタデータを考慮しつつ、配列要素を順次 <code>Datum</code> として取り出す抽象化レイヤーを提供し、呼び出し側が配列の内部表現を直接操作する複雑さを排除します。</li>
+<li>**<code>ltree</code> の <code>array_iterator</code>**: <code>ltree</code> 配列に対して特定の条件判定（コールバック関数）を適用する処理を共通化し、コードの重複を避けます。</li>
+</ul>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:contrib/ltree</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/include/utils/array.h#ArrayIterator</code>**: PostgreSQLコアが提供する、配列を反復処理するための抽象化されたイテレータ構造体（<code>ArrayIteratorData *</code> の不透明ポインタ）。</li>
+<li>**<code>symbol:contrib/ltree/_ltree_op.c#array_iterator</code>**: <code>ltree</code> 型の配列を走査し、各要素に対して指定されたコールバック関数を適用して条件判定を行う <code>static</code> 関数。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>コアの <code>ArrayIterator</code> と <code>ltree</code> の <code>array_iterator</code> は独立して動作するため、統一された単一のエンドツーエンドの流れは存在しません。それぞれの処理の流れは以下の通りです。</p>
+<h3>コアの <code>ArrayIterator</code> の流れ</h3>
+<p>1. **初期化**: <code>array_create_iterator</code> を呼び出し、対象の <code>ArrayType</code> 配列、スライス次元数、メタデータ（<code>ArrayMetaState</code>）を渡して <code>ArrayIterator</code> を生成します。 2. **反復処理**: <code>array_iterate</code> を繰り返し呼び出し、次の要素が存在する限り <code>Datum</code> 値と NULL フラグを取得します。 3. **解放**: 走査完了後（<code>array_iterate</code> が <code>false</code> を返した後）、<code>array_free_iterator</code> を呼び出してイテレータのリソースを解放します。</p>
+<h3><code>ltree</code> の <code>array_iterator</code> の流れ</h3>
+<p>1. **呼び出し**: <code>ltree_isparent</code> などの関数から、<code>ArrayType</code> 配列、コールバック関数（<code>PGCALL2</code>）、パラメータ等を指定して <code>array_iterator</code> を呼び出します。 2. **検証**: 配列の次元数と NULL の有無をチェックします。 3. **ループと評価**: 配列の各要素に対して、<code>DirectFunctionCall2</code> を介してコールバック関数を実行します。 4. **早期返却**: コールバックが真を返した場合は即座に <code>true</code> を返し、必要に応じて合致した要素へのポインタを <code>found</code> に格納します。全要素の走査が終わっても条件を満たさない場合は <code>false</code> を返します。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**コアの <code>ArrayIterator</code>**:</li>
+<li><code>array_iterate</code> を呼び出す前に、必ず <code>array_create_iterator</code> で有効なイテレータを初期化しなければなりません。</li>
+<li>反復処理の終了後、必ず <code>array_free_iterator</code> を呼び出してメモリを解放しなければなりません。</li>
+<li>**<code>ltree</code> の <code>array_iterator</code>**:</li>
+<li>入力配列は1次元配列でなければなりません（多次元配列は許容されません）。</li>
+<li>入力配列は <code>NULL</code> 値を含んではなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**同名シンボルの混同**: <code>contrib/ltree/_ltree_op.c</code> の <code>array_iterator</code> は <code>static</code> 関数であり、<code>src/backend/utils/adt/array_userfuncs.c</code> に存在する同名のシンボルや、コアの <code>ArrayIterator</code> 構造体とは異なります。</li>
+<li>**リソースリーク**: コアの <code>ArrayIterator</code> を使用する際、走査完了後に <code>array_free_iterator</code> の呼び出しを怠るとメモリリークの原因となります。</li>
+<li>**エラーの発生**: <code>ltree</code> の <code>array_iterator</code> は、多次元配列や <code>NULL</code> を含む配列が渡された場合に <code>ereport</code> によるエラー（<code>ERRCODE_ARRAY_SUBSCRIPT_ERROR</code> や <code>ERRCODE_NULL_VALUE_NOT_ALLOWED</code>）を発生させるため、呼び出し側で事前チェックまたは適切なデータ保証が必要です。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/include/utils/array.h</code> (コアの <code>ArrayIterator</code> 定義)</li>
+<li><code>contrib/ltree/_ltree_op.c</code> (<code>ltree</code> 固有の <code>array_iterator</code> 実装)</li>
+</ul></body></html>

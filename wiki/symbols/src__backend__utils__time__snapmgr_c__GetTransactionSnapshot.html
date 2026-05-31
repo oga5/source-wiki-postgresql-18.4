@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__utils__time__snapmgr_c__GetTransactionSnapshot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>GetTransactionSnapshot</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/utils/time/snapmgr.c:270</code></li>
+</ul>
+<h2>目的</h2>
+<p>現在のトランザクションコンテキストにおいて、クエリ実行に使用すべきスナップショットを取得します。論理デコーディング中であれば履歴スナップショットを、それ以外ではMVCCスナップショットを返します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>Snapshot GetTransactionSnapshot(void)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: なし</li>
+<li>**出力**: <code>Snapshot</code> 型のポインタ。現在のトランザクション状態に応じた可視性情報を含む構造体を指します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>論理デコーディング中（<code>HistoricSnapshotActive()</code>）の場合、履歴スナップショットが返されます。</li>
+<li><code>FirstSnapshotSet</code> が真の場合、トランザクション内で既にスナップショットが初期化済みであることを示します。</li>
+<li>並列操作中（<code>IsInParallelMode()</code>）にこの関数を呼び出すことはできません（エラーが発生します）。</li>
+<li><code>IsolationUsesXactSnapshot()</code> が真の場合、トランザクション内で一貫したスナップショットが再利用されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **論理デコーディングの確認**: <code>HistoricSnapshotActive()</code> が真であれば、<code>HistoricSnapshot</code> を即座に返します。 2. **初回呼び出しの処理**:</p>
+<ul>
+<li><code>InvalidateCatalogSnapshot()</code> を呼び出し、カタログスナップショットの整合性を確保します。</li>
+<li><code>IsolationUsesXactSnapshot()</code> が真（シリアライザブル等）の場合、スナップショットを生成し、<code>CopySnapshot</code> でコピーを作成して <code>FirstXactSnapshot</code> に保持・登録します。</li>
+<li>それ以外の場合は <code>GetSnapshotData</code> で直接スナップショットを取得します。</li>
+<li><code>FirstSnapshotSet</code> を真に設定します。</li>
+<p>3. **後続呼び出しの処理**:</p>
+<li><code>IsolationUsesXactSnapshot()</code> が真であれば、既存の <code>CurrentSnapshot</code> を返します。</li>
+<li>それ以外の場合は、<code>InvalidateCatalogSnapshot()</code> を経て、毎回新しい <code>GetSnapshotData</code> を取得して返します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/amcheck</code>（<code>verify_heapam.c</code>, <code>verify_nbtree.c</code>）、<code>src/backend/access/</code>（<code>brin.c</code>, <code>gininsert.c</code>, <code>heapam_handler.c</code>, <code>nbtsort.c</code>, <code>parallel.c</code>）、<code>src/backend/catalog/index.c</code> 等から参照されています。</li>
+<li>**呼び出し先**: <code>HistoricSnapshotActive</code>, <code>InvalidateCatalogSnapshot</code>, <code>pairingheap_is_empty</code>, <code>IsInParallelMode</code>, <code>IsolationUsesXactSnapshot</code>, <code>IsolationIsSerializable</code>, <code>GetSerializableTransactionSnapshot</code>, <code>GetSnapshotData</code>, <code>CopySnapshot</code>, <code>pairingheap_add</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SnapshotData</code>: 返されるスナップショットの本体。</li>
+<li><code>FirstXactSnapshot</code>: トランザクション全体で保持されるスナップショットの静的変数。</li>
+<li><code>RegisteredSnapshots</code>: 登録済みスナップショットを管理するペアリングヒープ。</li>
+<li><code>CurrentSnapshotData</code>: スナップショット取得用の静的バッファ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**並列モード**: 並列操作中に呼び出すと <code>elog(ERROR)</code> により中断されます。</li>
+<li>**メモリ管理**: <code>IsolationUsesXactSnapshot()</code> が真の場合、返されるスナップショットはコピーであり、呼び出し元で適切に管理する必要があります。</li>
+<li>**整合性**: カタログスナップショットがトランザクションスナップショットより古くならないよう、<code>InvalidateCatalogSnapshot()</code> が強制的に実行されます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数が返すスナップショットは、呼び出し元で <code>PushActiveSnapshot</code> や <code>RegisterSnapshot</code> を使用して参照カウントを管理することが推奨されます。特に <code>IsolationUsesXactSnapshot()</code> が偽の場合、返されるポインタは <code>CurrentSnapshotData</code> を指しており、後続の呼び出しで内容が上書きされる可能性があるため注意してください。</li>
+</ul></body></html>

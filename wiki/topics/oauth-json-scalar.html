@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/oauth-json-scalar.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>oauth_json_scalar</h1>
+<h2>概念</h2>
+<p><code>oauth_json_scalar</code> は、PostgreSQLのOAuth認証プロセスにおいて、JSON形式のレスポンスを解析する際にスカラー値（主に文字列）を抽出し、指定されたターゲットフィールドに格納するためのコールバック関数です。JSON解析器と連携し、必要な認証メタデータ（アクセストークンなど）を安全に取得する役割を持ちます。</p>
+<h2>なぜ重要か</h2>
+<p>OAuth認証フローでは、外部のIDプロバイダやトークンエンドポイントから返されるJSONレスポンスを正確にパースする必要があります。<code>oauth_json_scalar</code> は、単に値を抽出するだけでなく、JSONの構造検証（ネストレベルのチェック）、重複定義の防止、型チェック（文字列型であることの確認）を厳格に行うことで、不正なJSONレスポンスによるバッファオーバーフローや不正な状態遷移を防ぎ、安全なメモリ確保（<code>strdup</code>）を保証します。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/interfaces/libpq</code></li>
+<li><code>module:src/interfaces/libpq-oauth</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/interfaces/libpq/fe-auth-oauth.c#oauth_json_scalar</code>**</li>
+<p>JSON解析中に呼び出され、状態管理構造体（<code>json_ctx</code>）に基づいてスカラー値を検証・格納する関数。</p>
+<li>**<code>src/interfaces/libpq-oauth/oauth-curl.c</code> 内の <code>oauth_json_scalar</code> 参照**</li>
+<p><code>fe-auth-oauth.c</code> の実装を呼び出す、または同様のJSON解析コンテキストで連携する処理。</p>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **解析の開始**: JSONパーサーがレスポンスデータを処理し、スカラー値（トークン）を検出すると、コールバックとして <code>oauth_json_scalar</code> が呼び出されます。 2. **コンテキストの取得**: 引数 <code>state</code> から <code>json_ctx</code> 構造体へのポインタを取得します。 3. **トップレベルの検証**: <code>ctx-&gt;nested</code> が0の場合、トップレベルがオブジェクト構造であるか検証します。オブジェクトでない場合はエラーを返します。 4. **ターゲットフィールドの処理**:</p>
+<ul>
+<li><code>ctx-&gt;target_field</code> が設定されている場合、現在のネストレベルが1であることを確認します。</li>
+<li>すでに値が格納されている場合は、重複エラーを返します。</li>
+<li>トークン型が <code>JSON_TOKEN_STRING</code> であることを検証します。</li>
+<li><code>strdup</code> を使用して <code>token</code> を複製し、<code>*ctx-&gt;target_field</code> に格納します。</li>
+<li>格納完了後、<code>ctx-&gt;target_field</code> および <code>ctx-&gt;target_field_name</code> を <code>NULL</code> にクリアします。</li>
+<p>5. **無視**: ターゲットフィールドが設定されていない場合は、値を処理せず <code>JSON_SUCCESS</code> を返します。</p>
+</ul>
+<p>※ なお、<code>libpq-oauth</code> 側（<code>oauth-curl.c</code>）における具体的なHTTP通信や、全体のOAuth認証シーケンスにおける完全なエンドツーエンドの統合フローの詳細は、提供された情報からは未確定です。</p>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**型キャストの妥当性**: <code>state</code> 引数は、常に有効な <code>json_ctx</code> 構造体インスタンスを指していなければなりません。</li>
+<li>**オブジェクト構造**: 解析対象のJSONのトップレベルは、必ずオブジェクトでなければなりません。</li>
+<li>**ネストレベルの制限**: ターゲットフィールドに値を格納する際、ネストレベルは正確に <code>1</code> でなければなりません（それ以外は内部エラー）。</li>
+<li>**単一代入**: 同一のターゲットフィールドに対して、複数回値を書き込むことはできません（重複エラーの発生）。</li>
+<li>**トークン型**: 抽出対象となるトークンは、必ず <code>JSON_TOKEN_STRING</code>（文字列）でなければなりません。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**メモリリーク**: <code>oauth_json_scalar</code> は内部で <code>strdup</code> を使用して文字列を動的に確保します。呼び出し側（またはコンテキストの所有者）がこのメモリを適切に解放しない場合、メモリリークが発生します。</li>
+<li>**ターゲットフィールドの自動クリア**: 値が一度格納されると、<code>ctx-&gt;target_field</code> は自動的に <code>NULL</code> にリセットされます。これは単一のフィールド抽出を前提とした設計であるため、同一コンテキストで連続して複数の値を抽出する場合は、状態管理に注意が必要です。</li>
+<li>**ネストされたオブジェクトの制限**: ネストレベルが1より深い場所にあるスカラー値は、ターゲットフィールドが設定されていても抽出できず、エラー（内部エラーまたはパースエラー）となります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/interfaces/libpq/fe-auth-oauth.c</code></li>
+<p><code>oauth_json_scalar</code> の具体的なC言語実装および <code>json_ctx</code> 構造体の定義を確認できます。</p>
+<li><code>src/interfaces/libpq-oauth/oauth-curl.c</code></li>
+<p>cURL等を用いたOAuth通信処理において、このJSON解析コールバックがどのように登録・利用されているかを確認できます。</p>
+</ul></body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/splitguclist.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SplitGUCList</h1>
+<h2>概念</h2>
+<p><code>SplitGUCList</code> は、PostgreSQLにおいて区切り文字（カンマなど）で区切られたGUC（Grand Unified Configuration）リスト形式の文字列（識別子やファイル名のリスト）を解析し、個別の要素に分割するための関数です。</p>
+<p>バックエンド側（<code>src/backend/utils/adt/varlena.c</code>）とクライアントツール側（<code>src/bin/pg_dump/dumputils.c</code>）の双方に同名の関数が存在し、それぞれ異なるデータ構造（<code>List</code> 構造体、または <code>char **</code> の動的配列）として結果を返しますが、解析ロジックは同様のルールに従います。</p>
+<h2>なぜ重要か</h2>
+<p>PostgreSQLの設定パラメータや各種リスト形式の文字列は、カンマなどの区切り文字や引用符（ダブルクォーテーション <code>&quot;</code>）を含む複雑な構文を持つことがあります。<code>SplitGUCList</code> は、引用符のネスト（<code>&quot;&quot;</code> を単一の <code>&quot;</code> に置換する処理など）や空白のスキップ、構文エラーの検出を正しく処理しながら、安全に文字列をトークン化するために重要です。</p>
+<p>また、バックエンドと <code>pg_dump</code> などのユーティリティ間で同様のパースロジックを共有・維持するために、それぞれのコンテキストに応じた実装が用意されています。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/adt</code></li>
+<li><code>module:src/bin/pg_dump</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**<code>symbol:src/backend/utils/adt/varlena.c#SplitGUCList</code>**</li>
+<li>バックエンド用の実装。解析結果を PostgreSQL の <code>List</code> 構造体（<code>namelist</code>）として返します。</li>
+<li>**<code>symbol:src/bin/pg_dump/dumputils.c#SplitGUCList</code>**</li>
+<li><code>pg_dump</code> などのクライアントツール用の実装。解析結果を <code>char **</code> の動的配列（<code>namelist</code>）として返します。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>現時点では、システム全体における具体的なエンドツーエンドの呼び出しフロー（どの設定読み込みフェーズやダンプ処理フェーズでどのように本関数がトリガーされ、結果がどう伝播するか）の全体像は完全には明らかになっていません。</p>
+<p>ただし、各関数単体における処理の流れは以下の通りです：</p>
+<p>1. **入力の受け取り**: 解析対象の文字列 <code>rawstring</code> と区切り文字 <code>separator</code> を受け取ります。 2. **メモリ確保**:</p>
+<ul>
+<li>**バックエンド版**: 内部で <code>lappend</code> を用いて <code>List</code> を構築します。</li>
+<li>**クライアント版**: <code>rawstring</code> の長さに応じて <code>pg_malloc</code> でポインタ配列を確保します。</li>
+<p>3. **パース処理**:</p>
+<li>先頭の空白をスキップします。</li>
+<li>引用符付き（<code>&quot;</code> で囲まれた範囲。内部の <code>&quot;&quot;</code> は <code>&quot;</code> に置換）または引用符なし（区切り文字や空白まで）の識別子を抽出します。</li>
+<li>抽出した識別子を終端（<code>\0</code>）し、リストまたは配列に追加します。</li>
+<p>4. **終了判定**:</p>
+<li>構文エラー（引用符の閉じ忘れ、空の識別子、不正な文字など）を検出した場合は直ちに <code>false</code> を返します。</li>
+<li>正常に終端に達した場合は <code>true</code> を返します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**破壊的変更**: 入力引数 <code>rawstring</code> は関数内部で直接書き換えられ、ヌル文字（<code>\0</code>）の挿入や引用符の置換（collapse）が行われます。呼び出し元は、元の文字列を保持する必要がある場合、事前にコピーを作成しなければなりません。</li>
+<li>**メモリ管理（クライアント版）**: <code>rawstring</code> は <code>pg_malloc</code> で確保された領域である必要があり、出力される <code>namelist</code> 配列は呼び出し元で解放する必要があります。</li>
+<li>**空の識別子の禁止**: 引用符なしで区切り文字が連続するなどの理由で識別子が空になる場合は、構文エラーとして <code>false</code> が返されます。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**定数文字列の渡し**: <code>rawstring</code> を直接書き換える（破壊的読み込みを行う）ため、読み取り専用の定数文字列（<code>const char *</code>）を直接渡すとセグメンテーションフォールトなどの未定義動作を引き起こします。</li>
+<li>**重複コードの保守**: <code>src/backend/utils/adt/varlena.c</code> と <code>src/bin/pg_dump/dumputils.c</code> に同名の関数が同様のロジックで独立して実装されています。一方のパース規則やバグ修正を行う際は、もう一方の実装との整合性を確認し、両方を更新する必要があります。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/adt/varlena.c</code></li>
+<li><code>src/bin/pg_dump/dumputils.c</code></li>
+</ul></body></html>

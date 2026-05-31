@@ -1,0 +1,130 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/autovacuum.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/autovacuum.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の自動バキューム（Autovacuum）システムを実装するファイルです。サーバー全体のメンテナンスを担う「ランチャー（Launcher）」プロセスと、個別のテーブルに対するバキューム/アナライズを実行する「ワーカー（Worker）」プロセスの2階層で構成されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、バックグラウンドでの自動メンテナンスを統括します。Postmaster がプロセスをフォークし、本モジュールが共有メモリを介してワーカーの起動・終了・負荷分散を制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ランチャー管理**: データベースごとのバキュームスケジュール管理、ワーカーの起動要求、およびワーカーの死活監視。</li>
+<li>**ワーカー実行**: データベースへの接続、対象テーブルの選定（<code>pg_class</code> スキャン）、バキューム/アナライズの実行。</li>
+<li>**リソース制御**: 共有メモリを用いたワーカー間の負荷分散（コスト制限の調整）および作業項目（WorkItem）の管理。</li>
+<li>**安全性の確保**: トランザクションIDの周回防止（Anti-wraparound）のための強制バキューム実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ管理</h3>
+<ul>
+<li><code>AutoVacuumShmem</code>: 自動バキュームシステム全体の共有メモリ構造体。ワーカーのリスト、作業項目、シグナル状態を保持。</li>
+<li><code>WorkerInfoData</code>: 個々のワーカーの状態（PID、対象DB、対象テーブル等）を保持する構造体。</li>
+<li><code>AutovacuumLock</code>: 共有メモリ構造へのアクセスを保護する主要なロック。</li>
+</ul>
+<h3>プロセスメイン関数</h3>
+<ul>
+<li><code>AutoVacLauncherMain</code>: ランチャープロセスのメインループ。スケジュールに基づきワーカーを起動。</li>
+<li><code>AutoVacWorkerMain</code>: ワーカープロセスのメイン処理。対象DBに接続し、<code>do_autovacuum</code> を呼び出す。</li>
+</ul>
+<h3>制御・判定ロジック</h3>
+<ul>
+<li><code>do_autovacuum</code>: ワーカーが実行するテーブル選定とバキューム実行のメインフロー。</li>
+<li><code>relation_needs_vacanalyze</code>: テーブルがバキューム/アナライズを必要としているかを判定するロジック。</li>
+<li><code>rebuild_database_list</code>: データベースごとのバキュームスケジュールを再構築する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>AutoVacuumShmemInit</code></li>
+<li><code>AutoVacuumShmemStruct</code></li>
+<li><code>AutoVacuumSignal</code></li>
+<li><code>AutoVacuumWorkItem</code></li>
+<li><code>FreeWorkerInfo</code></li>
+<li><code>WorkerInfo</code></li>
+<li><code>WorkerInfoData</code></li>
+<li><code>autovac_init</code></li>
+<li><code>autovac_table</code></li>
+<li><code>av_relation</code></li>
+<li><code>avl_dbase</code></li>
+<li><code>avw_dbase</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起動**: Postmaster が <code>autovac_init</code> を経由してランチャーを起動。 2. **スケジュール**: ランチャーは <code>DatabaseList</code> を管理し、<code>WaitLatch</code> で待機。 3. **ワーカー起動**: ランチャーが <code>do_start_worker</code> を呼び出し、<code>PMSIGNAL_START_AUTOVAC_WORKER</code> を Postmaster に送信。 4. **ワーカー処理**: ワーカーは <code>do_autovacuum</code> 内で <code>pg_class</code> をスキャンし、<code>table_recheck_autovac</code> で最終判定を行い、<code>vacuum()</code> を呼び出す。 5. **終了・再利用**: ワーカー終了時に <code>FreeWorkerInfo</code> が呼ばれ、共有メモリ上のスロットを解放し、ランチャーに <code>SIGUSR2</code> で通知。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/</code>: <code>latch.h</code>, <code>lmgr.h</code> (ロック管理), <code>pmsignal.h</code> (プロセス間シグナル)。</li>
+<li><code>access/</code>: <code>heapam.h</code>, <code>tableam.h</code> (テーブルスキャン)。</li>
+<li><code>catalog/</code>: <code>pg_database.h</code>, <code>pg_class.h</code> (システムカタログ)。</li>
+<li><code>pgstat.h</code>: 統計情報の取得とレポート。</li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/vacuum.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>lib/ilist.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/postmaster/autovacuum.h</code>: 公開インターフェースと共有メモリ定義。</li>
+<li><code>src/backend/commands/vacuum.c</code>: バキューム実行のコアロジック。</li>
+<li><code>src/backend/postmaster/postmaster.c</code>: プロセスフォークの起点。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>AutovacMemCxt</code> を使用して、エラー発生時のクリーンアップを確実に行っています。</li>
+<li>**共有メモリ**: <code>AutovacuumLock</code> は非常に頻繁に使用されるため、競合を避ける設計になっています。</li>
+<li>**制約**: ワーカーは <code>InitPostgres</code> を呼び出すため、通常のバックエンドと同様の権限チェックやセッション設定が適用されます。</li>
+<li>**未実装/浅い部分**: <code>NUM_WORKITEMS</code> は固定値（256）であり、将来的に動的な拡張が必要になる可能性があります。また、<code>table_recheck_autovac</code> での競合判定にはわずかなレースコンディションが存在することがソース内のコメントで言及されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__avl_dbase.html" target="wiki-view"><code>avl_dbase</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__avw_dbase.html" target="wiki-view"><code>avw_dbase</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__av_relation.html" target="wiki-view"><code>av_relation</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__autovac_table.html" target="wiki-view"><code>autovac_table</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__WorkerInfoData.html" target="wiki-view"><code>WorkerInfoData</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__WorkerInfo.html" target="wiki-view"><code>WorkerInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__AutoVacuumSignal.html" target="wiki-view"><code>AutoVacuumSignal</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__AutoVacuumWorkItem.html" target="wiki-view"><code>AutoVacuumWorkItem</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__AutoVacuumShmemStruct.html" target="wiki-view"><code>AutoVacuumShmemStruct</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__FreeWorkerInfo.html" target="wiki-view"><code>FreeWorkerInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__autovac_init.html" target="wiki-view"><code>autovac_init</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__autovacuum_c__AutoVacuumShmemInit.html" target="wiki-view"><code>AutoVacuumShmemInit</code></a></li>
+</ul></body></html>

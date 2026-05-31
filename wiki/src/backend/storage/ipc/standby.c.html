@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/ipc/standby.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/ipc/standby.c</h1>
+<h2>概要</h2>
+<p>ホットスタンバイ（Hot Standby）モードにおけるトランザクション管理と、リカバリ処理とクエリ実行間の競合解決を担うモジュールです。プライマリから送られてくる WAL レコード（<code>RM_STANDBY_ID</code>）を解釈し、スタンバイ側でロックの再現やスナップショットの構築を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> 内で、リカバリ中のスタートアッププロセスがクエリ実行プロセスと協調するための「調停者」として機能します。ロックマネージャやプロセス管理と連携し、リカバリの進行を妨げるクエリを検出し、必要に応じてキャンセルするロジックをカプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**リカバリ環境の管理**: スタートアッププロセス用の仮想トランザクション環境の初期化・終了。</li>
+<li>**ロックの再現**: プライマリで発生した <code>AccessExclusiveLock</code> をスタンバイ側で再現し、クエリの整合性を保護。</li>
+<li>**競合解決**: バッファピン、ロック、スナップショット、テーブルスペース、データベース削除に伴うリカバリ競合の検出と、該当バックエンドのキャンセル。</li>
+<li>**WAL 記録**: スタンバイ状態（実行中トランザクション、ロック、無効化メッセージ）を WAL に書き出し、スタンバイ起動時の状態復元を支援。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理とハッシュテーブル</h3>
+<ul>
+<li><code>RecoveryLockHash</code> / <code>RecoveryLockXidHash</code>: 再現された <code>AccessExclusiveLock</code> を管理するハッシュテーブル。XID 単位でのロック検索を効率化。</li>
+<li><code>standbyState</code>: 現在のスタンバイモードの状態（初期化中、稼働中など）。</li>
+</ul>
+<h3>競合解決（ResolveRecoveryConflict...）</h3>
+<ul>
+<li><code>ResolveRecoveryConflictWithSnapshot</code>: 指定された Horizon 以前の XID を参照するクエリをキャンセル。</li>
+<li><code>ResolveRecoveryConflictWithLock</code>: リレーションロック待ちの際に、競合するバックエンドをキャンセルまたはデッドロックチェックを要求。</li>
+<li><code>ResolveRecoveryConflictWithBufferPin</code>: バッファピンによるリカバリ停止を解消するため、ピンを保持するバックエンドをキャンセル。</li>
+</ul>
+<h3>WAL 記録・適用</h3>
+<ul>
+<li><code>standby_redo</code>: <code>RM_STANDBY_ID</code> 関連の WAL レコードをディスパッチするメインエントリ。</li>
+<li><code>LogStandbySnapshot</code>: チェックポイント時に実行中トランザクションとロック情報を WAL に書き出す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetStandbyLimitTime</code></li>
+<li><code>InitRecoveryTransactionEnvironment</code></li>
+<li><code>LogRecoveryConflict</code></li>
+<li><code>RecoveryLockEntry</code></li>
+<li><code>RecoveryLockXidEntry</code></li>
+<li><code>ResolveRecoveryConflictWithDatabase</code></li>
+<li><code>ResolveRecoveryConflictWithSnapshot</code></li>
+<li><code>ResolveRecoveryConflictWithSnapshotFullXid</code></li>
+<li><code>ResolveRecoveryConflictWithTablespace</code></li>
+<li><code>ResolveRecoveryConflictWithVirtualXIDs</code></li>
+<li><code>ShutdownRecoveryTransactionEnvironment</code></li>
+<li><code>WaitExceedsMaxStandbyDelay</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **WAL 適用**: <code>standby_redo</code> が WAL レコードを読み取り、<code>StandbyAcquireAccessExclusiveLock</code> 等を呼び出して共有メモリ上のロック状態を更新します。 2. **競合検出**: リカバリ中に <code>LockAcquire</code> や <code>LockBufferForCleanup</code> が競合を検知すると、本モジュールの <code>Resolve...</code> 関数が呼び出されます。 3. **待機とキャンセル**: <code>ResolveRecoveryConflictWithVirtualXIDs</code> が中心となり、<code>WaitExceedsMaxStandbyDelay</code> で設定されたタイムアウトまで待機し、期限超過時に <code>CancelVirtualTransaction</code> を発行して対象プロセスを終了させます。 4. **デッドロック検知**: <code>ResolveRecoveryConflictWithLock</code> 等は <code>DeadlockTimeout</code> を監視し、タイムアウト時に <code>PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK</code> シグナルを送信して、クエリ側で <code>CheckRecoveryConflictDeadlock</code> を誘発させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog...</code>: WAL の読み書きおよびリカバリ制御。</li>
+<li><code>storage/procarray.h</code>: 実行中トランザクションの管理とスナップショット構築。</li>
+<li><code>storage/lmgr.h</code> (lock.h): ロックの取得・解放。</li>
+<li><code>utils/timeout.h</code>: 競合解決時のタイムアウト管理。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>pgstat.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/sinvaladt.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/storage/standby.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/access/transam/xact.c</code>: トランザクションのコミット/アボート時のロック解放トリガー。</li>
+<li><code>src/backend/storage/lmgr/proc.c</code>: プロセス間シグナル（<code>PROCSIG_...</code>）の受信側処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>RecoveryLockHash</code> 等のハッシュテーブルはスタートアッププロセスが管理する共有メモリ領域に存在します。</li>
+<li>**デッドロックの扱い**: 本モジュールは「リカバリを止めているクエリ」を排除する責務を持ちます。デッドロックチェックは、スタートアッププロセスとクエリプロセスの間でシグナルを介して行われるため、非常に複雑な非同期フローになっています。</li>
+<li>**省略された詳細**: <code>InjectionPoint</code> を用いたテスト用コードや、詳細な WAL レコードのバイナリレイアウトについては、実装の主目的ではないため簡略化しています。</li>
+<li>**注意点**: <code>ResolveRecoveryConflictWithVirtualXIDs</code> は、対象プロセスが終了するまで待機するループを含むため、リカバリの進行をブロックする可能性があります。<code>max_standby_..._delay</code> GUC パラメータによるタイムアウト設定が重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__RecoveryLockEntry.html" target="wiki-view"><code>RecoveryLockEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__RecoveryLockXidEntry.html" target="wiki-view"><code>RecoveryLockXidEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__InitRecoveryTransactionEnvironment.html" target="wiki-view"><code>InitRecoveryTransactionEnvironment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ShutdownRecoveryTransactionEnvironment.html" target="wiki-view"><code>ShutdownRecoveryTransactionEnvironment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__GetStandbyLimitTime.html" target="wiki-view"><code>GetStandbyLimitTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__WaitExceedsMaxStandbyDelay.html" target="wiki-view"><code>WaitExceedsMaxStandbyDelay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__LogRecoveryConflict.html" target="wiki-view"><code>LogRecoveryConflict</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.html" target="wiki-view"><code>ResolveRecoveryConflictWithVirtualXIDs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshot.html" target="wiki-view"><code>ResolveRecoveryConflictWithSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshotFullXid.html" target="wiki-view"><code>ResolveRecoveryConflictWithSnapshotFullXid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithTablespace.html" target="wiki-view"><code>ResolveRecoveryConflictWithTablespace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithDatabase.html" target="wiki-view"><code>ResolveRecoveryConflictWithDatabase</code></a></li>
+</ul></body></html>

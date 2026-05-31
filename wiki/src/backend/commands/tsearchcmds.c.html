@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/tsearchcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/tsearchcmds.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL の全文検索（Tsearch）機能に関連する DDL コマンド（<code>CREATE</code>/<code>ALTER</code>）の実行ロジックを実装するモジュールです。テキスト検索パーサー、辞書、テンプレート、および設定の定義と変更を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> ディレクトリの一部として、SQL レベルのテキスト検索オブジェクト定義をシステムカタログ（<code>pg_ts_*</code>）へ反映させる役割を担います。<code>tsearch</code> サブシステムの管理層に位置し、パーサーや辞書のキャッシュ更新や依存関係の解決を仲介します。</p>
+<h2>責務</h2>
+<ul>
+<li>**オブジェクト定義の永続化**: <code>CREATE</code> 文に基づき、システムカタログへの挿入と依存関係（<code>pg_depend</code>）の構築を行います。</li>
+<li>**設定の変更**: <code>ALTER</code> 文による辞書オプションの更新や、設定（Configuration）におけるトークンと辞書のマッピング変更を処理します。</li>
+<li>**検証とシリアライズ**: テンプレートの初期化メソッドの検証や、辞書オプションのシリアライズ/デシリアライズ（<code>pg_dump</code> 対応のため）を管理します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>DefineTSParser</code>, <code>DefineTSDictionary</code>, <code>DefineTSTemplate</code>, <code>DefineTSConfiguration</code>: 各オブジェクトを作成する主要なエントリポイント。</li>
+<li><code>AlterTSDictionary</code>, <code>AlterTSConfiguration</code>: 各オブジェクトの属性やマッピングを変更するエントリポイント。</li>
+<li><code>make*Dependencies</code>: 各オブジェクト作成時に <code>pg_depend</code> を構築するヘルパー関数群。</li>
+<li><code>serialize_deflist</code> / <code>deserialize_deflist</code>: 辞書の初期化オプションをテキスト形式と <code>List</code> 形式間で変換する関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetTSConfigTuple</code></li>
+<li><code>MakeConfigurationMapping</code></li>
+<li><code>RemoveTSConfigurationById</code></li>
+<li><code>TSTokenTypeItem</code></li>
+<li><code>ds_state</code></li>
+<li><code>getTokenTypes</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: SQL 文から渡された <code>List *parameters</code> を走査し、必要な関数 OID やオプションを抽出します。 2. **検証**: <code>LookupFuncName</code> や <code>verify_dictoptions</code> を使用して、指定された関数やオプションが妥当かを確認します。 3. **カタログ更新**: <code>table_open</code> で対象カタログを開き、<code>heap_form_tuple</code> でタプルを作成して <code>CatalogTupleInsert</code> を実行します。 4. **依存関係登録**: <code>make*Dependencies</code> を呼び出し、作成したオブジェクトと名前空間や関数との依存関係を <code>pg_depend</code> に記録します。 5. **フック**: <code>InvokeObjectPostCreateHook</code> を呼び出し、イベントトリガーやキャッシュ無効化をトリガーします。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**カタログ**: <code>pg_ts_config</code>, <code>pg_ts_dict</code>, <code>pg_ts_parser</code>, <code>pg_ts_template</code> 等のシステムカタログ定義。</li>
+<li>**アクセス層**: <code>access/table.h</code>, <code>access/genam.h</code>（カタログ操作用）。</li>
+<li>**ユーティリティ**: <code>utils/syscache.h</code>（キャッシュ検索）、<code>utils/acl.h</code>（権限チェック）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_config_map.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_ts_parser.h</code></li>
+<li><code>catalog/pg_ts_template.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>tsearch/ts_cache.h</code></li>
+<li><code>tsearch/ts_public.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/tsearch/ts_public.h</code>: テキスト検索の共通定義。</li>
+<li><code>src/backend/tsearch/</code>: テキスト検索の実行エンジン（実際の検索処理）。</li>
+<li><code>src/backend/catalog/</code>: システムカタログの定義と依存関係管理の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイルは主に DDL 処理に特化しています。検索実行時の挙動を追う場合は <code>src/backend/tsearch/</code> を参照してください。</li>
+<li><code>serialize_deflist</code> は <code>pg_dump</code> が辞書定義を再構築できるように、SQL 構文に近い形式で文字列化を行う点に注意してください。</li>
+<li><code>ALTER</code> 操作において、依存関係の更新が必要な場合と不要な場合（オプション変更のみなど）の判断ロジックが各関数内に含まれています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__TSTokenTypeItem.html" target="wiki-view"><code>TSTokenTypeItem</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__DefineTSParser.html" target="wiki-view"><code>DefineTSParser</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__DefineTSDictionary.html" target="wiki-view"><code>DefineTSDictionary</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__AlterTSDictionary.html" target="wiki-view"><code>AlterTSDictionary</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__DefineTSTemplate.html" target="wiki-view"><code>DefineTSTemplate</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__GetTSConfigTuple.html" target="wiki-view"><code>GetTSConfigTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__DefineTSConfiguration.html" target="wiki-view"><code>DefineTSConfiguration</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__RemoveTSConfigurationById.html" target="wiki-view"><code>RemoveTSConfigurationById</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__AlterTSConfiguration.html" target="wiki-view"><code>AlterTSConfiguration</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__getTokenTypes.html" target="wiki-view"><code>getTokenTypes</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__MakeConfigurationMapping.html" target="wiki-view"><code>MakeConfigurationMapping</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__tsearchcmds_c__ds_state.html" target="wiki-view"><code>ds_state</code></a></li>
+</ul></body></html>

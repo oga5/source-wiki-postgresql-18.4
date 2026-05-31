@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__port__win32__timer_c__setitimer.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>setitimer</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/port/win32/timer.c:85</code></li>
+</ul>
+<h2>目的</h2>
+<p>Windows環境においてPOSIX準拠の <code>setitimer</code> インターフェースをエミュレートし、<code>ITIMER_REAL</code> タイマー機能を提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>int setitimer(int which, const struct itimerval *value, struct itimerval *ovalue);</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>which</code>: タイマーの種類（<code>ITIMER_REAL</code> のみサポート）。</li>
+<li><code>value</code>: 設定するタイマー値。</li>
+<li><code>ovalue</code>: 前回のタイマー設定を格納するポインタ（NULL可）。</li>
+<li>**出力**:</li>
+<li>成功時は <code>0</code> を返します。</li>
+<li>失敗時は <code>ereport(FATAL, ...)</code> によりプロセスが終了します。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>value</code> は <code>NULL</code> であってはなりません。</li>
+<li><code>value-&gt;it_interval</code>（インターバル値）は <code>0</code> である必要があります（インターバルタイマーは未サポート）。</li>
+<li><code>which</code> は <code>ITIMER_REAL</code> である必要があります。</li>
+<li>初回呼び出し時にタイマー管理用スレッドとイベントオブジェクトが生成されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回呼び出し時、<code>CreateEvent</code> でイベントを作成し、<code>CreateThread</code> で <code>pg_timer_thread</code> を起動します。<code>CRITICAL_SECTION</code> を初期化します。 2. **設定更新**: <code>CRITICAL_SECTION</code> を用いて排他制御を行い、<code>timerCommArea.value</code> を更新します。<code>ovalue</code> が指定されている場合は、更新前の値をコピーします。 3. **通知**: <code>SetEvent</code> を呼び出し、待機中のタイマー管理スレッドを起床させて設定変更を伝達します。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/postmaster/fork_process.c</code></li>
+<li><code>src/backend/utils/misc/timeout.c</code></li>
+<li>（注: 上記はツールによる参照候補であり、直接的な呼び出し関係の全容は不明です）</li>
+<li>**呼び出し先**:</li>
+<li><code>CreateEvent</code>, <code>CreateThread</code>, <code>InitializeCriticalSection</code>, <code>EnterCriticalSection</code>, <code>LeaveCriticalSection</code>, <code>SetEvent</code> (Win32 API)</li>
+<li><code>pg_timer_thread</code> (管理スレッド関数)</li>
+<li><code>ereport</code> (PostgreSQLエラー報告)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>timerCommArea</code>: タイマー設定と同期用オブジェクトを保持する共有構造体。</li>
+<li><code>itimerval</code>: POSIXタイマー設定構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**FATALエラー**: イベント作成またはスレッド作成に失敗した場合、<code>ereport(FATAL, ...)</code> が発行され、バックエンドプロセスが停止します。</li>
+<li>**制限事項**: <code>ITIMER_REAL</code> 以外のタイマー種別や、インターバルタイマー（<code>it_interval</code>）の使用はアサーションにより禁止されています。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本実装はミリ秒単位の精度を持つ <code>WaitForSingleObjectEx</code> に依存しています。</li>
+<li><code>timerCommArea</code> へのアクセスは <code>CRITICAL_SECTION</code> で保護されていますが、デッドロックやイベントの取りこぼしには注意が必要です。</li>
+</ul></body></html>

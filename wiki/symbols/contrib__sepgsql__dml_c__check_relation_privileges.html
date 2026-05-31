@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/contrib__sepgsql__dml_c__check_relation_privileges.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>check_relation_privileges</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>contrib/sepgsql/dml.c:141</code></li>
+</ul>
+<h2>目的</h2>
+<p>指定されたリレーション（テーブル、シーケンス、ビュー）およびそのカラムに対するSELinuxセキュリティ権限を検証します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool check_relation_privileges(Oid relOid,
+                                      Bitmapset *selected,
+                                      Bitmapset *inserted,
+                                      Bitmapset *updated,
+                                      uint32 required,
+                                      bool abort_on_violation)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>relOid</code>: 対象リレーションのOID。</li>
+<li><code>selected</code>, <code>inserted</code>, <code>updated</code>: 各操作対象となるカラムのビットマップ。</li>
+<li><code>required</code>: 要求されるテーブルレベルの権限ビットマスク。</li>
+<li><code>abort_on_violation</code>: 権限違反時にエラーを発生させるかを示すフラグ。</li>
+<li>**出力**:</li>
+<li>権限チェックが成功した場合は <code>true</code>、失敗した場合は <code>false</code>（またはエラー発生）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>sepgsql_getenforce() &gt; 0</code> の場合、システムカタログへのDML操作およびTOASTリレーションへのアクセスは、ポリシー設定に関わらず強制的に拒否されます。</li>
+<li>カラムレベルの権限チェックは、<code>RELKIND_RELATION</code> または <code>RELKIND_PARTITIONED_TABLE</code> の場合にのみ実行されます。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ハードコードされたポリシーの適用**: システムカタログへの更新操作や、TOASTテーブルへのアクセスを検出し、違反時はエラーを投げます。 2. **リレーションレベルの検証**: <code>relkind</code> に応じて適切なSELinuxクラス（<code>DB_TABLE</code>, <code>DB_SEQUENCE</code>, <code>DB_VIEW</code>）を選択し、<code>sepgsql_avc_check_perms</code> を呼び出します。 3. **カラムレベルの検証**:</p>
+<ul>
+<li><code>fixup_whole_row_references</code> を用いて行全体参照を全カラム参照へ展開します。</li>
+<li>選択・挿入・更新の各ビットマップを統合し、対象となる全カラムを走査します。</li>
+<li>各カラムに対して必要な権限を計算し、<code>sepgsql_avc_check_perms</code> で検証します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>contrib/sepgsql/dml.c</code> 内の関数（<code>sepgsql_dml_privileges</code> 等からの呼び出しが確認されています）。</li>
+<li>**呼び出し先**: </li>
+<li><code>sepgsql_getenforce()</code></li>
+<li><code>getObjectIdentity()</code>, <code>getObjectDescription()</code></li>
+<li><code>sepgsql_avc_check_perms()</code></li>
+<li><code>fixup_whole_row_references()</code></li>
+<li><code>bms_union()</code>, <code>bms_next_member()</code>, <code>bms_is_member()</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>Bitmapset</code>: カラム操作の追跡に使用。</li>
+<li><code>ObjectAddress</code>: 権限チェック対象の識別に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: システムカタログへのDML操作やTOASTテーブルへのアクセスが試みられた場合、<code>ERRCODE_INSUFFICIENT_PRIVILEGE</code> でエラー終了します。</li>
+<li>**境界条件**: <code>relkind</code> が <code>RELKIND_RELATION</code> 等以外の場合、カラムレベルのチェックはスキップされます。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>属性番号の計算には <code>FirstLowInvalidHeapAttributeNumber</code> を用いたオフセット調整が含まれています。</li>
+<li>継承テーブルの処理において、親と子で属性番号が異なる可能性があるため、呼び出し元での適切な補正が必要です。</li>
+</ul></body></html>

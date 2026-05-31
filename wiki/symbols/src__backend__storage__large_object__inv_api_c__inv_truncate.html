@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__large_object__inv_api_c__inv_truncate.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>inv_truncate</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/storage/large_object/inv_api.c:739</code></li>
+</ul>
+<h2>目的</h2>
+<p>ラージオブジェクト（LO）を指定されたサイズに切り詰め（truncate）、不要となったデータページを削除し、必要に応じて切り詰め境界のページを調整する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void inv_truncate(LargeObjectDesc *obj_desc, int64 len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>obj_desc</code>: 操作対象のラージオブジェクトを記述する <code>LargeObjectDesc</code> 構造体へのポインタ。</li>
+<li><code>len</code>: 切り詰め後の目標サイズ（バイト単位）。</li>
+<li>戻り値: なし。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>obj_desc</code> は有効なポインタであること。</li>
+<li><code>obj_desc</code> に書き込み権限（<code>IFS_WRLOCK</code>）が付与されていること。</li>
+<li><code>len</code> は 0 以上かつ <code>MAX_LARGE_OBJECT_SIZE</code> 以下であること。</li>
+<li>内部で <code>open_lo_relation()</code> を呼び出し、<code>pg_largeobject</code> カタログへのアクセスを確立する。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **権限とパラメータの検証**: 書き込み権限を確認し、<code>len</code> の範囲をチェックする。 2. **スキャン開始**: <code>pg_largeobject</code> テーブルに対し、対象LOIDかつ切り詰め位置以降のページを順序立ててスキャンする。 3. **境界ページの処理**:</p>
+<ul>
+<li>切り詰め位置を含むページが存在する場合、そのデータを読み込み、切り詰め位置までを保持して更新（またはゼロ埋め）し、カタログを更新する。</li>
+<li>存在しない場合（穴がある場合）、切り詰め位置に新しいページを作成する。</li>
+<p>4. **不要ページの削除**: 切り詰め位置より後のページをすべてカタログから削除する。 5. **可視化**: <code>CommandCounterIncrement()</code> を呼び出し、トランザクション内の後続操作から変更を可視化する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**:</li>
+<li><code>src/backend/libpq/be-fsstubs.c:575</code></li>
+<li>**呼び出し先**:</li>
+<li><code>open_lo_relation</code>, <code>CatalogOpenIndexes</code>, <code>systable_beginscan_ordered</code>, <code>systable_getnext_ordered</code>, <code>getdatafield</code>, <code>heap_modify_tuple</code>, <code>CatalogTupleUpdateWithInfo</code>, <code>heap_form_tuple</code>, <code>CatalogTupleInsertWithInfo</code>, <code>CatalogTupleDelete</code>, <code>systable_endscan_ordered</code>, <code>CatalogCloseIndexes</code>, <code>CommandCounterIncrement</code> 等。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>LargeObjectDesc</code>: オープンされたLOの状態を保持。</li>
+<li><code>pg_largeobject</code>: LOのデータを格納するシステムカタログ。</li>
+<li><code>CatalogIndexState</code>: カタログインデックスの更新状態を管理。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**権限エラー**: 書き込み権限がない場合、<code>ERRCODE_INSUFFICIENT_PRIVILEGE</code> でエラー終了する。</li>
+<li>**パラメータエラー**: <code>len</code> が負または上限を超える場合、<code>ERRCODE_INVALID_PARAMETER_VALUE</code> でエラー終了する。</li>
+<li>**データ不整合**: <code>pg_largeobject</code> 内に NULL フィールドが存在する場合、<code>elog</code> でエラー終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>pg_largeobject</code> を直接操作するため、トランザクションの整合性に注意が必要である。</li>
+<li><code>LOBLKSIZE</code> 単位でのページ管理を行っており、切り詰め位置がページ境界でない場合は、既存データの切り詰めまたはゼロ埋めが行われる。</li>
+<li><code>CommandCounterIncrement()</code> の呼び出しにより、本関数の実行後に同一トランザクション内でLOを読み取ると、切り詰め後の状態が正しく反映される。</li>
+</ul></body></html>

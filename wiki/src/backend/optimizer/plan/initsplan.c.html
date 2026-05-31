@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/plan/initsplan.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/plan/initsplan.c</h1>
+<h2>概要</h2>
+<p><code>initsplan.c</code> は、クエリの論理的なジョインツリー（<code>JoinTree</code>）を分解し、プランニングに必要な制約情報（<code>RestrictInfo</code>）や結合メタデータ（<code>SpecialJoinInfo</code>）を初期化するモジュールです。プランナの初期段階において、どのテーブルがどの結合条件に関与し、どの変数がどのレベルで必要かを決定する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/plan</code> サブシステムにおいて、<code>planner.c</code> が呼び出す初期化フェーズの核心部です。<code>deconstruct_jointree</code> を起点として、クエリツリーを走査し、<code>RelOptInfo</code>（リレーション情報）の構築や、結合条件の適切な配置（<code>distribute_qual_to_rels</code>）を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ジョインツリーの分解**: <code>FromExpr</code> や <code>JoinExpr</code> を再帰的に走査し、結合順序の制約を抽出する。</li>
+<li>**制約の分配**: WHERE 句や JOIN/ON 句の条件式を、適切なリレーションの <code>baserestrictinfo</code> または <code>joininfo</code> リストへ割り当てる。</li>
+<li>**変数参照の管理**: 結合に必要な変数が各リレーションで利用可能になるよう、<code>targetlist</code> への追加や <code>attr_needed</code> の更新を行う。</li>
+<li>**最適化の準備**: <code>GROUP BY</code> の冗長カラム削除や、<code>LATERAL</code> 参照の解決、外部結合（Outer Join）のセマンティクス保持を行う。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ジョインツリー処理</h3>
+<ul>
+<li><code>deconstruct_jointree</code>: 本ファイルのメインエントリーポイント。ジョインツリーを分解し、制約を分配する。</li>
+<li><code>JoinTreeItem</code>: 分解プロセス中に使用される一時的な構造体。ツリーの各ノードのスコープや結合関係を保持する。</li>
+</ul>
+<h3>制約分配・管理</h3>
+<ul>
+<li><code>distribute_qual_to_rels</code>: 条件式（<code>clause</code>）を適切なリレーションのリストへ分配する。</li>
+<li><code>add_vars_to_targetlist</code>: 必要な変数をリレーションのターゲットリストに追加し、実行時に参照可能にする。</li>
+<li><code>make_outerjoininfo</code>: 外部結合の制約（<code>SpecialJoinInfo</code>）を生成し、結合順序の制限を定義する。</li>
+</ul>
+<h3>最適化ユーティリティ</h3>
+<ul>
+<li><code>remove_useless_groupby_columns</code>: 一意性制約を利用して不要な <code>GROUP BY</code> カラムを削除する。</li>
+<li><code>find_lateral_references</code>: <code>LATERAL</code> サブクエリが必要とする変数を特定し、依存関係を構築する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GroupByColInfo</code></li>
+<li><code>JoinTreeItem</code></li>
+<li><code>add_base_rels_to_query</code></li>
+<li><code>add_other_rels_to_query</code></li>
+<li><code>add_vars_to_attr_needed</code></li>
+<li><code>add_vars_to_targetlist</code></li>
+<li><code>build_base_rel_tlists</code></li>
+<li><code>create_lateral_join_info</code></li>
+<li><code>extract_lateral_references</code></li>
+<li><code>find_lateral_references</code></li>
+<li><code>rebuild_lateral_attr_needed</code></li>
+<li><code>remove_useless_groupby_columns</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>deconstruct_jointree</code> が <code>PlannerInfo</code> を受け取り、<code>deconstruct_recurse</code> を呼び出してジョインツリーを深さ優先探索する。 2. **ツリー分解**: <code>JoinTreeItem</code> を生成し、各ノードの <code>qualscope</code>（含まれるリレーション集合）や <code>inner_join_rels</code> を計算する。 3. **制約分配**: <code>deconstruct_distribute</code> が各 <code>JoinTreeItem</code> を処理し、<code>distribute_qual_to_rels</code> を通じて条件式を <code>RestrictInfo</code> に変換し、関連するリレーションのリストへ格納する。 4. **外部結合処理**: <code>make_outerjoininfo</code> が外部結合の制約を計算し、<code>root-&gt;join_info_list</code> に追加する。これにより、プランナは結合順序の入れ替えが許容されるかを判断可能になる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/</code>: ノード操作（<code>makefuncs.h</code>, <code>nodeFuncs.h</code>）。</li>
+<li><code>optimizer/</code>: プランニングの基盤（<code>pathnode.h</code>, <code>restrictinfo.h</code>, <code>joininfo.h</code>）。</li>
+<li><code>utils/</code>: システムカタログやリレーション情報のキャッシュ（<code>lsyscache.h</code>, <code>rel.h</code>）。</li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/inherit.h</code></li>
+<li><code>optimizer/joininfo.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/planner.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>parser/analyze.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/optimizer/plan/analyzejoins.c</code>: 本モジュールで構築した <code>SpecialJoinInfo</code> を利用して不要な結合を削除する。</li>
+<li><code>src/backend/optimizer/plan/createplan.c</code>: ここで分配された <code>RestrictInfo</code> を元に物理プランを生成する。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>JoinTreeItem</code> は <code>deconstruct_jointree</code> の終了時に解放されますが、その内部構造（<code>Relids</code> 等）は <code>RestrictInfo</code> 等から参照されるため、安易な解放は禁物です。</li>
+<li>**制約の配置**: 条件式が「どこで評価されるべきか」は、<code>qualscope</code> と <code>ojscope</code> によって厳密に制御されます。特に外部結合の制約（<code>SpecialJoinInfo</code>）は、結合順序の入れ替え可否を決定する重要な不変条件です。</li>
+<li>**LATERAL 参照**: <code>find_lateral_references</code> は、<code>deconstruct_jointree</code> の前に実行される必要があります。これは、<code>LATERAL</code> 依存関係が <code>PlaceHolderInfo</code> の生成に影響を与えるためです。</li>
+<li>**省略された詳細**: <code>check_mergejoinable</code> 等のヘルパー関数は、特定の演算子がインデックスやハッシュ結合で利用可能かを判定する単純な述語チェックであり、ロジックの核心は <code>distribute_qual_to_rels</code> に集約されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__JoinTreeItem.html" target="wiki-view"><code>JoinTreeItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__GroupByColInfo.html" target="wiki-view"><code>GroupByColInfo</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__add_base_rels_to_query.html" target="wiki-view"><code>add_base_rels_to_query</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__add_other_rels_to_query.html" target="wiki-view"><code>add_other_rels_to_query</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__build_base_rel_tlists.html" target="wiki-view"><code>build_base_rel_tlists</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__add_vars_to_targetlist.html" target="wiki-view"><code>add_vars_to_targetlist</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__add_vars_to_attr_needed.html" target="wiki-view"><code>add_vars_to_attr_needed</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__remove_useless_groupby_columns.html" target="wiki-view"><code>remove_useless_groupby_columns</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__find_lateral_references.html" target="wiki-view"><code>find_lateral_references</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__extract_lateral_references.html" target="wiki-view"><code>extract_lateral_references</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__rebuild_lateral_attr_needed.html" target="wiki-view"><code>rebuild_lateral_attr_needed</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__plan__initsplan_c__create_lateral_join_info.html" target="wiki-view"><code>create_lateral_join_info</code></a></li>
+</ul></body></html>

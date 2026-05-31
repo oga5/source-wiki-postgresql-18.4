@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__bin__pg_upgrade__parallel_c__reap_child.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>reap_child</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/bin/pg_upgrade/parallel.c:277</code></li>
+</ul>
+<h2>目的</h2>
+<p>並列実行されている子プロセスまたはスレッドの終了を監視・回収し、リソースを解放して実行中のジョブ数を更新する。</p>
+<h2>シグネチャまたは形状</h2>
+<p><code>bool reap_child(bool wait_for_child)</code></p>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>wait_for_child</code> (bool): <code>true</code> の場合、いずれかの子プロセスが終了するまでブロックする。<code>false</code> の場合、即座に終了確認を行い、完了したものがなければ直ちに制御を戻す。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: 子プロセス/スレッドが回収された場合は <code>true</code>、回収対象が存在しない（または待機中にタイムアウトした）場合は <code>false</code> を返す。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>user_opts.jobs</code> が 1 より大きく、かつ <code>parallel_jobs</code> が 0 より大きい場合にのみ処理を実行する。</li>
+<li>異常終了を検知した場合は <code>pg_fatal</code> を呼び出し、プロセス全体を停止させる。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期チェック**: 並列実行が不要な設定、または実行中のジョブがない場合は <code>false</code> を返す。 2. **プラットフォーム別処理**:</p>
+<ul>
+<li>**Unix**: <code>waitpid</code> を使用。<code>wait_for_child</code> に応じて <code>WNOHANG</code> フラグを制御する。終了ステータスが 0 でない場合は異常終了とみなす。</li>
+<li>**Windows**: <code>WaitForMultipleObjects</code> を使用してスレッド終了を待機。終了したスレッドのハンドルを <code>CloseHandle</code> で解放する。</li>
+<p>3. **状態更新**:</p>
+<li>終了したスレッドのインデックスを特定し、配列の末尾にあるアクティブなスレッド情報をその空きスロットへ移動させる（Windows のみ）。</li>
+<li>グローバル変数 <code>parallel_jobs</code> をデクリメントする。</li>
+<p>4. **終了**: 回収に成功した場合は <code>true</code> を返す。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/bin/pg_upgrade/dump.c</code>, <code>src/bin/pg_upgrade/parallel.c</code>, <code>src/bin/pg_upgrade/pg_upgrade.c</code>, <code>src/bin/pg_upgrade/relfilenumber.c</code> 内の各所から、ジョブ投入前後の完了待ちとして呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li>Unix: <code>waitpid</code>, <code>pg_fatal</code></li>
+<li>Windows: <code>WaitForMultipleObjects</code>, <code>GetExitCodeThread</code>, <code>CloseHandle</code>, <code>pg_fatal</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>parallel_jobs</code> (グローバル変数): 現在実行中のジョブ数。</li>
+<li><code>thread_handles</code> (Windows): スレッドハンドルの配列。</li>
+<li><code>cur_thread_args</code> (Windows): スレッド引数構造体の配列。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**異常終了**: 子プロセス/スレッドが 0 以外のステータスで終了した場合、<code>pg_fatal</code> によりプログラムが強制終了する。</li>
+<li>**タイムアウト**: <code>wait_for_child</code> が <code>false</code> の場合、待機対象がなければ即座に <code>false</code> を返す。</li>
+<li>**Windows 制限**: <code>WaitForMultipleObjects</code> の仕様により、最大ジョブ数は <code>MAXIMUM_WAIT_OBJECTS</code> (64) に制限される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>Windows 環境では、スレッド終了後に配列の詰め直し（スロットの再配置）を行っているため、ポインタ操作の整合性に注意すること。</li>
+<li>Unix と Windows でエラーハンドリングの粒度が異なるため、修正時は両方のプラットフォームでの動作確認が必要。</li>
+</ul></body></html>

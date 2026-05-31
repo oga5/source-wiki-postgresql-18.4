@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__spi_c__AtEOSubXact_SPI.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>AtEOSubXact_SPI</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/spi.c:481</code></li>
+</ul>
+<h2>目的</h2>
+<p>サブトランザクションの終了（コミットまたはアボート）時に、SPI（Server Programming Interface）の実行コンテキストとリソースをクリーンアップし、スタックの整合性を維持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li><code>isCommit</code> (bool): <code>true</code> の場合はサブトランザクションのコミット時、<code>false</code> の場合はアボート時の処理を行う。</li>
+<li><code>mySubid</code> (SubTransactionId): 終了対象となるサブトランザクションの ID。</li>
+<li>出力: なし（副作用として SPI スタックおよびメモリコンテキストを操作する）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>_SPI_stack</code> が有効な SPI 接続状態を保持していること。</li>
+<li><code>isCommit</code> が <code>true</code> の場合、SPI スタックが空でないままサブトランザクションが終了すると警告（<code>WARNING</code>）が発行される。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **スタックのクリーンアップ**: <code>_SPI_connected</code> から順に、現在のサブトランザクション ID (<code>mySubid</code>) に一致する SPI 接続をスタックから探索する。 2. **リソース解放**: 一致した接続に対し、<code>execCxt</code> および <code>procCxt</code> メモリコンテキストを削除し、グローバル変数（<code>SPI_processed</code> 等）をスタック上の保存値で復元する。 3. **アボート時の追加処理**: <code>isCommit</code> が <code>false</code> の場合、現在の SPI コンテキストにおいて、指定された <code>mySubid</code> 以降に作成された実行状態（<code>execCxt</code> のリセット）およびタプルテーブル（<code>SPITupleTable</code>）を破棄し、メモリリークを防止する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>呼び出し元: <code>src/backend/access/transam/xact.c</code>（サブトランザクションのコミットおよびアボート処理の過程で呼び出される）。</li>
+<li>呼び出し先: <code>MemoryContextDelete</code>, <code>MemoryContextReset</code>, <code>ereport</code> 等のメモリ管理およびエラー報告関数。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>_SPI_stack</code>: SPI 接続のネストを管理する内部スタック。</li>
+<li><code>_SPI_connection</code>: 各接続のコンテキスト情報を保持する構造体。</li>
+<li><code>SPITupleTable</code>: SPI 経由で返されるタプルセットを管理する構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>サブトランザクション終了時に SPI スタックが正しくクリーンアップされていない場合、<code>WARNING</code> が発生する。</li>
+<li>アボート時に <code>_SPI_current</code> が存在する場合、関連するメモリコンテキストやタプルテーブルが強制的に解放される。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>SPI_finish()</code> と異なり、既に解放されている可能性のあるメモリコンテキストへの切り替えを行わずにスタックを操作する設計となっている。</li>
+<li>タプルテーブルの解放において、<code>SPI_freetuptable()</code> を使用すると O(N^2) の計算量になるため、手動でリストを走査して削除する実装が採用されている。</li>
+</ul></body></html>

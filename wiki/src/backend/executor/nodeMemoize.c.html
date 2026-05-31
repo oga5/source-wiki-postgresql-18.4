@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/nodeMemoize.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/nodeMemoize.c</h1>
+<h2>概要</h2>
+<p>パラメータ化されたプランノードの実行結果をキャッシュし、同一パラメータでの再スキャン時に計算コストを削減するための実行ノードです。ハッシュテーブルを用いたキャッシュ機構と、LRU（Least Recently Used）アルゴリズムによるメモリ管理を実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> における実行ノードの一つであり、主にパラメータ化されたサブプラン（Nested Loopの内部など）の直上に配置されます。クエリプランナーが再スキャンの頻度が高いと判断した場合に挿入されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**キャッシュ管理**: パラメータ値をキーとしたハッシュテーブルによる結果の保持。</li>
+<li>**メモリ制限とLRU**: メモリ予算を超過した場合、LRUリストに基づいて古いエントリを破棄し、メモリ消費を制御する。</li>
+<li>**状態管理**: キャッシュの検索、充填、バイパス、完了状態の遷移を管理するステートマシン。</li>
+<li>**並列クエリ対応**: 並列ワーカー間での統計情報の共有と集約。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>MemoizeState</code>: ノードの実行状態を保持する構造体。</li>
+<li><code>MemoizeEntry</code>: キャッシュのハッシュテーブルに格納されるデータ構造。</li>
+<li><code>ExecMemoize</code>: ノードのメイン実行関数。ステートマシンを駆動する。</li>
+<li><code>cache_lookup</code>: キャッシュの検索および新規エントリの作成を行う。</li>
+<li><code>cache_reduce_memory</code>: メモリ制限を超えた際にLRUリストからエントリを削除する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ExecEndMemoize</code></li>
+<li><code>ExecEstimateCacheEntryOverheadBytes</code></li>
+<li><code>ExecInitMemoize</code></li>
+<li><code>ExecMemoizeInitializeDSM</code></li>
+<li><code>ExecMemoizeInitializeWorker</code></li>
+<li><code>ExecReScanMemoize</code></li>
+<li><code>MemoizeHash_equal</code></li>
+<li><code>MemoizeHash_hash</code></li>
+<li><code>MemoizeKey</code></li>
+<li><code>MemoizeTuple</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>ExecInitMemoize</code> でハッシュテーブルとメモリコンテキストを準備。 2. **実行 (<code>ExecMemoize</code>)**:</p>
+<ul>
+<li><code>MEMO_CACHE_LOOKUP</code>: 現在のパラメータでキャッシュを検索。ヒットすれば <code>MEMO_CACHE_FETCH_NEXT_TUPLE</code> へ。ミスならサブプランを実行し <code>MEMO_FILLING_CACHE</code> へ。</li>
+<li><code>MEMO_FILLING_CACHE</code>: サブプランから取得したタプルをキャッシュに格納。</li>
+<li><code>MEMO_CACHE_BYPASS_MODE</code>: メモリ不足等でキャッシュ不可と判断された場合、キャッシュを介さずサブプランを直接実行。</li>
+<p>3. **終了**: <code>ExecEndMemoize</code> でキャッシュ用メモリコンテキストを解放し、統計情報を共有メモリへ書き出す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>lib/simplehash.h</code>: キャッシュ用ハッシュテーブルの実装。</li>
+<li><code>lib/ilist.h</code>: LRUリスト管理用。</li>
+<li><code>executor/nodeMemoize.h</code>: 公開インターフェース定義。</li>
+<li><code>utils/datum.h</code>, <code>utils/lsyscache.h</code>: データ型操作およびハッシュ関数取得。</li>
+<li><code>common/hashfn.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/executor/nodeMemoize.h</code>: ノードの構造体定義と外部公開関数。</li>
+<li><code>src/backend/executor/nodeHash.c</code>: 類似のハッシュベースの実行ノード。</li>
+<li><code>src/backend/executor/execMain.c</code>: 実行ノードのライフサイクル管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**LRUの仕組み**: <code>simplehash.h</code> の再配置（リサイズ）を考慮し、LRUリストのノードは <code>MemoizeKey</code> 構造体内に保持されています。</li>
+<li>**バイパスモード**: メモリ制限に達した際、キャッシュを諦めて直接サブプランを読み出す挙動は、再スキャン時にリセットされます。</li>
+<li>**シングル行最適化**: <code>singlerow</code> フラグが有効な場合、最初のタプル取得後にキャッシュエントリを完了と見なす最適化が行われます。これはユニーク結合などで有効です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__MemoizeTuple.html" target="wiki-view"><code>MemoizeTuple</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__MemoizeKey.html" target="wiki-view"><code>MemoizeKey</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__MemoizeEntry.html" target="wiki-view"><code>MemoizeEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__MemoizeHash_hash.html" target="wiki-view"><code>MemoizeHash_hash</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__MemoizeHash_equal.html" target="wiki-view"><code>MemoizeHash_equal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecMemoize.html" target="wiki-view"><code>ExecMemoize</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecInitMemoize.html" target="wiki-view"><code>ExecInitMemoize</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecEndMemoize.html" target="wiki-view"><code>ExecEndMemoize</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecReScanMemoize.html" target="wiki-view"><code>ExecReScanMemoize</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecEstimateCacheEntryOverheadBytes.html" target="wiki-view"><code>ExecEstimateCacheEntryOverheadBytes</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecMemoizeInitializeDSM.html" target="wiki-view"><code>ExecMemoizeInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeMemoize_c__ExecMemoizeInitializeWorker.html" target="wiki-view"><code>ExecMemoizeInitializeWorker</code></a></li>
+</ul></body></html>

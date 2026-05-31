@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__transam__clog_c__TransactionGroupUpdateXidStatus.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>TransactionGroupUpdateXidStatus</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/transam/clog.c:440</code></li>
+</ul>
+<h2>目的</h2>
+<p>複数のバックエンドプロセスによるトランザクション状態（CLOG）更新をグループ化し、SLRU ページロックの競合を削減することで、コミット処理の並列性能を向上させる。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status, XLogRecPtr lsn, int64 pageno)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>xid</code>: 更新対象のトランザクションID。</li>
+<li><code>status</code>: 設定するトランザクション状態（コミット/アボート等）。</li>
+<li><code>lsn</code>: 関連する WAL の LSN。</li>
+<li><code>pageno</code>: 更新対象の CLOG ページ番号。</li>
+<li>**出力**:</li>
+<li><code>bool</code>: グループ更新が成功（または参加）した場合は <code>true</code>、ページ番号の不一致等によりグループ化できず、呼び出し元で個別に更新すべき場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>TransactionIdIsValid(xid)</code> が真であること。</li>
+<li>呼び出し元は、サブトランザクション数が <code>THRESHOLD_SUBTRANS_CLOG_OPT</code> 以下であることを保証する必要がある。</li>
+<li>グループリーダーは、自身のページと異なるページを更新しようとする後続プロセスをグループに含めない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **グループ参加**: 呼び出し元プロセスは自身の情報を <code>PGPROC</code> に格納し、<code>ProcGlobal-&gt;clogGroupFirst</code> を通じてキューイングを試みる。 2. **リーダー判定**:</p>
+<ul>
+<li>既にリストが存在し、ページ番号が一致する場合、リーダーの更新完了を待機する（セマフォによるスリープ）。</li>
+<li>リストが空、または自身が最初のプロセスである場合、自身がリーダーとなる。</li>
+<p>3. **リーダーの処理**:</p>
+<li>対象ページの SLRU バンクロックを <code>LW_EXCLUSIVE</code> で取得する。</li>
+<li>キュー内の全プロセスを順次処理し、<code>TransactionIdSetPageStatusInternal</code> を呼び出して状態を書き込む。</li>
+<li>処理中にページ番号が変わる場合は、必要に応じてロックを解放・再取得する。</li>
+<li>全ての更新完了後、参加プロセスをセマフォで起床させる。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/transam/clog.c</code> 内の <code>TransactionIdSetTreeStatus</code> から呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li><code>SimpleLruGetBankLock</code></li>
+<li><code>LWLockAcquire</code> / <code>LWLockRelease</code></li>
+<li><code>TransactionIdSetPageStatusInternal</code></li>
+<li><code>PGSemaphoreLock</code> / <code>PGSemaphoreUnlock</code></li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>PGPROC</code>: 各バックエンドのグループ更新用状態（<code>clogGroupMember</code>, <code>clogGroupMemberXid</code> 等）を保持。</li>
+<li><code>ProcGlobal</code>: グループの先頭プロセスを指す <code>clogGroupFirst</code> を保持。</li>
+<li><code>XactCtl</code>: SLRU 制御構造体。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**ページ不一致**: 異なる CLOG ページを更新しようとするプロセスが混在した場合、グループ化を中断し <code>false</code> を返す。</li>
+<li>**ロック競合**: 異なる SLRU バンクへのアクセスが発生した場合、リーダーはロックを切り替える。</li>
+<li>**ABA 問題**: <code>clogGroupFirst</code> の操作において、アトミックな交換処理により回避している。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>TransactionIdSetTreeStatus</code> の最適化パスである。</li>
+<li>ページ更新中にロックを切り替える際、既に更新済みのプロセスの起床を待たずにロックを解放しているが、これは実装の簡略化のためであり、さらなる最適化の余地がある。</li>
+</ul></body></html>

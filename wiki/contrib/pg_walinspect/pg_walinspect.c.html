@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_walinspect/pg_walinspect.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_walinspect/pg_walinspect.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのWAL（Write-Ahead Log）の内容をSQLインターフェース経由で詳細に調査・解析するための関数群を提供するモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_walinspect</code> 拡張のコアロジックを担います。PostgreSQLの内部的なWAL読み取りメカニズム（<code>xlogreader</code>）をラップし、低レベルなWALレコードやブロック情報を、ユーザーがクエリ可能なテーブル形式のデータとして提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>WALの読み取り開始位置（LSN）の検証と、読み取り可能な範囲の特定。</li>
+<li><code>XLogReaderState</code> を用いたWALの逐次読み取りと解析。</li>
+<li>WALレコードのメタデータ、ブロック参照、および統計情報の抽出と整形。</li>
+<li>統計情報の集計（リソースマネージャ単位またはレコードタイプ単位）。</li>
+<li>互換性のための古い関数インターフェースの維持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_get_wal_record_info</code>: 指定したLSNの単一レコード情報を取得。</li>
+<li><code>pg_get_wal_records_info</code>: 指定範囲の全レコード情報を取得。</li>
+<li><code>pg_get_wal_block_info</code>: WALレコード内のブロック参照を詳細に展開。</li>
+<li><code>pg_get_wal_stats</code>: WALの統計情報を集計。</li>
+<li><code>InitXLogReaderState</code>: WAL読み取り状態の初期化と、最初の有効なレコードの検索。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>GetCurrentLSN</code></li>
+<li><code>GetWALRecordInfo</code></li>
+<li><code>GetWALRecordsInfo</code></li>
+<li><code>ReadNextXLogRecord</code></li>
+<li><code>ValidateInputLSNs</code></li>
+<li><code>pg_get_wal_records_info_till_end_of_wal</code></li>
+<li><code>pg_get_wal_stats_till_end_of_wal</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>InitXLogReaderState</code> が <code>XLogReaderAllocate</code> を呼び出し、WALセグメントを読み取るためのコールバックを設定します。 2. **走査**: <code>ReadNextXLogRecord</code> をループ内で呼び出し、指定された <code>end_lsn</code> に達するまでレコードを順次デコードします。 3. **データ抽出**:</p>
+<ul>
+<li>レコード単位の情報は <code>GetWALRecordInfo</code> で抽出。</li>
+<li>ブロック単位の情報は <code>GetWALBlockInfo</code> で展開し、<code>tuplestore</code> に格納。</li>
+<li>統計情報は <code>XLogRecStoreStats</code> で蓄積し、最後に <code>GetXLogSummaryStats</code> で整形。</li>
+<p>4. **終了**: <code>MemoryContext</code> のリセットと <code>XLogReaderFree</code> によるリソース解放を行います。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlogreader.h</code>: WALレコードのデコード用。</li>
+<li><code>access/xlogstats.h</code>: WAL統計の計算用。</li>
+<li><code>access/xlogutils.h</code>: WALページ読み取り用。</li>
+<li><code>funcapi.h</code>: SRF（Set Returning Function）の実装用。</li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/transam/xlogreader.c</code>: WAL読み取りの基盤実装。</li>
+<li><code>src/bin/pg_waldump/</code>: 本モジュールとロジックを共有するコマンドラインツール。変更時は本ファイルと同期させることが強く推奨されます。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本ファイル内の関数はメモリリークが発生しやすい設計（<code>palloc</code> の多用）であるため、<code>MemoryContext</code> を切り替えてループごとに解放するパターンが採用されています。</li>
+<li>**非侵入性**: システムへの影響を最小限にするため、WALの読み取りにはロックや予約スロットを使用せず、読み取りエラーが発生した場合は適切にエラーを報告する設計になっています。</li>
+<li>**互換性**: <code>_till_end_of_wal</code> で終わる関数は古いバージョンとの互換性のために残されています。新規開発では範囲指定可能な関数を使用してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__GetCurrentLSN.html" target="wiki-view"><code>GetCurrentLSN</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__InitXLogReaderState.html" target="wiki-view"><code>InitXLogReaderState</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__ReadNextXLogRecord.html" target="wiki-view"><code>ReadNextXLogRecord</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__GetWALRecordInfo.html" target="wiki-view"><code>GetWALRecordInfo</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_block_info.html" target="wiki-view"><code>pg_get_wal_block_info</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_record_info.html" target="wiki-view"><code>pg_get_wal_record_info</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__ValidateInputLSNs.html" target="wiki-view"><code>ValidateInputLSNs</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__GetWALRecordsInfo.html" target="wiki-view"><code>GetWALRecordsInfo</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_records_info.html" target="wiki-view"><code>pg_get_wal_records_info</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_stats.html" target="wiki-view"><code>pg_get_wal_stats</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_records_info_till_end_of_wal.html" target="wiki-view"><code>pg_get_wal_records_info_till_end_of_wal</code></a></li>
+<li><a href="../../symbols/contrib__pg_walinspect__pg_walinspect_c__pg_get_wal_stats_till_end_of_wal.html" target="wiki-view"><code>pg_get_wal_stats_till_end_of_wal</code></a></li>
+</ul></body></html>

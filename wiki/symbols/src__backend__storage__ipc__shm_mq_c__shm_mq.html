@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__storage__ipc__shm_mq_c__shm_mq.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>shm_mq</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>struct</code></li>
+<li>定義箇所: <code>src/backend/storage/ipc/shm_mq.c:71</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のバックエンドプロセス間でメッセージをやり取りするための、単一リーダー・単一ライターの共有メモリメッセージキューを定義します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>struct shm_mq
+{
+    slock_t        mq_mutex;
+    PGPROC        *mq_receiver;
+    PGPROC        *mq_sender;
+    pg_atomic_uint64 mq_bytes_read;
+    pg_atomic_uint64 mq_bytes_written;
+    Size           mq_ring_size;
+    bool           mq_detached;
+    uint8          mq_ring_offset;
+    char           mq_ring[FLEXIBLE_ARRAY_MEMBER];
+};</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: 共有メモリ上に配置されるデータ構造であり、<code>mq_ring</code> を通じてメッセージの送受信が行われます。</li>
+<li>**出力**: <code>mq_bytes_read</code> および <code>mq_bytes_written</code> のアトミックな更新により、キューの状態が同期されます。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>単一リーダー・単一ライターの構成であること。</li>
+<li><code>mq_bytes_read</code> と <code>mq_bytes_written</code> はアトミック操作とメモリバリアによって保護されており、スピンロック（<code>mq_mutex</code>）の使用を最小限に抑える設計であること。</li>
+<li>相手プロセスが終了した場合は <code>mq_detached</code> フラグにより検知可能であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<ul>
+<li>**リングバッファ管理**: <code>mq_ring</code> を使用したリングバッファ構造を共有メモリ上で管理します。</li>
+<li>**同期**: <code>PGPROC</code> を介して <code>Latch</code> を利用し、バッファが満杯または空の際にプロセスをブロッキング/ウェイクアップします。</li>
+<li>**効率化**: 頻繁な通知を避けるため、一定量（リングサイズの1/4）のデータが溜まるまでポインタ更新を遅延させる仕組みを持ちます。</li>
+<li>**終了処理**: <code>mq_detached</code> フラグを立てることで、相手側に切断を通知します。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元（参照箇所）**:</li>
+<li><code>src/backend/access/transam/parallel.c</code></li>
+<li><code>src/backend/executor/execParallel.c</code></li>
+<li><code>src/backend/executor/tqueue.c</code></li>
+<li>**呼び出し先**:</li>
+<li>本構造体自体はデータ構造であり、操作には <code>shm_mq_send</code> や <code>shm_mq_receive</code> 等の関数が使用されます。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>shm_mq_handle</code>: 各バックエンドが保持するキューへのアクセス用プライベートハンドル。</li>
+<li><code>PGPROC</code>: プロセス間同期のためのプロセス情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**バッファフル/エンプティ**: 送信時にバッファが満杯、または受信時に空の場合、<code>WaitLatch</code> による待機が発生します（<code>nowait = true</code> の場合は <code>SHM_MQ_WOULD_BLOCK</code> を返します）。</li>
+<li>**予期せぬ終了**: 相手プロセスが終了した場合、<code>BackgroundWorkerHandle</code> を介して検知し、デッドロックを回避します。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li><code>mq_bytes_read</code> や <code>mq_bytes_written</code> の操作にはアトミック操作が必須です。</li>
+<li><code>mq_ring</code> は <code>FLEXIBLE_ARRAY_MEMBER</code> を使用しているため、構造体のサイズは動的に決定されます。</li>
+</ul></body></html>

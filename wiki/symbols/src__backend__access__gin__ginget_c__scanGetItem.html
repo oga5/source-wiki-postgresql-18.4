@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gin__ginget_c__scanGetItem.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>scanGetItem</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gin/ginget.c:1299</code></li>
+</ul>
+<h2>目的</h2>
+<p>複数のスキャンキーをロックステップで走査し、すべてのキー条件を満たす単一のタプル（TID）または損失のあるページ（Lossy Page）を特定する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static bool scanGetItem(IndexScanDesc scan, ItemPointerData advancePast, ItemPointerData *item, bool *recheck)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>scan</code>: インデックススキャン記述子。</li>
+<li><code>advancePast</code>: この位置より後のアイテムを検索するための基準点。</li>
+<li>**出力**:</li>
+<li><code>item</code>: 条件に合致した <code>ItemPointerData</code>。</li>
+<li><code>recheck</code>: 損失のあるページが含まれる場合など、再チェックが必要かを示すフラグ。</li>
+<li>**戻り値**: 検索が成功した場合は <code>true</code>、すべてのキーの走査が完了した場合は <code>false</code>。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>keyGetItem</code> ストリームは、同一ページに対して「完全な TID」と「損失のあるポインタ」を混在させないこと（混在すると走査の不整合が生じるため）。</li>
+<li><code>ginNewScanKey</code> は、最初のキーを <code>excludeOnly</code> としてマークしてはならない。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. <code>advancePast</code> を超えるアイテムを各キーに対して <code>keyGetItem</code> で順次取得する。 2. いずれかのキーで <code>isFinished</code> が真となった場合、走査を終了する。 3. 各キーの <code>curItemMatches</code> を確認し、一致しない場合は <code>advancePast</code> を更新してループを継続する。 4. 一致した場合は、そのアイテムがすべてのキーで共通しているかを確認する。</p>
+<ul>
+<li>損失のあるページ（Lossy Page）の場合、ブロック番号の一致を確認する。</li>
+<li>完全な TID の場合、<code>ginCompareItemPointers</code> で一致を確認する。</li>
+<p>5. すべてのキーで一致が確認されるまでループを繰り返す。 6. 最後に、いずれかのキーで <code>recheckCurItem</code> が設定されていれば、<code>recheck</code> を <code>true</code> に設定する。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gin/ginget.c</code> 内の検索処理（例: <code>gingetbitmap</code> のループ内）。</li>
+<li>**呼び出し先**: <code>keyGetItem</code>（各キーのアイテム取得）、<code>ginCompareItemPointers</code>（TID の比較）。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>IndexScanDesc</code>: インデックススキャンの状態を保持。</li>
+<li><code>GinScanOpaque</code>: GIN 固有のスキャン状態（<code>nkeys</code>, <code>keys</code> 等を保持）。</li>
+<li><code>GinScanKey</code>: 個別の検索キーの状態。</li>
+<li><code>ItemPointerData</code>: タプル位置情報。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**中断**: <code>CHECK_FOR_INTERRUPTS()</code> により、クエリ実行中の割り込みを処理する。</li>
+<li>**終了条件**: いずれかのキーの走査が完了（<code>isFinished</code>）した時点で <code>false</code> を返す。</li>
+<li>**損失のあるページ**: <code>ItemPointerIsLossyPage</code> が真の場合、特定のオフセットではなくページ全体が対象となるため、比較ロジックがブロック番号ベースに切り替わる。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は GIN 検索の AND 条件統合の核心部である。</li>
+<li>損失のあるポインタと完全な TID が混在する際の比較ロジックは非常に繊細であり、変更時は <code>keyGetItem</code> との整合性に注意すること。</li>
+<li><code>i == 0</code> のキーを基準に他のキーを追従させる設計となっている。</li>
+</ul></body></html>

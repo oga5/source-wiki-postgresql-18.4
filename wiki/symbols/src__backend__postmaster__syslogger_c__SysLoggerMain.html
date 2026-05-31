@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__postmaster__syslogger_c__SysLoggerMain.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>SysLoggerMain</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/postmaster/syslogger.c:164</code></li>
+</ul>
+<h2>目的</h2>
+<p>PostgreSQL のログ収集プロセス（Syslogger）のメインループを実行し、全バックエンドプロセスからのログ出力を集約・管理する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>void SysLoggerMain(const void *startup_data, size_t startup_data_len)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: </li>
+<li><code>startup_data</code>: プロセス起動時に渡されるデータ（<code>EXEC_BACKEND</code> 環境下では <code>SysloggerStartupData</code> 構造体）。</li>
+<li><code>startup_data_len</code>: データのサイズ。</li>
+<li>**出力**: なし（プロセス終了までループを継続）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>SysLogger_Start</code> によってパイプおよびログファイルが初期化されていること。</li>
+<li><code>PostmasterContext</code> が存在する場合、本関数内で解放される。</li>
+<li>終了処理において、全アップストリームプロセスが終了し、パイプが EOF になるまでプロセスは生存し続ける。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 起動データからファイル記述子を復元し、<code>PostmasterContext</code> を解放。 2. **環境設定**: <code>stderr</code> を <code>/dev/null</code> にリダイレクトし、不要なパイプ書き込み端を閉じる。 3. **シグナル設定**: <code>SIGHUP</code>（設定再読み込み）や <code>SIGUSR1</code>（ログローテーション）を登録し、終了シグナルを無視する。 4. **スレッド起動**: Windows 環境ではデータ転送用スレッド (<code>pipeThread</code>) を生成。 5. **メタデータ更新**: ログファイル名やローテーション時間を初期化し、<code>current_logfiles</code> を更新。 6. **イベント待機**: <code>WaitEventSet</code> を作成し、<code>MyLatch</code> およびパイプからの読み込みイベントを監視するループへ移行する。</p>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/postmaster/launch_backend.c</code>（<code>B_LOGGER</code> プロセス起動時）。</li>
+<li>**呼び出し先**: </li>
+<li><code>syslogger_fdopen</code>, <code>MemoryContextDelete</code>, <code>init_ps_display</code>, <code>pqsignal</code>, <code>logfile_getname</code>, <code>set_next_rotation_time</code>, <code>update_metainfo_datafile</code>, <code>CreateWaitEventSet</code>, <code>AddWaitEventToSet</code> 等。</li>
+<li>Windows 環境では <code>_beginthreadex</code> を介して <code>pipeThread</code> を起動。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>SysloggerStartupData</code>: 起動時に渡されるファイル記述子情報。</li>
+<li><code>WaitEventSet</code>: イベント監視用オブジェクト。</li>
+<li><code>syslogPipe</code>: プロセス間通信用パイプ。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li><code>EXEC_BACKEND</code> 環境下で <code>syslogger_fdopen</code> が失敗した場合、NULL ポインタ参照によりクラッシュする可能性がある。</li>
+<li>Windows 環境でスレッド生成に失敗した場合、<code>FATAL</code> エラーでプロセスが終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本プロセスは他の全プロセスが終了したことを確認するために、パイプの EOF を待機する設計となっている。</li>
+<li>Windows では名前付きパイプの制限を回避するため、専用スレッドでデータ転送を行っている点に注意すること。</li>
+</ul></body></html>

@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/acl.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/acl.c</h1>
+<h2>概要</h2>
+<p><code>acl.c</code> は、PostgreSQL のアクセス制御リスト（ACL）のデータ構造操作、および SQL レベルの権限チェック関数を実装する中心的なファイルです。<code>AclItem</code>（権限付与の最小単位）の配列として表現される ACL のパース、マージ、更新、およびロールのメンバーシップ判定を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、SQL 型 <code>aclitem</code> の I/O 関数および演算子を提供します。また、システム全体で利用される権限チェック（<code>has_table_privilege</code> 等のファミリー）のバックエンド実装を提供し、セキュリティサブシステムとデータ型システムを橋渡しします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ACL 操作**: ACL 配列の作成、コピー、連結、マージ、ソート、および更新。</li>
+<li>**権限判定**: ロール間のメンバーシップ判定（継承、SET ROLE、管理権限の再帰的探索）。</li>
+<li>**SQL インターフェース**: <code>has_xxx_privilege</code> ファミリーの関数群による、オブジェクトに対する権限の動的チェック。</li>
+<li>**文字列変換**: ACL 文字列のパース（<code>aclparse</code>）およびシリアライズ（<code>aclitemout</code>）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ACL データ構造操作</h3>
+<ul>
+<li><code>AclItem</code>: 権限付与の最小単位（被付与者、付与者、権限ビット）。</li>
+<li><code>allocacl</code>, <code>aclcopy</code>, <code>aclconcat</code>, <code>aclmerge</code>: ACL 配列のメモリ管理と集合演算。</li>
+<li><code>aclupdate</code>: 権限の追加・削除・置換を行うメインのミューテータ。</li>
+<li><code>aclmask</code>: 指定されたロールが持つ権限ビットを計算する。</li>
+</ul>
+<h3>ロールメンバーシップとキャッシュ</h3>
+<ul>
+<li><code>cached_roles</code>: ロールメンバーシップの再帰的探索結果を保持するキャッシュ。</li>
+<li><code>roles_is_member_of</code>: ロールのメンバーシップを再帰的に探索するコア関数。</li>
+<li><code>has_privs_of_role</code>, <code>member_can_set_role</code>, <code>is_admin_of_role</code>: 権限の種類に応じたロール関係の判定。</li>
+</ul>
+<h3>SQL 呼び出し可能関数</h3>
+<ul>
+<li><code>aclitemin</code>, <code>aclitemout</code>: <code>aclitem</code> 型の I/O。</li>
+<li><code>aclexplode</code>: ACL 配列をテーブル形式に展開する SRF（Set Returning Function）。</li>
+<li><code>has_table_privilege_*</code> 等: 各種オブジェクトに対する権限チェックの SQL 関数群。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>RoleMembershipCacheCallback</code></li>
+<li><code>RoleRecurseType</code></li>
+<li><code>acldefault_sql</code></li>
+<li><code>aclitem_eq</code></li>
+<li><code>aclitem_match</code></li>
+<li><code>check_acl</code></li>
+<li><code>check_circularity</code></li>
+<li><code>hash_aclitem</code></li>
+<li><code>hash_aclitem_extended</code></li>
+<li><code>is_safe_acl_char</code></li>
+<li><code>make_empty_acl</code></li>
+<li><code>priv_map</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **権限チェック**: <code>has_xxx_privilege</code> 関数が呼ばれると、<code>convert_xxx_name</code> で対象 OID を特定し、<code>object_aclcheck</code> を経由して <code>aclmask</code> を呼び出します。 2. **メンバーシップ探索**: <code>aclmask</code> は <code>has_privs_of_role</code> を呼び出し、これは <code>roles_is_member_of</code> を経由してシステムカタログ（<code>pg_auth_members</code>）を走査します。 3. **ACL 更新**: <code>aclupdate</code> は既存の <code>AclItem</code> を検索し、変更を適用して新しい ACL 配列を返します。再帰的な権限剥奪が必要な場合は <code>recursive_revoke</code> が呼び出されます。 4. **キャッシュ**: <code>initialize_acl</code> で登録されたコールバックが、カタログ更新時に <code>cached_roles</code> を無効化します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_authid</code>, <code>pg_class</code> 等のシステムカタログ定義。</li>
+<li><code>utils/</code>: <code>acl.h</code>（データ構造定義）、<code>syscache.h</code>（カタログキャッシュ）、<code>memutils.h</code>（メモリ管理）。</li>
+<li><code>lib/</code>: <code>bloomfilter.h</code>（メンバーシップ探索の高速化）。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_class.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/proclang.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>foreign/foreign.h</code></li>
+<li><code>funcapi.h</code></li>
+<li><code>lib/bloomfilter.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>storage/large_object.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/utils/acl.h</code>: <code>AclItem</code> 構造体とビットマスク定義。</li>
+<li><code>src/backend/catalog/aclchk.c</code>: ACL を用いた実際の権限チェックロジックの本体。</li>
+<li><code>src/backend/utils/cache/syscache.c</code>: ロールメンバーシップのキャッシュ無効化のトリガー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: ACL 配列は <code>palloc</code> された可変長データ（<code>varlena</code>）として扱われます。<code>aclupdate</code> 等の関数は新しいメモリ領域を確保して返すため、呼び出し側でのメモリ解放に注意が必要です。</li>
+<li>**パフォーマンス**: ロールのメンバーシップ探索は再帰的でコストが高いため、<code>cached_roles</code> と Bloom フィルタによる最適化が行われています。</li>
+<li>**制約**: <code>aclitem</code> のサイズは <code>pg_type.h</code> でハードコードされているため、構造体の変更は厳禁です。</li>
+<li>**未実装**: <code>aclinsert</code> および <code>aclremove</code> は現在サポートされておらず、エラーを返します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__priv_map.html" target="wiki-view"><code>priv_map</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__RoleRecurseType.html" target="wiki-view"><code>RoleRecurseType</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__is_safe_acl_char.html" target="wiki-view"><code>is_safe_acl_char</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__make_empty_acl.html" target="wiki-view"><code>make_empty_acl</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__check_acl.html" target="wiki-view"><code>check_acl</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__aclitem_match.html" target="wiki-view"><code>aclitem_match</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__aclitem_eq.html" target="wiki-view"><code>aclitem_eq</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__hash_aclitem.html" target="wiki-view"><code>hash_aclitem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__hash_aclitem_extended.html" target="wiki-view"><code>hash_aclitem_extended</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__acldefault_sql.html" target="wiki-view"><code>acldefault_sql</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__check_circularity.html" target="wiki-view"><code>check_circularity</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__acl_c__RoleMembershipCacheCallback.html" target="wiki-view"><code>RoleMembershipCacheCallback</code></a></li>
+</ul></body></html>

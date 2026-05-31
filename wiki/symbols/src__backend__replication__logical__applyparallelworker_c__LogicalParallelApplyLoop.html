@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__replication__logical__applyparallelworker_c__LogicalParallelApplyLoop.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>LogicalParallelApplyLoop</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/replication/logical/applyparallelworker.c:733</code></li>
+</ul>
+<h2>目的</h2>
+<p>論理レプリケーションの並列適用ワーカーにおいて、リーダーワーカーから共有メモリメッセージキュー（<code>shm_mq</code>）経由で送信される変更データを受信し、適用処理を実行するメインループを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void LogicalParallelApplyLoop(shm_mq_handle *mqh)</code></pre>
+<ul>
+<li><code>mqh</code>: リーダーワーカーとの通信に使用する共有メモリメッセージキューのハンドル。</li>
+</ul>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>shm_mq_handle *mqh</code>（リーダーからのメッセージソース）。</li>
+<li>**出力**: なし（ループ内で <code>apply_dispatch</code> を呼び出し、トランザクション変更を適用）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>ApplyMessageContext</code> が初期化され、メッセージ処理ごとにリセットされること。</li>
+<li><code>error_context_stack</code> に <code>apply_error_callback</code> がプッシュされていること。</li>
+<li>リーダーから送信されるメッセージの最初のバイトは <code>&#x27;w&#x27;</code> であること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: メモリコンテキスト（<code>ApplyMessageContext</code>）とエラーコールバックを設定します。 2. **メッセージ受信**: <code>shm_mq_receive</code> を使用してリーダーからのデータを待機します。</p>
+<ul>
+<li>**成功時**: メッセージが <code>&#x27;w&#x27;</code> で始まることを確認し、統計情報をスキップした後、<code>apply_dispatch</code> を呼び出して適用します。</li>
+<li>**ブロック時**: <code>pa_process_spooled_messages_if_required</code> を呼び出し、ファイルにシリアライズされたメッセージがあれば処理します。その後、<code>WaitLatch</code> で次のメッセージを待機します。待機中にタイムアウトが発生した場合は、統計情報を報告します。</li>
+<li>**切断時**: リーダーとの接続が失われたと判断し、エラーを報告します。</li>
+<p>3. **後処理**: 各メッセージ処理後に <code>ApplyMessageContext</code> をリセットし、ループを継続します。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>ParallelApplyWorkerMain</code>（<code>src/backend/replication/logical/applyparallelworker.c:986</code>）。</li>
+<li>**呼び出し先**: <code>ProcessParallelApplyInterrupts</code>, <code>shm_mq_receive</code>, <code>pq_getmsgbyte</code>, <code>apply_dispatch</code>, <code>pa_process_spooled_messages_if_required</code>, <code>WaitLatch</code>, <code>ResetLatch</code>, <code>pgstat_report_stat</code>。</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>shm_mq_handle</code>: リーダー・ワーカー間の通信キュー。</li>
+<li><code>ApplyMessageContext</code>: メッセージ処理ごとのメモリ管理用コンテキスト。</li>
+<li><code>ErrorContextCallback</code>: エラー発生時のコンテキスト保持用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**メッセージ形式不正**: 受信データの先頭バイトが <code>&#x27;w&#x27;</code> でない場合、<code>elog(ERROR)</code> で停止します。</li>
+<li>**キュー切断**: <code>shm_mq_receive</code> が <code>SHM_MQ_DETACHED</code> を返した場合、リーダーとの接続喪失としてエラーを報告します。</li>
+<li>**メッセージ長**: 長さが 0 のメッセージを受信した場合、エラーとなります。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>ApplyMessageContext</code> を使用してメモリを管理しています。メッセージ処理後のメモリリークを防ぐため、ループ末尾での <code>MemoryContextReset</code> が必須です。</li>
+<li><code>XXX</code> コメントにある通り、リーダーから送信される統計情報フィールドをスキップする処理が含まれています。将来的にリーダー側で送信を抑制する最適化が検討されています。</li>
+</ul></body></html>

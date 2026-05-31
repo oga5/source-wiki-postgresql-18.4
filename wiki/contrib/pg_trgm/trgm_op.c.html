@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/pg_trgm/trgm_op.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/pg_trgm/trgm_op.c</h1>
+<h2>概要</h2>
+<p><code>trgm_op.c</code> は、<code>pg_trgm</code> モジュールのコアとなる演算ロジックを実装するファイルです。文字列のトリグラム（3文字の連続）分解、類似度計算、およびそれらを利用した演算子（<code>%</code>, <code>&lt;%</code>, <code>&lt;&lt;%</code> など）のバックエンド関数を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_trgm</code> モジュールにおける「計算エンジン」です。インデックス構造（GIN/GiST）に依存しない汎用的な文字列処理と、ユーザーが SQL から呼び出す演算関数の実装を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**トリグラム生成**: 文字列をトリグラムの配列に変換し、正規化・ソート・重複排除を行う。</li>
+<li>**類似度計算**: Jaccard 係数に基づく類似度および単語単位の類似度（Word Similarity）の算出。</li>
+<li>**GUC 管理**: 類似度閾値（<code>similarity_threshold</code> 等）の保持と設定。</li>
+<li>**演算子実装**: SQL 演算子に対応する C 関数群の提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>similarity_threshold</code> 等: 類似度判定に使用される GUC 変数。</li>
+<li><code>generate_trgm</code>: 文字列からトリグラム配列を生成するメイン関数。</li>
+<li><code>calc_word_similarity</code>: 単語単位の類似度を計算する複雑なロジックの入口。</li>
+<li><code>growable_trgm_array</code>: 動的に拡張可能なトリグラム配列管理用の構造体。</li>
+<li><code>CMPTRGM_CHOOSE</code>: 文字の符号付き/なしを判定し、比較関数を動的に切り替える初期化関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CMPTRGM_SIGNED</code></li>
+<li><code>CMPTRGM_UNSIGNED</code></li>
+<li><code>TrgmBound</code></li>
+<li><code>comp_trgm</code></li>
+<li><code>enlarge_trgm_array</code></li>
+<li><code>index_strategy_get_limit</code></li>
+<li><code>init_trgm_array</code></li>
+<li><code>pos_trgm</code></li>
+<li><code>set_limit</code></li>
+<li><code>show_limit</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>_PG_init</code> で GUC 変数を登録。<code>CMPTRGM</code> 関数ポインタが初回呼び出し時にシステム設定に応じて最適化される。 2. **生成**: <code>generate_trgm</code> が入力を受け取り、<code>init_trgm_array</code> でバッファを確保後、<code>make_trigrams</code> でトリグラムを抽出。 3. **計算**: <code>similarity</code> 関数は <code>cnt_sml</code> を呼び出し、ソート済み配列の突き合わせで類似度を算出。<code>word_similarity</code> は <code>calc_word_similarity</code> を経由し、位置情報付きトリグラムを用いてスライディングウィンドウ的に最大類似度を探索する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: PostgreSQL の基本型とマクロ。</li>
+<li><code>trgm.h</code>: モジュール共通の定数、マクロ、データ構造定義。</li>
+<li><code>utils/guc.h</code>: 設定変数（GUC）の管理。</li>
+<li><code>utils/pg_crc.h</code>: マルチバイト文字のハッシュ化に使用。</li>
+<li><code>catalog/pg_collation_d.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>lib/qunique.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>tsearch/ts_locale.h</code></li>
+<li><code>utils/formatting.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>trgm.h</code>: このファイルで使用される <code>TRGM</code> 型や <code>CALCSML</code> マクロの定義元。</li>
+<li><code>trgm_gin.c</code> / <code>trgm_gist.c</code>: 本ファイルで生成されたトリグラム配列をインデックス検索に利用するコード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**比較ロジック**: <code>CMPTRGM</code> はシステム依存の文字符号（signed/unsigned）を考慮するため、直接比較せず必ずこの関数ポインタを経由してください。</li>
+<li>**メモリ管理**: <code>growable_trgm_array</code> を使用する際は、<code>init_trgm_array</code> と <code>enlarge_trgm_array</code> を適切に呼び出し、<code>MaxAllocSize</code> を超えないよう注意が必要です。</li>
+<li>**Word Similarity**: このロジックは単なる集合比較ではなく、位置情報を保持した <code>pos_trgm</code> を用いた動的な探索を行うため、コードの複雑度が高いです。デバッグ時は <code>iterate_word_similarity</code> のループ挙動を追うのが近道です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__pos_trgm.html" target="wiki-view"><code>pos_trgm</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__TrgmBound.html" target="wiki-view"><code>TrgmBound</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__growable_trgm_array.html" target="wiki-view"><code>growable_trgm_array</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__init_trgm_array.html" target="wiki-view"><code>init_trgm_array</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__enlarge_trgm_array.html" target="wiki-view"><code>enlarge_trgm_array</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__CMPTRGM_SIGNED.html" target="wiki-view"><code>CMPTRGM_SIGNED</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__CMPTRGM_UNSIGNED.html" target="wiki-view"><code>CMPTRGM_UNSIGNED</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__CMPTRGM_CHOOSE.html" target="wiki-view"><code>CMPTRGM_CHOOSE</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__set_limit.html" target="wiki-view"><code>set_limit</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__index_strategy_get_limit.html" target="wiki-view"><code>index_strategy_get_limit</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__show_limit.html" target="wiki-view"><code>show_limit</code></a></li>
+<li><a href="../../symbols/contrib__pg_trgm__trgm_op_c__comp_trgm.html" target="wiki-view"><code>comp_trgm</code></a></li>
+</ul></body></html>

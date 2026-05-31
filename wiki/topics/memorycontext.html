@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>topics/memorycontext.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>MemoryContext</h1>
+<h2>概念</h2>
+<p><code>MemoryContext</code> は、PostgreSQLのバックエンドにおいてメモリ割り当ての生存期間（ライフサイクル）を論理的なグループ単位で管理するための抽象的なデータ型（<code>struct MemoryContextData *</code> へのポインタ）です（<code>src/include/nodes/memnodes.h#MemoryContext</code>, <code>src/include/utils/palloc.h#MemoryContext</code>）。</p>
+<p>メモリコンテキストは階層構造（親子関係）を形成しており、親コンテキストに対する操作（削除やリセット）は、その子孫コンテキストに対しても再帰的または非再帰的な走査によって伝播・適用されます。</p>
+<h2>なぜ重要か</h2>
+<p>C言語における個別のメモリ領域（チャンク）の追跡と手動解放（<code>pfree</code>）の煩雑さを解消し、コンテキスト単位での一括解放やリセットを可能にすることで、メモリリークを防止します（<code>src/include/utils/palloc.h#MemoryContext</code>）。</p>
+<p>また、システム起動時の極めて初期段階でエラー処理専用の <code>ErrorContext</code> を確保しておくことで、PANIC発生時やメモリ枯渇（OOM）状況下でも、安全にエラー報告処理を実行できる仕組みを提供します（<code>src/backend/utils/mmgr/mcxt.c#MemoryContextInit</code>）。</p>
+<h2>関与するモジュール</h2>
+<ul>
+<li><code>module:src/backend/utils/mmgr</code></li>
+<li><code>module:src/include/nodes</code></li>
+<li><code>module:src/include/utils</code></li>
+</ul>
+<h2>主要エンティティ</h2>
+<ul>
+<li>**型定義**:</li>
+<li><code>symbol:src/include/nodes/memnodes.h#MemoryContext</code>: メモリ確保・解放を行う論理的な領域を指す主要なハンドル。</li>
+<li><code>symbol:src/include/utils/palloc.h#MemoryContext</code>: バックエンド全体で広く参照される抽象的なコンテキストポインタ型。</li>
+<li>**主要関数**:</li>
+<li><code>symbol:src/backend/utils/mmgr/mcxt.c#MemoryContextInit</code>: メモリ管理システム全体を初期化し、ルートとなる <code>TopMemoryContext</code> および <code>ErrorContext</code> を構築する。</li>
+<li><code>symbol:src/backend/utils/mmgr/mcxt.c#MemoryContextCreate</code>: 新しいメモリコンテキスト構造体を初期化し、階層ツリーに登録する。</li>
+<li><code>symbol:src/backend/utils/mmgr/mcxt.c#MemoryContextAlloc</code>: 指定されたコンテキスト内でメモリ領域を割り当てる。</li>
+<li><code>symbol:src/backend/utils/mmgr/mcxt.c#MemoryContextReset</code>: コンテキスト内の全メモリ割り当てを解放し、初期状態に戻す（子コンテキストは削除される）。</li>
+<li><code>symbol:src/backend/utils/mmgr/mcxt.c#MemoryContextDelete</code>: 指定されたコンテキストおよびそのすべての子孫コンテキストを破棄し、メモリを解放する。</li>
+</ul>
+<h2>エンドツーエンドの流れ</h2>
+<p>1. **初期化**: システム起動時に <code>MemoryContextInit</code> が一度だけ呼び出され、すべてのコンテキストの親となる <code>TopMemoryContext</code>、デフォルトの <code>CurrentMemoryContext</code>、および <code>ErrorContext</code> が生成されます。 2. **コンテキストの作成**: 各メモリコンテキスト実装（<code>aset.c</code> や <code>slab.c</code> など）の作成ルーチンから <code>MemoryContextCreate</code> が呼び出され、親コンテキストの子リストの先頭に挿入されて階層構造に登録されます。 3. **メモリ割り当て**: <code>MemoryContextAlloc</code> を呼び出すと、コンテキストの <code>isReset</code> フラグが <code>false</code> に設定され、コンテキスト固有のメソッドテーブル（<code>context-&gt;methods-&gt;alloc</code>）に実際のメモリ確保処理が委譲されます。 4. **リセットと削除**:</p>
+<ul>
+<li><code>MemoryContextReset</code> は、子コンテキストを削除した上で、コンテキスト自体は維持しつつ内部のメモリ領域のみを解放（<code>MemoryContextResetOnly</code>）します。</li>
+<li><code>MemoryContextDelete</code> は、スタック枯渇を避けるために非再帰的なループで階層を降下し、末端の子コンテキストから順に <code>MemoryContextDeleteOnly</code> を呼び出して完全に破棄します。</li>
+</ul>
+<h2>重要な不変条件</h2>
+<ul>
+<li>**有効性の検証**: すべての操作対象コンテキストは、<code>MemoryContextIsValid</code> マクロによる検証をパスする有効なポインタでなければなりません。</li>
+<li>**クリティカルセクションの制限**: クリティカルセクション内（<code>CritSectionCount &gt; 0</code>）でのコンテキスト作成（<code>MemoryContextCreate</code>）やメモリ割り当て（<code>MemoryContextAlloc</code>）は原則として禁止されています。ただし、<code>ErrorContext</code> のように明示的に <code>allowInCritSection</code> フラグが継承・設定されている場合は例外的に許可されます。</li>
+<li>**二重初期化の防止**: <code>MemoryContextInit</code> 実行時、<code>TopMemoryContext</code> は必ず <code>NULL</code> でなければなりません。</li>
+<li>**CurrentMemoryContext の変更**: <code>CurrentMemoryContext</code> を直接書き換えることは禁止されており、必ず <code>MemoryContextSwitchTo</code> などの適切なAPIを介して切り替える必要があります（※ <code>MemoryContextSwitchTo</code> の詳細な実装仕様は本コンテキスト内では未定義です）。</li>
+</ul>
+<h2>よくある落とし穴</h2>
+<ul>
+<li>**階層構造の破壊**: 親コンテキストを削除（<code>MemoryContextDelete</code>）した後に、その子コンテキストや紐付いていたメモリ領域へアクセスすると、メモリ破損やセグメンテーション違反を引き起こします。</li>
+<li>**エラーハンドリングの委譲**: <code>MemoryContextAlloc</code> 自体は割り当て後のNULLチェックを行いません。メモリ割り当て失敗時の挙動（エラーを投げるか、NULLを返すかなど）は、呼び出される各コンテキストの <code>alloc</code> メソッド側の実装に依存します。</li>
+<li>**クリティカルセクション内での不適切な割り当て**: 許可されていないコンテキストでクリティカルセクション中にメモリを割り当てようとすると、アサーションによりシステムが停止します。</li>
+</ul>
+<h2>次に読む場所</h2>
+<ul>
+<li><code>src/backend/utils/mmgr/mcxt.c</code> (メモリコンテキストの基本操作およびライフサイクル管理の実装)</li>
+<li><code>src/include/nodes/memnodes.h</code> (MemoryContextData 構造体および仮想関数テーブル <code>MemoryContextMethods</code> の定義)</li>
+<li><code>src/include/utils/palloc.h</code> (メモリ割り当てAPIおよび <code>MemoryContext</code> の基本型定義)</li>
+</ul></body></html>

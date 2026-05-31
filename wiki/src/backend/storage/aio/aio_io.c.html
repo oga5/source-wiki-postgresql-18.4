@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/aio/aio_io.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/aio/aio_io.c</h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの非同期I/O（AIO）サブシステムにおいて、I/Oハンドル（<code>PgAioHandle</code>）と実際のI/O操作を紐付ける低レベルなインターフェースを提供します。特定のI/Oメソッド（io_uringやワーカー等）に依存しない共通の補助関数群を定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p>AIOサブシステムにおける「I/Oの準備と実行」の橋渡し役です。上位層がI/Oをリクエストする際、ハンドルに対して操作内容（read/write）や対象ファイル、バッファ情報を設定するための標準的なAPIを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/Oハンドルの管理**: <code>PgAioHandle</code> へのI/Oパラメータ（<code>iovec</code>、ファイル記述子、オフセット）の格納と取得。</li>
+<li>**I/O開始の標準化**: <code>pgaio_io_before_start</code> を介した状態チェックと、<code>pgaio_io_stage</code> を用いたI/Oのステージング。</li>
+<li>**同期実行のフォールバック**: 非同期メソッドが利用できない場合や、同期的な実行が必要な場合の共通実行パスの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pgaio_io_start_readv</code> / <code>pgaio_io_start_writev</code>: I/O操作を開始するための主要なエントリーポイント。</li>
+<li><code>pgaio_io_perform_synchronously</code>: 非同期処理の裏側で、あるいはフォールバックとして同期的に <code>preadv</code>/<code>pwritev</code> を実行する関数。</li>
+<li><code>pgaio_io_before_start</code>: I/O開始前のガード条件（割り込み禁止状態の確認など）を強制する内部ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>pgaio_io_get_iovec</code></li>
+<li><code>pgaio_io_get_iovec_length</code></li>
+<li><code>pgaio_io_get_op</code></li>
+<li><code>pgaio_io_get_op_data</code></li>
+<li><code>pgaio_io_get_op_name</code></li>
+<li><code>pgaio_io_uses_fd</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 上位層が <code>pgaio_io_start_readv</code> 等を呼び出し、ハンドルに操作情報を書き込みます。 2. **ステージング**: <code>pgaio_io_stage</code> を呼び出し、I/Oサブシステムへ処理を登録します。 3. **実行**:</p>
+<ul>
+<li>非同期メソッド（io_uring等）が選択された場合、各メソッドの実装がハンドルを参照してI/Oを発行します。</li>
+<li>同期実行が必要な場合、<code>pgaio_io_perform_synchronously</code> が <code>pg_preadv</code>/<code>pg_pwritev</code> を呼び出し、完了処理（<code>pgaio_io_process_completion</code>）をトリガーします。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/aio.h</code> / <code>storage/aio_internal.h</code>: AIOハンドルの定義と内部構造体。</li>
+<li><code>storage/fd.h</code>: <code>pg_preadv</code> 等の低レベルファイルI/O関数。</li>
+<li><code>utils/wait_event.h</code>: I/O待機中の統計情報取得用。</li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/aio/method_sync.c</code>: 同期I/Oメソッドの実装。</li>
+<li><code>src/backend/storage/aio/method_io_uring.c</code>: io_uringを用いた非同期I/Oの実装。</li>
+<li><code>src/backend/storage/aio/aio.c</code>: AIOサブシステムのメイン制御ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の関数は、I/O操作の「準備」と「実行」の境界を定義しています。</li>
+<li><code>pgaio_io_before_start</code> 内の <code>Assert(!INTERRUPTS_CAN_BE_PROCESSED())</code> は重要です。I/O操作中に割り込みが発生してファイル記述子が閉じられることを防ぐための重要な不変条件です。</li>
+<li><code>pgaio_io_perform_synchronously</code> は、非同期I/Oがサポートされていない環境や、エラー時のフォールバックとして非常に堅牢に設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_get_iovec.html" target="wiki-view"><code>pgaio_io_get_iovec</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_get_op.html" target="wiki-view"><code>pgaio_io_get_op</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_get_op_data.html" target="wiki-view"><code>pgaio_io_get_op_data</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_start_readv.html" target="wiki-view"><code>pgaio_io_start_readv</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_start_writev.html" target="wiki-view"><code>pgaio_io_start_writev</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_perform_synchronously.html" target="wiki-view"><code>pgaio_io_perform_synchronously</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_before_start.html" target="wiki-view"><code>pgaio_io_before_start</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_get_op_name.html" target="wiki-view"><code>pgaio_io_get_op_name</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_uses_fd.html" target="wiki-view"><code>pgaio_io_uses_fd</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__aio__aio_io_c__pgaio_io_get_iovec_length.html" target="wiki-view"><code>pgaio_io_get_iovec_length</code></a></li>
+</ul></body></html>

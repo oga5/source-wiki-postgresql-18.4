@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/postmaster/launch_backend.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/postmaster/launch_backend.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのPostmaster（親プロセス）が、バックエンドプロセスや各種補助プロセス（bgwriter, autovacuum等）を起動するための基盤機能を提供します。OSのプロセス生成モデルの違いを抽象化し、一貫した子プロセス起動インターフェースを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster.c</code> が管理するプロセス起動要求を受け取り、適切なメイン関数（<code>BackendMain</code> や <code>StartupProcessMain</code> など）へ制御を移すためのブリッジです。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス起動の抽象化**: Unix系での <code>fork()</code> と、Windows等での <code>fork()</code> + <code>exec()</code>（<code>EXEC_BACKEND</code> モード）を吸収します。</li>
+<li>**環境の引き継ぎ**: <code>EXEC_BACKEND</code> モードにおいて、親プロセスのメモリ状態や共有メモリセグメント、ソケットハンドル等の情報を子プロセスへ安全に受け渡します。</li>
+<li>**子プロセスの初期化**: 子プロセス起動直後に、不要なファイルディスクリプタのクローズや共有メモリの再アタッチを行い、実行可能な状態へ整えます。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>postmaster_child_launch()</code>: 子プロセスを起動するための公開API。</li>
+<li><code>SubPostmasterMain()</code>: <code>EXEC_BACKEND</code> モードで起動された子プロセスが最初に実行するエントリポイント。</li>
+<li><code>child_process_kinds</code>: 各種プロセスタイプと、対応するメイン関数、共有メモリへのアタッチ要否を定義したテーブル。</li>
+<li><code>BackendParameters</code>: <code>EXEC_BACKEND</code> モードでプロセス間で受け渡される状態情報の構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>InheritableSocket</code></li>
+<li><code>PostmasterChildName</code></li>
+<li><code>SubPostmasterMain</code></li>
+<li><code>child_process_kind</code></li>
+<li><code>internal_forkexec</code></li>
+<li><code>postmaster_child_launch</code></li>
+<li><code>read_backend_variables</code></li>
+<li><code>read_inheritable_socket</code></li>
+<li><code>save_backend_variables</code></li>
+<li><code>write_duplicated_handle</code></li>
+<li><code>write_inheritable_socket</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **起動要求**: <code>postmaster_child_launch</code> が呼び出され、プロセスタイプに応じたメイン関数を特定します。 2. **プロセス生成**:</p>
+<ul>
+<li>Unix系: <code>fork_process()</code> を実行し、子プロセス側で不要なリソースを解放してメイン関数へ移行します。</li>
+<li><code>EXEC_BACKEND</code> モード: <code>save_backend_variables</code> で状態をファイルまたは共有メモリに保存し、<code>execv</code> または <code>CreateProcess</code> で子プロセスを起動します。</li>
+<p>3. **子プロセスの再構成**: <code>SubPostmasterMain</code> が起動され、保存された <code>BackendParameters</code> を読み込み、共有メモリへの再アタッチやGUC変数の復元を行い、本来のメイン関数へ制御を移します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>, <code>miscadmin.h</code>: 基本的な定義と管理機能。</li>
+<li><code>postmaster/*.h</code>: 各種子プロセスのメイン関数宣言。</li>
+<li><code>storage/pg_shmem.h</code>, <code>storage/dsm.h</code>: 共有メモリ管理。</li>
+<li><code>tcop/backend_startup.h</code>: バックエンド起動時のデータ構造。</li>
+<li><code>common/file_utils.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>nodes/queryjumble.h</code></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>postmaster/bgworker_internals.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/fork_process.h</code></li>
+<li><code>postmaster/pgarch.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>postmaster/startup.h</code></li>
+<li><code>postmaster/syslogger.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>postmaster/walwriter.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/io_worker.h</code></li>
+<li><code>storage/lwlock.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/postmaster/postmaster.c</code>: プロセス起動のトリガーとなるメインループ。</li>
+<li><code>src/backend/postmaster/fork_process.c</code>: <code>fork()</code> のラッパー実装。</li>
+<li><code>src/backend/storage/ipc/ipc.c</code>: プロセス終了時のクリーンアップ処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**EXEC_BACKEND**: Windows環境や特定のテスト環境で有効化されます。このモードでは、親プロセスのメモリ空間が継承されないため、状態のシリアライズ/デシリアライズが不可欠です。</li>
+<li>**デバッグのヒント**: <code>EXEC_BACKEND</code> モードで子プロセスが起動しない場合、<code>BackendParameters</code> の構造体定義の不一致や、ハンドル/ソケットの複製失敗が原因であることが多いです。</li>
+<li>**メモリ管理**: <code>SubPostmasterMain</code> 内での初期化順序は非常に厳密です。共有メモリへのアタッチ前に <code>elog</code> 等のサブシステムが正しく動作するよう注意が払われています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__InheritableSocket.html" target="wiki-view"><code>InheritableSocket</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__BackendParameters.html" target="wiki-view"><code>BackendParameters</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__child_process_kind.html" target="wiki-view"><code>child_process_kind</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__PostmasterChildName.html" target="wiki-view"><code>PostmasterChildName</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__postmaster_child_launch.html" target="wiki-view"><code>postmaster_child_launch</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__internal_forkexec.html" target="wiki-view"><code>internal_forkexec</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__SubPostmasterMain.html" target="wiki-view"><code>SubPostmasterMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__write_inheritable_socket.html" target="wiki-view"><code>write_inheritable_socket</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__read_inheritable_socket.html" target="wiki-view"><code>read_inheritable_socket</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__save_backend_variables.html" target="wiki-view"><code>save_backend_variables</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__write_duplicated_handle.html" target="wiki-view"><code>write_duplicated_handle</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__launch_backend_c__read_backend_variables.html" target="wiki-view"><code>read_backend_variables</code></a></li>
+</ul></body></html>

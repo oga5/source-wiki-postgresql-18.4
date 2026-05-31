@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__spgist__spgvacuum_c__vacuumLeafRoot.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>vacuumLeafRoot</h1>
+<h2>定義</h2>
+<ul>
+<li>**種別**: <code>function</code></li>
+<li>**定義箇所**: <code>src/backend/access/spgist/spgvacuum.c:408</code></li>
+</ul>
+<h2>目的</h2>
+<p>SP-GiST インデックスのルートページ（リーフページでもある場合）から、不要になったライブタプルを削除し、インデックスの整合性を維持する。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void vacuumLeafRoot(spgBulkDeleteState *bds, Relation index, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>bds</code>: VACUUM 実行状態を保持する <code>spgBulkDeleteState</code> 構造体。</li>
+<li><code>index</code>: 対象のインデックスリレーション。</li>
+<li><code>buffer</code>: 処理対象のルートページを含むバッファ。</li>
+<li>**出力**: なし（副作用としてページ内容の更新と統計情報の加算を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>対象ページは SP-GiST のルートページであること。</li>
+<li>ルートページ内のすべてのタプルは <code>SPGIST_LIVE</code> 状態である必要がある（それ以外の状態はエラーとして扱われる）。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. ページ内の全タプルを走査し、<code>bds-&gt;callback</code> を用いて削除対象か判定する。 2. 削除対象のタプルオフセットを <code>toDelete</code> 配列に蓄積し、統計情報（<code>tuples_removed</code> または <code>num_index_tuples</code>）を更新する。 3. 削除対象が存在する場合:</p>
+<ul>
+<li>クリティカルセクションを開始する。</li>
+<li><code>PageIndexMultiDelete</code> を使用してページからタプルを物理的に削除する。</li>
+<li>バッファをダーティとしてマークする。</li>
+<li>WAL が必要な場合、<code>XLOG_SPGIST_VACUUM_ROOT</code> レコードを生成し、削除情報を記録する。</li>
+<li>クリティカルセクションを終了する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>spgvacuumpage</code>（<code>src/backend/access/spgist/spgvacuum.c</code> 内の 646 行目付近で確認）。</li>
+<li>**呼び出し先**:</li>
+<li><code>BufferGetPage</code>, <code>PageGetMaxOffsetNumber</code>, <code>PageGetItem</code>, <code>PageGetItemId</code> (ページ操作)</li>
+<li><code>bds-&gt;callback</code> (削除判定)</li>
+<li><code>PageIndexMultiDelete</code> (タプル削除)</li>
+<li><code>MarkBufferDirty</code>, <code>RelationNeedsWAL</code>, <code>XLogBeginInsert</code>, <code>XLogRegisterData</code>, <code>XLogRegisterBuffer</code>, <code>XLogInsert</code>, <code>PageSetLSN</code> (WAL 記録)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>spgBulkDeleteState</code>: VACUUM の進捗とコールバック関数を保持。</li>
+<li><code>spgxlogVacuumRoot</code>: ルートページ削除用の WAL ログ構造体。</li>
+<li><code>SpGistLeafTuple</code>: ページ内に格納されているリーフタプル。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**エラー**: ルートページ内に <code>SPGIST_LIVE</code> 以外の状態のタプルが存在する場合、<code>elog(ERROR)</code> を発生させる。</li>
+<li>**境界条件**: 削除対象のタプルが存在しない場合、処理を即座に終了する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数はルートページ専用の削除ロジックである。通常のリーフページ処理には <code>vacuumLeafPage</code> が使用される。</li>
+<li>WAL 記録時に <code>toDelete</code> 配列の内容を登録しているため、<code>xlrec.nDelete</code> の整合性に注意すること。</li>
+</ul></body></html>

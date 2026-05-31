@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/storage/smgr/bulk_write.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/storage/smgr/bulk_write.c</h1>
+<h2>概要</h2>
+<p><code>bulk_write.c</code> は、PostgreSQL においてリレーション（テーブルやインデックス）を新規作成・初期ロードする際に、バッファマネージャを介さず直接ストレージへ書き込むための最適化インターフェースを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>smgr</code>（Storage Manager）サブシステムの一部として、通常のバッファ管理に伴うロックオーバーヘッドを回避し、大量のページを効率的にディスクへ書き出す役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファマネージャのバイパス**: <code>smgrextend</code> を直接呼び出し、共有バッファプールを汚染せずに書き込みを行う。</li>
+<li>**WAL ログのバッチ処理**: 複数のページ書き込みを単一の WAL レコードに集約し、ログ書き込みのオーバーヘッドを削減する。</li>
+<li>**整合性の維持**: 書き込み中のチェックポイント発生を検知し、必要に応じて <code>fsync</code> を強制することで、クラッシュリカバリ時のデータ整合性を保証する。</li>
+<li>**ディスクレイアウトの最適化**: 非連続的なブロック書き込み時にゼロ埋めを行い、ファイルシステムの断片化を抑制する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>BulkWriteState</code>: 書き込み操作の状態を保持する構造体。WAL の要否や保留中の書き込みキューを管理。</li>
+<li><code>smgr_bulk_start_rel / smgr_bulk_start_smgr</code>: バルク書き込み操作の開始点。</li>
+<li><code>smgr_bulk_write</code>: ページを書き込みキューに追加する。<code>MAX_PENDING_WRITES</code> に達すると自動的にフラッシュされる。</li>
+<li><code>smgr_bulk_finish</code>: 操作の終了処理。残りのキューをフラッシュし、必要に応じて <code>fsync</code> を実行する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>PendingWrite</code></li>
+<li><code>buffer_cmp</code></li>
+<li><code>smgr_bulk_flush</code></li>
+<li><code>smgr_bulk_get_buf</code></li>
+<li><code>smgr_bulk_start_rel</code></li>
+<li><code>smgr_bulk_start_smgr</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>smgr_bulk_start_*</code> で <code>BulkWriteState</code> を作成し、現在の <code>RedoRecPtr</code> を記録する。 2. **書き込み**: <code>smgr_bulk_get_buf</code> でメモリを確保し、データを書き込んだ後 <code>smgr_bulk_write</code> でキューイングする。 3. **フラッシュ**: <code>smgr_bulk_flush</code> が呼び出されると、キュー内のページをソートし、<code>log_newpages</code> で WAL を記録後、<code>smgrextend</code> または <code>smgrwrite</code> で物理書き込みを行う。 4. **終了**: <code>smgr_bulk_finish</code> で最終フラッシュを行い、チェックポイントとの競合を確認して <code>smgrregistersync</code> または <code>smgrimmedsync</code> を実行する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xloginsert.h</code>, <code>access/xlogrecord.h</code>: WAL ログ生成用。</li>
+<li><code>storage/smgr.h</code>: ストレージマネージャの基本操作。</li>
+<li><code>storage/bufpage.h</code>: ページチェックサム計算用。</li>
+<li><code>storage/proc.h</code>: チェックポイント遅延フラグ制御用。</li>
+<li><code>postgres.h</code></li>
+<li><code>storage/bulk_write.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/storage/smgr/smgr.c</code>: <code>smgr</code> レイヤの基盤。</li>
+<li><code>src/backend/access/transam/xlog.c</code>: WAL ログの書き込みとチェックポイント管理。</li>
+<li><code>src/include/storage/bulk_write.h</code>: 公開インターフェース定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**排他制御の前提**: 本モジュールは、対象リレーションに他のバックエンドがアクセスしない（新規作成時など）ことを前提としています。</li>
+<li>**バッファの所有権**: <code>smgr_bulk_write</code> に渡されたバッファの所有権は <code>BulkWriteState</code> に移譲されます。呼び出し側で <code>pfree</code> してはいけません。</li>
+<li>**チェックポイントとの競合**: <code>smgr_bulk_finish</code> 内で <code>MyProc-&gt;delayChkptFlags</code> を使用してチェックポイントを一時的に抑制し、書き込み完了後の <code>fsync</code> 漏れを防ぐロジックは非常に重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__PendingWrite.html" target="wiki-view"><code>PendingWrite</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__BulkWriteState.html" target="wiki-view"><code>BulkWriteState</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_start_rel.html" target="wiki-view"><code>smgr_bulk_start_rel</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_start_smgr.html" target="wiki-view"><code>smgr_bulk_start_smgr</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_finish.html" target="wiki-view"><code>smgr_bulk_finish</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__buffer_cmp.html" target="wiki-view"><code>buffer_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_flush.html" target="wiki-view"><code>smgr_bulk_flush</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_write.html" target="wiki-view"><code>smgr_bulk_write</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__smgr__bulk_write_c__smgr_bulk_get_buf.html" target="wiki-view"><code>smgr_bulk_get_buf</code></a></li>
+</ul></body></html>

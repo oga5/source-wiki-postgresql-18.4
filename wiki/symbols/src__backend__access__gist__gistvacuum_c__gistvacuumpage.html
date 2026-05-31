@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__access__gist__gistvacuum_c__gistvacuumpage.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>gistvacuumpage</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/access/gist/gistvacuum.c:307</code></li>
+</ul>
+<h2>目的</h2>
+<p>GiSTインデックスの単一ページに対する <code>VACUUM</code> 処理を実行します。不要なタプルの削除、空ページの特定、およびインデックス分割に伴う再帰的なページ走査を行います。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>static void gistvacuumpage(GistVacState *vstate, Buffer buffer)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**:</li>
+<li><code>vstate</code>: <code>GistVacState</code> 構造体へのポインタ。スキャン状態、コールバック関数、統計情報、空ページ管理用セットを保持。</li>
+<li><code>buffer</code>: 処理対象のインデックスページを保持するバッファ。</li>
+<li>**出力**: なし（副作用としてバッファの更新、統計情報の加算、空ページセットへの登録を行う）。</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li><code>vstate</code> が有効であること。</li>
+<li><code>buffer</code> はロックされていない状態で渡される（関数内で <code>GIST_EXCLUSIVE</code> ロックを取得する）。</li>
+<li><code>IntegerSet</code> に追加するブロック番号は昇順である必要があるため、再帰呼び出し時はセットへの追加をスキップする。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **ロックと初期化**: 対象ページを排他ロックし、ページ状態を確認。 2. **ページ種別ごとの処理**:</p>
+<ul>
+<li>**リサイクル可能/削除済み**: 統計情報を更新。</li>
+<li>**リーフページ**:</li>
+<li>分割発生時の再帰チェック: <code>NSN</code> や <code>rightlink</code> を確認し、必要に応じて過去のページへ戻る（<code>goto restart</code> によるループ処理）。</li>
+<li>タプル削除: <code>callback</code> を使用して不要タプルを特定し、<code>PageIndexMultiDelete</code> で削除。WAL 記録を行う。</li>
+<li>空ページ判定: 全タプル削除後に空になった場合、<code>vstate-&gt;empty_leaf_set</code> に登録。</li>
+<li>**内部ページ**:</li>
+<li>不正タプルチェック: 旧バージョン由来の無効なタプルを検出しログ出力。</li>
+<li>ページセット登録: 後段の <code>gistvacuum_delete_empty_pages</code> 用に <code>vstate-&gt;internal_page_set</code> に登録。</li>
+<p>3. **終了**: バッファのロックを解放。</p>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: <code>src/backend/access/gist/gistvacuum.c</code> 内の <code>gistvacuumscan</code> から呼び出される。</li>
+<li>**呼び出し先**: </li>
+<li><code>RecordFreeIndexPage</code>, <code>intset_add_member</code> (データ構造操作)</li>
+<li><code>PageIndexMultiDelete</code>, <code>GistMarkTuplesDeleted</code> (ページ操作)</li>
+<li><code>gistXLogUpdate</code> (WAL 記録)</li>
+<li><code>callback</code> (ユーザー定義の削除判定関数)</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>GistVacState</code>: スキャン中の状態管理。</li>
+<li><code>GISTPageOpaque</code>: GiST ページヘッダー情報（<code>rightlink</code>, <code>NSN</code> など）。</li>
+<li><code>IntegerSet</code>: 空ページ番号の管理に使用。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**再帰的走査**: インデックス分割によりタプルが移動した場合、過去のページへ戻る必要がある。スタックオーバーフローを避けるため、再帰呼び出しではなく <code>goto</code> を用いたループ構造を採用している。</li>
+<li>**不正タプル**: 過去のクラッシュリカバリに起因する無効な内部タプルが存在する場合、ログを出力し <code>REINDEX</code> を推奨する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>VACUUM</code> の中心的なページ処理ロジックです。<code>goto restart</code> はスタック消費を抑えるための最適化であり、変更時は注意してください。</li>
+<li>ページが空になった際の <code>IntegerSet</code> への追加は、昇順制約のため非再帰的な初回訪問時のみに行われます。</li>
+</ul></body></html>

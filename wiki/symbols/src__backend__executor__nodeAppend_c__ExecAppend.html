@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>symbols/src__backend__executor__nodeAppend_c__ExecAppend.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>ExecAppend</h1>
+<h2>定義</h2>
+<ul>
+<li>種別: <code>function</code></li>
+<li>定義箇所: <code>src/backend/executor/nodeAppend.c:302</code></li>
+</ul>
+<h2>目的</h2>
+<p>複数の子プラン（サブプラン）を順次または並列に実行し、結果を統合して上位ノードへタプルを提供します。</p>
+<h2>シグネチャまたは形状</h2>
+<pre><code>TupleTableSlot *ExecAppend(PlanState *pstate)</code></pre>
+<h2>入力と出力</h2>
+<ul>
+<li>**入力**: <code>PlanState *pstate</code>（<code>AppendState</code> 構造体としてキャストして使用）</li>
+<li>**出力**: <code>TupleTableSlot *</code>（取得したタプル、または終了時は <code>NULL</code> を含むスロット）</li>
+</ul>
+<h2>前提条件と不変条件</h2>
+<ul>
+<li>初回呼び出し時、<code>node-&gt;as_begun</code> が <code>false</code> であること。</li>
+<li><code>as_begun</code> が <code>true</code> の場合、<code>as_whichplan</code> は有効なサブプランインデックス（0 以上 <code>as_nplans</code> 未満）であること。</li>
+<li>非同期サブプランが存在する場合、<code>ExecAppendAsyncGetNext</code> がタプルを返すか、<code>as_needrequest</code> が空になるまで処理が継続されること。</li>
+</ul>
+<h2>アルゴリズムまたは振る舞い</h2>
+<p>1. **初期化**: 初回呼び出し時、<code>as_begun</code> が偽であれば、非同期サブプランの開始（<code>ExecAppendAsyncBegin</code>）および最初の同期サブプランの選択（<code>choose_next_subplan</code>）を行う。 2. **ループ処理**:</p>
+<ul>
+<li>非同期サブプランが有効な場合、<code>ExecAppendAsyncGetNext</code> を試行し、タプルがあれば即座に返す。</li>
+<li>現在の同期サブプランから <code>ExecProcNode</code> を呼び出し、タプルを取得する。</li>
+<li>タプルが取得できた場合はそれを返す。</li>
+<li>タプルが空（<code>TupIsNull</code>）の場合、非同期イベントの待機（<code>ExecAppendAsyncEventWait</code>）を行い、<code>choose_next_subplan</code> を呼び出して次のサブプランへ移行する。</li>
+<li>全てのサブプランが終了し、かつ非同期サブプランも残っていない場合は <code>ExecClearTuple</code> を返して終了する。</li>
+</ul>
+<h2>呼び出し元と呼び出し先</h2>
+<ul>
+<li>**呼び出し元**: 実行エンジン内の <code>ExecProcNode</code> インターフェース経由で呼び出される（直接的な呼び出し元関数の詳細はソース抜粋からは不明）。</li>
+<li>**呼び出し先**:</li>
+<li><code>ExecAppendAsyncBegin</code></li>
+<li><code>ExecAppendAsyncGetNext</code></li>
+<li><code>ExecAppendAsyncEventWait</code></li>
+<li><code>ExecProcNode</code></li>
+<li><code>node-&gt;choose_next_subplan</code>（関数ポインタ）</li>
+</ul>
+<h2>関連データ構造</h2>
+<ul>
+<li><code>AppendState</code>: ノードの実行状態を保持する主要構造体。</li>
+<li><code>PlanState</code>: 汎用的なプランノード状態。</li>
+</ul>
+<h2>失敗モードと境界条件</h2>
+<ul>
+<li>**サブプランなし**: <code>as_nplans == 0</code> の場合、即座に空スロットを返す。</li>
+<li>**全プラン終了**: 同期・非同期サブプランがすべて枯渇した場合、<code>ExecClearTuple</code> を返して終了する。</li>
+<li>**割り込み**: <code>CHECK_FOR_INTERRUPTS()</code> により、実行中に割り込みが発生した場合は処理を中断する。</li>
+</ul>
+<h2>保守担当者向けメモ</h2>
+<ul>
+<li>本関数は <code>AppendState</code> の <code>as_begun</code> フラグを用いて初期化状態を管理しています。</li>
+<li><code>choose_next_subplan</code> は関数ポインタであり、実行モード（ローカル、リーダー、ワーカー）に応じて動的に切り替わります。</li>
+<li>非同期実行の制御は <code>as_nasyncremain</code> および <code>as_needrequest</code> ビットマップの状態に依存しています。</li>
+</ul></body></html>

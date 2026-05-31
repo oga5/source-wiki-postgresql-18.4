@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>contrib/btree_gin/btree_gin.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>contrib/btree_gin/btree_gin.c</h1>
+<h2>概要</h2>
+<p><code>btree_gin.c</code> は、PostgreSQL の GIN（Generalized Inverted Index）インデックス上で、B-tree がサポートするスカラーデータ型（整数、浮動小数点、日付、テキスト等）の順序比較を可能にするためのブリッジ実装です。GIN は本来集合演算に最適化されていますが、本モジュールにより、B-tree のような範囲検索（<code>&lt;</code>, <code>&lt;=</code>, <code>=</code>, <code>&gt;=</code>, <code>&gt;</code>）を GIN インデックス上で効率的に実行可能にします。</p>
+<h2>モジュール内での役割</h2>
+<p>GIN インデックスのアクセスメソッドが要求する標準的なサポート関数群を、多様なデータ型に対して提供するアダプター層です。各データ型固有の比較ロジックを GIN の汎用的なスキャンフローに適合させる役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**GIN サポート関数の実装**: <code>extractValue</code>, <code>extractQuery</code>, <code>comparePartial</code>, <code>consistent</code> の実装。</li>
+<li>**型固有のボイラープレート生成**: <code>GIN_SUPPORT</code> マクロを用い、20種類以上のデータ型に対して一貫したインターフェースを提供。</li>
+<li>**最左値（Leftmost Value）の定義**: 範囲検索の開始点として、各データ型の理論上の最小値を定義。</li>
+<li>**比較ロジックの抽象化**: <code>QueryInfo</code> 構造体を用いて、スキャン中の比較戦略と対象値を保持し、型固有の比較関数へ委譲。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
+<ul>
+<li><code>QueryInfo</code>: スキャン中に引き回される構造体。戦略（<code>StrategyNumber</code>）、検索対象値、型固有の比較関数ポインタを保持します。</li>
+</ul>
+<h3>GIN サポート関数（共通）</h3>
+<ul>
+<li><code>gin_btree_extract_value</code>: インデックス構築時に値を抽出。常に要素数 1 の配列を返します。</li>
+<li><code>gin_btree_extract_query</code>: クエリ実行時に検索条件を解析。<code>QueryInfo</code> を生成し、範囲検索の開始点を決定します。</li>
+<li><code>gin_btree_compare_prefix</code>: インデックス内のキーとクエリ値を比較し、スキャンの継続・終了を判定します。</li>
+<li><code>gin_btree_consistent</code>: 常に <code>true</code> を返し、GIN の一致判定をサポートします。</li>
+</ul>
+<h3>型固有のヘルパー</h3>
+<ul>
+<li><code>leftmostvalue_*</code>: 各データ型に対応する最小値を生成する関数群。</li>
+<li><code>GIN_SUPPORT(...)</code>: 型ごとの関数（<code>gin_extract_value_*</code> 等）を生成するマクロ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>QueryInfo</code></li>
+<li><code>gin_btree_compare_prefix</code></li>
+<li><code>gin_btree_consistent</code></li>
+<li><code>gin_btree_extract_query</code></li>
+<li><code>gin_btree_extract_value</code></li>
+<li><code>leftmostvalue_float4</code></li>
+<li><code>leftmostvalue_float8</code></li>
+<li><code>leftmostvalue_int2</code></li>
+<li><code>leftmostvalue_int4</code></li>
+<li><code>leftmostvalue_int8</code></li>
+<li><code>leftmostvalue_money</code></li>
+<li><code>leftmostvalue_oid</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **インデックス構築**: <code>gin_extract_value_&lt;type&gt;</code> が呼び出され、値を <code>Datum</code> として抽出します。 2. **クエリ解析**: <code>gin_extract_query_&lt;type&gt;</code> が検索条件を解析し、<code>QueryInfo</code> を作成します。範囲検索（<code>&lt;</code>, <code>&lt;=</code>）の場合、<code>leftmostvalue</code> を使用してスキャン開始点を設定します。 3. **スキャン実行**: <code>gin_btree_compare_prefix</code> がインデックス内のキーと <code>QueryInfo</code> 内の値を比較します。<code>data-&gt;typecmp</code> を通じて型固有の比較関数を呼び出し、<code>StrategyNumber</code> に基づいてスキャンを継続するか判定します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code>: 基本型およびメモリ管理。</li>
+<li><code>access/stratnum.h</code>: B-tree 演算子戦略（<code>BTLessStrategyNumber</code> 等）。</li>
+<li><code>utils/*</code>: 各種データ型の比較関数（<code>btint4cmp</code>, <code>timestamp_cmp</code> 等）および型固有の操作関数。</li>
+<li><code>limits.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/inet.h</code></li>
+<li><code>utils/numeric.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/uuid.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gin/</code>: GIN インデックスのコア実装。</li>
+<li><code>src/backend/access/nbtree/</code>: B-tree の比較関数（<code>btint4cmp</code> 等の定義元）。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>palloc</code> を多用しており、メモリは現在のメモリコンテキスト（通常はクエリ実行コンテキスト）に割り当てられます。</li>
+<li>**特殊な型**: <code>numeric</code> や <code>enum</code> など、物理的な最小値が存在しない型については、<code>NULL</code> ポインタや <code>InvalidOid</code> を用いた「ダミーの最小値」トリックが使用されています。</li>
+<li>**制約**: 本モジュールはスカラー比較に特化しています。複雑な構造を持つデータ型や、順序付けが定義できない型には対応していません。</li>
+<li>**省略された詳細**: <code>GIN_SUPPORT</code> マクロで生成される個別の関数定義は、すべて共通のロジックを呼び出しているため、本ドキュメントではマクロの構造と代表的な関数に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__QueryInfo.html" target="wiki-view"><code>QueryInfo</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__gin_btree_extract_value.html" target="wiki-view"><code>gin_btree_extract_value</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__gin_btree_extract_query.html" target="wiki-view"><code>gin_btree_extract_query</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__gin_btree_compare_prefix.html" target="wiki-view"><code>gin_btree_compare_prefix</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__gin_btree_consistent.html" target="wiki-view"><code>gin_btree_consistent</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_int2.html" target="wiki-view"><code>leftmostvalue_int2</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_int4.html" target="wiki-view"><code>leftmostvalue_int4</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_int8.html" target="wiki-view"><code>leftmostvalue_int8</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_float4.html" target="wiki-view"><code>leftmostvalue_float4</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_float8.html" target="wiki-view"><code>leftmostvalue_float8</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_money.html" target="wiki-view"><code>leftmostvalue_money</code></a></li>
+<li><a href="../../symbols/contrib__btree_gin__btree_gin_c__leftmostvalue_oid.html" target="wiki-view"><code>leftmostvalue_oid</code></a></li>
+</ul></body></html>

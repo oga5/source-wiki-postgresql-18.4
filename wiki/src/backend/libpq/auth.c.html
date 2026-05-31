@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/libpq/auth.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/libpq/auth.c</h1>
+<h2>概要</h2>
+<p><code>src/backend/libpq/auth.c</code> は、PostgreSQL バックエンドにおけるクライアント認証プロセスの中心的な実装です。<code>pg_hba.conf</code> で定義された認証方式に基づき、フロントエンドとのハンドシェイク、資格情報の検証、および認証結果の確定を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> サブシステムにおいて、通信の物理層（<code>pqcomm.c</code>）とアクセス制御ポリシー（<code>hba.c</code>）の間に位置します。認証方式ごとの具体的なロジック（SCRAM, GSSAPI, LDAP 等）を呼び出し、認証成功時にセッションのアイデンティティを確立する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**認証ディスパッチ**: <code>Port</code> 構造体の HBA 設定に基づき、適切な認証関数を呼び出す。</li>
+<li>**認証プロトコル制御**: <code>sendAuthRequest</code> を介した認証要求の送信と、<code>recv_password_packet</code> によるパスワード応答の受信。</li>
+<li>**アイデンティティ管理**: 認証成功時に <code>set_authn_id</code> を呼び出し、セッションの認証済み ID を記録する。</li>
+<li>**エラーハンドリング**: 認証失敗時のログ出力と、セキュリティを考慮したクライアントへのエラー通知。</li>
+<li>**認証フックの提供**: <code>ClientAuthentication_hook</code> を通じた外部プラグインによる認証プロセスへの介入。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>認証ディスパッチ</h3>
+<ul>
+<li><code>ClientAuthentication(Port *port)</code>: 認証プロセスのエントリポイント。</li>
+<li><code>sendAuthRequest(...)</code>: フロントエンドへ認証要求メッセージを送信する。</li>
+<li><code>auth_failed(...)</code>: 認証失敗時の処理。FATAL エラーを発生させ、プロセスを終了させる。</li>
+<li><code>set_authn_id(Port *port, const char *id)</code>: 認証済み ID を <code>MyClientConnectionInfo</code> に設定する。</li>
+</ul>
+<h3>認証方式の実装</h3>
+<ul>
+<li>**パスワード系**: <code>CheckPasswordAuth</code> (平文), <code>CheckPWChallengeAuth</code> (MD5/SCRAM), <code>CheckMD5Auth</code>。</li>
+<li>**外部認証系**: <code>CheckPAMAuth</code> (PAM), <code>CheckLDAPAuth</code> (LDAP), <code>CheckRADIUSAuth</code> (RADIUS), <code>CheckBSDAuth</code> (BSD)。</li>
+<li>**OS/ネットワーク系**: <code>ident_inet</code> (Ident), <code>auth_peer</code> (Peer), <code>pg_GSS_recvauth</code> (GSSAPI), <code>pg_SSPI_recvauth</code> (SSPI)。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CheckBSDAuth</code></li>
+<li><code>CheckLDAPAuth</code></li>
+<li><code>CheckMD5Auth</code></li>
+<li><code>CheckPAMAuth</code></li>
+<li><code>CheckPWChallengeAuth</code></li>
+<li><code>CheckPasswordAuth</code></li>
+<li><code>ClientAuthentication</code></li>
+<li><code>FormatSearchFilter</code></li>
+<li><code>InitializeLDAPConnection</code></li>
+<li><code>PCtxtHandle</code></li>
+<li><code>radius_attribute</code></li>
+<li><code>radius_packet</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>ClientAuthentication</code> が呼び出され、<code>hba_getauthmethod</code> で認証方式を決定。 2. **検証**: 必要に応じて <code>secure_loaded_verify_locations</code> 等でクライアント証明書を検証。 3. **ディスパッチ**: <code>switch</code> 文で <code>port-&gt;hba-&gt;auth_method</code> に応じた関数を実行。 4. **メッセージ交換**: 認証関数内で <code>sendAuthRequest</code> でチャレンジを送り、<code>recv_password_packet</code> で応答を待機。 5. **完了**: 認証成功時に <code>set_authn_id</code> で ID を確定し、<code>AUTH_REQ_OK</code> を送信。失敗時は <code>auth_failed</code> で終了。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**認証プロトコル**: <code>libpq/sasl.h</code>, <code>libpq/scram.h</code>, <code>libpq/oauth.h</code></li>
+<li>**通信・メッセージ**: <code>libpq/pqformat.h</code>, <code>libpq/libpq.h</code></li>
+<li>**システム・セキュリティ**: <code>pam/pam_appl.h</code>, <code>ldap.h</code>, <code>bsd_auth.h</code></li>
+<li>**PostgreSQL 内部**: <code>postgres.h</code>, <code>storage/ipc.h</code>, <code>utils/memutils.h</code></li>
+<li><code>commands/user.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>common/md5.h</code></li>
+<li><code>libpq/auth.h</code></li>
+<li><code>libpq/be-gssapi-common.h</code></li>
+<li><code>libpq/crypt.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><code>pwd.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>security/pam_appl.h</code></li>
+<li><code>sys/param.h</code></li>
+<li><code>sys/select.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>tcop/backend_startup.h</code></li>
+<li><code>unistd.h</code></li>
+<li><code>winldap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/libpq/hba.c</code>: 認証方式の決定ロジック。</li>
+<li><code>src/backend/libpq/auth-scram.c</code>: SCRAM 認証の詳細実装。</li>
+<li><code>src/backend/libpq/be-secure.c</code>: TLS/SSL 接続の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>set_authn_id</code> は <code>TopMemoryContext</code> に ID をコピーするため、外部ライブラリから渡された文字列も安全に保持されます。</li>
+<li>**セキュリティ**: <code>auth_failed</code> は、攻撃者に情報を与えすぎないよう、詳細なエラー内容はログにのみ出力し、クライアントには汎用的なメッセージを返します。</li>
+<li>**未実装・浅い部分**: RADIUS 認証のタイムアウト処理や、一部のプラットフォーム固有の認証（Solaris の PAM 等）は、レガシーな回避策が含まれており、保守性が低くなっています。</li>
+<li>**注意点**: <code>recv_password_packet</code> は <code>PG_MAX_AUTH_TOKEN_LENGTH</code> (65535バイト) を上限としており、これを超える認証トークンはプロトコル違反として扱われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__PCtxtHandle.html" target="wiki-view"><code>PCtxtHandle</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__ClientAuthentication.html" target="wiki-view"><code>ClientAuthentication</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckPasswordAuth.html" target="wiki-view"><code>CheckPasswordAuth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckPWChallengeAuth.html" target="wiki-view"><code>CheckPWChallengeAuth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckMD5Auth.html" target="wiki-view"><code>CheckMD5Auth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckPAMAuth.html" target="wiki-view"><code>CheckPAMAuth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckBSDAuth.html" target="wiki-view"><code>CheckBSDAuth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__InitializeLDAPConnection.html" target="wiki-view"><code>InitializeLDAPConnection</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__FormatSearchFilter.html" target="wiki-view"><code>FormatSearchFilter</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__CheckLDAPAuth.html" target="wiki-view"><code>CheckLDAPAuth</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__radius_attribute.html" target="wiki-view"><code>radius_attribute</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__auth_c__radius_packet.html" target="wiki-view"><code>radius_packet</code></a></li>
+</ul></body></html>

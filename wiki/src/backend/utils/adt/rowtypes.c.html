@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/rowtypes.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/rowtypes.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「複合型（Composite Types）」および「匿名レコード（RECORD）」の入出力、比較、およびハッシュ計算を実装するモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> 内で、ユーザー定義の行型や一時的なレコード構造をSQLレベルで操作するための基盤を提供します。他のデータ型モジュールが単一の値を扱うのに対し、本ファイルは複数のフィールドからなるタプルを再帰的に処理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**I/O処理**: テキスト形式およびバイナリ形式でのレコードのシリアライズ・デシリアライズ。</li>
+<li>**比較演算**: 複合型同士の比較（等価性、大小関係）の実行。</li>
+<li>**ハッシュ計算**: ハッシュ結合やハッシュ集約で使用するためのレコードのハッシュ値生成。</li>
+<li>**メタデータキャッシュ**: 実行効率向上のため、レコードの構造（<code>TupleDesc</code>）や各フィールドのI/O関数情報を <code>fn_extra</code> にキャッシュする。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>record_in</code> / <code>record_out</code>: テキスト形式の入出力関数。</li>
+<li><code>record_recv</code> / <code>record_send</code>: バイナリ形式の入出力関数。</li>
+<li><code>record_cmp</code>: 内部的な比較ロジック。<code>record_lt</code>, <code>record_gt</code> 等の基盤。</li>
+<li><code>record_eq</code>: 等価性判定。</li>
+<li><code>hash_record</code> / <code>hash_record_extended</code>: ハッシュ値生成関数。</li>
+<li><code>RecordIOData</code> / <code>RecordCompareData</code>: 実行時の型情報や関数ポインタを保持するキャッシュ構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>ColumnCompareData</code></li>
+<li><code>ColumnIOData</code></li>
+<li><code>record_ne</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 各関数は <code>lookup_rowtype_tupdesc</code> を呼び出し、対象レコードの型定義（<code>TupleDesc</code>）を取得します。 2. **キャッシュ確認**: <code>fcinfo-&gt;flinfo-&gt;fn_extra</code> を確認し、既存のキャッシュがあれば再利用します。なければ、各フィールドの型に応じたI/O関数や比較関数をルックアップしてキャッシュします。 3. **処理実行**:</p>
+<ul>
+<li>入出力時は <code>heap_form_tuple</code> / <code>heap_deform_tuple</code> を使用してタプルとフィールド配列を変換します。</li>
+<li>比較・ハッシュ時は、各フィールドの型に対応する関数を再帰的に呼び出します。</li>
+<p>4. **終了**: <code>ReleaseTupleDesc</code> でリソースを解放し、結果を返します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/htup_details.h</code>: タプルヘッダーの操作。</li>
+<li><code>utils/typcache.h</code>: 型情報のキャッシュとルックアップ。</li>
+<li><code>utils/lsyscache.h</code>: システムカタログからの型情報取得。</li>
+<li><code>funcapi.h</code>: 関数呼び出しインターフェース。</li>
+<li><code>libpq/pqformat.h</code>: バイナリプロトコル用メッセージ処理。</li>
+<li><code>access/detoast.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>miscadmin.h</code></li>
+<li><code>postgres.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/common/heaptuple.c</code>: タプルの物理的な分解・構築。</li>
+<li><code>src/backend/utils/cache/typcache.c</code>: 型キャッシュの管理。</li>
+<li><code>src/backend/utils/adt/expandedrecord.c</code>: 展開されたレコード形式の処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**再帰的処理**: レコードの中にレコードが含まれる場合があるため、<code>check_stack_depth()</code> によるスタック保護が行われています。</li>
+<li>**キャッシュの生存期間**: <code>fn_extra</code> は関数呼び出しのライフサイクルに依存します。型が途中で変更されるケース（<code>ALTER TYPE</code> 等）には注意が必要です。</li>
+<li>**Dropped Columns**: 削除された列（<code>attisdropped</code>）はスキップされるよう設計されています。比較ロジックでは、物理的な列位置ではなく論理的な列順序で対応付けが行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__ColumnIOData.html" target="wiki-view"><code>ColumnIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__RecordIOData.html" target="wiki-view"><code>RecordIOData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__ColumnCompareData.html" target="wiki-view"><code>ColumnCompareData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__RecordCompareData.html" target="wiki-view"><code>RecordCompareData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_in.html" target="wiki-view"><code>record_in</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_out.html" target="wiki-view"><code>record_out</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_recv.html" target="wiki-view"><code>record_recv</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_send.html" target="wiki-view"><code>record_send</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_cmp.html" target="wiki-view"><code>record_cmp</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_eq.html" target="wiki-view"><code>record_eq</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_ne.html" target="wiki-view"><code>record_ne</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__rowtypes_c__record_lt.html" target="wiki-view"><code>record_lt</code></a></li>
+</ul></body></html>

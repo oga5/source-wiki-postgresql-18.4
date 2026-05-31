@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_rewind/pg_rewind.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_rewind/pg_rewind.c</h1>
+<h2>概要</h2>
+<p><code>pg_rewind.c</code> は、分岐した PostgreSQL データディレクトリを、ソースとなる別のクラスタの状態に同期させるためのメインエントリポイントです。主に、フェイルオーバー後に旧プライマリをスタンバイとして再利用可能にするために使用されます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_rewind</code> モジュールの司令塔です。コマンドライン引数の解析、ソースとターゲットの接続管理、タイムラインの分岐点特定、およびファイル操作の決定と実行を統括します。</p>
+<h2>責務</h2>
+<ul>
+<li>**クラスタ状態の検証**: ターゲットとソースの互換性（システム識別子、バージョン、チェックサム設定）を確認。</li>
+<li>**分岐点の特定**: タイムライン履歴を解析し、両クラスタが分岐した WAL 位置を特定。</li>
+<li>**同期計画の策定**: <code>filemap</code> を使用して、どのファイルをコピー、切り詰め、削除すべきかを決定。</li>
+<li>**データ同期の実行**: <code>perform_rewind</code> を通じて、変更されたデータページやファイルをソースからターゲットへ転送。</li>
+<li>**リカバリ設定**: 同期完了後、ターゲットが新しいタイムラインで起動できるよう <code>backup_label</code> や <code>recovery.conf</code> を生成。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>main</code>: プログラムのライフサイクルを管理するエントリポイント。</li>
+<li><code>perform_rewind</code>: 同期計画に基づき、実際のファイル転送や変更を適用する中核関数。</li>
+<li><code>ControlFile_target</code> / <code>ControlFile_source</code>: 両クラスタの制御ファイル情報を保持する構造体。</li>
+<li><code>findCommonAncestorTimeline</code>: 2つのクラスタのタイムライン履歴から分岐点を算出。</li>
+<li><code>extractPageMap</code>: ターゲットの WAL を読み込み、変更されたページマップを抽出。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>MinXLogRecPtr</code></li>
+<li><code>checkControlFile</code></li>
+<li><code>createBackupLabel</code></li>
+<li><code>disconnect_atexit</code></li>
+<li><code>getRestoreCommand</code></li>
+<li><code>getTimelineHistory</code></li>
+<li><code>progress_report</code></li>
+<li><code>sanityChecks</code></li>
+<li><code>usage</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 引数解析後、ソース（ローカルまたは libpq）とターゲットの制御ファイルを読み込む。 2. **分岐点解析**: <code>getTimelineHistory</code> で履歴を取得し、<code>findCommonAncestorTimeline</code> で分岐点（<code>divergerec</code>）を特定。 3. **ファイルリスト作成**: <code>traverse_files</code> を用いて両ディレクトリのファイル状態を収集。 4. **差分抽出**: <code>extractPageMap</code> でターゲットの WAL を解析し、変更されたブロックを特定。 5. **計画決定**: <code>decide_file_actions</code> で各ファイルの操作（コピー、削除等）を決定。 6. **実行**: <code>perform_rewind</code> でソースからデータをフェッチし、ターゲットに適用。 7. **終了処理**: <code>backup_label</code> 作成と制御ファイルの更新を行い、整合性を確保。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres_fe.h</code>: PostgreSQL フロントエンド用共通ヘッダー。</li>
+<li><code>filemap.h</code>, <code>rewind_source.h</code>: 同期計画とデータソース抽象化。</li>
+<li><code>catalog/pg_control.h</code>: 制御ファイル構造の定義。</li>
+<li><code>access/timeline.h</code>: タイムライン履歴解析用。</li>
+<li><code>fe_utils/</code>: ユーティリティ（オプション解析、リカバリ設定生成）。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>catalog/catversion.h</code></li>
+<li><code>common/controldata_utils.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/restricted_token.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/option_utils.h</code></li>
+<li><code>fe_utils/recovery_gen.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>file_ops.h</code></li>
+<li><code>getopt_long.h</code></li>
+<li><code>pg_rewind.h</code></li>
+<li><code>storage/bufpage.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>time.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>parsexlog.c</code>: WAL の解析とページマップ抽出ロジック。</li>
+<li><code>file_ops.c</code>: ファイルの読み書き、切り詰め、削除などの低レベル操作。</li>
+<li><code>libpq_source.c</code> / <code>local_source.c</code>: ソースデータ取得の具体的な実装。</li>
+<li><code>filemap.c</code>: 同期対象ファイルの管理とアクション決定ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**不可逆な操作**: <code>perform_rewind</code> が実行されるとターゲットのデータが上書きされます。<code>--dry-run</code> オプションで事前に計画を確認することを推奨します。</li>
+<li>**クリーンなシャットダウン**: 本ツールはターゲットがクリーンに停止していることを前提とします。<code>ensureCleanShutdown</code> は必要に応じてシングルユーザーモードでリカバリを強制しますが、運用上の注意が必要です。</li>
+<li>**WAL 整合性**: タイムラインの分岐点以降の WAL がターゲットに存在しない場合、<code>pg_rewind</code> はソースから必要なデータを取得して補完します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__usage.html" target="wiki-view"><code>usage</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__main.html" target="wiki-view"><code>main</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__perform_rewind.html" target="wiki-view"><code>perform_rewind</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__sanityChecks.html" target="wiki-view"><code>sanityChecks</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__progress_report.html" target="wiki-view"><code>progress_report</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__MinXLogRecPtr.html" target="wiki-view"><code>MinXLogRecPtr</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__getTimelineHistory.html" target="wiki-view"><code>getTimelineHistory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__findCommonAncestorTimeline.html" target="wiki-view"><code>findCommonAncestorTimeline</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__createBackupLabel.html" target="wiki-view"><code>createBackupLabel</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__checkControlFile.html" target="wiki-view"><code>checkControlFile</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__getRestoreCommand.html" target="wiki-view"><code>getRestoreCommand</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_rewind__pg_rewind_c__disconnect_atexit.html" target="wiki-view"><code>disconnect_atexit</code></a></li>
+</ul></body></html>

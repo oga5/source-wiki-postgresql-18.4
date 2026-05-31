@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/common/ip.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1>src/common/ip.c</h1>
+<h2>概要</h2>
+<p>PostgreSQL におけるネットワークアドレス解決および名前解決のための抽象化レイヤーです。標準的な <code>getaddrinfo</code> / <code>getnameinfo</code> API をラップし、IPv4/IPv6 に加えて Unix ドメインソケットを透過的に扱えるようにします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/common</code> 内のネットワーク関連ユーティリティとして、フロントエンド（<code>psql</code> 等）とバックエンドの両方から利用されます。OS 依存の差異を吸収し、ネットワーク接続の初期化やログ出力時のアドレス表示を統一する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロトコル非依存の解決**: <code>AF_UNIX</code>、<code>AF_INET</code>、<code>AF_INET6</code> を区別せず、単一のインターフェースでアドレス情報を取得・解放する。</li>
+<li>**Unix ドメインソケットのサポート**: 標準 API が対応していない Unix ソケットの <code>addrinfo</code> 構築および名前解決をエミュレートする。</li>
+<li>**堅牢なエラーハンドリング**: 名前解決失敗時にも、呼び出し元が安全に処理を継続できるようデフォルト値（&quot;???&quot;）を補完する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>pg_getaddrinfo_all</code>: ホスト名とサービス名から <code>addrinfo</code> 構造体のリストを生成する。</li>
+<li><code>pg_freeaddrinfo_all</code>: 生成された <code>addrinfo</code> 構造体を、その生成元（標準 API か Unix 用か）に応じて適切に解放する。</li>
+<li><code>pg_getnameinfo_all</code>: ソケットアドレスからホスト名とサービス名を文字列として取得する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>getaddrinfo_unix</code></li>
+<li><code>getnameinfo_unix</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解決要求**: <code>pg_getaddrinfo_all</code> が呼び出されると、<code>hintp-&gt;ai_family</code> を確認し、<code>AF_UNIX</code> であれば内部の <code>getaddrinfo_unix</code> へ、それ以外は標準の <code>getaddrinfo</code> へ処理を委譲します。 2. **Unix ソケットの構築**: <code>getaddrinfo_unix</code> は <code>calloc</code> で <code>addrinfo</code> と <code>sockaddr_un</code> を確保し、パス情報を設定します。特に <code>@</code> で始まる抽象名前空間（Abstract Namespace）のソケットを適切に処理します。 3. **解放**: <code>pg_freeaddrinfo_all</code> は、<code>hint_ai_family</code> を引数として受け取り、Unix ソケット用であれば手動で <code>free</code> し、それ以外は <code>freeaddrinfo</code> を呼び出します。 4. **名前解決**: <code>pg_getnameinfo_all</code> は、失敗時に <code>node</code> や <code>service</code> バッファを &quot;???&quot; で埋めることで、呼び出し側のクラッシュや未定義動作を防ぎます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>postgres.h</code> / <code>postgres_fe.h</code>: 環境に応じた共通定義。</li>
+<li><code>&lt;netdb.h&gt;</code>, <code>&lt;sys/socket.h&gt;</code>, <code>&lt;netinet/in.h&gt;</code>: 標準的なネットワーク API。</li>
+<li><code>&lt;sys/un.h&gt;</code> (間接的): Unix ドメインソケット構造体用。</li>
+<li><code>common/ip.h</code>: 公開インターフェース定義。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>netdb.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>sys/file.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>unistd.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/include/common/ip.h</code>: 本ファイルのヘッダー。</li>
+<li><code>src/backend/libpq/pqcomm.c</code>: 本ファイルで定義された関数を利用して、実際のソケット接続を行うバックエンド側のコード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li><code>pg_freeaddrinfo_all</code> に <code>hint_ai_family</code> を渡す必要があるのは、<code>addrinfo</code> 構造体自体からは、それが標準 API によって生成されたものか、<code>getaddrinfo_unix</code> によって生成されたものかを判別できないためです。</li>
+<li>Unix ドメインソケットのパスが <code>@</code> で始まる場合、それは Linux 固有の抽象名前空間ソケットとして扱われます。この実装は、その慣習に従い <code>sun_path</code> の先頭をヌル文字に置換して処理します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/src__common__ip_c__pg_getaddrinfo_all.html" target="wiki-view"><code>pg_getaddrinfo_all</code></a></li>
+<li><a href="../../symbols/src__common__ip_c__pg_freeaddrinfo_all.html" target="wiki-view"><code>pg_freeaddrinfo_all</code></a></li>
+<li><a href="../../symbols/src__common__ip_c__pg_getnameinfo_all.html" target="wiki-view"><code>pg_getnameinfo_all</code></a></li>
+<li><a href="../../symbols/src__common__ip_c__getaddrinfo_unix.html" target="wiki-view"><code>getaddrinfo_unix</code></a></li>
+<li><a href="../../symbols/src__common__ip_c__getnameinfo_unix.html" target="wiki-view"><code>getnameinfo_unix</code></a></li>
+</ul></body></html>

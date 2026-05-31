@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/utils/adt/network_gist.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/utils/adt/network_gist.c</h1>
+<h2>概要</h2>
+<p>PostgreSQLのネットワーク型（<code>INET</code> / <code>CIDR</code>）に対するGiSTインデックスのサポートを実装するファイルです。ネットワークアドレスの階層構造や包含関係を効率的に検索するためのインデックス構造を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/adt</code> モジュールの一部として、ネットワーク型に対するGiST演算子クラス（<code>inet_ops</code>）のバックエンドロジックを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックスキーの定義**: <code>GistInetKey</code> 構造体による、ネットワークアドレスと共通プレフィックス長、最小ネットマスク長を保持するインデックス表現の定義。</li>
+<li>**GiSTメソッドの実装**: インデックスの構築、検索、分割に必要な以下のGiSTサポート関数を提供します。</li>
+<li><code>consistent</code>: 検索条件との整合性判定。</li>
+<li><code>union</code>: 複数のキーを統合して親ノードのキーを生成。</li>
+<li><code>compress</code>: インデックス挿入時のデータ変換。</li>
+<li><code>penalty</code>: インデックス分割時のコスト計算。</li>
+<li><code>picksplit</code>: インデックスページ分割戦略の決定。</li>
+<li><code>same</code>: 2つのキーが同一かどうかの判定。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>GistInetKey</code>: GiSTインデックス内で使用される特殊なキー構造体。</li>
+<li><code>inet_gist_consistent</code>: 検索クエリがインデックスの各ノードと一致するかを判定する中心的な関数。</li>
+<li><code>calc_inet_union_params</code>: 複数のキーから共通のプレフィックス長と最小ネットマスク長を計算するヘルパー。</li>
+<li><code>INETSTRAT_*</code>: GiSTインデックスでサポートされる演算子戦略番号（包含、重なり、比較など）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>build_inet_union_key</code></li>
+<li><code>calc_inet_union_params_indexed</code></li>
+<li><code>inet_gist_compress</code></li>
+<li><code>inet_gist_fetch</code></li>
+<li><code>inet_gist_penalty</code></li>
+<li><code>inet_gist_picksplit</code></li>
+<li><code>inet_gist_same</code></li>
+<li><code>inet_gist_union</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **挿入時**: <code>inet_gist_compress</code> が <code>INET</code> 値を <code>GistInetKey</code> に変換し、インデックスに格納します。 2. **検索時**: <code>inet_gist_consistent</code> がクエリとインデックスキーを比較します。まずアドレスファミリーをチェックし、次にネットマスク長（<code>minbits</code>）と共通プレフィックス（<code>commonbits</code>）を用いて、木を探索すべきか枝刈りすべきかを決定します。 3. **分割時**: <code>inet_gist_picksplit</code> がアドレスファミリーやビット単位の共通性に基づいてページを分割し、<code>calc_inet_union_params</code> を用いて新しいノードの代表値を再計算します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist.h</code>: GiSTインデックスの基本インターフェース。</li>
+<li><code>utils/inet.h</code>: ネットワーク型の内部表現と操作関数。</li>
+<li><code>postgres.h</code>, <code>varatt.h</code>: PostgreSQLの基本型定義と可変長データ処理。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>sys/socket.h</code></li>
+<li><code>utils/fmgrprotos.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/utils/adt/network.c</code>: ネットワーク型の比較ロジックや基本演算の実装。</li>
+<li><code>src/backend/utils/adt/network_selfuncs.c</code>: ネットワーク型の選択率推定ロジック。</li>
+<li><code>src/backend/access/gist/</code>: GiSTインデックスの汎用的な管理フレームワーク。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**設計の肝**: この実装では、単なるアドレス値だけでなく <code>minbits</code>（最小ネットマスク長）と <code>commonbits</code>（共通プレフィックス長）を独立して保持しています。これにより、検索時の枝刈り効率が大幅に向上しています。</li>
+<li>**注意点**: <code>GistInetKey</code> は <code>varlena</code> 形式に従っていますが、内部構造は <code>INET</code> 型とは異なります。そのため、<code>fetch</code> 関数でインデックスキーから元の <code>INET</code> 型を復元する処理が必要です。</li>
+<li>**最適化**: <code>penalty</code> 関数は、アドレスファミリーの不一致に高いコストを割り当て、インデックスのクラスタリングを最適化するように設計されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__GistInetKey.html" target="wiki-view"><code>GistInetKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_consistent.html" target="wiki-view"><code>inet_gist_consistent</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__calc_inet_union_params.html" target="wiki-view"><code>calc_inet_union_params</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__calc_inet_union_params_indexed.html" target="wiki-view"><code>calc_inet_union_params_indexed</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__build_inet_union_key.html" target="wiki-view"><code>build_inet_union_key</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_union.html" target="wiki-view"><code>inet_gist_union</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_compress.html" target="wiki-view"><code>inet_gist_compress</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_fetch.html" target="wiki-view"><code>inet_gist_fetch</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_penalty.html" target="wiki-view"><code>inet_gist_penalty</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_picksplit.html" target="wiki-view"><code>inet_gist_picksplit</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__adt__network_gist_c__inet_gist_same.html" target="wiki-view"><code>inet_gist_same</code></a></li>
+</ul></body></html>
