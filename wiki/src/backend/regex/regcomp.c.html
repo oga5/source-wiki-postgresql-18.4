@@ -1,55 +1,52 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/regex/regcomp.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/regex/regcomp.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/regex/regcomp.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/regex/regcomp.c</h1>
 <h2>概要</h2>
-<p><code>regcomp.c</code> は、PostgreSQL の正規表現エンジンにおけるコンパイルフェーズのメインエントリポイントです。正規表現パターンを解析し、実行時に使用される NFA（非決定性有限オートマトン）およびサブ式ツリー（<code>subre</code>）を構築します。</p>
+<p><code>regcomp.c</code> は、PostgreSQL の正規表現エンジンにおけるコンパイルフェーズのハブとなるファイルです。正規表現パターンを解析し、実行可能な NFA（非決定性有限オートマトン）およびサブ式ツリー（<code>subre</code>）を構築します。このファイル自体は比較的小規模ですが、複数の補助ファイルを <code>#include</code> することで、単一のコンパイル単位として複雑な正規表現の解析ロジックを統合しています。</p>
 <h2>モジュール内での役割</h2>
-<p>本ファイルは <code>src/backend/regex</code> モジュールの中心的なハブであり、字句解析、カラーマッピング、NFA 構築、ロケール対応といった各サブコンポーネントを <code>#include</code> して統合します。正規表現のコンパイルプロセス全体を統括するオーケストレーターとして機能します。</p>
+<p>正規表現モジュールの「フロントエンド」として機能します。ユーザーから渡された正規表現文字列を字句解析し、内部的な中間表現（NFA および <code>subre</code> ツリー）へ変換します。ここで生成されたデータ構造は、後の <code>regexec.c</code> によるマッチング実行フェーズで利用されます。</p>
 <h2>責務</h2>
 <ul>
-<li>**パターン解析**: <code>parse()</code> 関数を中心に、正規表現の構文を再帰的に解析し、<code>subre</code> ツリーを生成する。</li>
-<li>**NFA 構築**: 構文要素を NFA の状態と遷移（アーク）に変換する。</li>
-<li>**最適化**: 構築された NFA に対して、不要な状態の削除や検索効率向上のための変換（<code>makesearch</code>）を行う。</li>
-<li>**リソース管理**: コンパイル中に使用されるメモリや一時的なデータ構造の割り当てと解放を管理する。</li>
+<li>**構文解析**: 正規表現の文法（POSIX 拡張）に基づき、再帰的なパーサーを用いてツリー構造を構築する。</li>
+<li>**NFA 構築**: 文字クラス、量指定子、境界条件、先読み/後読み（Lookaround）を NFA の状態遷移として具体化する。</li>
+<li>**最適化**: NFA の冗長な状態削除、カラーマッピングによるエッジ削減、およびインデックススキャン用の検索用 NFA（<code>search</code>）の生成。</li>
+<li>**リソース管理**: コンパイル中に使用されるメモリ（<code>vars</code> 構造体）の確保と、エラー発生時のクリーンアップ。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>コンテキスト管理</h3>
 <ul>
-<li><code>pg_regcomp()</code>: 公開されているコンパイル関数。<code>regex_t</code> 構造体を初期化し、解析を開始する。</li>
-<li><code>struct vars</code>: コンパイル中の状態（NFA、カラーマップ、ツリー、エラー状態など）を保持するコンテキスト構造体。</li>
-<li><code>struct subre</code>: 正規表現の構造を表現するツリーノード。キャプチャグループや量指定子の情報を保持する。</li>
-<li><code>parse()</code>: 正規表現のトップレベル解析関数。</li>
+<li><code>struct vars</code>: コンパイル中の状態を保持するコンテキスト構造体。NFA、カラーマップ、サブ式ツリー、エラー状態、字句解析のトークン情報などを集約。</li>
+<li><code>pg_regcomp()</code>: 公開インターフェース。正規表現のコンパイルを開始し、最終的な <code>regex_t</code> を構築する。</li>
+<li><code>freev()</code>: コンパイル中に確保されたリソースを解放するユーティリティ。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>構文解析・ツリー構築</h3>
 <ul>
-<li><code>charclass</code></li>
-<li><code>charclasscomplement</code></li>
-<li><code>freev</code></li>
-<li><code>makesearch</code></li>
-<li><code>moresubs</code></li>
-<li><code>nonword</code></li>
-<li><code>parse</code></li>
-<li><code>parsebranch</code></li>
-<li><code>parseqatom</code></li>
-<li><code>pg_regcomp</code></li>
-<li><code>vars</code></li>
-<li><code>word</code></li>
+<li><code>parse()</code>: 正規表現のトップレベルパーサー。<code>|</code> で区切られたブランチを処理する。</li>
+<li><code>parsebranch()</code> / <code>parseqatom()</code>: 連結および量指定子付きアトムを処理する再帰的パーサー。</li>
+<li><code>subre</code>: 正規表現の構造を表現するサブ式ツリーノード。</li>
+</ul>
+<h3>状態・遷移管理</h3>
+<ul>
+<li><code>newstate()</code> / <code>newarc()</code>: NFA の状態および遷移（アーク）を生成する。</li>
+<li><code>repeat()</code>: 量指定子（<code>*</code>, <code>+</code>, <code>{m,n}</code>）に対応する NFA の複製とループ構造の構築。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>pg_regcomp</code> が <code>vars</code> 構造体をセットアップし、ロケール情報を設定する。 2. **字句解析と構文解析**: <code>lexstart()</code> で字句解析を開始し、<code>parse()</code> が再帰的に呼び出されて <code>subre</code> ツリーと NFA を構築する。 3. **最適化**: <code>optimize()</code> および <code>makesearch()</code> を呼び出し、NFA を実行に適した形式に変換する。 4. **コンパクト化**: <code>compact()</code> を使用して、実行エンジンが扱うための圧縮された NFA（<code>cnfa</code>）を生成する。 5. **終了処理**: <code>freev()</code> を通じて、コンパイル中に使用した一時的な作業領域を解放する。</p>
+<p>1. **初期化**: <code>pg_regcomp</code> が <code>vars</code> 構造体を初期化し、ロケール設定を適用。 2. **字句解析**: <code>lexstart</code> を呼び出し、トークンストリームを準備。 3. **解析**: <code>parse</code> が再帰的に呼び出され、<code>subre</code> ツリーと NFA を構築。この過程で <code>regc_nfa.c</code> の関数群を多用し、状態遷移を組み立てる。 4. **最適化**: <code>optimize</code> で NFA を整理し、<code>makesearch</code> でインデックス検索用の NFA を生成。 5. **圧縮**: <code>compact</code> を呼び出し、実行に適した <code>cnfa</code> 形式へ変換。 6. **終了**: <code>freev</code> を通じて一時的な作業領域を解放し、結果を <code>regex_t</code> に格納。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>regex/regguts.h</code>: 共通のデータ構造とマクロ定義。</li>
-<li><code>regc_lex.c</code>, <code>regc_color.c</code>, <code>regc_nfa.c</code>, <code>regc_cvec.c</code>, <code>regc_pg_locale.c</code>, <code>regc_locale.c</code>: コンパイルに必要な各機能モジュール。</li>
+<li><code>regex/regguts.h</code>: 共通データ構造、マクロ、および内部インターフェース定義。</li>
+<li><code>regc_lex.c</code>, <code>regc_color.c</code>, <code>regc_nfa.c</code>, <code>regc_cvec.c</code>, <code>regc_pg_locale.c</code>, <code>regc_locale.c</code>: 構文解析、NFA 構築、ロケール処理などの実装を <code>#include</code> で取り込む。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>regexec.c</code>: コンパイルされた NFA を使用して実際に文字列マッチングを行う実行エンジン。</li>
-<li><code>regfree.c</code>: コンパイルされた <code>regex_t</code> 構造体に関連するメモリを解放する関数。</li>
+<li><code>src/backend/regex/regexec.c</code>: 本ファイルでコンパイルされた NFA を使用してマッチングを実行する。</li>
+<li><code>src/backend/regex/regprefix.c</code>: コンパイルされた NFA からインデックス利用可能な接頭辞を抽出する。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>本ファイルは非常に多くの内部関数を抱えていますが、まずは <code>pg_regcomp</code> の流れを追い、次に <code>parse()</code> と <code>parseqatom()</code> がどのように <code>subre</code> ツリーを構築しているかを理解するのが近道です。</li>
-<li><code>vars</code> 構造体は多くの関数間で共有されるため、そのフィールドの役割を把握することが重要です。</li>
-<li><code>REG_DEBUG</code> マクロを有効にすると、コンパイル過程のダンプ出力が可能になり、複雑なパターンの解析に役立ちます。</li>
+<li>**メモリ管理**: コンパイル中にエラーが発生した場合、<code>freev()</code> が自動的にリソースを解放します。<code>pg_regcomp</code> の呼び出し側は、成功時のみ <code>regfree</code> を呼び出す必要があります。</li>
+<li>**再帰的構造**: <code>parse</code> 系関数は再帰的です。非常に複雑な正規表現ではスタック消費に注意が必要であり、<code>rstacktoodeep()</code> によるチェックが組み込まれています。</li>
+<li>**インクルード戦略**: 本ファイルは複数の <code>.c</code> ファイルを <code>#include</code> しています。これは、静的関数を共有し、コンパイル単位での最適化を容易にするための設計です。個別のファイルとして独立してコンパイルすることはできません。</li>
+<li>**カラーマッピング**: <code>regc_color.c</code> で定義されるカラーマッピングは、文字コードを抽象的な「色」に変換し、NFA のエッジ数を劇的に削減する重要な最適化手法です。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

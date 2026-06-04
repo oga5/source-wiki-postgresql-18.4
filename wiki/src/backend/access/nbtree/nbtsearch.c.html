@@ -1,47 +1,53 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/nbtree/nbtsearch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtsearch.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/access/nbtree/nbtsearch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/nbtree/nbtsearch.c</h1>
 <h2>概要</h2>
-<p>PostgreSQL B-tree インデックスにおける検索およびスキャン操作の中核を担うファイルです。ツリーのルートからリーフページへの降下、リーフページ内での二分探索、およびスキャン中のページ間移動（左右の兄弟ページへの遷移）を実装しています。</p>
+<p><code>nbtsearch.c</code> は、PostgreSQL B-tree インデックスにおける検索アルゴリズムの中核を担うファイルです。ルートページからリーフページへの降下（Tree Descent）、ページ内での二分探索、および並行性制御のための「右移動（Move Right）」アルゴリズムを実装しています。</p>
 <h2>モジュール内での役割</h2>
-<p><code>nbtree</code> サブシステムにおいて、インデックススキャン（<code>IndexScan</code>）の実行フェーズを担当します。<code>nbtree.c</code> が提供するスキャンインターフェースの背後で、実際のデータ検索ロジックを完結させます。</p>
+<p><code>nbtree</code> モジュールにおいて、インデックススキャン（<code>IndexScan</code>）の開始点およびページ遷移を制御します。<code>nbtree.c</code> が提供する AM API の検索インターフェースを支える下位層であり、物理的なページ構造を抽象化してスキャン状態（<code>BTScanOpaque</code>）に変換します。</p>
 <h2>責務</h2>
 <ul>
-<li>**ツリー降下**: <code>_bt_search</code> を用いて、指定された検索キーに対応するリーフページを特定する。</li>
-<li>**ページ内検索**: <code>_bt_binsrch</code> を用いて、ページ内のタプルを二分探索で特定する。</li>
-<li>**スキャン制御**: <code>_bt_first</code> および <code>_bt_next</code> を通じて、スキャン方向（順方向/逆方向）に応じたページ遷移とタプル取得を管理する。</li>
-<li>**並行性制御**: ページ分割や削除が発生している状況下でも、正しい兄弟ページへ移動するための「右移動（Move Right）」アルゴリズムを適用する。</li>
+<li>**ツリー降下**: ルートからリーフまでのパスを特定し、必要に応じてロックを管理しながら移動する。</li>
+<li>**ページ内探索**: 二分探索（<code>_bt_binsrch</code>）を用いて、スキャンキーに合致するタプル位置を特定する。</li>
+<li>**並行性制御**: ページ分割や削除と競合する検索操作において、右兄弟への移動やロックの再取得を制御する。</li>
+<li>**スキャン状態管理**: スキャン中のページ遷移、バッファのピン留め・ロック解除、および重複排除されたタプル（Posting List）の展開。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>検索・降下制御</h3>
 <ul>
-<li><code>_bt_search</code>: ルートからリーフまでツリーを降下し、対象ページをロックして返す。</li>
-<li><code>_bt_moveright</code>: ページ分割等により現在のページが古くなった場合、正しい兄弟ページへ移動する。</li>
-<li><code>_bt_binsrch</code>: ページ内のタプルを二分探索し、ターゲットの <code>OffsetNumber</code> を返す。</li>
-<li><code>_bt_first</code>: スキャン開始時の初期位置を決定し、最初のページを読み込む。</li>
-<li><code>_bt_next</code>: スキャン中に次のタプルを取得する。</li>
+<li><code>_bt_search</code>: インデックスをルートからリーフまで降下し、対象リーフページのバッファをロックして返す。</li>
+<li><code>_bt_moveright</code>: ページ分割等により現在のページが古くなった場合、右兄弟へ移動して正しい位置を再特定する。</li>
+<li><code>_bt_endpoint</code>: インデックスの端（最初または最後）からスキャンを開始するためのエントリポイント。</li>
+</ul>
+<h3>ページ内探索</h3>
+<ul>
+<li><code>_bt_binsrch</code>: ページ内のタプルを二分探索し、指定されたキーに対応する <code>OffsetNumber</code> を返す。</li>
+<li><code>_bt_binsrch_insert</code>: 挿入時に使用される、キャッシュ可能な増分二分探索。</li>
+<li><code>_bt_binsrch_posting</code>: Posting List（重複排除されたタプル）内部を探索する。</li>
+</ul>
+<h3>比較・ユーティリティ</h3>
+<ul>
+<li><code>_bt_compare</code>: スキャンキーとインデックス上のタプルを比較する。内部ページとリーフページで異なる比較ルール（マイナス無限大の扱い等）を適用する。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>_bt_first</code> が呼び出され、スキャンキーのプリプロセスを経て、<code>_bt_search</code> でリーフページを特定します。 2. **ページ読み込み**: <code>_bt_readpage</code> がページ内のタプルを <code>BTScanOpaque</code> 構造体にロードします。 3. **反復**: <code>_bt_next</code> が <code>_bt_steppage</code> を呼び出し、現在のページが尽きたら兄弟ページ（<code>btpo_next</code> または <code>btpo_prev</code>）へ遷移します。 4. **検証**: 逆方向スキャンの場合、<code>_bt_lock_and_validate_left</code> を使用して、ページ削除等の競合を解決しながら左側のページへ正しく移動します。</p>
+<p>1. **初期化**: <code>_bt_first</code> が <code>_bt_preprocess_keys</code> でキーを最適化し、<code>_bt_search</code> を呼び出す。 2. **降下**: <code>_bt_search</code> は <code>_bt_getroot</code> で開始し、<code>_bt_moveright</code> でページ分割を追いかけながら、<code>_bt_binsrch</code> で次の階層のダウンリンクを特定して下位へ進む。 3. **ページ読み込み**: <code>_bt_readpage</code> がページ内のタプルをスキャンし、<code>_bt_checkkeys</code> で条件判定を行う。 4. **遷移**: <code>_bt_next</code> がページ末尾に達すると <code>_bt_steppage</code> を呼び出し、<code>_bt_readnextpage</code> が右（または左）の兄弟ページへ移動してスキャンを継続する。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/nbtree.h</code>: B-tree の基本構造体およびマクロ定義。</li>
+<li><code>access/nbtree.h</code>: B-tree の主要構造体（<code>BTScanOpaque</code>, <code>BTStack</code> 等）の定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理およびロック操作。</li>
 <li><code>access/relscan.h</code>: インデックススキャン記述子。</li>
-<li><code>storage/predicate.h</code>: シリアライザブル分離レベルのための述語ロック。</li>
-<li><code>utils/rel.h</code>: リレーション情報へのアクセス。</li>
-<li><code>access/xact.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>pgstat.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>nbtutils.c</code>: スキャンキーのプリプロセスや比較関数の補助。</li>
-<li><code>nbtpage.c</code>: ページ構造の操作（分割、削除、メタページ操作）。</li>
-<li><code>nbtree.c</code>: インデックスアクセスメソッドのメインインターフェース。</li>
+<li><code>nbtinsert.c</code>: 挿入時のページ分割やロック管理の対となる実装。</li>
+<li><code>nbtpage.c</code>: ページレベルの低レイヤー操作（<code>_bt_getbuf</code>, <code>_bt_relbuf</code> 等）。</li>
+<li><code>nbtcompare.c</code>: 比較ロジックの基盤。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**Lehman &amp; Yao アルゴリズム**: 本ファイルは、ページ分割中の並行アクセスを許容する Lehman &amp; Yao のアルゴリズムを実装しています。<code>_bt_moveright</code> はこのアルゴリズムの肝であり、インデックスの整合性を保つために極めて重要です。</li>
-<li>**逆方向スキャン**: 順方向スキャンに比べて、ページ削除や分割の競合解決が複雑です。<code>_bt_lock_and_validate_left</code> のロジックは、インデックスの物理的な順序と論理的な順序が一時的に乖離する状況を考慮しています。</li>
-<li>**デバッグ**: ページ遷移が無限ループに陥る場合は、<code>btpo_next</code> や <code>btpo_prev</code> のリンクが壊れている可能性があるため、<code>amcheck</code> モジュールでの検証を推奨します。</li>
+<li>**メモリとライフサイクル**: <code>BTStack</code> は降下中に <code>palloc</code> で確保され、<code>_bt_freestack</code> で解放されます。スキャン中のバッファピンは <code>BTScanOpaque</code> で管理され、<code>_bt_drop_lock_and_maybe_pin</code> によって VACUUM との競合を避けるために適宜解放されます。</li>
+<li>**並行性**: 本ファイルは Lehman &amp; Yao のアルゴリズムに基づき、ロックを保持したまま右へ移動することで、ページ分割中の検索整合性を保証します。</li>
+<li>**エッジケース**: </li>
+<li><code>_bt_lock_and_validate_left</code> は、逆方向スキャン時にページ削除と競合した場合のリカバリを担当する複雑なロジックです。</li>
+<li>Posting List（重複排除）の展開は、<code>_bt_readpage</code> 内で <code>_bt_setuppostingitems</code> を通じて行われます。</li>
+<li>**省略箇所**: <code>_bt_checkkeys</code> や <code>_bt_parallel_*</code> 関連の詳細は、検索ロジックのフローを理解する上では補助的なため、本ファイル内では呼び出し側としての記述に留めています。</li>
 </ul></body></html>

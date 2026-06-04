@@ -1,70 +1,63 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/path/joinpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/joinpath.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/optimizer/path/joinpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/path/joinpath.c</h1>
 <h2>概要</h2>
-<p><code>joinpath.c</code> は、PostgreSQL オプティマイザにおいて、2 つの結合対象リレーション（<code>RelOptInfo</code>）から可能な結合パス（<code>Path</code>）を生成・評価する中心的なモジュールです。</p>
+<p>本ファイルは、PostgreSQL プランナにおいて、2つのリレーションを結合する際の物理的な実行パス（<code>NestLoop</code>, <code>MergeJoin</code>, <code>HashJoin</code>）を生成・評価する中核モジュールです。結合順序の探索過程で呼び出され、コストモデルに基づいた最適な結合手法の選定と、それらのパスを <code>RelOptInfo</code> に登録する責務を負います。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/optimizer/path</code> サブシステムの一部として、<code>add_paths_to_joinrel</code> を通じて結合リレーションのパスリストを構築します。<code>joinrels.c</code> が結合順序を決定するのに対し、本ファイルは決定された結合順序に対して、具体的にどのようなアルゴリズム（Nestloop, Mergejoin, Hashjoin）で結合を実行するのが最適かを検討します。</p>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、<code>joinrels.c</code> が決定した結合順序に基づき、具体的な実行アルゴリズムを適用する役割を担います。<code>allpaths.c</code> からの要求を受け、<code>costsize.c</code> でコストを算出し、<code>pathnode.c</code> でパスノードを生成します。</p>
 <h2>責務</h2>
 <ul>
-<li>**結合パスの生成**: Nestloop, Mergejoin, Hashjoin の各アルゴリズムに基づいたパスを生成し、コスト評価を行う。</li>
-<li>**パスの選別**: <code>add_path</code> / <code>add_partial_path</code> を呼び出し、コストやパラメータ化の観点で劣るパスを排除する。</li>
-<li>**特殊な結合の処理**: <code>JOIN_SEMI</code>, <code>JOIN_ANTI</code>, <code>JOIN_UNIQUE_INNER/OUTER</code> などの特殊な結合タイプに対するコスト補正やパス生成。</li>
-<li>**並列結合のサポート**: パラレルクエリ実行のための <code>partial_path</code> 生成。</li>
-<li>**拡張性**: <code>set_join_pathlist_hook</code> を提供し、外部拡張が結合パス生成プロセスに介入できるようにする。</li>
+<li>**結合パスの網羅的生成**: NestLoop, MergeJoin, HashJoin の各アルゴリズムについて、可能なパスを生成。</li>
+<li>**コストベースのフィルタリング**: <code>add_path</code> / <code>add_partial_path</code> を通じて、コスト的に劣るパスを早期に排除。</li>
+<li>**制約の検証**: 結合順序制約（<code>SpecialJoinInfo</code>）やパラメータ化（<code>ParamPathInfo</code>）の整合性チェック。</li>
+<li>**特殊な結合の処理**: <code>JOIN_UNIQUE_INNER</code> / <code>OUTER</code> などの内部的な結合型の正規化と、それらに伴う一意性保証パスの生成。</li>
+<li>**拡張性**: <code>set_join_pathlist_hook</code> を通じた外部プラグインによるパス操作の許可。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>結合パス生成のメインエントリ</h3>
 <ul>
-<li><code>add_paths_to_joinrel</code>: 本ファイルのメインエントリポイント。結合リレーションに対するすべてのパス生成ロジックを統括する。</li>
-<li><code>try_nestloop_path</code> / <code>try_mergejoin_path</code> / <code>try_hashjoin_path</code>: 各結合アルゴリズムのパスを生成し、<code>add_path</code> を試みるヘルパー関数。</li>
-<li><code>set_join_pathlist_hook</code>: 外部モジュールが結合パス生成をカスタマイズするためのフック。</li>
-<li><code>JoinPathExtraData</code>: 結合処理中に必要なメタデータ（<code>SpecialJoinInfo</code> や <code>restrictlist</code> など）を保持する構造体。</li>
+<li><code>add_paths_to_joinrel</code>: 結合リレーションに対するパス生成の統括関数。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>結合アルゴリズム別生成関数</h3>
 <ul>
-<li><code>allow_star_schema_join</code></li>
-<li><code>extract_lateral_vars_from_PHVs</code></li>
-<li><code>get_memoize_path</code></li>
-<li><code>have_unsafe_outer_join_ref</code></li>
-<li><code>paraminfo_get_equal_hashops</code></li>
-<li><code>try_partial_hashjoin_path</code></li>
-<li><code>try_partial_mergejoin_path</code></li>
-<li><code>try_partial_nestloop_path</code></li>
+<li><code>try_nestloop_path</code> / <code>try_partial_nestloop_path</code>: NestLoop パスの生成と登録。</li>
+<li><code>try_mergejoin_path</code> / <code>try_partial_mergejoin_path</code>: MergeJoin パスの生成と登録。</li>
+<li><code>try_hashjoin_path</code> / <code>try_partial_hashjoin_path</code>: HashJoin パスの生成と登録。</li>
+</ul>
+<h3>補助・最適化関数</h3>
+<ul>
+<li><code>get_memoize_path</code>: 結合パス上に <code>Memoize</code> ノードを付与可能か判定し生成。</li>
+<li><code>select_mergejoin_clauses</code>: MergeJoin に利用可能な条件式を抽出。</li>
+<li><code>allow_star_schema_join</code>: スター型スキーマにおけるパラメータ化パスの制約緩和判定。</li>
+<li><code>extract_lateral_vars_from_PHVs</code>: <code>LATERAL</code> 参照をキャッシュキーとして抽出。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>add_paths_to_joinrel</code> が呼び出され、<code>JoinPathExtraData</code> を初期化。 2. **事前準備**: 結合タイプに応じた一意性（<code>inner_unique</code>）の判定や、マージ結合用の句の選択を行う。 3. **パス生成の試行**:</p>
+<p>1. **初期化**: <code>add_paths_to_joinrel</code> が <code>JoinPathExtraData</code> を初期化し、結合のユニーク性やマージ条件を特定。 2. **パス探索**:</p>
 <ul>
-<li><code>sort_inner_and_outer</code> / <code>match_unsorted_outer</code>: Mergejoin のパスを生成。</li>
-<li><code>hash_inner_and_outer</code>: Hashjoin のパスを生成。</li>
-<li><code>try_nestloop_path</code>: Nestloop のパスを生成。</li>
-<p>4. **拡張**: FDW（外部データラッパー）のパス生成や、フックによる外部パスの追加を許可。 5. **評価**: 各関数内で <code>add_path</code> を呼び出し、既存のパスとのコスト比較を経て <code>joinrel-&gt;pathlist</code> が更新される。</p>
+<li><code>sort_inner_and_outer</code>: MergeJoin 用にソート順序を考慮したパスを生成。</li>
+<li><code>match_unsorted_outer</code>: 既存の順序を活かした NestLoop/MergeJoin を生成。</li>
+<li><code>hash_inner_and_outer</code>: ハッシュ結合可能な条件を特定し HashJoin を生成。</li>
+<p>3. **コスト評価**: 各 <code>try_*_path</code> 関数内で <code>initial_cost_*</code> を呼び出し、コストの下限値を算出。 4. **登録**: <code>add_path</code> / <code>add_partial_path</code> により、コストが優位なパスのみを <code>RelOptInfo</code> に保持。</p>
 </ul>
 <h2>直接依存</h2>
 <ul>
-<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス生成および操作の基本定義。</li>
-<li><code>optimizer/cost.h</code>: コスト見積もりのための関数群。</li>
-<li><code>optimizer/restrictinfo.h</code>: 結合条件（<code>RestrictInfo</code>）の管理。</li>
-<li><code>nodes/nodeFuncs.h</code>: ノードツリーの操作。</li>
-<li><code>executor/executor.h</code></li>
-<li><code>foreign/fdwapi.h</code></li>
-<li><code>math.h</code></li>
-<li><code>optimizer/optimizer.h</code></li>
-<li><code>optimizer/placeholder.h</code></li>
-<li><code>optimizer/planmain.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
-<li><code>utils/typcache.h</code></li>
+<li><code>optimizer/pathnode.h</code>: パスノード生成インターフェース。</li>
+<li><code>optimizer/cost.h</code>: コスト見積もりモデル。</li>
+<li><code>optimizer/restrictinfo.h</code>: 結合条件のメタデータ管理。</li>
+<li><code>optimizer/optimizer.h</code>: プランナのグローバル設定。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/optimizer/path/joinrels.c</code>: 結合順序の決定ロジック。</li>
-<li><code>src/backend/optimizer/path/costsize.c</code>: 結合コストの計算ロジック。</li>
-<li><code>src/backend/optimizer/plan/createplan.c</code>: ここで生成された <code>Path</code> を実際の <code>Plan</code> ノードへ変換する。</li>
+<li><code>joinrels.c</code>: 結合順序の探索制御。</li>
+<li><code>pathkeys.c</code>: ソート順序の正規化とマッチング。</li>
+<li><code>equivclass.c</code>: 等価条件の推論。</li>
+<li><code>src/backend/optimizer/README</code>: 結合パス生成に関する設計思想と制約。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>本ファイルは非常に複雑な条件分岐（特に <code>JOIN_FULL</code> や <code>JOIN_UNIQUE</code> 関連）を含みます。まずは <code>add_paths_to_joinrel</code> の全体的な流れを追い、その後に各結合アルゴリズム（Nestloop/Merge/Hash）の <code>try_</code> 関数を読むのが効率的です。</li>
-<li><code>PATH_PARAM_BY_REL</code> などのマクロは、パスが特定のリレーションに依存しているか（パラメータ化されているか）を判定する重要なユーティリティです。</li>
-<li><code>Memoize</code> パスの生成ロジック（<code>get_memoize_path</code>）は、Nested Loop のコストを劇的に改善する可能性があるため、最近の PostgreSQL の最適化において重要度が増しています。</li>
+<li>**メモリ管理**: <code>bms_free</code> を多用し、パス生成の試行段階でメモリリークを防いでいます。</li>
+<li>**制約**: <code>JOIN_RIGHT_SEMI</code> や <code>JOIN_FULL</code> など、一部の結合型は特定のアルゴリズム（NestLoop等）でサポートされません。</li>
+<li>**省略された詳細**: 本ファイルはパス生成の「ロジック」に集中しており、実際のコスト計算式（<code>costsize.c</code>）や、プランノード生成（<code>createplan.c</code>）の詳細は含まれていません。</li>
+<li>**最適化**: <code>add_path_precheck</code> による早期終了は、探索空間が巨大なクエリにおいてプランナの実行時間を抑えるための重要なヒューリスティックです。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

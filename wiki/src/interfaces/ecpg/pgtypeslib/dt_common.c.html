@@ -1,60 +1,60 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/interfaces/ecpg/pgtypeslib/dt_common.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/interfaces/ecpg/pgtypeslib/dt_common.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/interfaces/ecpg/pgtypeslib/dt_common.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/interfaces/ecpg/pgtypeslib/dt_common.c</h1>
 <h2>概要</h2>
-<p>本ファイルは、ECPG（Embedded C for PostgreSQL）ライブラリにおける日付・時刻処理の共通基盤を提供します。主に日付文字列の解析（デコード）、書式化（エンコード）、およびカレンダー計算（ユリウス日変換など）を担う低レベルなユーティリティ群を実装しています。</p>
+<p>本ファイルは、ECPG ライブラリにおける日付・時刻処理の共通基盤です。文字列の解析（デコード）、内部表現から文字列への変換（エンコード）、およびカレンダー計算（ユリウス日変換等）を担います。<code>pgtypeslib</code> の日付・時刻関連機能のバックエンドとして機能します。</p>
 <h2>モジュール内での役割</h2>
-<p><code>pgtypeslib</code> サブシステムにおいて、日付・時刻関連のデータ型（<code>timestamp</code>, <code>date</code>, <code>interval</code> 等）を扱うための「共通語彙」を提供します。他のファイル（<code>datetime.c</code>, <code>timestamp.c</code> など）がこのファイルで定義されたテーブルや変換関数を呼び出し、一貫した日付処理を実現します。</p>
+<p><code>datetime.c</code>, <code>timestamp.c</code>, <code>interval.c</code> といった上位の型固有実装に対し、共通のトークンテーブル、解析ロジック、および書式変換ユーティリティを提供します。</p>
 <h2>責務</h2>
 <ul>
-<li>**日付・時刻の解析**: 文字列から <code>struct tm</code> への変換（<code>DecodeDate</code>, <code>DecodeTime</code> 等）。</li>
-<li>**書式化**: <code>struct tm</code> から特定のスタイル（ISO, SQL, German等）の文字列への変換（<code>EncodeDateTime</code>）。</li>
-<li>**カレンダー計算**: ユリウス日とカレンダー日付の相互変換（<code>date2j</code>, <code>j2date</code>）。</li>
-<li>**トークン管理**: 日付・時刻に関連するキーワード（月名、曜日、タイムゾーン等）の検索とキャッシュ。</li>
+<li>**日付・時刻の解析**: 文字列をトークン化し、<code>struct tm</code> や <code>fsec_t</code>（小数秒）へ変換。</li>
+<li>**カレンダー計算**: ユリウス日とグレゴリオ暦の相互変換。</li>
+<li>**書式化**: <code>ISO</code>, <code>SQL</code>, <code>German</code>, <code>Postgres</code> スタイルの日付・時刻文字列生成。</li>
+<li>**タイムゾーン処理**: POSIX 形式や数値オフセットの解析と変換。</li>
+<li>**スキャン処理**: <code>strftime</code> に似たフォーマット文字列に基づく入力解析（<code>defmt_scan</code>）。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>トークンテーブルとキャッシュ</h3>
 <ul>
-<li><code>datetktbl</code>: 日付・時刻のキーワードテーブル。解析時の辞書として機能します。</li>
-<li><code>datebsearch</code>: トークンテーブルを高速に検索するためのバイナリサーチ関数。</li>
-<li><code>DecodeDateTime</code>: 文字列を解析し、<code>struct tm</code> に分解する主要なエントリポイント。</li>
-<li><code>EncodeDateTime</code>: <code>struct tm</code> を指定されたスタイルで文字列化する関数。</li>
-<li><code>date2j</code> / <code>j2date</code>: カレンダー日付とユリウス日の変換関数。</li>
+<li><code>datetktbl</code>, <code>deltatktbl</code>: 日付・時刻・期間解析用のキーワードテーブル。</li>
+<li><code>datecache</code>, <code>deltacache</code>: 解析効率化のための直近のトークンキャッシュ。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>日付・時刻変換</h3>
 <ul>
-<li><code>AbsoluteTime</code></li>
-<li><code>DecodeDate</code></li>
-<li><code>DecodeNumber</code></li>
-<li><code>DecodeNumberField</code></li>
-<li><code>DecodeSpecial</code></li>
-<li><code>DecodeTime</code></li>
-<li><code>DecodeUnits</code></li>
-<li><code>GetCurrentDateTime</code></li>
-<li><code>GetEpochTime</code></li>
-<li><code>PGTYPEStimestamp_defmt_scan</code></li>
-<li><code>TrimTrailingZeros</code></li>
+<li><code>date2j</code>, <code>j2date</code>: ユリウス日と暦（年・月・日）の相互変換。</li>
+<li><code>abstime2tm</code>: <code>AbsoluteTime</code> を <code>struct tm</code> に変換し、タイムゾーン情報を抽出。</li>
+<li><code>dt2time</code>: ユリウス日（double）を時・分・秒・小数秒に分解。</li>
+</ul>
+<h3>解析・デコード</h3>
+<ul>
+<li><code>ParseDateTime</code>: 文字列をフィールド単位にトークン化。</li>
+<li><code>DecodeDateTime</code>: 解析済みフィールドを <code>struct tm</code> へマッピング。</li>
+<li><code>DecodeUnits</code>, <code>DecodeTime</code>, <code>DecodeTimezone</code>: 特定の単位や形式のデコード。</li>
+</ul>
+<h3>エンコード</h3>
+<ul>
+<li><code>EncodeDateOnly</code>, <code>EncodeDateTime</code>: <code>struct tm</code> を指定されたスタイルで文字列化。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **解析フロー**: <code>ParseDateTime</code> が入力文字列をトークン化し、<code>DecodeDateTime</code> がそれらを順次処理します。各トークンは <code>DecodeSpecial</code> や <code>DecodeNumber</code> を経由して <code>struct tm</code> に反映されます。 2. **キャッシュ**: <code>datecache</code> および <code>deltacache</code> を使用して、頻出するトークンの検索コストを削減しています。 3. **変換フロー**: <code>EncodeDateTime</code> は <code>style</code> 引数に基づき、<code>switch</code> 文で出力フォーマットを切り替え、<code>sprintf</code> を用いてバッファへ書き出します。</p>
+<p>1. **入力解析**: <code>ParseDateTime</code> が入力文字列を <code>field[]</code> 配列に分割し、<code>ftype[]</code> で型を識別します。 2. **デコード**: <code>DecodeDateTime</code> が各フィールドを走査し、<code>DecodeNumber</code> や <code>DecodeSpecial</code> を呼び出して <code>struct tm</code> を構築します。 3. **変換**: <code>abstime2tm</code> 等がシステム時刻を <code>struct tm</code> に変換し、必要に応じてタイムゾーンオフセットを適用します。 4. **出力**: <code>EncodeDateTime</code> が <code>struct tm</code> と <code>fsec_t</code> を受け取り、指定された <code>style</code> に基づいてバッファへシリアライズします。</p>
 <h2>直接依存</h2>
 <ul>
+<li><code>dt.h</code>: 日付・時刻関連の定数・構造体定義。</li>
+<li><code>pgtypeslib_extern.h</code>: 公開 API 定義。</li>
 <li><code>postgres_fe.h</code>: フロントエンド用共通定義。</li>
-<li><code>dt.h</code>: 日付・時刻処理の定数やデータ構造定義。</li>
-<li><code>pgtypes_timestamp.h</code>: タイムスタンプ関連の型定義。</li>
-<li><code>pgtypeslib_extern.h</code>: モジュール内公開関数の宣言。</li>
-<li>標準ライブラリ: <code>time.h</code>, <code>ctype.h</code>, <code>math.h</code>。</li>
-<li><code>common/string.h</code></li>
+<li>標準ライブラリ: <code>time.h</code> (時刻操作), <code>math.h</code> (数値計算), <code>ctype.h</code> (文字分類)。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/interfaces/ecpg/pgtypeslib/datetime.c</code>: 本ファイルの関数を利用して高レベルな日付操作を行う。</li>
-<li><code>src/interfaces/ecpg/pgtypeslib/timestamp.c</code>: タイムスタンプ型特有の処理を実装。</li>
-<li><code>src/interfaces/ecpg/pgtypeslib/dt.h</code>: 本ファイルで使用される <code>datetkn</code> 構造体や定数の定義元。</li>
+<li><code>datetime.c</code>, <code>timestamp.c</code>, <code>interval.c</code>: 本ファイルのユーティリティを利用して各型を実装。</li>
+<li><code>common.c</code>: メモリ管理や文字列操作の補助。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**日付の境界**: 本ファイルは AD/BC 表記を扱いますが、歴史的な「0年」が存在しない仕様（1 BC の次は 1 AD）を考慮した計算ロジックが含まれています。</li>
-<li>**パフォーマンス**: <code>datebsearch</code> による検索は、トークンの先頭文字を事前チェックすることで最適化されています。</li>
-<li>**注意点**: <code>EncodeDateTime</code> 等の関数は、出力バッファのサイズが十分であることを呼び出し側が保証する必要があります。また、<code>PGTYPEStimestamp_defmt_scan</code> は <code>strptime</code> に似た機能を提供しますが、ECPG 独自のフォーマット解析ルールに従います。</li>
+<li>**メモリ管理**: <code>PGTYPEStimestamp_defmt_scan</code> 内で <code>pgtypes_alloc</code> を使用しており、呼び出し元での解放が必要です。</li>
+<li>**エッジケース**: 紀元前（BC）の扱いや、ユリウス日変換の境界条件（Nov 24, -4713）に注意してください。</li>
+<li>**制限事項**: <code>DecodeNumberField</code> 等の数値解析ロジックには、一部の桁数制限や丸め処理の簡略化（バックエンドとの差異）が存在します。</li>
+<li>**スレッド安全性**: <code>localtime_r</code> や <code>gmtime_r</code> を使用しており、スレッドセーフな設計となっています。</li>
+<li>**省略箇所**: <code>find_end_token</code> 等の内部スキャン関数は、フォーマット解析の複雑な再帰的ロジックを隠蔽していますが、エラーハンドリングは限定的です。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

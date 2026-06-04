@@ -1,76 +1,58 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/access/brin/brin.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin.c</h1>
 <h2>概要</h2>
-<p>BRIN (Block Range Index) アクセスメソッドのコア実装です。テーブルの物理的な順序に基づき、ページ範囲ごとの要約情報を保持することで、巨大なテーブルに対するスキャン効率を向上させます。</p>
+<p><code>brin.c</code> は PostgreSQL の BRIN (Block Range Index) アクセスメソッドのメインエントリポイントです。インデックスの構築、挿入、スキャン、およびメンテナンス（バキューム・要約）の各操作を定義し、BRIN インデックスのライフサイクル全体を管理します。</p>
 <h2>モジュール内での役割</h2>
-<p>BRIN インデックスのライフサイクル（構築、挿入、スキャン、バキューム）を管理するハンドラを提供します。<code>brinhandler</code> 関数を通じて、PostgreSQL のインデックス AM インターフェースと各操作を結びつけます。</p>
+<p>BRIN サブシステムにおける「司令塔」です。<code>IndexAmRoutine</code> を通じて PostgreSQL コアと通信し、具体的なページ操作やデータ型の要約ロジックは <code>brin_pageops.c</code> や各戦略ファイル（<code>brin_minmax.c</code> 等）に委譲します。</p>
 <h2>責務</h2>
 <ul>
-<li>**インデックス構築**: シリアルおよび並列（Parallel）でのインデックス作成。</li>
-<li>**データ挿入**: <code>brininsert</code> による、新しいタプル挿入時の範囲要約の更新。</li>
-<li>**スキャン実行**: <code>bringetbitmap</code> による、スキャンキーと範囲要約の照合および対象ページの特定。</li>
-<li>**メンテナンス**: <code>brinvacuumcleanup</code> や <code>brin_summarize_range</code> を通じた、未要約範囲の補完。</li>
+<li>**AM ハンドラ**: <code>brinhandler</code> を通じて、PostgreSQL がインデックス操作を呼び出すためのインターフェースを提供。</li>
+<li>**インデックス構築**: シリアルおよび並列（Parallel）でのインデックス構築ロジック。</li>
+<li>**挿入管理**: <code>brininsert</code> によるヒープ挿入時のインデックス更新と、必要に応じた自動要約のトリガー。</li>
+<li>**スキャン実行**: <code>bringetbitmap</code> によるビットマップスキャンと、各ページ範囲の要約判定。</li>
+<li>**メンテナンス**: <code>brinsummarize</code> による未要約範囲の補完および <code>brinvacuumcleanup</code> によるインデックスの健全性維持。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>インデックス状態管理</h3>
 <ul>
-<li><code>brinhandler</code>: AM ルーチンを定義するエントリポイント。</li>
-<li><code>BrinBuildState</code>: インデックス構築中の状態を保持する構造体。</li>
-<li><code>BrinInsertState</code>: 挿入操作中にキャッシュされる状態（Revmap へのアクセス等）。</li>
-<li><code>BrinOpaque</code>: スキャン中に使用される内部状態。</li>
-<li><code>brininsert</code>: 新しいタプルが既存の範囲要約と矛盾しないかを確認し、必要に応じて更新する。</li>
-<li><code>bringetbitmap</code>: 範囲要約を読み込み、条件に合致するページ範囲をビットマップに登録する。</li>
+<li><code>BrinBuildState</code>: インデックス構築中の作業状態（メモリコンテキスト、Revmap、ソート状態など）。</li>
+<li><code>BrinInsertState</code>: 挿入操作中に保持されるキャッシュ（Revmap や記述子）。</li>
+<li><code>BrinOpaque</code>: スキャン中に保持されるスキャン固有のメタデータ。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>並列構築用</h3>
 <ul>
-<li><code>BrinLeader</code></li>
-<li><code>BrinShared</code></li>
-<li><code>brin_build_desc</code></li>
-<li><code>brin_desummarize_range</code></li>
-<li><code>brin_free_desc</code></li>
-<li><code>brin_summarize_new_values</code></li>
-<li><code>brin_summarize_range</code></li>
-<li><code>initialize_brin_buildstate</code></li>
-<li><code>initialize_brin_insertstate</code></li>
+<li><code>BrinShared</code>: 並列構築時に共有メモリに配置される状態（参加者数、統計情報）。</li>
+<li><code>BrinLeader</code>: 並列構築のリーダープロセスが保持する制御構造。</li>
+</ul>
+<h3>主要ハンドラ</h3>
+<ul>
+<li><code>brinhandler</code>: AM の機能フラグと関数ポインタを定義。</li>
+<li><code>brininsert</code>: 挿入時の要約更新ロジック。</li>
+<li><code>bringetbitmap</code>: スキャンキーに基づくページ範囲のフィルタリング。</li>
+<li><code>brinbuild</code>: インデックス構築の開始点。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **構築**: <code>brinbuild</code> がテーブルをスキャンし、<code>brinbuildCallback</code> で範囲ごとの要約を生成。並列構築時は <code>_brin_parallel_merge</code> がワーカーの結果を統合します。 2. **挿入**: <code>brininsert</code> が対象のページ範囲を特定し、<code>brin_deform_tuple</code> で要約を復元。<code>add_values_to_range</code> で新しい値をマージし、必要なら <code>brin_doupdate</code> でインデックスを更新します。 3. **スキャン**: <code>bringetbitmap</code> が Revmap を介して範囲要約を取得し、<code>consistent</code> サポート関数を用いてスキャンキーとの整合性を判定します。</p>
+<p>1. **構築**: <code>brinbuild</code> が <code>table_index_build_scan</code> を呼び出し、<code>brinbuildCallback</code> がページ範囲ごとに要約を生成。並列時は <code>tuplesort</code> を経由してリーダーがマージ。 2. **挿入**: <code>brininsert</code> が対象のページ範囲を特定し、<code>brin_doinsert</code> で要約を更新。競合時は <code>brin_doupdate</code> で再試行ループに入る。 3. **スキャン**: <code>bringetbitmap</code> が Revmap を走査し、各範囲の要約を <code>consistent</code> 関数で評価。一致した範囲のページをビットマップに追加。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/brin.h</code>, <code>access/brin_page.h</code>, <code>access/brin_pageops.h</code>, <code>access/brin_xlog.h</code></li>
-<li><code>storage/bufmgr.h</code>, <code>storage/freespace.h</code></li>
-<li><code>utils/rel.h</code>, <code>utils/tuplesort.h</code></li>
-<li><code>catalog/index.h</code>, <code>catalog/pg_am.h</code></li>
-<li><code>access/relation.h</code></li>
-<li><code>access/reloptions.h</code></li>
-<li><code>access/relscan.h</code></li>
-<li><code>access/table.h</code></li>
-<li><code>access/tableam.h</code></li>
-<li><code>access/xloginsert.h</code></li>
-<li><code>commands/vacuum.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>pgstat.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>postmaster/autovacuum.h</code></li>
-<li><code>tcop/tcopprot.h</code></li>
-<li><code>utils/acl.h</code></li>
-<li><code>utils/datum.h</code></li>
-<li><code>utils/fmgrprotos.h</code></li>
-<li><code>utils/guc.h</code></li>
-<li><code>utils/index_selfuncs.h</code></li>
-<li><code>utils/memutils.h</code></li>
+<li><code>access/brin_*.h</code>: BRIN 内部のページ操作、WAL、Revmap 管理。</li>
+<li><code>storage/bufmgr.h</code>: バッファ管理。</li>
+<li><code>utils/tuplesort.h</code>: 並列構築時のソート処理。</li>
+<li><code>catalog/index.h</code>: インデックス定義とカタログ操作。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/access/brin/brin_revmap.c</code>: ページ範囲とインデックス位置の対応を管理する Revmap の実装。</li>
-<li><code>src/backend/access/brin/brin_tuple.c</code>: BRIN タプルのシリアライズ/デシリアライズ。</li>
-<li><code>src/backend/access/brin/brin_pageops.c</code>: ページレベルの操作（挿入、更新、クリーンアップ）。</li>
-<li><code>src/backend/access/brin/brin_minmax.c</code> 等: 各種演算クラス（MinMax, Bloom 等）の具体的な要約ロジック。</li>
+<li><code>brin_revmap.c</code>: インデックスページとヒープブロックの対応付け管理。</li>
+<li><code>brin_pageops.c</code>: 物理的なページ構造の読み書き。</li>
+<li><code>brin_tuple.c</code>: 要約タプルのデフォーム・フォーム処理。</li>
+<li><code>brin_xlog.c</code>: WAL リプレイ時の整合性維持。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>BRIN は「ページ範囲」という概念が中心です。<code>pages_per_range</code> オプションがインデックスの粒度を決定します。</li>
-<li>並列構築時の <code>BrinShared</code> 構造体と <code>tuplesort</code> の連携は複雑です。リーダーとワーカーの役割分担を理解するには、<code>_brin_parallel_merge</code> と <code>_brin_parallel_scan_and_build</code> を追うのが近道です。</li>
-<li><code>brininsert</code> は、範囲が未要約（Revmap が NULL）の場合、何もせず終了する点に注意してください。これは <code>brinsummarize</code> によって後から埋められます。</li>
+<li>**メモリ管理**: <code>brininsert</code> や <code>bringetbitmap</code> では、<code>MemoryContext</code> を適切にリセットすることで、大量のページ範囲をスキャンする際のメモリリークを防いでいます。</li>
+<li>**並列構築**: <code>_brin_parallel_merge</code> は、各ワーカーが生成した要約をソートしてマージし、欠落している範囲を <code>brin_fill_empty_ranges</code> で埋めるという複雑なフローを持っています。</li>
+<li>**制約**: <code>brinbulkdelete</code> は現在 No-op です。BRIN は物理的なページ範囲に依存するため、個別のタプル削除には対応していません。</li>
+<li>**未実装**: <code>ScalarArrayOpExpr</code> のサポート（<code>amsearcharray</code>）は TODO として残されています。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

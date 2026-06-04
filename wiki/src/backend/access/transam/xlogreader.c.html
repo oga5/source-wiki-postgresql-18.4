@@ -1,64 +1,55 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/transam/xlogreader.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogreader.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/access/transam/xlogreader.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/transam/xlogreader.c</h1>
 <h2>概要</h2>
-<p>WAL（Write-Ahead Log）レコードを読み取り、解析するための汎用的なライブラリです。PostgreSQLのバックエンドだけでなく、<code>pg_waldump</code> などのフロントエンドツールからも利用可能な設計になっています。</p>
+<p>WAL（Write-Ahead Log）レコードを読み込み、解析（デコード）するための汎用的な基盤機能を提供します。本ファイルはフロントエンド（<code>pg_waldump</code>等）とバックエンドの両方でコンパイルされるため、<code>ereport</code>等のサーバー固有機能に依存せず、コールバックベースの設計を採用しています。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/access/transam</code> モジュールにおいて、WALの物理的な読み込み（I/O）と、バイナリデータから論理的なレコード構造へのデコードを抽象化する層です。<code>xlog.c</code> がWALの書き込みやリカバリの全体を制御するのに対し、本ファイルは「特定のLSNからレコードを順次読み出す」という低レベルな責務を担います。</p>
+<p><code>src/backend/access/transam</code> モジュールにおいて、WALの物理的な読み込みと論理的なレコード構造への変換を抽象化するレイヤーです。リカバリ処理（<code>xlogrecovery.c</code>）やレプリケーション、WAL解析ツールがWALの内容を解釈するための唯一のインターフェースとなります。</p>
 <h2>責務</h2>
 <ul>
-<li>**WALの読み込み抽象化**: <code>page_read</code> コールバックを介して、ストレージやネットワークからWALページを取得する。</li>
-<li>**レコードの再構築**: ページ境界をまたぐWALレコードの断片を結合し、完全なレコードとして復元する。</li>
-<li>**検証**: ページヘッダーの整合性チェック、レコードヘッダーの検証、およびCRCチェックを行う。</li>
-<li>**デコード**: 複雑なバイナリ形式のWALレコードを、後続のREDO処理で扱いやすい <code>DecodedXLogRecord</code> 構造体に変換する。</li>
+<li>**WALストリームの抽象化**: ページ単位の読み込みをコールバック（<code>page_read</code>）経由で抽象化し、セグメント境界やページ境界を跨ぐレコードの再構築を管理。</li>
+<li>**レコードのデコード**: 物理的なWALバイト列を、ブロック参照やメインデータを含む論理的な <code>DecodedXLogRecord</code> 構造体に変換。</li>
+<li>**検証**: ページヘッダーの整合性チェック、レコードヘッダーの検証、およびCRCチェックによるデータの正当性保証。</li>
+<li>**メモリ管理**: デコード用バッファの循環管理および、巨大レコードに対する動的なメモリ割り当て。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>状態管理</h3>
 <ul>
-<li><code>XLogReaderState</code>: リーダーの状態を保持するメイン構造体。</li>
+<li><code>XLogReaderState</code>: リーダーの現在の読み込み位置、バッファ、コールバック関数、エラー状態を保持するメイン構造体。</li>
 <li><code>XLogReaderAllocate</code> / <code>XLogReaderFree</code>: リーダーのライフサイクル管理。</li>
-<li><code>XLogReadRecord</code>: 次の有効なWALレコードを読み取り、デコードして返すメイン関数。</li>
-<li><code>XLogReadAhead</code>: 非同期的な先読みや、キューへのレコード追加を行う。</li>
-<li><code>DecodeXLogRecord</code>: 生のWALレコードを解析し、ブロック参照やメインデータに分解する。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>読み込み・解析</h3>
 <ul>
-<li><code>ResetDecoder</code></li>
-<li><code>WALOpenSegmentInit</code></li>
-<li><code>XLogBeginRead</code></li>
-<li><code>XLogDecodeNextRecord</code></li>
-<li><code>XLogNextRecord</code></li>
-<li><code>XLogReadRecordAlloc</code></li>
-<li><code>XLogReaderResetError</code></li>
-<li><code>XLogReaderSetDecodeBuffer</code></li>
-<li><code>XLogReleasePreviousRecord</code></li>
+<li><code>XLogReadRecord</code>: 次の有効なWALレコードを読み込み、デコードして返す。</li>
+<li><code>XLogReadAhead</code>: 非同期的な先読みを行い、デコード済みレコードをキューに蓄積する。</li>
+<li><code>XLogFindNextRecord</code>: 指定したLSN以降の最初の有効なレコードを探す。</li>
+</ul>
+<h3>デコード・検証</h3>
+<ul>
+<li><code>DecodeXLogRecord</code>: 物理的なレコードを論理構造へ変換するコア関数。</li>
+<li><code>ValidXLogRecord</code>: CRCチェックを行い、レコードの破損を検出する。</li>
+<li><code>XLogReaderValidatePageHeader</code>: WALページヘッダーのマジックナンバーやシステムIDを検証する。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1.  **初期化**: <code>XLogReaderAllocate</code> でバッファとコールバックをセットアップ。 2.  **読み込み**: <code>XLogReadRecord</code> が呼ばれると、<code>ReadPageInternal</code> が必要なページを読み込む。 3.  **再構築**: ページをまたぐ場合、<code>readRecordBuf</code> を使用して断片を連結する。 4.  **検証**: <code>ValidXLogRecordHeader</code> と <code>ValidXLogRecord</code> (CRC) でデータの正当性を確認。 5.  **デコード**: <code>DecodeXLogRecord</code> がレコード内のブロックIDやデータを解析し、<code>DecodedXLogRecord</code> 構造体へ格納。 6.  **消費**: 呼び出し元が <code>XLogNextRecord</code> を通じてデコード済みレコードを取得し、<code>XLogReleasePreviousRecord</code> でメモリを解放する。</p>
+<p>1. **初期化**: <code>XLogReaderAllocate</code> でバッファとコールバックをセットアップ。 2. **ページ読み込み**: <code>ReadPageInternal</code> が <code>page_read</code> コールバックを呼び出し、必要なWALページを <code>readBuf</code> にロード。 3. **レコード再構築**: レコードがページを跨ぐ場合、<code>readRecordBuf</code> を使用して断片を連結。 4. **デコード**: <code>DecodeXLogRecord</code> がヘッダーを解析し、ブロック参照やメインデータを <code>DecodedXLogRecord</code> 構造体に展開。 5. **キューイング**: デコード済みレコードは <code>decode_queue</code> にリンクされ、<code>XLogNextRecord</code> を通じて消費される。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/xlogreader.h</code>: 公開インターフェース定義。</li>
+<li><code>access/xlogreader.h</code>: インターフェース定義。</li>
 <li><code>access/xlogrecord.h</code>: WALレコードの物理フォーマット定義。</li>
-<li><code>common/pg_lzcompress.h</code>, <code>lz4.h</code>, <code>zstd.h</code>: 圧縮されたフルページイメージの展開用。</li>
-<li><code>storage/bufmgr.h</code> (バックエンドのみ): バッファ管理との連携。</li>
-<li><code>access/transam.h</code></li>
-<li><code>access/xlog_internal.h</code></li>
-<li><code>catalog/pg_control.h</code></li>
-<li><code>common/logging.h</code></li>
-<li><code>pgstat.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>replication/origin.h</code></li>
-<li><code>unistd.h</code></li>
+<li><code>storage/bufmgr.h</code> / <code>common/logging.h</code>: 環境に応じたI/Oおよびログ出力。</li>
+<li><code>lz4.h</code> / <code>zstd.h</code> / <code>pg_lzcompress.h</code>: ページイメージの圧縮・解凍用。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/include/access/xlogreader.h</code>: 構造体定義とコールバックの仕様。</li>
-<li><code>src/bin/pg_waldump/</code>: 本モジュールを利用する代表的なツール。</li>
-<li><code>src/backend/access/transam/xlog.c</code>: WALの生成とリカバリのメインロジック。</li>
+<li><code>xlog.c</code>: WALの書き込みと管理の司令塔。</li>
+<li><code>xlogrecovery.c</code>: 本リーダーを使用してWALをリプレイするリカバリ処理。</li>
+<li><code>xloginsert.c</code>: WALレコードを生成する側。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**フロントエンド互換性**: このファイルは <code>FRONTEND</code> マクロの有無で挙動が変わります。<code>ereport</code> が使えないため、エラー報告は <code>errormsg_buf</code> を介して行われます。</li>
-<li>**メモリ管理**: <code>XLogReaderState</code> は <code>palloc</code> を使用します。フロントエンドで利用する場合は、適切なメモリコンテキストが設定されていることを確認してください。</li>
-<li>**CRCチェック**: <code>ValidXLogRecord</code> は非常に重要です。WALの破損を早期に検知するため、デコードの最終段階で必ず実行されます。</li>
+<li>**メモリ所有権**: <code>XLogReaderState</code> は <code>readBuf</code> や <code>decode_buffer</code> を所有します。<code>XLogReaderFree</code> を呼び出すまでメモリは解放されません。</li>
+<li>**エラーハンドリング**: <code>report_invalid_record</code> はエラーメッセージをバッファに書き込み、<code>errormsg_deferred</code> フラグを立てます。呼び出し側はこれをチェックする必要があります。</li>
+<li>**制約**: <code>ValidXLogRecordHeader</code> はレコードのヘッダーが完全に読み込まれていることを前提とします。ページ境界を跨ぐ場合は、再構築後に検証が行われます。</li>
+<li>**省略された詳細**: 本ファイルは汎用性を重視しているため、特定のWALリソースマネージャ（RMGR）の具体的なリプレイロジックは含まず、あくまで「レコードの抽出」に特化しています。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

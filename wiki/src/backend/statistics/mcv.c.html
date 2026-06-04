@@ -1,66 +1,55 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/statistics/mcv.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/mcv.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/statistics/mcv.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/statistics/mcv.c</h1>
 <h2>概要</h2>
-<p>本ファイルは、PostgreSQLの拡張統計情報（Extended Statistics）における「多変量MCV（Most Common Values）リスト」の構築、シリアライズ、デシリアライズ、およびクエリプランナでの選択率推定ロジックを実装しています。</p>
+<p>本ファイルは、PostgreSQLの拡張統計情報における「多変量最頻値（Multivariate MCV: Most Common Values）」リストの構築、シリアライズ、デシリアライズ、およびクエリプランナによる選択率推定ロジックを実装しています。単一列の統計では捉えきれない列間の相関関係を、サンプルデータから抽出した頻度リストを用いて補正します。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/statistics</code> モジュールの一部として、複数の列（または式）にまたがる相関関係を捉えるための統計データ構造を提供します。単一列の統計情報では不可能な、列間の依存関係を考慮した高精度な選択率推定を可能にします。</p>
+<p><code>src/backend/statistics</code> モジュールの一部として、<code>extended_stats.c</code> が管理する拡張統計オブジェクトの具体的な計算エンジンとして機能します。プランナが <code>statext_clauselist_selectivity</code> を呼び出した際、MCVリストが存在すれば本モジュールのロジックが呼び出され、より精度の高い選択率推定を提供します。</p>
 <h2>責務</h2>
 <ul>
-<li>**MCVリストの構築**: サンプリングされたデータから頻出する値の組み合わせを抽出し、統計ターゲットに基づいてリスト化する。</li>
-<li>**シリアライズ/デシリアライズ**: <code>pg_statistic_ext_data</code> カタログに格納するためのバイナリ形式への変換と復元。</li>
-<li>**選択率推定**: プランナがクエリの条件句（WHERE句など）を評価する際、MCVリストを用いてより正確な選択率を算出する。</li>
+<li>**統計構築**: サンプルデータから列の組み合わせをグループ化し、統計的有意性（<code>get_mincount_for_mcv_list</code>）に基づいてMCVリストを生成する。</li>
+<li>**永続化**: システムカタログ（<code>pg_statistic_ext_data</code>）に格納するためのバイナリ形式へのシリアライズおよびデシリアライズ。</li>
+<li>**選択率推定**: クエリの <code>WHERE</code> 句条件とMCVリストを照合し、相関を考慮した選択率を算出する。</li>
+<li>**SRF提供**: <code>pg_stats_ext_mcvlist_items</code> 関数を通じ、SQL層からMCVリストの内容を可視化する。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>統計構築・管理</h3>
 <ul>
-<li><code>statext_mcv_build</code>: サンプルデータからMCVリストを生成するメイン関数。</li>
-<li><code>statext_mcv_serialize</code> / <code>statext_mcv_deserialize</code>: 永続化のための変換処理。</li>
-<li><code>mcv_clauselist_selectivity</code>: AND条件句に対する選択率推定。</li>
-<li><code>mcv_clause_selectivity_or</code>: OR条件句に対する選択率推定。</li>
-<li><code>MCVList</code> / <code>MCVItem</code>: 多変量統計情報を保持する主要なデータ構造。</li>
+<li><code>statext_mcv_build</code>: サンプルデータからMCVリストを構築するメイン関数。</li>
+<li><code>get_mincount_for_mcv_list</code>: 統計的に有意な頻度閾値を計算する（超幾何分布に基づく）。</li>
+<li><code>build_mss</code> / <code>build_distinct_groups</code>: 複数の列を組み合わせたソートとグループ化を行うユーティリティ。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>シリアライズ・デシリアライズ</h3>
 <ul>
-<li><code>build_column_frequencies</code></li>
-<li><code>build_distinct_groups</code></li>
-<li><code>build_mss</code></li>
-<li><code>compare_sort_item_count</code></li>
-<li><code>count_distinct_groups</code></li>
-<li><code>get_mincount_for_mcv_list</code></li>
-<li><code>pg_stats_ext_mcvlist_items</code></li>
-<li><code>sort_item_compare</code></li>
-<li><code>statext_mcv_load</code></li>
+<li><code>statext_mcv_serialize</code>: MCVリストを <code>bytea</code> 形式に変換。値の重複排除（Deduplication）を行い、インデックス参照に置換することでサイズを削減する。</li>
+<li><code>statext_mcv_deserialize</code>: <code>bytea</code> からメモリ上の <code>MCVList</code> 構造体を復元する。</li>
+</ul>
+<h3>選択率推定</h3>
+<ul>
+<li><code>mcv_clauselist_selectivity</code>: AND条件リストに対するMCVベースの選択率推定。</li>
+<li><code>mcv_clause_selectivity_or</code>: OR条件リストに対するMCVベースの選択率推定（包含排除の原理を適用）。</li>
+<li><code>mcv_combine_selectivities</code>: MCVでカバーされる部分と、それ以外の部分の選択率を統合する。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **構築**: <code>statext_mcv_build</code> がデータをソートし、頻度に基づいてグループ化。<code>get_mincount_for_mcv_list</code> で統計的に有意な頻度閾値を決定し、リストを切り詰める。 2. **永続化**: <code>statext_mcv_serialize</code> は、値を重複排除してインデックス化し、<code>bytea</code> 形式へパックする。 3. **推定**: プランナは <code>mcv_get_match_bitmap</code> を呼び出し、各MCVアイテムがクエリ条件に合致するかをビットマップで判定。その後、<code>mcv_combine_selectivities</code> を用いて、MCVでカバーできない部分の選択率と統合する。</p>
+<p>1. **構築**: <code>ANALYZE</code> 中に <code>statext_mcv_build</code> が呼ばれ、全列を結合したキーでソートし、頻度順にグループ化。閾値を超えたグループのみを <code>MCVList</code> に格納する。 2. **シリアライズ**: 値を列ごとに重複排除して配列化し、<code>MCVItem</code> 内の値をその配列への <code>uint16</code> インデックスに置換して格納する。 3. **推定**: プランナが <code>mcv_get_match_bitmap</code> を呼び出し、各MCVアイテムがクエリ条件に合致するかをビットマップで判定。合致したアイテムの頻度（<code>frequency</code>）と、独立と仮定した場合の頻度（<code>base_frequency</code>）を合計し、<code>mcv_combine_selectivities</code> で最終的な選択率を算出する。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>postgres.h</code>, <code>math.h</code></li>
-<li><code>catalog/pg_statistic_ext.h</code>, <code>catalog/pg_statistic_ext_data.h</code></li>
-<li><code>statistics/extended_stats_internal.h</code>, <code>statistics/statistics.h</code></li>
-<li><code>utils/</code> 配下の各種ユーティリティ（<code>selfuncs.h</code>, <code>syscache.h</code>, <code>typcache.h</code> 等）</li>
-<li><code>access/htup_details.h</code></li>
-<li><code>fmgr.h</code></li>
-<li><code>funcapi.h</code></li>
-<li><code>nodes/nodeFuncs.h</code></li>
-<li><code>utils/array.h</code></li>
-<li><code>utils/builtins.h</code></li>
-<li><code>utils/fmgrprotos.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
-<li><code>utils/selfuncs.h</code></li>
-<li><code>utils/syscache.h</code></li>
-<li><code>utils/typcache.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code>: 統計オブジェクト定義。</li>
+<li><code>statistics/extended_stats_internal.h</code>: 内部データ構造（<code>MCVList</code>, <code>MCVItem</code> 等）。</li>
+<li><code>utils/selfuncs.h</code>: 選択率推定の共通基盤。</li>
+<li><code>utils/typcache.h</code>: 型ごとの比較演算子ルックアップ。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/statistics/extended_stats.c</code>: 拡張統計情報の管理全般。</li>
-<li><code>src/backend/statistics/dependencies.c</code>: 列間の関数的依存関係の統計。</li>
-<li><code>src/backend/statistics/mvdistinct.c</code>: 多変量NDistinct値の統計。</li>
+<li><code>extended_stats.c</code>: 拡張統計のカタログ操作と制御のハブ。</li>
+<li><code>dependencies.c</code>: 関数従属性による選択率推定（MCVと並ぶ主要手法）。</li>
+<li><code>mvdistinct.c</code>: 多変量NDistinctの推定。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**メモリ効率**: MCVリストは値をインデックス化して格納するため、データ型によっては大幅に圧縮されます。</li>
-<li>**推定の仕組み**: MCVリストは「カバーできる範囲」の選択率を正確に計算し、残りの部分は独立性を仮定した「単純な選択率」と組み合わせるハイブリッドなアプローチをとっています。</li>
-<li>**デバッグ**: <code>pg_stats_ext_mcvlist_items</code> 関数を使用すると、SQL経由でMCVリストの中身を可視化できます。</li>
+<li>**メモリ管理**: <code>statext_mcv_deserialize</code> は、すべてのデータを単一のメモリチャンクとして割り当てます。これにより、<code>pfree</code> 一発でメモリ解放が可能です。</li>
+<li>**レイアウト**: シリアライズ形式は、ヘッダー、次元情報、重複排除された値配列、アイテム配列の順で構成されます。<code>uint16</code> インデックスを使用しているため、MCVリストのアイテム数は最大 65,535 に制限されます（現状の統計ターゲット設定により、実際にはもっと少ない数で運用されます）。</li>
+<li>**制約**: <code>pg_mcv_list_in</code> / <code>recv</code> は未実装です。これは、MCVリストがシステム内部でのみ使用されるバイナリ形式であり、ユーザーが直接SQLで入力することを想定していないためです。</li>
+<li>**未実装・浅い部分**: <code>mcv_get_match_bitmap</code> 内のビットマップは現在 <code>bool</code> 配列ですが、ビット演算に最適化することでメモリ効率と速度を向上させる余地があります。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

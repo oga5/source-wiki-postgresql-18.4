@@ -1,70 +1,57 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/pl/plpgsql/src/pl_comp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/pl/plpgsql/src/pl_comp.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/pl/plpgsql/src/pl_comp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/pl/plpgsql/src/pl_comp.c</h1>
 <h2>概要</h2>
-<p>PL/pgSQL 言語のコンパイラ部分を実装するファイルです。PostgreSQL の関数定義（<code>CREATE FUNCTION</code>）や匿名コードブロック（<code>DO</code>）のソーステキストを解析し、実行可能な <code>PLpgSQL_function</code> 構造体（実行ツリー）を構築します。</p>
+<p>PL/pgSQL のコンパイラ実装です。SQL 関数や <code>DO</code> ブロックのソースコードを解析し、実行エンジンが利用する抽象構文木（AST）およびデータ構造（<code>PLpgSQL_function</code>）を構築します。本ファイルは、構文解析器（<code>pl_scanner.c</code>）と実行エンジン（<code>pl_exec.c</code>）の橋渡しを行い、名前解決、型チェック、およびメモリ管理を統括します。</p>
 <h2>モジュール内での役割</h2>
-<p>PL/pgSQL サブシステムにおいて、ソースコードを解析して実行可能な中間表現に変換するフロントエンドの役割を担います。<code>pl_handler.c</code> から呼び出され、解析結果を <code>pl_exec.c</code> が実行時に利用します。</p>
+<p>PL/pgSQL サブシステムにおける「コンパイルフェーズ」を担当します。<code>pl_handler.c</code> から呼び出され、システムカタログから取得したソースコードを、実行可能な内部表現へと変換します。</p>
 <h2>責務</h2>
 <ul>
-<li>**関数コンパイル**: SQL テキストを解析し、変数、パラメータ、ステートメントのツリーを生成する。</li>
-<li>**名前空間管理**: 変数やパラメータのスコープを管理し、名前解決を行う。</li>
-<li>**データ型構築**: PL/pgSQL で使用するデータ型情報を PostgreSQL のシステムカタログから構築する。</li>
-<li>**パーサーフック**: SQL 式内の変数参照を解決するためのパーサーコールバックを提供し、動的パラメータを処理する。</li>
+<li>**関数コンパイル**: <code>CREATE FUNCTION</code> 等のソースを解析し、<code>PLpgSQL_function</code> 構造体を生成。</li>
+<li>**名前空間管理**: 変数、レコード、パラメータのスコープ解決および名前解決。</li>
+<li>**型システム統合**: PostgreSQL の型システムと PL/pgSQL の変数型のマッピングおよび検証。</li>
+<li>**エラーハンドリング**: コンパイル時の構文エラーに対するコンテキスト情報の付与。</li>
+<li>**リソース管理**: コンパイル中に使用するメモリコンテキストの管理と、成功時の永続化。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>コンパイルエントリーポイント</h3>
 <ul>
-<li><code>plpgsql_compile</code>: 関数コンパイルの主要なエントリーポイント。</li>
-<li><code>plpgsql_compile_inline</code>: <code>DO</code> ブロック用のコンパイル関数。</li>
-<li><code>plpgsql_compile_callback</code>: 実際のコンパイル処理を行う内部関数。</li>
-<li><code>plpgsql_Datums</code>: コンパイル中に生成されたすべての変数・レコードを保持する配列。</li>
-<li><code>plpgsql_parser_setup</code>: SQL 式の解析時に変数参照を解決するためのフック設定。</li>
+<li><code>plpgsql_compile</code>: 関数コンパイルのメインインターフェース。キャッシュ済みの場合は即座に返却。</li>
+<li><code>plpgsql_compile_callback</code>: コンパイルの主処理。AST 構築、名前空間初期化、型解決を行う。</li>
+<li><code>plpgsql_compile_inline</code>: <code>DO</code> ブロック（匿名コードブロック）用のコンパイル処理。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>名前解決・パーサーフック</h3>
 <ul>
-<li><code>ExceptionLabelMap</code></li>
-<li><code>add_dummy_return</code></li>
-<li><code>add_parameter_name</code></li>
-<li><code>compile_error_callback_arg</code></li>
-<li><code>plpgsql_compile_error_callback</code></li>
-<li><code>plpgsql_param_ref</code></li>
-<li><code>plpgsql_post_column_ref</code></li>
-<li><code>plpgsql_pre_column_ref</code></li>
+<li><code>plpgsql_parser_setup</code>: SQL 式内の変数参照を解決するためのパーサーフック設定。</li>
+<li><code>resolve_column_ref</code>: SQL 式内の識別子を PL/pgSQL 変数またはレコードフィールドとして解決。</li>
+<li><code>plpgsql_parse_word</code> / <code>plpgsql_parse_dblword</code>: 字句解析器が識別子を検出した際の変数ルックアップ。</li>
+</ul>
+<h3>データ構造構築</h3>
+<ul>
+<li><code>plpgsql_build_variable</code>: 変数（<code>PLpgSQL_var</code>）またはレコード（<code>PLpgSQL_rec</code>）の生成と登録。</li>
+<li><code>plpgsql_build_datatype</code>: PostgreSQL の型情報から PL/pgSQL の型構造体を構築。</li>
+<li><code>build_row_from_vars</code>: 複数の変数を束ねる行（Row）構造体の生成。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>plpgsql_compile</code> が <code>cached_function_compile</code> を経由して <code>plpgsql_compile_callback</code> を呼び出します。 2. **コンテキスト作成**: 関数専用のメモリコンテキストを作成し、解析中のメモリ割り当てを管理します。 3. **解析**: <code>plpgsql_yyparse</code> を呼び出し、スキャナからトークンを読み取ってステートメントツリーを構築します。 4. **名前解決**: <code>plpgsql_pre_column_ref</code> 等のフックを通じて、SQL 式内の識別子が PL/pgSQL 変数かテーブル列かを判定し、<code>Param</code> ノードに変換します。 5. **完了**: 構築された <code>PLpgSQL_function</code> を <code>CacheMemoryContext</code> に移動し、永続化します。</p>
+<p>1. **初期化**: <code>plpgsql_compile</code> が <code>func_cxt</code>（メモリコンテキスト）を作成し、<code>plpgsql_ns_init</code> で名前空間を初期化。 2. **解析**: <code>plpgsql_yyparse</code> を呼び出し、字句解析器と連携して AST を生成。 3. **変数登録**: <code>plpgsql_start_datums</code> でデータム配列を準備し、解析過程で <code>plpgsql_build_variable</code> 等を用いて変数を登録。 4. **解決**: SQL 式が含まれる場合、パーサーフック（<code>plpgsql_pre_column_ref</code> 等）を通じて、SQL 内の識別子を <code>plpgsql_ns_lookup</code> で変数にバインド。 5. **完了**: <code>plpgsql_finish_datums</code> でデータムを関数構造体にコピーし、メモリコンテキストを <code>CacheMemoryContext</code> に昇格させて永続化。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>plpgsql.h</code>: PL/pgSQL の主要なデータ構造と型定義。</li>
-<li><code>parser/parse_node.h</code>: PostgreSQL のパーサー状態管理。</li>
-<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: システムカタログ情報。</li>
-<li><code>utils/syscache.h</code>: 型やプロシージャのキャッシュ検索。</li>
+<li><code>plpgsql.h</code>: コアデータ構造の定義。</li>
+<li><code>parser/parse_node.h</code>: SQL パーサーのノード定義。</li>
 <li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
-<li><code>access/htup_details.h</code></li>
-<li><code>catalog/namespace.h</code></li>
-<li><code>ctype.h</code></li>
-<li><code>funcapi.h</code></li>
-<li><code>nodes/makefuncs.h</code></li>
-<li><code>plerrcodes.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>utils/builtins.h</code></li>
-<li><code>utils/fmgroids.h</code></li>
-<li><code>utils/guc.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
-<li><code>utils/regproc.h</code></li>
-<li><code>utils/typcache.h</code></li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_proc</code>, <code>pg_type</code>）へのアクセス。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>pl_scanner.c</code>: ソーステキストをトークン化するスキャナ。</li>
-<li><code>pl_funcs.c</code>: ステートメントや式のデータ構造操作。</li>
-<li><code>pl_exec.c</code>: コンパイルされたツリーを実行するランタイム。</li>
-<li><code>pl_handler.c</code>: PL/pgSQL 言語ハンドラのメインエントリー。</li>
+<li><code>pl_scanner.c</code>: 字句解析器。本ファイルの <code>plpgsql_parse_*</code> 系関数を呼び出す。</li>
+<li><code>pl_funcs.c</code>: 名前空間管理（<code>plpgsql_ns_*</code>）や AST 走査ユーティリティ。</li>
+<li><code>pl_exec.c</code>: コンパイルされた <code>PLpgSQL_function</code> を実行するエンジン。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**メモリ管理**: コンパイル中のメモリは <code>plpgsql_compile_tmp_cxt</code> で管理され、成功時にのみ <code>CacheMemoryContext</code> へ昇格されます。このため、コンパイル失敗時のメモリリークが抑制されています。</li>
-<li>**再入不可**: このファイル内のコードは再入可能ではありません。コンパイル中に別の PL/pgSQL 関数が呼び出されることは想定されていません。</li>
-<li>**名前解決**: <code>resolve_column_ref</code> は、SQL 式内の識別子が変数か列かを解決する重要な箇所です。複雑な名前解決ルール（<code>A.B.C</code> など）がここで実装されています。</li>
+<li>**メモリ管理**: コンパイル中のメモリは <code>plpgsql_compile_tmp_cxt</code> で管理され、失敗時には自動的にクリーンアップされます。成功時のみ <code>MemoryContextSetParent</code> で永続化される設計です。</li>
+<li>**再入不可**: 本ファイル内のコンパイルロジックは再入可能（re-entrant）ではありません。コンパイル中に別の PL/pgSQL 関数が呼び出されることは想定されていません。</li>
+<li>**型解決**: ポリモーフィック型（<code>ANYELEMENT</code> 等）の解決は、コンパイル時に呼び出し元の情報に基づいて行われます。</li>
+<li>**省略された詳細**: <code>plerrcodes.h</code> に依存する例外ラベルの全リストや、個別のステートメント（<code>IF</code>, <code>LOOP</code> 等）の具体的な AST 構築ロジックは、<code>pl_gram.y</code>（パーサー定義）側に委譲されているため、本ファイルでは主に「変数と型の管理」に焦点を当てています。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

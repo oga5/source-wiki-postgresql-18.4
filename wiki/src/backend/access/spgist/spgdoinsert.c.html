@@ -1,66 +1,59 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/spgist/spgdoinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgdoinsert.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/access/spgist/spgdoinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/spgist/spgdoinsert.c</h1>
 <h2>概要</h2>
-<p>SP-GiST（Space-Partitioned GiST）インデックスへのデータ挿入アルゴリズムを実装するコアファイルです。ツリーの探索、ノードの分割（PickSplit）、およびリーフタプルの挿入・移動といった、インデックス構造を維持するための複雑な操作を担います。</p>
+<p>SP-GiSTインデックスへのデータ挿入アルゴリズムを実装する中核ファイルです。ツリーの走査、ノードの選択、ページ分割（PickSplit）、およびインデックス構造の動的な再構成（ノード追加やタプル分割）を担います。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/access/spgist</code> モジュールにおいて、インデックスの更新処理の心臓部です。<code>spginsert.c</code> が外部インターフェースを提供し、このファイルが実際のツリー構造の変更（ページ分割や再配置）を制御します。</p>
+<p><code>src/backend/access/spgist</code> モジュールにおいて、<code>spginsert.c</code> から呼び出される挿入ロジックの心臓部です。インデックスの物理的なページ状態を管理し、演算子クラス（OpClass）が提供する <code>choose</code> や <code>picksplit</code> プロシージャの結果に基づき、ツリーを適切に成長させます。</p>
 <h2>責務</h2>
 <ul>
-<li>**挿入ロジックの実行**: <code>spgdoinsert</code> 関数を起点に、適切なリーフページへの到達と挿入を試行する。</li>
-<li>**ページ管理**: ページ容量不足時の分割（<code>doPickSplit</code>）や、リーフチェーンの移動（<code>moveLeafs</code>）を制御する。</li>
-<li>**WAL 記録**: インデックスの整合性を保つため、構造変更時の WAL ログ生成を管理する。</li>
-<li>**ノード操作**: インナータプルのノード追加（<code>spgAddNodeAction</code>）や分割（<code>spgSplitNodeAction</code>）を行う。</li>
+<li>**挿入フローの制御**: ルートからリーフに至るまで、適切なノードを選択しながらツリーを下降する。</li>
+<li>**ページ管理と分割**: リーフページが溢れた際の分割（<code>doPickSplit</code>）や、チェーンの移動（<code>moveLeafs</code>）を実行する。</li>
+<li>**構造変更**: ノードの追加（<code>spgAddNodeAction</code>）や内部タプルの分割（<code>spgSplitNodeAction</code>）によるツリーの再構成。</li>
+<li>**WAL整合性**: 構造変更時のWALログ記録と、クラッシュリカバリのための整合性担保。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>状態管理</h3>
 <ul>
-<li><code>spgdoinsert</code>: 挿入のメインループ。ツリーを下降し、必要に応じて分割やノード追加を繰り返す。</li>
-<li><code>SPPageDesc</code>: 挿入中のページ、タプル、ノード情報を保持する一時的な構造体。</li>
-<li><code>doPickSplit</code>: ページ容量が不足した際に、リーフタプルを再分配してインナータプルを生成する。</li>
-<li><code>moveLeafs</code>: 分割するほどではないが、ページ容量が足りない場合にリーフチェーンを別のページへ移動させる。</li>
-<li><code>spgPageIndexMultiDelete</code>: ページ内のタプルを削除し、リダイレクトやプレースホルダーで置き換える。</li>
+<li><code>SPPageDesc</code>: 挿入中のページ、タプル、ノード情報を保持する一時的な記述子。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>挿入・再構成アクション</h3>
 <ul>
-<li><code>addLeafTuple</code></li>
-<li><code>addNode</code></li>
-<li><code>checkAllTheSame</code></li>
-<li><code>checkSplitConditions</code></li>
-<li><code>cmpOffsetNumbers</code></li>
-<li><code>saveNodeLink</code></li>
-<li><code>setRedirectionTuple</code></li>
-<li><code>spgUpdateNodeLink</code></li>
+<li><code>spgdoinsert</code>: 挿入のメインエントリーポイント。ループ内でツリーを下降し、必要に応じて再試行する。</li>
+<li><code>spgMatchNodeAction</code>: 既存のノードへ下降する。</li>
+<li><code>spgAddNodeAction</code>: 内部タプルに新しいノードを追加する。</li>
+<li><code>spgSplitNodeAction</code>: 内部タプルを接頭辞と接尾辞に分割する。</li>
+</ul>
+<h3>ページ分割・メンテナンス</h3>
+<ul>
+<li><code>doPickSplit</code>: リーフページ分割のメインロジック。演算子クラスの <code>picksplit</code> を呼び出し、データを再配置する。</li>
+<li><code>moveLeafs</code>: 分割するほどデータ量が多くない場合に、チェーン全体を別のページへ移動する。</li>
+<li><code>spgPageIndexMultiDelete</code>: ページ内の複数タプルを削除し、リダイレクトやプレースホルダーで置き換える。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>spgdoinsert</code> が挿入対象のリーフタプルを準備し、ルートページから探索を開始する。 2. **探索**: <code>spgChoose</code> プロシージャを呼び出し、インナータプルのどのノードへ進むかを決定する。 3. **挿入/分割**:</p>
+<p>1. **初期化**: <code>spgdoinsert</code> が <code>choose</code> プロシージャを準備し、ルートページから開始。 2. **下降**: <code>choose</code> プロシージャの結果（<code>spgMatchNode</code>, <code>spgAddNode</code>, <code>spgSplitTuple</code>）に従い、ツリーを下降または構造を変更。 3. **リーフ到達**:</p>
 <ul>
-<li>ページに空きがあれば <code>addLeafTuple</code> で挿入。</li>
-<li>空きがなければ <code>doPickSplit</code> または <code>moveLeafs</code> を実行し、ツリー構造を更新。</li>
-<p>4. **再帰/ループ**: 構造変更が発生した場合、新しいインナータプルに対して再度探索を行う。 5. **完了**: 最終的にリーフページへ挿入が完了するまでループを継続する。</p>
+<li>空きがあれば <code>addLeafTuple</code> で挿入。</li>
+<li>溢れた場合、<code>doPickSplit</code> でページ分割を行い、必要に応じて再帰的に構造を更新。</li>
+<p>4. **WAL記録**: 各変更は <code>START_CRIT_SECTION()</code> で囲まれ、<code>XLogInsert</code> を通じてWALに書き込まれる。 5. **再試行**: 並行挿入による競合やロック失敗時は、<code>spgdoinsert</code> が <code>false</code> を返し、呼び出し元が再試行する。</p>
 </ul>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/spgist_private.h</code>: SP-GiST 内部構造体定義。</li>
-<li><code>access/spgxlog.h</code>: WAL ログの構造定義。</li>
-<li><code>storage/bufmgr.h</code>: バッファ管理とロック制御。</li>
-<li><code>access/xloginsert.h</code>: WAL 挿入インターフェース。</li>
-<li><code>access/genam.h</code></li>
-<li><code>common/int.h</code></li>
-<li><code>common/pg_prng.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>utils/rel.h</code></li>
+<li><code>access/spgist_private.h</code>: SP-GiST内部データ構造（<code>SpGistInnerTuple</code>, <code>SpGistLeafTuple</code> 等）。</li>
+<li><code>access/spgxlog.h</code>: WALリプレイ用の構造体定義。</li>
+<li><code>storage/bufmgr.h</code>: バッファのロックおよびダーティフラグ管理。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>spgproc.c</code>: ユーザー定義の <code>choose</code> や <code>picksplit</code> 関数を呼び出すための基盤。</li>
-<li><code>spgutils.c</code>: タプルの作成やページ初期化などのユーティリティ関数群。</li>
-<li><code>spgxlog.c</code>: WAL リプレイ時の処理。</li>
+<li><code>spgutils.c</code>: タプルの生成やページ初期化などの低レベルユーティリティ。</li>
+<li><code>spginsert.c</code>: 外部からの挿入インターフェース。</li>
+<li><code>spgxlog.c</code>: 本ファイルで生成されたWALレコードのリプレイ処理。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**デッドロック回避**: ページを下降する際、ロック取得順序に注意が必要です。<code>ConditionalLockBuffer</code> を使用してデッドロックを回避しており、ロック取得に失敗した場合は挿入を中断して再試行する設計になっています。</li>
-<li>**WAL 整合性**: 構造変更は <code>START_CRIT_SECTION()</code> で囲まれており、エラー発生時にはインデックスが壊れないよう細心の注意が払われています。</li>
-<li>**無限ループ**: 壊れた opclass が <code>picksplit</code> で進捗のない分割を繰り返す可能性があるため、<code>numNoProgressCycles</code> によるガードが実装されています。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用しますが、WAL記録中のクリティカルセクション内ではメモリ確保を行わないよう設計されています。</li>
+<li>**並行性**: ページレベルのロックを使用します。デッドロック回避のため、親ページから子ページへ下降する順序が厳格に守られています。</li>
+<li>**未実装・浅い部分**: <code>spgdoinsert</code> 内の <code>numNoProgressCycles</code> による無限ループ検出は、演算子クラスのバグに対する安全装置ですが、極めて稀なケースを想定しています。</li>
+<li>**注意**: <code>spgPageIndexMultiDelete</code> はWALリプレイ時にも使用されるため、状態依存のロジックを極力排除しています。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

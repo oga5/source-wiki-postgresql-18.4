@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/optimizer/plan/README</title><link rel="stylesheet" href="../../../../../../styles.css"></head><body><h1>Japanese translation</h1><p><code>src/backend/optimizer/plan/README</code></p><pre>src/backend/optimizer/plan/README
+
+サブセレクト (Subselects)
+========================
+
+Vadim B. Mikheev
+
+
+From owner-pgsql-hackers@hub.org Fri Feb 13 09:01:19 1998
+Received: from renoir.op.net (root@renoir.op.net [209.152.193.4])
+	by candle.pha.pa.us (8.8.5/8.8.5) with ESMTP id JAA11576
+	for &lt;maillist@candle.pha.pa.us&gt;; Fri, 13 Feb 1998 09:01:17 -0500 (EST)
+Received: from hub.org (hub.org [209.47.148.200]) by renoir.op.net (o1/$Revision: 1.14 $) with ESMTP id IAA09761 for &lt;maillist@candle.pha.pa.us&gt;; Fri, 13 Feb 1998 08:41:22 -0500 (EST)
+Received: from localhost (majordom@localhost) by hub.org (8.8.8/8.7.5) with SMTP id IAA08135; Fri, 13 Feb 1998 08:40:17 -0500 (EST)
+Received: by hub.org (TLB v0.10a (1.23 tibbs 1997/01/09 00:29:32)); Fri, 13 Feb 1998 08:38:42 -0500 (EST)
+Received: (from majordom@localhost) by hub.org (8.8.8/8.7.5) id IAA06646 for pgsql-hackers-outgoing; Fri, 13 Feb 1998 08:38:35 -0500 (EST)
+Received: from dune.krasnet.ru (dune.krasnet.ru [193.125.44.86]) by hub.org (8.8.8/8.7.5) with ESMTP id IAA04568 for &lt;hackers@postgreSQL.org&gt;; Fri, 13 Feb 1998 08:37:16 -0500 (EST)
+Received: from sable.krasnoyarsk.su (dune.krasnet.ru [193.125.44.86])
+	by dune.krasnet.ru (8.8.7/8.8.7) with ESMTP id UAA13717
+	for &lt;hackers@postgreSQL.org&gt;; Fri, 13 Feb 1998 20:51:03 +0700 (KRS)
+	(envelope-from vadim@sable.krasnoyarsk.su)
+Message-ID: &lt;34E44FBA.D64E7997@sable.krasnoyarsk.su&gt;
+Date: Fri, 13 Feb 1998 20:50:50 +0700
+From: &quot;Vadim B. Mikheev&quot; &lt;vadim@sable.krasnoyarsk.su&gt;
+Organization: ITTS (Krasnoyarsk)
+X-Mailer: Mozilla 4.04 [en] (X11; I; FreeBSD 2.2.5-RELEASE i386)
+MIME-Version: 1.0
+To: PostgreSQL Developers List &lt;hackers@postgreSQL.org&gt;
+Subject: [HACKERS] Subselects are in CVS...
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+Sender: owner-pgsql-hackers@hub.org
+Precedence: bulk
+Status: OR
+
+実装に関するメモと未解決の課題です...
+
+まず、実装では相関Var（変数）を扱うために、新しいタイプのパラメータである PARAM_EXEC を使用します。query_planner() が呼び出されると、まず現在のクエリで参照されている上位クエリのすべての Var を、このタイプの Param に置き換えようとします。Var から Param へのマッピング、および Param から Var へのマッピングを保持するために、いくつかのグローバル変数が使用されます。
+
+これに続いて、現在のクエリのすべての SubLink が処理されます。クエリの qual に見つかった各 SubLink に対して、対応するサブセレクトを計画するために union_planner()（旧 planner() 関数）が呼び出されます（union_planner() は「単純な」クエリに対して query_planner() を呼び出し、UNION をサポートします）。サブセレクトの計画が完了すると、オプティマイザは、それが相関クエリなのか、非相関クエリなのか、あるいは「間接的」相関クエリ（親の Var は参照しないが、祖父母の Var を参照している：親の観点からは非相関）なのかを把握します。
+
+EXPRession 型または EXISTS 型の非相関サブクエリおよび間接的相関サブクエリについては、SubLink は SubLink-&gt;Oper リストからの「通常の」句に置き換えられます（このリストは単なる Oper ノードではなく、EXPR ノードのリストになるよう変更しました）。これらのノードの右辺は PARAM_EXEC パラメータに置き換えられます。これが新しいパラメータタイプの2つ目の用途です。実行時に、これらのパラメータはサブクエリの評価結果（つまり、サブクエリのターゲットリスト）から値を取得します。サブクエリ自体の実行計画は、親クエリの init plan になります。InitPlan はどのパラメータがサブクエリの結果から値を取得すべきかを把握しており、「オンデマンド」で実行されます（例：select * from table where x &gt; 0 and y &gt; (select max(a) from table_a) のようなクエリにおいて、x &gt; 0 を満たすタプルが存在せず、かつ y がインデックススキャンで使用されない場合、サブクエリは全く実行されません）。
+
+他のすべての型のサブクエリに対する SubLink は、新しいタイプの Expr ノードである SUBPLAN_EXPR に変換されます。Expr-&gt;args は「親」クエリからの相関変数です。Expr-&gt;oper は新しい SubPlan ノードです。
+
+このノードは InitPlan にも使用されます。これには、サブクエリの範囲テーブル、親クエリの Var（つまり Expr-&gt;args）から値を取得する Param のインデックス、サブクエリの結果を代入する Param のインデックス（これは InitPlan 用）、SubLink、およびサブクエリの実行計画が保持されます。
+
+Plan ノードは、親クエリや InitPlan からの Param への依存関係を把握し、変更された Param のリスト（上記のもの）を保持するように変更されました。これにより、リストが NULL でない場合は再スキャンが可能になります。また、InitPlans のリスト（実際には、現在のクエリに対するすべての InitPlan が最上位の Plan ノードに格納されています）やその他の SubPlans（plan-&gt;qual からのもの）のリストも追加され、それらを初期化し、変更された Param（それらの「関心」リストから）について通知できるようにしました。
+
+すべての SubLink が処理された後、query_planner() は qual の正規化関数を呼び出し、「通常」の処理を行います。Param を使用することで、オプティマイザはほとんど変更されずに済みます。
+
+さて、エグゼキュータについてです。ExecutorStart() や ExecutorEnd() を行わずに（リレーションやインデックスのオープン/クローズを行わず、多くの palloc() や pfree() を行わずに — これは SQL 関数が呼び出しのたびに行っていることです）サブプランを再評価するために、ExecReScan() は現在、ほとんどの Plan 型をサポートしています...
+
+EXPLAIN の説明。
+
+vac=&gt; explain select * from tmp where x &gt;= (select max(x2) from test2
+where y2 = y and exists (select * from tempx where tx = x));
+NOTICE:  QUERY PLAN:
+
+Seq Scan on tmp  (cost=40.03 size=101 width=8)
+  SubPlan
+  ^^^^^^^ サブクエリは Seq Scan の qual 内にあり、その計画は以下にあります
+    -&gt;  Aggregate  (cost=2.05 size=0 width=0)
+          InitPlan
+          ^^^^^^^^ EXISTS サブサブクエリはサブクエリの InitPlan です
+            -&gt;  Seq Scan on tempx  (cost=4.33 size=1 width=4)
+          -&gt;  Result  (cost=2.05 size=0 width=0)
+              ^^^^^^ EXISTS サブサブクエリは Param に変換されたため、
+                     ここに Result ノードがあります
+                -&gt;  Index Scan on test2  (cost=2.05 size=1 width=4)
+
+
+未解決の課題。
+
+1. 読み取り権限のチェックがない（簡単だが、まだ実装していない）。
+2. readfuncs.c が subplan を読み取れない（簡単。現在、実行計画の ASCII 表現をどこにも使用していないため、致命的ではない）。
+3. ExecReScan() がすべてのプラン型をサポートしていない。少なくとも MergeJoin のサポートは実装する必要がある。
+4. ExecReScan() におけるメモリリーク。
+5. アドバイスが必要：NOT IN で導入されたサブクエリがタプルを返さない場合、修飾（qualification）は失敗とみなされるべきか？
+6. 回帰テスト !!!!!!!!!!!!!!!!!!!!
+   (MySQL の crash.me のデータ/クエリを使用できるか？
+    著作権は？ 彼らは権利を譲渡してくれるか？)
+7. パフォーマンス。
+   - サブクエリが InitPlan に変換される場合は良好なはず。
+   - ANY/ALL で導入される非相関サブクエリについては何か対策が必要。検討中。現在は、親タプルごとにサブプランが再スキャンされるため、非常に遅い...
+
+いくつかのテスト結果。TMP は x, y (int4) を持つテーブルで、x は 0-9、y = 100 - x、1000 タプル（各タプルが10個の重複）。TEST2 は x2, y2 (int4) を持つテーブルで、x2 は 1-99、y2 = 100 - x2、10000 タプル（100個の重複）。
+
+   試行
+
+select * from tmp where x &gt;= (select max(x2) from test2 where y2 = y);
+
+   および
+
+begin;
+select y as ty, max(x2) as mx into table tsub from test2, tmp
+where y2 = y group by ty;
+vacuum tsub;
+select x, y from tmp, tsub where x &gt;= mx and y = ty;
+drop table tsub;
+end;
+
+   test2(y2) にインデックスがない場合：
+
+SubSelect         -&gt; 320 秒
+一時テーブル使用  -&gt; 32 秒
+
+   インデックスがある場合
+
+SubSelect         -&gt; 17 秒 (2MB のメモリ)
+一時テーブル使用  -&gt; 32 秒 (12MB のメモリ: -S 8192)
+
+Vadim</pre></body></html>

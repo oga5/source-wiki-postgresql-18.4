@@ -1,87 +1,61 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/functioncmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/functioncmds.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/commands/functioncmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/functioncmds.c</h1>
 <h2>概要</h2>
-<p>PostgreSQLにおける関数（FUNCTION）、プロシージャ（PROCEDURE）、キャスト（CAST）、および変換（TRANSFORM）の定義・削除・変更を管理するコマンド実装ファイルです。</p>
+<p>本ファイルは、PostgreSQL における関数（<code>FUNCTION</code>）、プロシージャ（<code>PROCEDURE</code>）、キャスト（<code>CAST</code>）、および変換（<code>TRANSFORM</code>）の定義・変更・削除を司る DDL コマンドの実装です。構文解析後のノードを受け取り、システムカタログ（<code>pg_proc</code>, <code>pg_cast</code>, <code>pg_transform</code> 等）への反映と整合性チェックを行います。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/commands</code> モジュールの一部として、SQLのDDL文（<code>CREATE FUNCTION</code>, <code>ALTER FUNCTION</code>, <code>DROP FUNCTION</code> 等）を解析し、システムカタログ（<code>pg_proc</code>, <code>pg_cast</code>, <code>pg_transform</code>）を操作する責務を担います。</p>
+<p><code>src/backend/commands</code> サブシステムの一部として、関数オブジェクトのライフサイクルを管理します。パーサーが生成した構文木をカタログ操作可能な形式に変換し、<code>catalog/</code> 配下の低レベルなカタログ更新関数を呼び出すブリッジの役割を果たします。</p>
 <h2>責務</h2>
 <ul>
-<li>**DDL解析と検証**: SQLパーサーから渡された構文木を解析し、引数、戻り値、言語、属性（volatility, cost等）の妥当性を検証する。</li>
-<li>**カタログ操作**: 適切なシステムカタログ更新ルーチンを呼び出し、オブジェクトの作成・更新・削除を行う。</li>
-<li>**権限チェック**: オブジェクト作成や実行に必要な権限（ACL）を検証する。</li>
-<li>**実行コンテキスト管理**: <code>CALL</code> 文実行時のアトミック/非アトミックなコンテキスト管理や、インラインコード（<code>DO</code> 文）の実行をサポートする。</li>
+<li>**関数定義の検証**: 引数リスト、戻り値型、属性（volatility, parallel, strict 等）の妥当性確認。</li>
+<li>**カタログ操作**: <code>CREATE FUNCTION/PROCEDURE</code> による <code>pg_proc</code> への挿入、<code>DROP</code> による削除。</li>
+<li>**キャストと変換の管理**: 型変換ルール（<code>pg_cast</code>）および言語間変換（<code>pg_transform</code>）の定義。</li>
+<li>**実行コンテキストの管理**: <code>CALL</code> 文実行時のアトミック性（トランザクション制御の可否）の判定と実行。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>関数定義・変更</h3>
 <ul>
-<li><code>CreateFunction</code>: <code>CREATE FUNCTION</code>/<code>PROCEDURE</code> 文のメインエントリポイント。</li>
-<li><code>AlterFunction</code>: <code>ALTER FUNCTION</code> 文の属性変更を処理する。</li>
-<li><code>RemoveFunctionById</code>: 関数や集約関数の削除処理。</li>
-<li><code>CreateCast</code> / <code>CreateTransform</code>: 型変換やデータ変換の定義を管理する。</li>
-<li><code>ExecuteDoStmt</code> / <code>ExecuteCallStmt</code>: プロシージャやインラインコードの実行を制御する。</li>
+<li><code>CreateFunction</code>: <code>CREATE FUNCTION/PROCEDURE</code> のメインエントリ。属性解析からカタログ登録までを統括。</li>
+<li><code>AlterFunction</code>: <code>ALTER FUNCTION</code> の実装。<code>pg_proc</code> の属性更新と依存関係の再構築を行う。</li>
+<li><code>RemoveFunctionById</code>: 関数または集約関数の削除。<code>pg_proc</code> および <code>pg_aggregate</code> からの削除を実行。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>パラメータ・属性解析</h3>
 <ul>
-<li><code>CallStmtResultDesc</code></li>
-<li><code>IsThereFunctionInNamespace</code></li>
-<li><code>compute_common_attribute</code></li>
-<li><code>compute_return_type</code></li>
-<li><code>interpret_function_parameter_list</code></li>
+<li><code>compute_function_attributes</code>: <code>CREATE/ALTER</code> のオプションリストを解析し、関数属性へマッピング。</li>
+<li><code>interpret_function_parameter_list</code>: 引数リスト（<code>IN</code>, <code>OUT</code>, <code>VARIADIC</code>）を解析し、<code>oidvector</code> や <code>ArrayType</code> に変換。</li>
+<li><code>compute_return_type</code>: 戻り値型の解決。シェル型の作成や検証を行う。</li>
+</ul>
+<h3>キャスト・変換</h3>
+<ul>
+<li><code>CreateCast</code>: <code>CREATE CAST</code> の実装。型間のバイナリ互換性や変換関数の妥当性を検証。</li>
+<li><code>CreateTransform</code>: <code>CREATE TRANSFORM</code> の実装。言語間変換関数の登録と依存関係の記録。</li>
+</ul>
+<h3>実行系</h3>
+<ul>
+<li><code>ExecuteDoStmt</code>: <code>DO</code> ブロックの実行。言語ハンドラの <code>laninline</code> を呼び出す。</li>
+<li><code>ExecuteCallStmt</code>: <code>CALL</code> 文の実行。プロシージャの引数評価と実行コンテキスト（アトミック性）の管理。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **解析**: <code>CreateFunction</code> 等が <code>ParseState</code> を受け取り、<code>compute_function_attributes</code> でオプションを抽出する。 2. **検証**: <code>interpret_function_parameter_list</code> で引数リストを解析し、型チェックや名前の重複確認を行う。 3. **変換**: <code>interpret_AS_clause</code> で関数本体（<code>prosrc</code>, <code>probin</code>）を確定させる。 4. **永続化**: <code>ProcedureCreate</code> などのカタログ操作関数を呼び出し、システムカタログを更新する。 5. **実行**: <code>ExecuteCallStmt</code> は <code>FuncExpr</code> を評価し、<code>fmgr</code> を通じてプロシージャを呼び出す。</p>
+<p>1. **解析フェーズ**: <code>compute_function_attributes</code> 等のヘルパーが <code>DefElem</code> リストを走査し、関数属性（<code>volatility</code>, <code>cost</code> 等）を抽出。 2. **型解決**: <code>LookupTypeName</code> や <code>typenameTypeId</code> を使用して、SQL レベルの型名をカタログ上の <code>Oid</code> に変換。 3. **カタログ更新**: <code>ProcedureCreate</code>（<code>catalog/</code> 側）を呼び出し、<code>pg_proc</code> への挿入を行う。 4. **依存関係記録**: <code>recordDependencyOn</code> を使用し、関数が依存する型や言語との関係を <code>pg_depend</code> に記録。 5. **実行時フロー**: <code>ExecuteCallStmt</code> は <code>FuncExpr</code> を評価し、<code>fmgr</code> を介してプロシージャを呼び出す。アトミック性が <code>false</code> の場合、トランザクション制御を許可するコンテキストを渡す。</p>
 <h2>直接依存</h2>
 <ul>
-<li>**カタログ**: <code>pg_proc</code>, <code>pg_cast</code>, <code>pg_transform</code>, <code>pg_type</code>, <code>pg_language</code> 等のシステムカタログ定義。</li>
-<li>**パーサー**: <code>parser/parse_func.h</code>, <code>parser/parse_type.h</code> 等の型・関数解析用ヘッダー。</li>
-<li>**ユーティリティ**: <code>utils/lsyscache.h</code>（システムキャッシュ検索）、<code>utils/acl.h</code>（権限チェック）。</li>
-<li><code>access/htup_details.h</code></li>
-<li><code>access/table.h</code></li>
-<li><code>catalog/catalog.h</code></li>
-<li><code>catalog/dependency.h</code></li>
-<li><code>catalog/indexing.h</code></li>
-<li><code>catalog/objectaccess.h</code></li>
-<li><code>catalog/pg_aggregate.h</code></li>
-<li><code>catalog/pg_cast.h</code></li>
-<li><code>catalog/pg_language.h</code></li>
-<li><code>catalog/pg_namespace.h</code></li>
-<li><code>catalog/pg_proc.h</code></li>
-<li><code>catalog/pg_transform.h</code></li>
-<li><code>catalog/pg_type.h</code></li>
-<li><code>commands/defrem.h</code></li>
-<li><code>commands/extension.h</code></li>
-<li><code>commands/proclang.h</code></li>
-<li><code>executor/executor.h</code></li>
-<li><code>executor/functions.h</code></li>
-<li><code>funcapi.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>nodes/nodeFuncs.h</code></li>
-<li><code>optimizer/optimizer.h</code></li>
-<li><code>parser/analyze.h</code></li>
-<li><code>parser/parse_coerce.h</code></li>
-<li><code>parser/parse_collate.h</code></li>
-<li><code>parser/parse_expr.h</code></li>
-<li><code>pgstat.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>tcop/pquery.h</code></li>
-<li><code>tcop/utility.h</code></li>
-<li><code>utils/builtins.h</code></li>
-<li><code>utils/guc.h</code></li>
-<li><code>utils/rel.h</code></li>
-<li><code>utils/snapmgr.h</code></li>
-<li><code>utils/syscache.h</code></li>
-<li><code>utils/typcache.h</code></li>
+<li><code>catalog/</code>: <code>pg_proc</code>, <code>pg_cast</code>, <code>pg_transform</code> 等のカタログ定義と操作関数。</li>
+<li><code>parser/</code>: <code>parse_func.h</code>, <code>parse_type.h</code> 等による型・関数名の解決。</li>
+<li><code>utils/</code>: <code>syscache.h</code>（カタログキャッシュ）、<code>acl.h</code>（権限チェック）、<code>typcache.h</code>（型情報）。</li>
+<li><code>executor/</code>: <code>functions.h</code>（関数実行基盤）。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/catalog/pg_proc.c</code>: カタログ操作の低レイヤー実装。</li>
-<li><code>src/backend/executor/functions.c</code>: 関数実行のエンジン。</li>
-<li><code>src/backend/parser/gram.y</code>: 本ファイルが処理するDDL文の文法定義。</li>
+<li><code>src/backend/catalog/pg_proc.c</code>: <code>ProcedureCreate</code> 等のカタログ更新の低レベル実装。</li>
+<li><code>src/backend/parser/gram.y</code>: 本ファイルが処理する <code>CreateFunctionStmt</code> 等の構文定義。</li>
+<li><code>src/backend/utils/fmgr/</code>: 関数呼び出しの基盤（<code>fmgr_info</code> 等）。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>本ファイルは非常に多機能です。関数定義の複雑な属性（<code>parallel</code>, <code>leakproof</code> 等）の解析ロジックを追う際は、<code>compute_function_attributes</code> を起点にすると全体像が把握しやすいです。</li>
-<li><code>CALL</code> 文の実行（<code>ExecuteCallStmt</code>）は、トランザクション制御を伴う非アトミックな実行コンテキストを扱うため、他のDDL処理とは異なる複雑さを持っています。</li>
-<li><code>pg_proc</code> は関数だけでなく、プロシージャや集約関数も格納するため、<code>prokind</code> フィールドによる条件分岐が随所に見られます。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用しており、コマンド実行単位のメモリコンテキストで管理されます。</li>
+<li>**エラーパス**: <code>ereport(ERROR, ...)</code> が多用されており、検証失敗時はトランザクションがアボートされます。</li>
+<li>**シェル型**: <code>compute_return_type</code> は、未定義の型を「シェル型」として作成する特殊なロジックを含みます。これは I/O 関数定義時に必要となる循環依存を解決するためです。</li>
+<li>**アトミック性**: <code>ExecuteCallStmt</code> における <code>atomic</code> フラグは、プロシージャ内での <code>COMMIT/ROLLBACK</code> を許可するかを制御する重要なフラグです。</li>
+<li>**省略箇所**: <code>pg_aggregate</code> の詳細なロジックは <code>src/backend/catalog/pg_aggregate.c</code> に委譲されており、本ファイルは主に <code>pg_proc</code> 側の操作に集中しています。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

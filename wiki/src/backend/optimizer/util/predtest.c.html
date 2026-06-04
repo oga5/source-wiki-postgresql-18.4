@@ -1,65 +1,52 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/optimizer/util/predtest.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/predtest.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/optimizer/util/predtest.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/optimizer/util/predtest.c</h1>
 <h2>概要</h2>
-<p><code>predtest.c</code> は、PostgreSQL のクエリ最適化プロセスにおいて、述語（Predicate）間の論理的な包含関係（Implication）や矛盾（Refutation）を証明するためのルーチン群を提供します。主に、WHERE 句や CHECK 制約の推論、パーティションプルーニング、インデックス条件の最適化などで利用されます。</p>
+<p><code>predtest.c</code> は、PostgreSQLのクエリプランナにおいて、述語（Predicate）間の論理的な包含関係（Implication）および矛盾（Refutation）を証明するための推論エンジンです。クエリの制約条件（<code>WHERE</code> 句や <code>CHECK</code> 制約）を比較し、不要なパスの排除や制約の最適化を可能にします。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/optimizer/util</code> モジュールの一部として、クエリの制約条件を論理的に解析する役割を担います。<code>clauses.c</code> 等で正規化された式ツリーを受け取り、それらが論理的に「真」を導くか、あるいは「偽」を導くかを判定します。</p>
+<p><code>src/backend/optimizer/util</code> モジュールの一部として、プランナが実行計画を生成する際の「論理推論」を担います。特に、インデックスの述語やテーブルの制約が、クエリの条件とどのように関連しているかを判定する基盤を提供します。</p>
 <h2>責務</h2>
 <ul>
-<li>**論理包含の証明**: ある条件（<code>clause_list</code>）が別の述語（<code>predicate_list</code>）を論理的に含意するかを判定する。</li>
-<li>**論理矛盾の証明**: ある条件が別の述語を否定（refute）できるかを判定する。</li>
-<li>**式構造の抽象化**: AND/OR 構造や <code>ScalarArrayOpExpr</code> を統一的に扱うためのイテレータ機構の提供。</li>
-<li>**演算子ベースの推論**: B-tree 演算子ファミリーの知識を利用した、定数比較や演算子間の包含関係の証明。</li>
+<li>**論理包含・矛盾の判定**: 述語リストが特定の条件を論理的に満たすか、あるいは矛盾するかを再帰的に判定する。</li>
+<li>**式ツリーの抽象化**: <code>AND</code>/<code>OR</code> 構造を持つ複雑な式（<code>List</code>, <code>BoolExpr</code>, <code>ScalarArrayOpExpr</code>）を統一的に扱うためのイテレータ基盤の提供。</li>
+<li>**演算子意味論の活用**: B-tree演算子族の知識を用い、演算子間の包含関係（例: <code>x &lt; y</code> は <code>x &lt;= y</code> を含意する）を証明する。</li>
+<li>**キャッシュ管理**: 演算子間の証明結果をキャッシュし、プランナの計算コストを削減する。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>推論エントリポイント</h3>
 <ul>
-<li><code>predicate_implied_by()</code>: 外部から呼び出されるメインの包含判定関数。</li>
-<li><code>predicate_refuted_by()</code>: 外部から呼び出されるメインの矛盾判定関数。</li>
-<li><code>PredClass</code> / <code>PredIterInfo</code>: AND/OR 構造を抽象化するための列挙型と構造体。</li>
-<li><code>MAX_SAOP_ARRAY_SIZE</code>: <code>ScalarArrayOpExpr</code> を AND/OR 展開する際の要素数上限（デフォルト 100）。</li>
-<li><code>OprProofCacheHash</code>: 演算子間の包含関係をキャッシュするハッシュテーブル。</li>
+<li><code>predicate_implied_by</code>: 述語が条件リストによって含意されるかを判定する。</li>
+<li><code>predicate_refuted_by</code>: 述語が条件リストによって矛盾（否定）されるかを判定する。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>抽象化イテレータ</h3>
 <ul>
-<li><code>ArrayConstIterState</code></li>
-<li><code>ArrayExprIterState</code></li>
-<li><code>InvalidateOprProofCacheCallBack</code></li>
-<li><code>OprProofCacheEntry</code></li>
-<li><code>OprProofCacheKey</code></li>
-<li><code>PredIterInfoData</code></li>
-<li><code>predicate_implied_by</code></li>
-<li><code>predicate_implied_by_recurse</code></li>
-<li><code>predicate_refuted_by</code></li>
-<li><code>predicate_refuted_by_recurse</code></li>
+<li><code>PredClass</code>: 式の型（ATOM, AND, OR）を定義する列挙型。</li>
+<li><code>PredIterInfoData</code>: 式の走査状態を保持する構造体。<code>startup_fn</code>, <code>next_fn</code>, <code>cleanup_fn</code> を持ち、異なるノード型を統一的に扱う。</li>
+</ul>
+<h3>演算子証明キャッシュ</h3>
+<ul>
+<li><code>OprProofCacheHash</code>: 演算子ペアの証明結果を保持するハッシュテーブル。</li>
+<li><code>OprProofCacheEntry</code>: キャッシュエントリ。含意・矛盾の証明結果およびテスト用演算子を保持する。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **分類**: <code>predicate_classify()</code> が入力式を <code>CLASS_ATOM</code>, <code>CLASS_AND</code>, <code>CLASS_OR</code> に分類し、イテレータを初期化します。 2. **再帰的走査**: <code>predicate_implied_by_recurse()</code> / <code>predicate_refuted_by_recurse()</code> が、AND/OR の論理規則に従って再帰的に式を分解します。 3. **終端判定**: 最終的に <code>predicate_implied_by_simple_clause()</code> 等の「単純な節」に対する判定関数に到達します。 4. **演算子推論**: 演算子同士の比較が必要な場合、<code>operator_predicate_proof()</code> が B-tree オペレータファミリーの情報を参照し、定数比較用の演算子を特定して実行します。</p>
+<p>1. **再帰的走査**: <code>predicate_implied_by_recurse</code> / <code>predicate_refuted_by_recurse</code> が、<code>predicate_classify</code> を用いて式を <code>AND</code>/<code>OR</code>/<code>ATOM</code> に分類しながら再帰的に探索します。 2. **イテレーション**: <code>iterate_begin</code>/<code>iterate_end</code> マクロと <code>PredIterInfo</code> を通じて、<code>List</code> や <code>ScalarArrayOpExpr</code> の要素を抽象的に列挙します。 3. **単純条件の判定**: <code>predicate_implied_by_simple_clause</code> が、<code>equal()</code> による直接比較や <code>clause_is_strict_for</code> による NULL 厳密性の判定を行います。 4. **演算子証明**: <code>operator_predicate_proof</code> が、演算子族（B-tree）の情報を利用して定数比較や演算子間の包含関係を判定します。必要に応じて <code>get_btree_test_op</code> で比較用演算子を特定し、<code>ExecEvalExpr</code> で実行時に評価します。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>nodes/nodeFuncs.h</code>, <code>nodes/pathnodes.h</code>: 式ツリーの操作とノード定義。</li>
-<li><code>utils/lsyscache.h</code>, <code>utils/syscache.h</code>: 演算子や型情報のカタログ参照。</li>
-<li><code>utils/array.h</code>: <code>ScalarArrayOpExpr</code> の解析用。</li>
-<li><code>executor/executor.h</code>: 実行時コンテキスト（<code>EState</code>）の管理。</li>
-<li><code>catalog/pg_operator.h</code></li>
-<li><code>catalog/pg_proc.h</code></li>
-<li><code>catalog/pg_type.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>nodes/makefuncs.h</code></li>
-<li><code>optimizer/optimizer.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>utils/inval.h</code></li>
+<li><code>nodes/</code>: ノード操作および走査基盤。</li>
+<li><code>catalog/</code>: <code>pg_operator</code>, <code>pg_proc</code>, <code>pg_type</code> へのアクセス。</li>
+<li><code>utils/</code>: <code>lsyscache.h</code> (システムキャッシュ), <code>array.h</code> (配列操作), <code>inval.h</code> (キャッシュ無効化)。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/optimizer/util/clauses.c</code>: 式の正規化（AND/OR のフラット化など）を行うため、本ファイルの前提条件を整える。</li>
-<li><code>src/backend/access/nbtree/nbtcompare.c</code>: B-tree 演算子の意味論的な定義。</li>
-<li><code>src/backend/utils/cache/lsyscache.c</code>: 演算子の negator/commutator 取得。</li>
+<li><code>clauses.c</code>: 式の簡略化や定数評価の基盤。</li>
+<li><code>restrictinfo.c</code>: <code>RestrictInfo</code> ノードの管理。</li>
+<li><code>access/cmptype.h</code>: B-tree演算子の比較タイプ定義。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**不変性（Immutability）**: 本モジュールは、関数や演算子が <code>IMMUTABLE</code> であることを前提に推論を行います。これに違反する式を渡すと、プラン作成時と実行時で結果が乖離するリスクがあります。</li>
-<li>**再帰の深さ**: 複雑な AND/OR 構造を持つ式は再帰的に処理されるため、極端に深い式ツリーはスタックオーバーフローやパフォーマンス低下を招く可能性があります。</li>
-<li>**キャッシュ**: <code>OprProofCacheHash</code> は <code>pg_amop</code> の変更時に <code>InvalidateOprProofCacheCallBack</code> によってフラッシュされます。デバッグ時はキャッシュのヒット状況に注意してください。</li>
+<li>**メモリ管理**: <code>PredIterInfo</code> の各実装（<code>arrayconst_startup_fn</code> 等）は、必要に応じて <code>palloc</code> で状態を確保し、<code>cleanup_fn</code> で解放します。</li>
+<li>**不変性（Immutability）**: 本モジュールは、関数や演算子が <code>IMMUTABLE</code> であることを前提に推論を行います。<code>STABLE</code> や <code>VOLATILE</code> な関数が含まれる場合、誤った推論を避けるため証明は失敗します。</li>
+<li>**制限事項**: <code>MAX_SAOP_ARRAY_SIZE</code> (100) を超える <code>ScalarArrayOpExpr</code> は、推論コストを抑えるために <code>ATOM</code> として扱われ、詳細な推論はスキップされます。</li>
+<li>**NULL 処理**: <code>weak</code> フラグは、NULL を考慮した推論（<code>CHECK</code> 制約等）を行うか、厳密な真偽値のみを扱うか（<code>WHERE</code> 句等）を制御します。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

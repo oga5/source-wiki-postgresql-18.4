@@ -1,74 +1,51 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/access/brin/brin_minmax_multi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_minmax_multi.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/access/brin/brin_minmax_multi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>src/backend/access/brin/brin_minmax_multi.c</h1>
 <h2>概要</h2>
-<p><code>brin_minmax_multi.c</code> は、PostgreSQL の BRIN (Block Range Index) インデックスにおける「Multi Min/Max」演算クラスの実装です。従来の単一範囲（Min/Max）では対応が困難だった、外れ値を含むデータ分布を効率的に扱うために設計されています。</p>
+<p>本ファイルは、BRIN インデックスにおける「Multi Min/Max」戦略の実装です。従来の単一範囲（Min/Max）では、外れ値の混入により範囲が過度に拡大し、インデックスの選択性が低下する問題がありました。本モジュールは、複数の小さな間隔（Interval）を保持することで、外れ値の影響を局所化し、スキャン効率を維持します。</p>
 <h2>モジュール内での役割</h2>
-<p>BRIN サブシステムの一部として、ページ範囲ごとの統計情報を管理します。単一の <code>[min, max]</code> ではなく、複数の間隔（Interval）を保持することで、データに大きなギャップや外れ値が存在する場合でも、インデックスによる不要なページ範囲のスキップを可能にします。</p>
+<p>BRIN アクセスメソッドの演算戦略の一つとして機能します。<code>brin.c</code> 等のコアモジュールから呼び出される演算関数（<code>consistent</code>, <code>add_value</code>, <code>union</code> 等）を提供し、インデックスの要約データ（<code>Ranges</code>）の構築、シリアライズ、およびマージを担います。</p>
 <h2>責務</h2>
 <ul>
-<li>**多重間隔の管理**: ページ範囲内の値を複数の間隔と単一ポイントの集合として保持・更新する。</li>
-<li>**動的な圧縮**: 保持する値の数が制限（<code>values_per_range</code>）を超えた際、最も近い間隔同士をマージしてサイズを縮小する。</li>
-<li>**シリアライズ/デシリアライズ**: インデックスの物理格納用に、メモリ上の構造体をコンパクトな <code>bytea</code> 形式へ変換する。</li>
-<li>**距離計算**: 間隔同士の「距離」を計算し、どの間隔をマージすべきかを決定するサポート関数の提供。</li>
+<li>**要約の管理**: ページ範囲内の値を複数の間隔または単一の値として保持し、<code>values_per_range</code> オプションに基づき管理する。</li>
+<li>**動的圧縮**: 保持する値が上限を超えた場合、距離関数（<code>distance</code>）を用いて最も近い間隔同士を貪欲にマージし、サイズを縮小する。</li>
+<li>**シリアライズ**: インメモリの <code>Ranges</code> 構造体を、ディスク保存用の <code>SerializedRanges</code>（<code>bytea</code> 形式）へ変換する。</li>
+<li>**演算戦略の提供**: 距離計算（<code>distance</code>）や比較演算を各データ型向けに提供する。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>データ構造</h3>
 <ul>
-<li><code>Ranges</code>: メモリ上で間隔とポイントを管理する主要構造体。</li>
-<li><code>SerializedRanges</code>: ディスク上の物理格納形式。</li>
-<li><code>ExpandedRange</code>: マージ処理のために間隔を正規化した一時的な表現。</li>
-<li><code>brin_minmax_multi_add_value</code>: 新しい値をインデックスに追加する際のメインエントリポイント。</li>
-<li><code>brin_minmax_multi_consistent</code>: スキャンキーとインデックスの整合性をチェックする関数。</li>
+<li><code>Ranges</code>: インメモリでの要約表現。固定長ヘッダと可変長の <code>values</code> 配列を持つ。</li>
+<li><code>SerializedRanges</code>: ディスク上の永続化形式。<code>bytea</code> として格納される。</li>
+<li><code>ExpandedRange</code>: マージ処理時に使用する、min/max を明示的に持つ中間表現。</li>
+<li><code>MinmaxMultiOpaque</code>: インデックスのメタデータキャッシュ。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>主要関数</h3>
 <ul>
-<li><code>AssertArrayOrder</code></li>
-<li><code>AssertCheckExpandedRanges</code></li>
-<li><code>AssertCheckRanges</code></li>
-<li><code>DistanceValue</code></li>
-<li><code>MinMaxMultiOptions</code></li>
-<li><code>MinmaxMultiOpaque</code></li>
-<li><code>compare_context</code></li>
-<li><code>minmax_multi_init</code></li>
-<li><code>range_deduplicate_values</code></li>
+<li><code>brin_minmax_multi_add_value</code>: 新しい値を要約に追加し、必要に応じて圧縮を行う。</li>
+<li><code>brin_minmax_multi_consistent</code>: スキャンキーと要約を比較し、ページ範囲のスキップ可否を判定する。</li>
+<li><code>brin_minmax_multi_union</code>: 2つの要約をマージする。</li>
+<li><code>reduce_expanded_ranges</code>: 距離関数に基づき、要約のサイズを目標値まで縮小する。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **値の追加**: <code>brin_minmax_multi_add_value</code> が呼ばれ、既存の <code>Ranges</code> に値が追加されます。 2. **バッファ管理**: 制限を超えると <code>ensure_free_space_in_buffer</code> が起動し、<code>ExpandedRange</code> への変換と距離計算が行われます。 3. **圧縮**: <code>reduce_expanded_ranges</code> が最も近い間隔をマージし、サイズを目標値以下に抑えます。 4. **永続化**: <code>brin_minmax_multi_serialize</code> により、最終的な <code>Ranges</code> が <code>SerializedRanges</code> へ変換され、インデックスページに書き込まれます。</p>
+<p>1. **追加**: <code>add_value</code> が呼ばれると、まず <code>ensure_free_space_in_buffer</code> でバッファの空きを確認する。 2. **圧縮**: バッファが溢れる場合、<code>build_expanded_ranges</code> で全範囲を中間形式に展開し、<code>build_distances</code> で間隔間の距離を計算。<code>reduce_expanded_ranges</code> で距離が近い順にマージする。 3. **シリアライズ**: <code>brin_range_serialize</code> により、<code>Ranges</code> を <code>SerializedRanges</code> へ変換し、<code>bytea</code> として格納する。 4. **クエリ**: <code>consistent</code> 関数が <code>SerializedRanges</code> をデシリアライズし、各間隔に対してスキャンキーの包含関係をチェックする。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/brin.h</code>, <code>access/brin_internal.h</code>: BRIN インデックスの基本構造。</li>
+<li><code>access/brin.h</code>, <code>access/brin_internal.h</code>: BRIN コア定義。</li>
 <li><code>utils/datum.h</code>, <code>utils/fmgr.h</code>: PostgreSQL のデータ型操作および関数呼び出し基盤。</li>
-<li><code>catalog/pg_am.h</code>, <code>catalog/pg_amop.h</code>: 演算クラスおよび演算子ファミリの定義。</li>
-<li><code>access/brin_tuple.h</code></li>
-<li><code>access/genam.h</code></li>
-<li><code>access/htup_details.h</code></li>
-<li><code>access/reloptions.h</code></li>
-<li><code>access/stratnum.h</code></li>
-<li><code>catalog/pg_type.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>sys/socket.h</code></li>
-<li><code>utils/array.h</code></li>
-<li><code>utils/builtins.h</code></li>
-<li><code>utils/date.h</code></li>
-<li><code>utils/float.h</code></li>
-<li><code>utils/inet.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
-<li><code>utils/memutils.h</code></li>
-<li><code>utils/pg_lsn.h</code></li>
-<li><code>utils/rel.h</code></li>
-<li><code>utils/syscache.h</code></li>
-<li><code>utils/timestamp.h</code></li>
-<li><code>utils/uuid.h</code></li>
+<li>各種 <code>utils/</code> ヘッダ: <code>uuid</code>, <code>inet</code>, <code>timestamp</code> 等の型固有の距離計算用。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/backend/access/brin/brin_minmax.c</code>: 単一範囲の Min/Max 実装。比較対象として有用。</li>
-<li><code>src/backend/access/brin/brin_tuple.c</code>: BRIN インデックスのタプル操作。</li>
+<li><code>brin_minmax.c</code>: 単一範囲の Min/Max 戦略。本モジュールの基礎となる。</li>
+<li><code>brin_tuple.c</code>: BRIN インデックスのタプル操作。</li>
+<li><code>brin_revmap.c</code>: インデックスページとヒープページの対応管理。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**圧縮のコスト**: 圧縮（マージ）処理は距離計算やソートを伴うため比較的高コストです。そのため、インデックス構築時には <code>MINMAX_BUFFER_FACTOR</code> を用いて一時的に大きなバッファを確保し、頻繁な圧縮を避ける設計になっています。</li>
-<li>**距離計算の近似**: UUID や INET 型などの複雑な型については、距離計算が近似値で行われます。これはインデックスの正確性を損なうものではなく、マージの最適化効率にのみ影響します。</li>
-<li>**デバッグ**: <code>AssertCheckRanges</code> や <code>AssertCheckExpandedRanges</code> が随所に配置されており、データ構造の不変条件（ソート済みであること、重なりがないこと等）を検証しています。コードを読む際は、これらのアサーションが示す制約を理解することが近道です。</li>
+<li>**メモリ管理**: 圧縮処理（<code>reduce_expanded_ranges</code> 等）はメモリ消費が激しいため、一時的な <code>MemoryContext</code> を作成してリークを防いでいます。</li>
+<li>**圧縮の性質**: 圧縮は貪欲法（Greedy）で行われます。距離関数は近似値でも許容されますが、正確であるほどインデックスの品質が向上します。</li>
+<li>**制約**: <code>values_per_range</code> は最大 256 まで設定可能です。デフォルトは 32 です。</li>
+<li>**未実装/浅い部分**: 距離計算のロジックは型ごとに手動で実装されており、一部（UUID や Inet 等）は近似的な計算を行っています。これは完全な精度よりも計算コストを優先しているためです。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

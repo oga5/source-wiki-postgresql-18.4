@@ -1,75 +1,63 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/commands/user.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/user.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/commands/user.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/commands/user.c</h1>
 <h2>概要</h2>
-<p>PostgreSQLにおけるロール（旧称：ユーザー）の作成、変更、削除、およびロール間のメンバーシップ管理（GRANT/REVOKE）を担うコマンド実装ファイルです。</p>
+<p>本ファイルは、PostgreSQL におけるロール（ユーザーおよびグループ）のライフサイクル管理および権限付与（GRANT/REVOKE）を実装する中核モジュールです。システムカタログ <code>pg_authid</code>（ロール定義）および <code>pg_auth_members</code>（ロール間のメンバーシップ関係）を操作し、DDL コマンドの実行を担います。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/commands</code> モジュールの一部として、データベースの認証・認可基盤である <code>pg_authid</code> および <code>pg_auth_members</code> カタログを操作する中心的な役割を果たします。</p>
+<p><code>src/backend/commands</code> サブシステムの一部として、認証・認可の基盤となるロール定義の永続化と、複雑なメンバーシップの依存関係管理を提供します。</p>
 <h2>責務</h2>
 <ul>
-<li>**ロール管理**: <code>CREATE ROLE</code>, <code>ALTER ROLE</code>, <code>DROP ROLE</code>, <code>RENAME ROLE</code> の実行。</li>
-<li>**メンバーシップ管理**: <code>GRANT</code> / <code>REVOKE</code> によるロール間の継承関係や権限付与の管理。</li>
-<li>**権限チェック**: ロール操作に必要な特権（<code>CREATEROLE</code> 属性や <code>ADMIN OPTION</code>）の検証。</li>
-<li>**依存関係の解決**: ロール削除時の依存オブジェクトチェックや、メンバーシップ取り消し時の再帰的な権限剥奪（CASCADE処理）。</li>
+<li>**ロールのライフサイクル管理**: <code>CREATE ROLE</code>, <code>ALTER ROLE</code>, <code>DROP ROLE</code>, <code>RENAME ROLE</code> の実行。</li>
+<li>**メンバーシップ管理**: <code>GRANT</code>/<code>REVOKE</code> によるロール間の包含関係の制御。</li>
+<li>**権限検証**: ロール作成・変更・削除に必要な特権（<code>CREATEROLE</code>, <code>SUPERUSER</code> 等）のチェック。</li>
+<li>**依存関係の解決**: ロール削除時の依存オブジェクトチェックおよび再帰的な権限剥奪（CASCADE 処理）。</li>
+<li>**所有権の移譲**: <code>DROP OWNED</code> および <code>REASSIGN OWNED</code> によるオブジェクト所有権の管理。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>ロール操作関数</h3>
 <ul>
-<li><code>CreateRole</code>, <code>AlterRole</code>, <code>DropRole</code>: 主要なDDLコマンドの実行関数。</li>
-<li><code>GrantRole</code>: ロールメンバーシップの付与・剥奪を行う関数。</li>
-<li><code>AddRoleMems</code>, <code>DelRoleMems</code>: メンバーシップ更新の内部ロジック。</li>
-<li><code>RevokeRoleGrantAction</code>: 権限剥奪時の再帰的なアクションを定義する列挙型。</li>
-<li><code>GrantRoleOptions</code>: <code>GRANT</code> 時に指定されるオプション（ADMIN, INHERIT, SET）を保持する構造体。</li>
+<li><code>CreateRole</code>: <code>pg_authid</code> への新規挿入と初期メンバーシップ設定。</li>
+<li><code>AlterRole</code>: ロール属性（パスワード、接続制限等）の更新。</li>
+<li><code>DropRole</code>: ロールおよび関連する依存関係の削除。</li>
+<li><code>RenameRole</code>: ロール名の変更と関連するキャッシュの更新。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>メンバーシップ管理関数</h3>
 <ul>
-<li><code>AlterRoleSet</code></li>
-<li><code>DropOwnedObjects</code></li>
-<li><code>InitGrantRoleOptions</code></li>
-<li><code>ReassignOwnedObjects</code></li>
-<li><code>RenameRole</code></li>
+<li><code>GrantRole</code>: <code>GRANT</code>/<code>REVOKE</code> コマンドのディスパッチャー。</li>
+<li><code>AddRoleMems</code>: <code>pg_auth_members</code> へのメンバー追加・更新。</li>
+<li><code>DelRoleMems</code>: <code>pg_auth_members</code> からのメンバー削除および再帰的剥奪の計画。</li>
+</ul>
+<h3>内部状態・補助構造体</h3>
+<ul>
+<li><code>GrantRoleOptions</code>: <code>GRANT</code> 実行時のオプション（<code>ADMIN</code>, <code>INHERIT</code>, <code>SET</code>）を保持。</li>
+<li><code>RevokeRoleGrantAction</code>: 権限剥奪時の再帰的アクション（削除、オプション解除、何もしない）を定義する列挙型。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **DDL実行**: 各関数は <code>ParseState</code> を受け取り、<code>stmt</code> ノードからオプションを抽出します。 2. **権限検証**: <code>superuser()</code> や <code>has_createrole_privilege()</code> を用いて操作の可否を判定します。 3. **カタログ更新**: <code>pg_authid</code> や <code>pg_auth_members</code> を <code>table_open</code> で開き、<code>CatalogTupleInsert</code> / <code>Update</code> / <code>Delete</code> を実行します。 4. **再帰的処理**: <code>DelRoleMems</code> は <code>plan_recursive_revoke</code> を呼び出し、依存関係を辿って権限剥奪の影響範囲を計算します。 5. **フック**: <code>check_password_hook</code> や <code>InvokeObjectPostCreateHook</code> を通じて、外部モジュールやシステムイベントへの通知を行います。</p>
+<p>1. **コマンド解析**: <code>ProcessUtility</code> から各 <code>Stmt</code> 構造体を受け取り、オプションを抽出。 2. **権限チェック**: <code>superuser()</code> や <code>have_createrole_privilege()</code> を用いて操作の可否を判定。 3. **カタログ操作**: <code>table_open(AuthIdRelationId, ...)</code> を経由して <code>pg_authid</code> を更新。 4. **メンバーシップ更新**:</p>
+<ul>
+<li><code>AddRoleMems</code> は <code>pg_auth_members</code> を更新し、<code>CommandCounterIncrement()</code> を呼び出して変更を可視化。</li>
+<li><code>DelRoleMems</code> は <code>initialize_revoke_actions</code> で剥奪計画を立て、<code>plan_recursive_revoke</code> で依存関係を再帰的に解決（CASCADE 処理）。</li>
+<p>5. **フック呼び出し**: <code>InvokeObjectPostCreateHook</code> 等により、外部モジュールやイベントトリガーへ変更を通知。</p>
+</ul>
 <h2>直接依存</h2>
 <ul>
-<li>**カタログ**: <code>pg_authid.h</code>, <code>pg_auth_members.h</code>, <code>pg_database.h</code> 等。</li>
-<li>**アクセス層**: <code>access/table.h</code>, <code>access/genam.h</code> (カタログ操作用)。</li>
-<li>**ユーティリティ**: <code>utils/acl.h</code>, <code>utils/syscache.h</code> (権限・キャッシュ管理)。</li>
-<li>**その他**: <code>libpq/crypt.h</code> (パスワード暗号化)。</li>
-<li><code>access/htup_details.h</code></li>
-<li><code>access/xact.h</code></li>
-<li><code>catalog/binary_upgrade.h</code></li>
-<li><code>catalog/catalog.h</code></li>
-<li><code>catalog/dependency.h</code></li>
-<li><code>catalog/indexing.h</code></li>
-<li><code>catalog/objectaccess.h</code></li>
-<li><code>catalog/pg_auth_members.h</code></li>
-<li><code>catalog/pg_authid.h</code></li>
-<li><code>catalog/pg_database.h</code></li>
-<li><code>catalog/pg_db_role_setting.h</code></li>
-<li><code>commands/comment.h</code></li>
-<li><code>commands/dbcommands.h</code></li>
-<li><code>commands/defrem.h</code></li>
-<li><code>commands/seclabel.h</code></li>
-<li><code>commands/user.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>storage/lmgr.h</code></li>
-<li><code>utils/builtins.h</code></li>
-<li><code>utils/catcache.h</code></li>
-<li><code>utils/fmgroids.h</code></li>
-<li><code>utils/varlena.h</code></li>
+<li>**カタログ**: <code>pg_authid</code>, <code>pg_auth_members</code>, <code>pg_database</code> 等のシステムカタログ定義。</li>
+<li>**アクセス層**: <code>access/table.h</code>, <code>access/genam.h</code>（テーブル操作とスキャン）。</li>
+<li>**ストレージ**: <code>storage/lmgr.h</code>（<code>AccessExclusiveLock</code> 等による排他制御）。</li>
+<li>**ユーティリティ**: <code>utils/syscache.h</code>（システムキャッシュによる高速なロール検索）。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/include/commands/user.h</code>: 本ファイルの公開インターフェース。</li>
-<li><code>src/backend/catalog/dependency.c</code>: 共有オブジェクトの依存関係管理。</li>
-<li><code>src/backend/utils/adt/acl.c</code>: ロール権限やACLの基本ロジック。</li>
+<li><code>src/include/commands/user.h</code>: 公開インターフェース定義。</li>
+<li><code>src/backend/catalog/pg_authid.c</code>: ロール関連のカタログ操作補助。</li>
+<li><code>src/backend/commands/dbcommands.c</code>: データベース所有権に関連する操作。</li>
+<li><code>src/backend/utils/adt/acl.c</code>: 権限チェックの基盤ロジック。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**再帰的REVOKE**: <code>plan_recursive_revoke</code> は、権限の連鎖（ADMIN OPTIONの継承）を考慮した複雑なロジックです。CASCADE指定時の挙動を理解する際はここが重要です。</li>
-<li>**ロック**: ロール操作時は <code>LockSharedObject</code> を使用して、並行実行による循環参照や競合を防いでいます。</li>
-<li>**セキュリティ**: 本ファイルは認証の根幹に関わるため、権限チェックのロジックは非常に厳格です。特に <code>superuser</code> 属性の変更や、<code>pg_</code> で始まる予約済みロール名の扱いに注意してください。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用しており、トランザクション終了時に自動解放されるメモリコンテキストに依存しています。</li>
+<li>**排他制御**: ロール操作時は <code>AuthIdRelationId</code> に対して <code>RowExclusiveLock</code> を取得し、メンバーシップ変更時は <code>ShareUpdateExclusiveLock</code> を用いて競合を防いでいます。</li>
+<li>**再帰的剥奪**: <code>plan_recursive_revoke</code> は <code>DROP CASCADE</code> 時に依存する権限を再帰的に探索します。この際、循環参照が発生しないよう <code>is_member_of_role_nosuper</code> 等でガードしています。</li>
+<li>**省略箇所**: 本ファイル内の <code>check_password_hook</code> 関連の詳細は、外部認証プラグインとの連携用であり、コアロジックの理解には必須ではありません。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

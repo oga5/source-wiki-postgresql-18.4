@@ -1,67 +1,62 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/backend/executor/execPartition.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execPartition.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/executor/execPartition.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/backend/executor/execPartition.c</h1>
 <h2>概要</h2>
-<p>パーティションテーブルに対するデータ操作（INSERT/UPDATE/MERGE）時の「タプルルーティング」と、クエリ実行時の「実行時パーティションプルーニング」をサポートするモジュールです。</p>
+<p>パーティションテーブルに対するタプルルーティング（挿入先パーティションの動的決定）および実行時パーティションプルーニング（不要なパーティションの除外）を実装するモジュールです。クエリ実行中にタプルの値を評価し、適切なパーティションを特定、またはクエリの条件に基づいてスキャン対象のパーティションを絞り込むための基盤を提供します。</p>
 <h2>モジュール内での役割</h2>
-<p><code>src/backend/executor</code> の一部として、パーティション化されたテーブルへのアクセスを抽象化します。プランナーが生成した計画に基づき、実行時に適切なパーティションを特定し、必要に応じてタプルの変換や制約チェックを行います。</p>
+<p><code>src/backend/executor</code> サブシステムの一部として、<code>ModifyTable</code> ノード（INSERT/UPDATE/MERGE）や <code>Append</code>/<code>MergeAppend</code> ノード（SELECT）の実行を支援します。プランナが生成した静的な情報と、実行時に取得されるリレーション情報を橋渡しする役割を担います。</p>
 <h2>責務</h2>
 <ul>
-<li>**タプルルーティング**: 挿入対象のタプルがどのパーティションに属するかを特定し、必要に応じて <code>ResultRelInfo</code> をオンデマンドで初期化・管理する。</li>
-<li>**実行時プルーニング**: クエリ実行中にパラメータ値が確定した際、不要なパーティション（サブプラン）を動的に除外する。</li>
-<li>**メタデータ管理**: パーティション階層の探索、属性マッピング（親テーブルとパーティション間の型変換）、および制約チェックの実行。</li>
+<li>**タプルルーティング**: 挿入対象のタプルからパーティションキーを抽出し、階層構造を辿って適切なリーフパーティションを特定する。</li>
+<li>**リソース管理**: ルーティングに必要な <code>ResultRelInfo</code> や <code>PartitionDispatch</code> の遅延初期化とメモリ管理。</li>
+<li>**実行時プルーニング**: クエリ実行中にパラメータが変化した際、不要なサブプランを動的に除外する。</li>
+<li>**データ変換**: 親テーブルと子パーティション間で列順序や型が異なる場合のタプル変換（<code>TupleConversionMap</code>）の適用。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>タプルルーティング関連</h3>
 <ul>
-<li><code>PartitionTupleRouting</code>: ルーティングに必要な情報を保持するメイン構造体。</li>
-<li><code>PartitionDispatchData</code>: パーティション階層の各レベルにおけるルーティング情報を保持。</li>
+<li><code>PartitionTupleRouting</code>: ルーティング全体の状態を保持するルート構造体。</li>
+<li><code>PartitionDispatchData</code>: パーティション階層の各レベルにおけるディスパッチ情報（キー、記述子、変換マップ）。</li>
 <li><code>ExecSetupPartitionTupleRouting</code>: ルーティング環境の初期化。</li>
-<li><code>ExecFindPartition</code>: タプルから適切なパーティション（<code>ResultRelInfo</code>）を特定する中心的な関数。</li>
-<li><code>ExecDoInitialPruning</code>: 実行開始時に不要なパーティションを特定する。</li>
-<li><code>ExecFindMatchingSubPlans</code>: 実行時にパラメータに基づいて有効なサブプランを特定する。</li>
+<li><code>ExecFindPartition</code>: タプルから適切なリーフパーティションの <code>ResultRelInfo</code> を特定・初期化するメイン関数。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>パーティションプルーニング関連</h3>
 <ul>
-<li><code>CreatePartitionPruneState</code></li>
-<li><code>ExecInitPartitionDispatchInfo</code></li>
-<li><code>ExecInitPartitionExecPruning</code></li>
-<li><code>ExecInitPartitionInfo</code></li>
-<li><code>ExecInitRoutingInfo</code></li>
-<li><code>InitExecPartitionPruneContexts</code></li>
-<li><code>InitPartitionPruneContext</code></li>
+<li><code>PartitionPruneState</code>: 実行時のプルーニング状態を保持。</li>
+<li><code>PartitionedRelPruningData</code>: 特定のパーティション階層におけるプルーニング情報。</li>
+<li><code>ExecDoInitialPruning</code>: 実行開始時に一度だけ行うプルーニング。</li>
+<li><code>ExecInitPartitionExecPruning</code>: 実行中のパラメータ変化に応じたプルーニングの初期化。</li>
+<li><code>ExecFindMatchingSubPlans</code>: 現在のパラメータ値に基づいて有効なサブプランを特定。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **ルーティング**: <code>ExecFindPartition</code> が呼ばれると、<code>PartitionDispatch</code> を辿りながらパーティションキーを抽出し、<code>get_partition_for_tuple</code> で対象パーティションを特定します。未初期化のパーティションであれば <code>ExecInitPartitionInfo</code> で <code>ResultRelInfo</code> を生成します。 2. **プルーニング**: <code>ExecDoInitialPruning</code> が実行開始時に呼ばれ、<code>PartitionPruneState</code> を作成します。その後、パラメータが変化するたびに <code>ExecFindMatchingSubPlans</code> が再帰的に呼ばれ、有効なサブプランのビットマップを更新します。</p>
+<p>1. **ルーティング**:</p>
+<ul>
+<li><code>ExecFindPartition</code> がタプルを受け取り、<code>FormPartitionKeyDatum</code> でキーを抽出。</li>
+<li><code>get_partition_for_tuple</code> がパーティション境界を検索。</li>
+<li>未初期化のパーティションであれば <code>ExecInitPartitionInfo</code> が <code>ResultRelInfo</code> を構築し、<code>ExecInitRoutingInfo</code> が変換マップや FDW 情報を設定。</li>
+<p>2. **プルーニング**:</p>
+<li><code>ExecDoInitialPruning</code> がプランノード初期化時に実行され、不要なサブプランをビットマップで特定。</li>
+<li><code>ExecFindMatchingSubPlans</code> が再帰的に階層を辿り、<code>find_matching_subplans_recurse</code> を通じて有効なパーティションを特定。</li>
+</ul>
 <h2>直接依存</h2>
 <ul>
-<li><code>access/tableam.h</code>, <code>catalog/partition.h</code>: テーブルアクセスおよびカタログ情報。</li>
-<li><code>partitioning/partprune.h</code>, <code>partitioning/partbounds.h</code>: プルーニングロジックと境界情報の管理。</li>
-<li><code>executor/nodeModifyTable.h</code>: <code>ModifyTableState</code> への依存。</li>
-<li><code>utils/partcache.h</code>: リレーションキャッシュからのパーティション情報取得。</li>
-<li><code>access/table.h</code></li>
-<li><code>executor/execPartition.h</code></li>
-<li><code>executor/executor.h</code></li>
-<li><code>foreign/fdwapi.h</code></li>
-<li><code>mb/pg_wchar.h</code></li>
-<li><code>miscadmin.h</code></li>
-<li><code>partitioning/partdesc.h</code></li>
-<li><code>postgres.h</code></li>
-<li><code>rewrite/rewriteManip.h</code></li>
-<li><code>utils/acl.h</code></li>
-<li><code>utils/lsyscache.h</code></li>
-<li><code>utils/rls.h</code></li>
-<li><code>utils/ruleutils.h</code></li>
+<li><code>partitioning/</code>: <code>partbounds.h</code>, <code>partdesc.h</code>, <code>partprune.h</code>（パーティションの境界定義やプルーニングロジック）。</li>
+<li><code>access/</code>: <code>table.h</code>, <code>tableam.h</code>（テーブルアクセス層の抽象化）。</li>
+<li><code>executor/</code>: <code>nodeModifyTable.h</code>, <code>executor.h</code>（実行ノードとの連携）。</li>
+<li><code>utils/</code>: <code>partcache.h</code>, <code>lsyscache.h</code>（リレーションキャッシュやシステムカタログの参照）。</li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/include/executor/execPartition.h</code>: 公開インターフェースとデータ構造の定義。</li>
-<li><code>src/backend/partitioning/</code>: パーティションの境界計算や記述子作成のロジック。</li>
+<li><code>src/include/executor/execPartition.h</code>: 本ファイルの公開インターフェース。</li>
+<li><code>src/backend/partitioning/partprune.c</code>: プルーニングの核心的なロジック。</li>
 <li><code>src/backend/executor/nodeModifyTable.c</code>: ルーティング結果を利用して実際に挿入を行うノード。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>**オンデマンド初期化**: <code>ResultRelInfo</code> はルーティング時に初めて必要になった時点で生成されます。これは大量のパーティションを持つテーブルでのオーバーヘッドを抑えるためです。</li>
-<li>**キャッシュ**: <code>get_partition_for_tuple</code> には <code>PARTITION_CACHED_FIND_THRESHOLD</code> を用いたキャッシュ機構があり、連続するタプルが同じパーティションに属する場合の探索を高速化します。</li>
-<li>**再帰的構造**: パーティションがさらにパーティション化されている（サブパーティション）場合、<code>PartitionDispatch</code> が再帰的にリンクされ、階層を降りて探索します。</li>
+<li>**メモリ管理**: <code>PartitionTupleRouting</code> は <code>estate-&gt;es_query_cxt</code> を使用してメモリを確保します。<code>ExecCleanupTupleRouting</code> を呼び出さないとメモリリークが発生します。</li>
+<li>**遅延初期化**: パフォーマンス最適化のため、パーティションの <code>ResultRelInfo</code> は実際にタプルがルーティングされるまで作成されません。</li>
+<li>**キャッシュ**: <code>get_partition_for_tuple</code> には <code>PARTITION_CACHED_FIND_THRESHOLD</code> を用いたキャッシュ機構があり、連続するタプルが同じパーティションに属する場合の検索を高速化します。</li>
+<li>**制約**: <code>ExecFindPartition</code> はデフォルトパーティションへのルーティング時にパーティション制約チェックを強制します。</li>
+<li>**省略箇所**: 本ファイルはルーティングとプルーニングの「実行時サポート」に特化しており、プランナによる静的なプルーニング計画の生成ロジックは含まれていません。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>

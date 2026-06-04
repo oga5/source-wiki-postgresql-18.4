@@ -1,58 +1,54 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="1"><title>src/bin/pg_upgrade/check.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/check.c</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/bin/pg_upgrade/check.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1>src/bin/pg_upgrade/check.c</h1>
 <h2>概要</h2>
-<p><code>check.c</code> は、<code>pg_upgrade</code> プロセスにおいて、アップグレード対象となる旧クラスタと、アップグレード先の新クラスタが互換性を持っているかを検証する一連のチェック処理を実装しています。</p>
+<p><code>check.c</code> は、<code>pg_upgrade</code> におけるアップグレード前後のクラスタ互換性検証の司令塔です。新旧クラスタのメタデータ、データ型、システムカタログ、およびレプリケーション設定が、移行先バージョンで正しく動作するかを網羅的にチェックします。</p>
 <h2>モジュール内での役割</h2>
-<p><code>pg_upgrade</code> のメインフローにおける「事前検証フェーズ」を担います。データ移行を開始する前に、バイナリの互換性、データ型の変更、システムカタログの整合性、および論理レプリケーション設定などを網羅的に検査し、アップグレード失敗のリスクを排除します。</p>
+<p><code>pg_upgrade</code> のメインフローにおいて、データ移行（<code>relfilenumber.c</code>）やスキーマダンプ（<code>dump.c</code>）を実行する前の「ゲートキーパー」として機能します。検証に失敗した場合、アップグレードを即座に中断し、ユーザーに修正手順を提示します。</p>
 <h2>責務</h2>
 <ul>
-<li>**クラスタ互換性チェック**: バージョン間の互換性、バイナリとデータディレクトリの整合性確認。</li>
-<li>**データ型・オブジェクトの検証**: バージョンアップで廃止・変更されたデータ型（<code>line</code>, <code>aclitem</code>, <code>unknown</code> 等）や、非推奨となった機能（<code>WITH OIDS</code> 等）の使用状況をスキャン。</li>
-<li>**環境設定の検証**: 接続設定、準備されたトランザクションの有無、論理レプリケーションスロットの整合性確認。</li>
-<li>**クリーンアップスクリプト生成**: アップグレード後に旧クラスタを安全に削除するためのスクリプト作成。</li>
+<li>**データ型互換性検証**: バージョン間で内部表現が変更されたデータ型（<code>jsonb</code>, <code>aclitem</code> 等）の使用状況を調査。</li>
+<li>**システムカタログ整合性チェック**: 廃止された機能（<code>WITH OIDS</code>、postfix 演算子等）や、移行不可なオブジェクトの検出。</li>
+<li>**レプリケーション状態の検証**: 論理レプリケーションスロットやサブスクリプションの移行可能性を判定。</li>
+<li>**環境整合性チェック**: 接続設定、インストールユーザーの権限、テーブルスペースのパス競合などを検証。</li>
+<li>**レポート生成**: 検出された問題をファイルに出力し、ユーザーへ修正を促す。</li>
 </ul>
 <h2>重要なシンボル</h2>
+<h3>データ型検証用構造体</h3>
 <ul>
-<li><code>DataTypesUsageChecks</code>: データ型の互換性を検証するためのメタデータ構造体。</li>
-<li><code>check_and_dump_old_cluster()</code>: 旧クラスタに対する一連の検証とダンプ準備を実行するメイン関数。</li>
-<li><code>check_new_cluster()</code>: 新クラスタが空であることや、転送モード（link/copy等）の妥当性を検証する関数。</li>
-<li><code>check_for_data_types_usage()</code>: 定義されたデータ型チェックを全データベースに対して実行するエンジン。</li>
+<li><code>DataTypesUsageChecks</code>: データ型ごとのチェックルール（SQLクエリ、エラーメッセージ、適用バージョン閾値）を定義した構造体。</li>
+<li><code>data_types_usage_checks</code>: 上記構造体の静的配列。各データ型の互換性チェックロジックがここに集約されています。</li>
 </ul>
-<h2>追加の索引済みシンボル</h2>
+<h3>検証実行関数</h3>
 <ul>
-<li><code>check_and_dump_old_cluster</code></li>
-<li><code>check_for_data_types_usage</code></li>
-<li><code>check_new_cluster</code></li>
-<li><code>data_type_check_query</code></li>
-<li><code>data_type_check_state</code></li>
-<li><code>fix_path_separator</code></li>
-<li><code>issue_warnings_and_set_wal_level</code></li>
-<li><code>output_check_banner</code></li>
-<li><code>output_completion_banner</code></li>
-<li><code>process_data_type_check</code></li>
-<li><code>report_clusters_compatible</code></li>
+<li><code>check_and_dump_old_cluster</code>: 旧クラスタに対する一連の検証を実行し、ダンプ準備を行うメイン関数。</li>
+<li><code>check_new_cluster</code>: 新クラスタの空き状態やパスの競合を検証する関数。</li>
+<li><code>check_cluster_versions</code>: メジャーバージョンの互換性（ダウングレード禁止等）を検証。</li>
+</ul>
+<h3>ユーティリティ・コールバック</h3>
+<ul>
+<li><code>data_type_check_query</code>: <code>DataTypesUsageChecks</code> から動的に SQL を生成するヘルパー。</li>
+<li><code>process_data_type_check</code>: 検証クエリの結果を解析し、エラーがあればレポートファイルへ書き出すコールバック。</li>
 </ul>
 <h2>制御フローとデータフロー</h2>
-<p>1. **初期化**: <code>check_cluster_versions()</code> でメジャーバージョンの互換性を確認。 2. **検証実行**: <code>check_and_dump_old_cluster()</code> が各チェック関数（<code>check_for_...</code>）を呼び出し、SQLクエリを各DBに対して実行。 3. **タスク管理**: <code>UpgradeTask</code> インフラを使用して、各DBに対するクエリ実行と結果処理（<code>process_...</code> コールバック）を抽象化。 4. **エラー報告**: チェックに失敗した場合、詳細をログファイルに出力し、<code>pg_fatal</code> で処理を中断。 5. **最終確認**: 全ての検証が通過した後、<code>report_clusters_compatible()</code> でユーザーに通知。</p>
+<p>1. **タスクの登録**: <code>check_for_data_types_usage</code> 等が <code>upgrade_task</code> フレームワークを使用して、各データベースに対する検証クエリを登録します。 2. **並列実行**: <code>upgrade_task_run</code> が各データベースに接続し、登録された SQL を実行します。 3. **結果の集約**: 各検証関数（<code>process_...</code>）が結果を <code>PQExpBuffer</code> やファイルに書き込み、エラーフラグを立てます。 4. **中断判定**: 検証終了後、エラーフラグが立っていれば <code>pg_fatal</code> を呼び出し、プロセスを終了させます。</p>
 <h2>直接依存</h2>
 <ul>
-<li><code>postgres_fe.h</code>: フロントエンド用共通ヘッダー。</li>
-<li><code>pg_upgrade.h</code>: モジュール共通のデータ構造と定義。</li>
+<li><code>pg_upgrade.h</code>: クラスタ情報構造体（<code>ClusterInfo</code>）やタスク管理基盤の定義。</li>
 <li><code>catalog/pg_authid_d.h</code>, <code>catalog/pg_class_d.h</code>: システムカタログの定数。</li>
 <li><code>fe_utils/string_utils.h</code>: 文字列操作ユーティリティ。</li>
-<li><code>common/unicode_version.h</code></li>
 </ul>
 <h2>関連コード</h2>
 <ul>
-<li><code>src/bin/pg_upgrade/info.c</code>: クラスタのメタデータ取得。</li>
-<li><code>src/bin/pg_upgrade/task.c</code>: <code>UpgradeTask</code> インフラの定義。</li>
-<li><code>src/bin/pg_upgrade/server.c</code>: ポストマスターの起動・停止制御。</li>
+<li><code>task.c</code>: <code>upgrade_task</code> フレームワークの実装。検証クエリの並列実行を支える基盤。</li>
+<li><code>info.c</code>: <code>ClusterInfo</code> や <code>DbInfo</code> 等のメタデータ収集ロジック。</li>
+<li><code>controldata.c</code>: <code>pg_control</code> ファイルの検証ロジック。</li>
 </ul>
 <h2>読者向けメモ</h2>
 <ul>
-<li>本ファイルは、PostgreSQLのバージョンアップに伴う「破壊的変更」の歴史を反映しています。特定の関数やデータ型がなぜチェック対象なのかは、各チェック関数のコメントに記載されたバージョン履歴を参照してください。</li>
-<li><code>data_types_usage_checks</code> 配列を拡張することで、将来のバージョンアップで発生する可能性のある新しい互換性問題を容易に追加できるよう設計されています。</li>
-<li><code>check_for_data_types_usage</code> は、再帰的なCTEを使用して、型、ドメイン、配列、複合型、範囲型まで含めた依存関係を網羅的にスキャンします。</li>
+<li>**メモリ管理**: <code>upgrade_task</code> で使用されるクエリ文字列や状態構造体は、タスク終了時に <code>upgrade_task_free</code> で解放されます。</li>
+<li>**エラーパス**: 多くのチェック関数は、エラーを即座に終了させるのではなく、レポートファイルを作成して最後にまとめて報告する設計になっています。</li>
+<li>**設計の意図**: <code>data_types_usage_checks</code> 配列は、新しいデータ型の互換性問題が発生した際に、SQL クエリを追加するだけで容易に拡張できるように設計されています。</li>
+<li>**省略された詳細**: 本ファイル内の各 <code>check_for_...</code> 関数は、特定の PostgreSQL バージョン固有の仕様に深く依存しています。これらは <code>pg_upgrade</code> のバージョンアップに伴い、適宜 <code>threshold_version</code> を調整する必要があります。</li>
 </ul>
 <h2>シンボルページ</h2>
 <ul>
