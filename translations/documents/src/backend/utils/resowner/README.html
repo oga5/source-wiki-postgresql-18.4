@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/backend/utils/resowner/README</title><link rel="stylesheet" href="../../../../../../styles.css"></head><body><h1>Japanese translation</h1><p><code>src/backend/utils/resowner/README</code></p><pre>src/backend/utils/resowner/README
+
+リソースオーナーに関するメモ
+===========================
+
+ResourceOwner オブジェクトは、バッファピンやテーブルロックなど、クエリ関連のリソース管理を簡素化するために考案された概念です。これらのリソースは、クエリがエラーで失敗した場合であっても、クエリ終了時に確実に解放されるよう、信頼性の高い方法で追跡される必要があります。エグゼキュータ全体に完璧なデータ構造を求めるのではなく、そのようなリソースの追跡を単一のモジュールに局所化しています。
+
+ResourceOwner API の設計は、メモリリークの防止において非常に柔軟で成功を収めている MemoryContext API をモデルにしています。特に、ResourceOwner は子 ResourceOwner オブジェクトを持つことができ、階層構造（フォレスト）を形成可能です。親 ResourceOwner を解放すると、その直接的および間接的なすべての子に対しても解放処理が行われます。
+
+（ResourceOwner と MemoryContext を単一のオブジェクト型に統合することも検討しましたが、使用パターンが大きく異なるため、そうすることは有益ではないと考えられます。）
+
+各トランザクションまたはサブトランザクション、および各 Portal に対して ResourceOwner を作成します。Portal の実行中、グローバル変数 CurrentResourceOwner はその Portal の ResourceOwner を指します。これにより、ReadBuffer や LockAcquire といった操作は、取得したリソースの所有権をその ResourceOwner オブジェクトに記録します。
+
+Portal が閉じられると、残りのリソース（通常はロックのみ）は現在のトランザクションの責任となります。これは、Portal の ResourceOwner を現在のトランザクションの ResourceOwner の子にすることで表現されます。resowner.c は、子を解放する際に自動的にリソースを親オブジェクトへ転送します。同様に、サブトランザクションの ResourceOwner は、その直近の親の子となります。
+
+トランザクション関連の ResourceOwner が必要なのは、関連する Portal がまだ存在しない段階（クエリのパースなど）で、リソースを必要とする操作がトランザクションによって開始される可能性があるためです。
+
+
+使用方法
+-----
+
+ResourceOwner に対する基本的な操作は以下の通りです。
+
+* ResourceOwner の作成
+
+* リソースの ResourceOwner への関連付け、または関連付けの解除
+
+* ResourceOwner の資産の解放（所有しているすべてのリソースを解放するが、オーナーオブジェクト自体は解放しない）
+
+* ResourceOwner の削除（子オーナーオブジェクトを含む）。すべてのリソースは事前に解放されている必要がある
+
+ロックは特別に扱われます。エラーが発生しない状況では、たとえサブトランザクションや Portal によって取得されたものであっても、ロックはトランザクション終了まで保持されるべきだからです。そのため、子 ResourceOwner に対する「解放」操作において isCommit が true の場合、ロックを実際に解放するのではなく、親にロックの所有権を転送します。
+
+トランザクション内では常に、グローバル変数 CurrentResourceOwner が、取得したリソースの所有権を割り当てるべきリソースオーナーを示します。ただし、トランザクション外（または失敗したトランザクション内）では CurrentResourceOwner は NULL になることに注意してください。この場合、クエリ寿命のリソースを取得することはできません。
+
+バッファのピン解除、ロックの解放、またはキャッシュ参照の解放を行う際は、CurrentResourceOwner が、そのバッファ、ロック、またはキャッシュ参照が取得された時点でカレントであったリソースオーナーを指している必要があります。追加の簿記作業を行えばこの制限を緩和することも可能ですが、現時点ではその必要性はなさそうです。
+
+
+新しいリソースタイプの追加
+--------------------------
+
+ResourceOwner は多種多様なリソースの所有権を追跡できます。PostgreSQL のコアでは、バッファピン、lmgr ロック、カタログキャッシュ参照などに使用されています。
+
+新しい種類のリソースを追加するには、それを記述する ResourceOwnerDesc を定義します。例：
+
+static const ResourceOwnerDesc myresource_desc = {
+	.name = &quot;My fancy resource&quot;,
+	.release_phase = RESOURCE_RELEASE_AFTER_LOCKS,
+	.release_priority = RELEASE_PRIO_FIRST,
+	.ReleaseResource = ReleaseMyResource,
+	.DebugPrint = PrintMyResource
+};
+
+ResourceOwnerRemember() および ResourceOwnerForget() 関数は、その構造体へのポインタと、リソースを表す Datum を引数に取ります。Datum の意味はリソースタイプによって異なります。ほとんどのリソースタイプでは構造体へのポインタを格納するために使用されますが、ファイル記述子やライブラリハンドルなどにも使用可能です。
+
+ReleaseResource コールバックは、リソースオーナーが解放または削除されるときに呼び出されます。リソースに関連付けられたあらゆるリソース（ファイルのクローズ、メモリの解放など）を解放する必要があります。このコールバックはトランザクションの中断中に呼び出されるため、ユーザーから見える影響を与えない低レベルなクリーンアップのみを実行しなければなりません。メモリ割り当てのように失敗する可能性のある操作は実行すべきではありません。
+
+オプションの DebugPrint コールバックは、トランザクションコミット時にリソースがリークしていた場合の警告で使用されます。指定されていない場合は、リソース名とリソースをポインタとして出力する汎用的な実装が使用されます。
+
+他のモジュールが ResourceOwner の解放中に制御を取得し、削除が必要なオブジェクトを独自のデータ構造からスキャンするための別の API も存在します。RegisterResourceReleaseCallback 関数を参照してください。以前は、拡張機能が新しい種類のオブジェクトでリソースオーナー機構を使用する唯一の方法でしたが、現在ではカスタムの ResourceOwnerDesc 構造体を定義する方が簡単です。
+
+
+解放処理
+---------
+
+ResourceOwner のリソース解放は、以下の3つのフェーズで行われます。
+
+1. 「ロック前 (Before-locks)」リソース
+
+2. ロック
+
+3. 「ロック後 (After-locks)」リソース
+
+各リソースタイプは、ロックの前後に解放する必要があるかどうかを指定します。また、各リソースタイプには優先順位があり、それによってリソースが解放される順序が決まります。フェーズはリソースオーナーのツリー全体に対して完全に実行されてから次のフェーズへ移行しますが、各フェーズ内の優先順位は、その ResourceOwner 内での順序のみを決定することに注意してください。子リソースオーナーは、各フェーズにおいて常に親より先に処理されます。
+
+例えば、親と子という2つの ResourceOwner があるとします。
+
+Parent
+  parent resource BEFORE_LOCKS priority 1
+  parent resource BEFORE_LOCKS priority 2
+  parent resource AFTER_LOCKS priority 10001
+  parent resource AFTER_LOCKS priority 10002
+  Child
+    child resource BEFORE_LOCKS priority 1
+    child resource BEFORE_LOCKS priority 2
+    child resource AFTER_LOCKS priority 10001
+    child resource AFTER_LOCKS priority 10002
+
+これらのリソースは以下の順序で解放されます。
+
+child resource BEFORE_LOCKS priority 1
+child resource BEFORE_LOCKS priority 2
+parent resource BEFORE_LOCKS priority 1
+parent resource BEFORE_LOCKS priority 2
+(locks)
+child resource AFTER_LOCKS priority 10001
+child resource AFTER_LOCKS priority 10002
+parent resource AFTER_LOCKS priority 10001
+parent resource AFTER_LOCKS priority 10002
+
+すべてのリソースを解放するには、ResourceOwnerRelease() を各フェーズで1回ずつ、計3回呼び出す必要があります。フェーズ間で追加のタスクを実行することは可能ですが、ResourceOwnerRelease() を最初に呼び出した後は、その ResourceOwner を使用してこれ以上リソースを記憶することはできません。また、解放プロセスを開始した後は、ResourceOwnerForget を呼び出して以前に記憶されたリソースを「個別に」解放することもできません。
+
+通常、コミット時に ResourceOwner が空になるよう（ロックは例外）、すべてのリソースに対して ResourceOwnerForget を呼び出すことが期待されています。コミット時に保持されているリソースがある場合、ResourceOwnerRelease はそのようなリソースごとに WARNING を出力します。しかし、アボート時には ResourceOwner 機構に完全に依存しており、解放すべきリソースが存在するのは正常な動作です。</pre></body></html>

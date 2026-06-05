@@ -1,0 +1,90 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>src/test/perl/README</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1>Japanese translation</h1><p><code>src/test/perl/README</code></p><pre>PerlベースのTAPテスト
+====================
+
+src/test/perl/ には、ソースツリー全体（特に src/bin および src/test 内のテスト）で Perl ベースのテストに使用される共有インフラストラクチャが含まれています。これは、バックアップとリストア、レプリケーションなど、pg_regress や分離テストフレームワークでは表現できないあらゆるテストを実行するために使用されます。
+
+テストは Perl の &#x27;prove&#x27; コマンドを介して呼び出され、PostgreSQL の Makefile でラップされてインスタンスのセットアップなどが行われます。Makefile.global 内の $(prove_check) および $(prove_installcheck) ターゲットを参照してください。デフォルトでは、t/ サブディレクトリ内のすべてのテストが実行されます。個別のテストを実行するには、make に PROVE_TESTS=&quot;t/001_testname.pl t/002_othertestname.pl&quot; のように渡します。
+
+デフォルトでは、実行中のノイズを抑えるために PROVE_FLAGS を介したフラグ設定は行いませんが、必要に応じて &#x27;make&#x27; コマンドラインで設定できます。例:
+
+make check-world PROVE_FLAGS=&#x27;--verbose&#x27;
+
+テストが失敗した場合、&#x27;prove&#x27; からの端末出力だけでは問題を診断するのに十分でないことがよくあります。tmp_check/log/ 配下に残されたログファイルを確認して詳細情報を取得してください。&#x27;regress_log_XXX&#x27; という名前のファイルは Perl テストスクリプト自体のログ出力であり、最初に確認する必要があります。その他のファイルは postmaster のログであり、追加データとして役立つ場合があります。
+
+テストでは、多くの個別の操作に対してデフォルトで 180 秒のタイムアウトが設定されています。低速なホストで負荷に起因する誤った失敗を回避するには、環境変数 PG_TEST_TIMEOUT_DEFAULT を 180 より大きい秒数に設定します。開発者は、この環境変数をより小さい秒数に設定することで、失敗をより早く確認できます。
+
+テストが失敗したときには、分析のためにデータディレクトリも残されます。これらはテストファイル名に基づいて命名されます。ただし、環境変数 PG_TEST_NOCLEAN が設定されている場合は、テストのステータスに関係なくデータディレクトリが保持されます。この環境変数は、テストの一時ディレクトリが削除されることも防ぎます。
+
+
+テストの作成
+-------------
+
+可能であれば、src/test/regress で pg_regress を使用するか、src/test/isolation で分離テスターの仕様を使用してテストを作成することを推奨します。そうでない場合は、新しいテストが src/test 内の既存のツリー（src/test/ssl など）で意味をなすか、あるいは既存のユーティリティのスイートに追加すべきかを確認してください。
+
+パッチを提出する前に、すべてのテストおよびテストツールに対して perltidy --profile=src/tools/pgindent/perltidyrc を使用して perltidy を実行する必要があることに注意してください。
+
+テストは Perl の Test::More を使用して記述され、src/test/perl からの PostgreSQL 固有のインフラストラクチャがノード管理、クエリを実行して結果を取得するための &#x27;psql&#x27; の呼び出しサポートなどを提供します。テストを作成する前に、Test::More のドキュメントを読む必要があります。
+
+スイートの t/ サブディレクトリ内のテストスクリプトは、アルファベット順に実行されます。
+
+各テストスクリプトは以下で始める必要があります。
+
+    use strict;
+    use warnings FATAL =&gt; &#x27;all&#x27;;
+    use PostgreSQL::Test::Cluster;
+    use PostgreSQL::Test::Utils;
+    use Test::More;
+
+その後、一般的には 1 つ以上のノードをセットアップし、それらに対してコマンドを実行し、結果を評価する必要があります。例:
+
+    my $node = PostgreSQL::Test::Cluster-&gt;new(&#x27;primary&#x27;);
+    $node-&gt;init;
+    $node-&gt;start;
+
+    my $ret = $node-&gt;safe_psql(&#x27;postgres&#x27;, &#x27;SELECT 1&#x27;);
+    is($ret, &#x27;1&#x27;, &#x27;SELECT 1 returns 1&#x27;);
+
+    $node-&gt;stop(&#x27;fast&#x27;);
+
+各テストスクリプトは以下で終了する必要があります。
+
+	done_testing();
+
+Test::Builder::Level は、失敗を報告する際にテストが呼び出しスタックのどれだけ上までを確認するかを制御します。これは、ok() や is() のような Test::More のテストルーチンを直接または間接的に呼び出すサブルーチンによってインクリメントされる必要があります。
+
+    local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+テストの作成方法の詳細については、ドキュメントを参照してください。
+
+    perldoc Test::More
+    perldoc Test::Builder
+
+PostgreSQL 固有の利用可能なテストメソッドやいくつかのテスト例については、テストモジュールの perldoc を読んでください。例:
+
+    perldoc src/test/perl/PostgreSQL/Test/Cluster.pm
+
+移植性
+-----------
+
+最先端の Perl 機能の使用は避けてください。ビルドファームには 5.14 と古いバージョンの Perl を実行している環境があるため、テストはそれらでもパスすることが期待されます。
+
+また、IPC::Run 以外の非コア Perl モジュールは使用しないでください。特定のテストでどうしても必要な場合は、そのモジュールが存在しないときにテストをスキップするように手配してください。不明な場合は、Module::CoreList を参照して、特定のモジュールが Perl コアの一部であるかどうか、およびどのモジュールバージョンがどの Perl リリースに同梱されていたかを確認できます。
+
+古い Perl バージョンとの互換性をテストする 1 つの方法は perlbrew を使用することです。http://perlbrew.pl を参照してください。インストール後、以下を実行します。
+
+    export PERLBREW_CONFIGURE_FLAGS=&#x27;-de -Duseshrplib&#x27;
+    perlbrew --force install 5.14.0
+    perlbrew use 5.14.0
+    perlbrew install-cpanm
+    cpanm install Test::Simple@0.98
+    cpanm install IPC::Run@0.79
+    cpanm install ExtUtils::MakeMaker@6.50  # ダウングレード
+
+ヒント: Test::Simple の utf8 回帰テストがハングアップする場合は、UTF8 対応のロケールを設定してみてください（例: &quot;export LANG=en_US.utf8&quot;）。
+
+その後、Postgres の configure を再実行して、テスト実行時に正しい Perl が使用されるようにします。正しい Perl が見つかったことを確認するには、以下を実行します。
+
+    grep ^PERL= config.log
+
+cpanm の制限により、この手順は古いビルドファーム環境のモジュールリストを完全に複製するわけではありません。不一致が問題になることはほとんどありませんが、確実を期す場合は cpanm をバイパスし、代わりに Test::Simple と IPC::Run の目的のバージョンを手動でインストールしてください。</pre></body></html>
