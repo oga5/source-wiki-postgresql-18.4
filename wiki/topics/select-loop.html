@@ -1,9 +1,9 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>topics/select-loop.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>select_loop</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="3"><title>topics/select-loop.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>select_loop</h1>
 <h2>概念</h2>
-<p><code>select_loop</code> は、PostgreSQL のクライアントツール（<code>pg_dump</code>、<code>pg_upgrade</code>、および共通ユーティリティ <code>fe_utils</code>）において、複数のファイル記述子（FD）に対する I/O 待機（<code>select()</code> システムコール）を、シグナル割り込みやキャンセル要求を考慮して安全に実行するためのラッパー関数です。</p>
+<p><code>select_loop</code> は、PostgreSQL のクライアントツール（<code>pg_dump</code>、<code>pg_upgrade</code>、および共通ユーティリティ <code>fe_utils</code>）において、複数のファイル記述子（FD）に対する <a class="wiki-source-link" href="../../source/src/common/md5.c.html#L63" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/common/md5.c.html&quot;}, '*');">I</a>/O 待機（<code>select()</code> システムコール）を、シグナル割り込みやキャンセル要求を考慮して安全に実行するためのラッパー関数です。</p>
 <h2>なぜ重要か</h2>
-<p>非同期または並行処理を行うクライアントツールにおいて、OS のシグナル割り込み（<code>EINTR</code> / <code>WSAEINTR</code>）やユーザーからのキャンセル要求（<code>CancelRequested</code>）が発生した場合でも、I/O 監視ループが不意に終了したりハングしたりするのを防ぎ、堅牢な並行処理の制御を維持するために重要です。特に Windows 環境と非 Windows 環境におけるエラーコードやタイムアウト処理の差異を吸収する役割を持ちます。</p>
+<p>非同期または並行処理を行うクライアントツールにおいて、OS のシグナル割り込み（<a class="wiki-source-link" href="../../source/src/include/port/win32_port.h.html#L361" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>EINTR</code></a> / <code>WSAEINTR</code>）やユーザーからのキャンセル要求（<a class="wiki-source-link" href="../../source/src/fe_utils/cancel.c.html#L59" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/fe_utils/cancel.c.html&quot;}, '*');"><code>CancelRequested</code></a>）が発生した場合でも、<a class="wiki-source-link" href="../../source/src/common/md5.c.html#L63" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/common/md5.c.html&quot;}, '*');">I</a>/O 監視ループが不意に終了したりハングしたりするのを防ぎ、堅牢な並行処理の制御を維持するために重要です。特に Windows 環境と非 Windows 環境におけるエラーコードやタイムアウト処理の差異を吸収する役割を持ちます。</p>
 <h2>関与するモジュール</h2>
 <p>提供された情報に基づき、以下のモジュールが関与しています。</p>
 <ul>
@@ -14,32 +14,32 @@
 <h2>主要エンティティ</h2>
 <ul>
 <li>**<code>symbol:src/bin/pg_upgrade/task.c#select_loop</code>**: <code>pg_upgrade</code> 内で、読み込み・書き込み用の <code>fd_set</code> を監視し、割り込みをハンドリングする静的関数。</li>
-<li>**<code>symbol:src/fe_utils/parallel_slot.c#select_loop</code>**: <code>fe_utils</code> 内で、キャンセル要求（<code>CancelRequested</code>）のチェックや Windows でのタイムアウト付き監視を行う静的関数。</li>
+<li>**<code>symbol:src/fe_utils/parallel_slot.c#select_loop</code>**: <code>fe_utils</code> 内で、キャンセル要求（<a class="wiki-source-link" href="../../source/src/fe_utils/cancel.c.html#L59" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/fe_utils/cancel.c.html&quot;}, '*');"><code>CancelRequested</code></a>）のチェックや Windows でのタイムアウト付き監視を行う静的関数。</li>
 <li>**<code>symbol:src/bin/pg_dump/parallel.c#select_loop</code>**: <code>pg_dump</code> の並行処理で利用される同名の関数（詳細な実装は提供されたコンテキストからは未詳）。</li>
 </ul>
 <h2>エンドツーエンドの流れ</h2>
 <p>1. 各ツール（<code>pg_upgrade</code> や <code>fe_utils</code> を利用するツール）の並行処理管理部（例: <code>wait_on_slots</code>）から <code>select_loop</code> が呼び出されます。 2. <code>select_loop</code> は、監視対象のファイル記述子集合（<code>fd_set</code>）と最大ファイル記述子番号（<code>maxFd</code>）を受け取ります。 3. ループ内で <code>select()</code> システムコールを実行します。</p>
 <ul>
-<li>**<code>fe_utils</code> の実装**: ループ開始時および実行中に <code>CancelRequested</code> が真であるかをチェックし、真であれば <code>-1</code> を返して即座に中断します。また、Windows 環境では 1 秒のタイムアウトを設定して定期的にキャンセル要求を監視します。</li>
-<li>**<code>pg_upgrade</code> の実装**: <code>input</code> および <code>output</code> の <code>fd_set</code> を内部で保存・復元しながら <code>select()</code> を呼び出します。</li>
-<p>4. <code>select()</code> が <code>EINTR</code>（または Windows の <code>WSAEINTR</code>）で失敗した場合は、ループを継続して再試行します。 5. 準備が整ったファイル記述子がある場合、または致命的なエラーが発生した場合は、ループを抜けて結果を呼び出し元に返します。</p>
+<li>**<code>fe_utils</code> の実装**: ループ開始時および実行中に <a class="wiki-source-link" href="../../source/src/fe_utils/cancel.c.html#L59" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/fe_utils/cancel.c.html&quot;}, '*');"><code>CancelRequested</code></a> が真であるかをチェックし、真であれば <code>-1</code> を返して即座に中断します。また、Windows 環境では 1 秒のタイムアウトを設定して定期的にキャンセル要求を監視します。</li>
+<li>**<code>pg_upgrade</code> の実装**: <code>input</code> および <a class="wiki-source-link" href="../../source/src/bin/pg_test_timing/pg_test_timing.c.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_test_timing__pg_test_timing_c__output.html&quot;}, '*');"><code>output</code></a> の <code>fd_set</code> を内部で保存・復元しながら <code>select()</code> を呼び出します。</li>
+<p>4. <code>select()</code> が <a class="wiki-source-link" href="../../source/src/include/port/win32_port.h.html#L361" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>EINTR</code></a>（または Windows の <code>WSAEINTR</code>）で失敗した場合は、ループを継続して再試行します。 5. 準備が整ったファイル記述子がある場合、または致命的なエラーが発生した場合は、ループを抜けて結果を呼び出し元に返します。</p>
 </ul>
 <p>※ <code>pg_dump</code> における具体的なエンドツーエンドの流れの詳細は、提供されたコンテキストからは不明です。</p>
 <h2>重要な不変条件</h2>
 <ul>
 <li>**破壊的更新の回避**: <code>select()</code> システムコールは引数として渡された <code>fd_set</code> を破壊的に更新するため、<code>select_loop</code> の内部（<code>pg_upgrade</code> の場合は <code>save_input</code>/<code>save_output</code> による復元）または呼び出し元（<code>fe_utils</code> の場合）で、呼び出しごとに <code>fd_set</code> を再構築・復元しなければなりません。</li>
-<li>**キャンセル即時応答**: <code>fe_utils</code> の <code>select_loop</code> においては、<code>CancelRequested</code> が設定されている場合、即座に <code>-1</code> を返して処理を中断しなければなりません。</li>
+<li>**キャンセル即時応答**: <code>fe_utils</code> の <code>select_loop</code> においては、<a class="wiki-source-link" href="../../source/src/fe_utils/cancel.c.html#L59" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/fe_utils/cancel.c.html&quot;}, '*');"><code>CancelRequested</code></a> が設定されている場合、即座に <code>-1</code> を返して処理を中断しなければなりません。</li>
 <li>**maxFd の境界**: <code>pg_upgrade</code> の実装では、<code>maxFd</code> が 0 の場合は即座に 0 を返さなければなりません。</li>
 </ul>
 <h2>よくある落とし穴</h2>
 <ul>
 <li>**fd_set の再利用**: <code>select_loop</code> に渡す <code>fd_set</code> は <code>select()</code> によって書き換えられるため、呼び出し元で再利用する際に再構築を怠ると、意図しないファイル記述子の監視漏れや誤検知が発生します。</li>
 <li>**Windows での FD_SETSIZE 制限**: Windows 環境では <code>FD_SETSIZE</code> の制限（デフォルトで 1024）があるため、これを超えるファイル記述子を扱うとエラーになる可能性があります。</li>
-<li>**プラットフォーム間の差異**: Windows と非 Windows で割り込みエラーコード（<code>EINTR</code> と <code>WSAEINTR</code>）やタイムアウトの扱いが異なるため、プラットフォーム依存のコード修正を行う際は注意が必要です。</li>
+<li>**プラットフォーム間の差異**: Windows と非 Windows で割り込みエラーコード（<a class="wiki-source-link" href="../../source/src/include/port/win32_port.h.html#L361" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>EINTR</code></a> と <code>WSAEINTR</code>）やタイムアウトの扱いが異なるため、プラットフォーム依存のコード修正を行う際は注意が必要です。</li>
 </ul>
 <h2>次に読む場所</h2>
 <ul>
-<li><code>src/bin/pg_upgrade/task.c</code> の <code>select_loop</code> および <code>wait_on_slots</code> の実装</li>
-<li><code>src/fe_utils/parallel_slot.c</code> の <code>select_loop</code> および <code>wait_on_slots</code> の実装</li>
-<li><code>src/bin/pg_dump/parallel.c</code> の並行処理実装</li>
+<li><a class="wiki-source-link" href="../../source/src/bin/pg_upgrade/task.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_upgrade/task.c.html&quot;}, '*');"><code>src/bin/pg_upgrade/task.c</code></a> の <code>select_loop</code> および <code>wait_on_slots</code> の実装</li>
+<li><a class="wiki-source-link" href="../../source/src/fe_utils/parallel_slot.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/fe_utils/parallel_slot.c.html&quot;}, '*');"><code>src/fe_utils/parallel_slot.c</code></a> の <code>select_loop</code> および <code>wait_on_slots</code> の実装</li>
+<li><a class="wiki-source-link" href="../../source/src/bin/pg_dump/parallel.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/parallel.c.html&quot;}, '*');"><code>src/bin/pg_dump/parallel.c</code></a> の並行処理実装</li>
 </ul></body></html>

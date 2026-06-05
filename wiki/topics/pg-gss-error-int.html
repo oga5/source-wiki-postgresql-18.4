@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>topics/pg-gss-error-int.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_GSS_error_int</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="3"><title>topics/pg-gss-error-int.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>pg_GSS_error_int</h1>
 <h2>概念</h2>
 <p><code>pg_GSS_error_int</code> は、PostgreSQLのバックエンド（サーバー側）とフロントエンド（クライアント側/libpq）の両方において、GSSAPIのステータスコード（メジャーまたはマイナーコード）を人間が読めるエラーメッセージ文字列に変換するための内部ヘルパー関数です。</p>
 <h2>なぜ重要か</h2>
@@ -15,23 +15,23 @@
 <li><code>symbol:src/interfaces/libpq/fe-gssapi-common.c#pg_GSS_error_int</code>: フロントエンド（libpq）用の実装。可変長バッファ <code>PQExpBuffer str</code> を受け取り、メッセージを追記します。</li>
 </ul>
 <h2>エンドツーエンドの流れ</h2>
-<p>1. GSSAPI認証処理中にエラーが発生すると、それぞれのモジュール内の <code>pg_GSS_error</code> 関数が呼び出されます。 2. <code>pg_GSS_error</code> は、メジャーコードとマイナーコードのそれぞれに対して <code>pg_GSS_error_int</code> を呼び出します。 3. <code>pg_GSS_error_int</code> 内部では、<code>gss_display_status</code> をループ内で呼び出し、ステータスコードに対応するすべてのメッセージを取得します。 4. 取得したメッセージは、スペースで区切りながら指定のバッファ（バックエンドでは <code>char *</code>、フロントエンドでは <code>PQExpBuffer</code>）に連結・格納されます。 5. メッセージ取得ごとに <code>gss_release_buffer</code> を呼び出してGSSAPIが確保したメモリを解放します。</p>
+<p>1. GSSAPI認証処理中にエラーが発生すると、それぞれのモジュール内の <code>pg_GSS_error</code> 関数が呼び出されます。 2. <code>pg_GSS_error</code> は、メジャーコードとマイナーコードのそれぞれに対して <code>pg_GSS_error_int</code> を呼び出します。 3. <code>pg_GSS_error_int</code> 内部では、<code>gss_display_status</code> をループ内で呼び出し、ステータスコードに対応するすべてのメッセージを取得します。 4. 取得したメッセージは、スペースで区切りながら指定のバッファ（バックエンドでは <code>char *</code>、フロントエンドでは <a class="wiki-source-link" href="../../source/src/interfaces/libpq/pqexpbuffer.h.html#L51" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__pqexpbuffer_h__PQExpBuffer.html&quot;}, '*');"><code>PQExpBuffer</code></a>）に連結・格納されます。 5. メッセージ取得ごとに <code>gss_release_buffer</code> を呼び出してGSSAPIが確保したメモリを解放します。</p>
 <p>※なお、GSSAPI認証全体における具体的なエラー発生から最終的なユーザーへのエラー表示に至る完全なエンドツーエンドの制御フローや、バックエンドとフロントエンド間の詳細な連携フローは、提供されたモジュール情報からは完全には明らかになっていません。</p>
 <h2>重要な不変条件</h2>
 <ul>
 <li>**メモリ解放の保証**: <code>gss_display_status</code> によって取得された一時バッファは、ループの各イテレーションにおいて必ず <code>gss_release_buffer</code> で解放されなければなりません。</li>
 <li>**バッファの安全性**:</li>
 <li>バックエンド実装では、書き込み先バッファ <code>s</code> は少なくとも <code>len</code> バイトの有効な領域を持つ必要があり、バッファオーバーフローを防ぐためにサイズ制限を超えた場合は切り詰められ、<code>elog(COMMERROR, ...)</code> が発行されます。</li>
-<li>フロントエンド実装では、渡される <code>PQExpBuffer</code> が事前に適切に初期化されている必要があります。</li>
+<li>フロントエンド実装では、渡される <a class="wiki-source-link" href="../../source/src/interfaces/libpq/pqexpbuffer.h.html#L51" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__pqexpbuffer_h__PQExpBuffer.html&quot;}, '*');"><code>PQExpBuffer</code></a> が事前に適切に初期化されている必要があります。</li>
 </ul>
 <h2>よくある落とし穴</h2>
 <ul>
-<li>**同名関数のシグネチャ相違**: バックエンドとフロントエンドで関数名が同一（<code>pg_GSS_error_int</code>）ですが、引数の型（<code>char *</code> と <code>size_t</code> vs <code>PQExpBuffer</code>）が異なります。これらは静的（<code>static</code>）関数として定義されており、共有ライブラリ等で混同しないよう注意が必要です。</li>
-<li>**再帰的エラーの防止**: バックエンド側でエラーが発生した際、エラー報告処理自体が再帰的にGSSAPIエラーを引き起こすのを防ぐため、通常の <code>ereport</code> ではなく <code>COMMERROR</code> レベルの <code>elog</code> が使用されています。このログレベルの選択を誤ると、無限ループやクラッシュにつながる恐れがあります。</li>
+<li>**同名関数のシグネチャ相違**: バックエンドとフロントエンドで関数名が同一（<code>pg_GSS_error_int</code>）ですが、引数の型（<code>char *</code> と <code>size_t</code> vs <a class="wiki-source-link" href="../../source/src/interfaces/libpq/pqexpbuffer.h.html#L51" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__pqexpbuffer_h__PQExpBuffer.html&quot;}, '*');"><code>PQExpBuffer</code></a>）が異なります。これらは静的（<code>static</code>）関数として定義されており、共有ライブラリ等で混同しないよう注意が必要です。</li>
+<li>**再帰的エラーの防止**: バックエンド側でエラーが発生した際、エラー報告処理自体が再帰的にGSSAPIエラーを引き起こすのを防ぐため、通常の <a class="wiki-source-link" href="../../source/src/include/utils/elog.h.html#L163" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');"><code>ereport</code></a> ではなく <a class="wiki-source-link" href="../../source/src/include/utils/elog.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');"><code>COMMERROR</code></a> レベルの <a class="wiki-source-link" href="../../source/src/include/utils/elog.h.html#L239" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');"><code>elog</code></a> が使用されています。このログレベルの選択を誤ると、無限ループやクラッシュにつながる恐れがあります。</li>
 <li>**ビルド環境の依存**: フロントエンド側の実装は <code>ENABLE_GSS</code> マクロが定義されている環境でのみコンパイルされます。</li>
 </ul>
 <h2>次に読む場所</h2>
 <ul>
-<li><code>src/backend/libpq/be-gssapi-common.c</code>: バックエンド側でのGSSAPIエラー処理と固定長バッファへの書き込み実装を確認する場合。</li>
-<li><code>src/interfaces/libpq/fe-gssapi-common.c</code>: フロントエンド（libpq）側での可変長バッファ（<code>PQExpBuffer</code>）を用いたエラーメッセージ蓄積の実装を確認する場合。</li>
+<li><a class="wiki-source-link" href="../../source/src/backend/libpq/be-gssapi-common.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/be-gssapi-common.c.html&quot;}, '*');"><code>src/backend/libpq/be-gssapi-common.c</code></a>: バックエンド側でのGSSAPIエラー処理と固定長バッファへの書き込み実装を確認する場合。</li>
+<li><a class="wiki-source-link" href="../../source/src/interfaces/libpq/fe-gssapi-common.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-gssapi-common.c.html&quot;}, '*');"><code>src/interfaces/libpq/fe-gssapi-common.c</code></a>: フロントエンド（libpq）側での可変長バッファ（<a class="wiki-source-link" href="../../source/src/interfaces/libpq/pqexpbuffer.h.html#L51" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__pqexpbuffer_h__PQExpBuffer.html&quot;}, '*');"><code>PQExpBuffer</code></a>）を用いたエラーメッセージ蓄積の実装を確認する場合。</li>
 </ul></body></html>

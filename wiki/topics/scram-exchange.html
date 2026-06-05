@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="2"><title>topics/scram-exchange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>scram_exchange</h1>
+<html><head><meta charset="utf-8"><meta name="source-wiki-viewer-version" content="3"><title>topics/scram-exchange.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>scram_exchange</h1>
 <h2>概念</h2>
 <p><code>scram_exchange</code> は、PostgreSQLにおけるSASL SCRAM-SHA-256認証プロトコルを処理するための、サーバー側（backend）およびクライアント側（libpq）の双方に存在する主要なステートマシン関数です。この関数は、認証プロセスにおけるメッセージの送受信、解析、検証、および状態遷移を制御します。</p>
 <h2>なぜ重要か</h2>
@@ -24,15 +24,15 @@
 <li>サーバー側は <code>SCRAM_AUTH_INIT</code> 状態において、クライアントの最初のメッセージを解析し、サーバーの nonce と salt を含むメッセージを生成して <code>SCRAM_AUTH_SALT_SENT</code> へ移行します。</li>
 <p>2. **チャレンジ・レスポンス検証フェーズ**:</p>
 <li>クライアント側は <code>FE_SCRAM_NONCE_SENT</code> 状態に移行し、サーバーからの salt/nonce を解析してクライアント証明（Proof）を生成し、サーバーへ送信して <code>FE_SCRAM_PROOF_SENT</code> へ移行します。</li>
-<li>サーバー側は <code>SCRAM_AUTH_SALT_SENT</code> 状態において、クライアントの最終メッセージを解析し、nonce と Proof を検証します（<code>verify_client_proof</code>）。</li>
+<li>サーバー側は <code>SCRAM_AUTH_SALT_SENT</code> 状態において、クライアントの最終メッセージを解析し、nonce と Proof を検証します（<a class="wiki-source-link" href="../../source/src/backend/libpq/auth-scram.c.html#L1148" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/auth-scram.c.html&quot;}, '*');"><code>verify_client_proof</code></a>）。</li>
 <p>3. **完了フェーズ**:</p>
-<li>サーバー側は検証成功時に <code>SCRAM_AUTH_FINISHED</code> 状態へ移行し、セッション鍵を <code>MyProcPort</code> に格納して <code>PG_SASL_EXCHANGE_SUCCESS</code> を返します。</li>
-<li>クライアント側は <code>FE_SCRAM_PROOF_SENT</code> 状態において、サーバーからの署名を検証し（<code>verify_server_signature</code>）、一致すれば <code>SASL_COMPLETE</code> を返します。</li>
+<li>サーバー側は検証成功時に <code>SCRAM_AUTH_FINISHED</code> 状態へ移行し、セッション鍵を <code>MyProcPort</code> に格納して <a class="wiki-source-link" href="../../source/src/include/libpq/sasl.h.html#L26" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/libpq/sasl.h.html&quot;}, '*');"><code>PG_SASL_EXCHANGE_SUCCESS</code></a> を返します。</li>
+<li>クライアント側は <code>FE_SCRAM_PROOF_SENT</code> 状態において、サーバーからの署名を検証し（<a class="wiki-source-link" href="../../source/src/interfaces/libpq/fe-auth-scram.c.html#L845" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-auth-scram.c.html&quot;}, '*');"><code>verify_server_signature</code></a>）、一致すれば <code>SASL_COMPLETE</code> を返します。</li>
 </ul>
 <h2>重要な不変条件</h2>
 <ul>
 <li>**サーバー側**:</li>
-<li><code>opaq</code> は有効な <code>scram_state</code> 構造体へのポインタでなければなりません。</li>
+<li><code>opaq</code> は有効な <a class="wiki-source-link" href="../../source/src/backend/libpq/auth-scram.c.html#L133" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__auth-scram_c__scram_state.html&quot;}, '*');"><code>scram_state</code></a> 構造体へのポインタでなければなりません。</li>
 <li><code>input</code> が <code>NULL</code> の場合は、認証の初期段階（<code>SCRAM_AUTH_INIT</code>）でなければなりません。</li>
 <li>認証成功時、<code>MyProcPort</code> に <code>ClientKey</code> および <code>ServerKey</code> が保存されます。</li>
 <li>**クライアント側**:</li>
@@ -43,10 +43,10 @@
 <ul>
 <li>**入力データの破壊**: クライアント側の <code>scram_exchange</code> は入力メッセージ（<code>input</code>）を破壊的に処理するため、呼び出し元は再利用や不変性を前提としたバッファの扱いに注意する必要があります。</li>
 <li>**タイミング攻撃**: サーバー側では、ユーザーが存在しない場合でもモック認証として計算を継続し、意図的に失敗（<code>doomed</code> フラグ）させることで、ユーザーの存在有無が処理時間から漏洩するのを防いでいます。このロジックをバイパスしないように注意が必要です。</li>
-<li>**プロトコル違反の厳格なチェック**: メッセージの長さ不一致や空メッセージの受信など、プロトコル違反が発生した場合は即座にエラー（<code>PG_SASL_EXCHANGE_FAILURE</code> または <code>SASL_FAILED</code>）を返し、詳細なエラーを記録する必要があります。</li>
+<li>**プロトコル違反の厳格なチェック**: メッセージの長さ不一致や空メッセージの受信など、プロトコル違反が発生した場合は即座にエラー（<a class="wiki-source-link" href="../../source/src/include/libpq/sasl.h.html#L27" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/libpq/sasl.h.html&quot;}, '*');"><code>PG_SASL_EXCHANGE_FAILURE</code></a> または <code>SASL_FAILED</code>）を返し、詳細なエラーを記録する必要があります。</li>
 </ul>
 <h2>次に読む場所</h2>
 <ul>
-<li><code>src/backend/libpq/auth-scram.c</code> (サーバー側の状態遷移とモック認証の実装)</li>
-<li><code>src/interfaces/libpq/fe-auth-scram.c</code> (クライアント側のステートマシンと破壊的解析処理の実装)</li>
+<li><a class="wiki-source-link" href="../../source/src/backend/libpq/auth-scram.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/auth-scram.c.html&quot;}, '*');"><code>src/backend/libpq/auth-scram.c</code></a> (サーバー側の状態遷移とモック認証の実装)</li>
+<li><a class="wiki-source-link" href="../../source/src/interfaces/libpq/fe-auth-scram.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-auth-scram.c.html&quot;}, '*');"><code>src/interfaces/libpq/fe-auth-scram.c</code></a> (クライアント側のステートマシンと破壊的解析処理の実装)</li>
 </ul></body></html>
