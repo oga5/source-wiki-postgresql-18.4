@@ -109,6 +109,7 @@ window.addEventListener('message', (event) => {
   if (!event.data) return;
   if (event.data.type === 'source-link') {
     setMode('source', false);
+    setSourcePage(event.data.source, false);
     setWikiPanel(event.data.panel, true, false);
     updateHash();
   } else if (event.data.type === 'source-page') {
