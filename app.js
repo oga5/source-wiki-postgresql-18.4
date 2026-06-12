@@ -3,7 +3,7 @@ const contentPane = document.querySelector('.content-pane');
 const sourceView = document.getElementById('source-view');
 const wikiView = document.getElementById('wiki-view');
 const blankPage = 'blank.html';
-const overviewPage = 'overview.html';
+const overviewPage = 'overview-content.html';
 let pendingExplicitPanel = null;
 let applyingState = false;
 
