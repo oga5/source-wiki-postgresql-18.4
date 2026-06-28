@@ -1,0 +1,163 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/commands/indexcmds.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/indexcmds.c.html&quot;}, '*');">src/backend/commands/indexcmds.c</a></h1>
+<h2>概要</h2>
+<p>インデックスの作成（<code>CREATE INDEX</code>）および再構築（<code>REINDEX</code>）を統括するコマンド実行エンジンです。システムカタログの更新、物理的なインデックス構築、および並行処理（<code>CONCURRENTLY</code>）における複雑な状態遷移と同期制御を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/commands</code> モジュールの一部として、インデックスという特定のデータベースオブジェクトのライフサイクルを管理します。<a class="wiki-source-link" href="../../../../source/src/backend/commands/tablecmds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/tablecmds.c.html&quot;}, '*');"><code>tablecmds.c</code></a> がテーブル全体の構造変更を扱うのに対し、本ファイルはインデックス固有の属性（演算子クラス、照合順序、述語）の検証と構築に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス定義の検証**: 属性、演算子クラス、述語（<code>WHERE</code> 句）、およびパーティション制約の整合性チェック。</li>
+<li>**インデックス構築のディスパッチ**: 通常の構築と、<code>CONCURRENTLY</code> モードによる段階的な構築（カタログ更新、スナップショット待機、検証）の制御。</li>
+<li>**再構築（REINDEX）の管理**: 単一インデックス、テーブル全体、スキーマ、データベース単位の再構築処理。</li>
+<li>**パーティション対応**: パーティションテーブルに対するインデックスの再帰的作成およびアタッチ処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>インデックス作成・構築</h3>
+<ul>
+<li><code>DefineIndex()</code>: <code>CREATE INDEX</code> コマンドのメインエントリ。カタログ登録から物理構築までを制御。</li>
+<li><code>index_concurrently_build()</code>: 並行構築の物理スキャンと挿入を実行。</li>
+<li><code>validate_index()</code>: 並行構築の最終フェーズで、インデックスの整合性を検証。</li>
+</ul>
+<h3>再構築（REINDEX）</h3>
+<ul>
+<li><code>ExecReindex()</code>: <code>REINDEX</code> コマンドのディスパッチャ。</li>
+<li><code>ReindexIndex()</code> / <code>ReindexTable()</code>: 対象に応じた再構築の実行。</li>
+<li><code>ReindexRelationConcurrently()</code>: <code>REINDEX CONCURRENTLY</code> の複雑な状態遷移を管理。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><code>CheckIndexCompatible()</code>: インデックスの再構築を回避できるか（互換性）を判定。</li>
+<li><code>ComputeIndexAttrs()</code>: インデックス属性、演算子クラス、オプションを計算・検証。</li>
+<li><code>WaitForOlderSnapshots()</code>: 並行構築時に、古いスナップショットを持つトランザクションの終了を待機。</li>
+<li><code>makeObjectName()</code> / <code>ChooseRelationName()</code>: インデックス名の自動生成と衝突回避。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L177" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__CheckIndexCompatible.html&quot;}, '*');"><code>CheckIndexCompatible</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L1844" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__CheckPredicate.html&quot;}, '*');"><code>CheckPredicate</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L2607" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ChooseRelationName.html&quot;}, '*');"><code>ChooseRelationName</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L361" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__CompareOpclassOptions.html&quot;}, '*');"><code>CompareOpclassOptions</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L1871" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ComputeIndexAttrs.html&quot;}, '*');"><code>ComputeIndexAttrs</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L541" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__DefineIndex.html&quot;}, '*');"><code>DefineIndex</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L2346" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__GetDefaultOpClass.html&quot;}, '*');"><code>GetDefaultOpClass</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ReindexErrorInfo.html&quot;}, '*');"><code>ReindexErrorInfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L123" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ReindexIndexCallbackState.html&quot;}, '*');"><code>ReindexIndexCallbackState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L3572" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ReindexIndexInfo.html&quot;}, '*');"><code>ReindexIndexInfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L2261" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ResolveOpClass.html&quot;}, '*');"><code>ResolveOpClass</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L434" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__WaitForOlderSnapshots.html&quot;}, '*');"><code>WaitForOlderSnapshots</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L541" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__DefineIndex.html&quot;}, '*');"><code>DefineIndex</code></a> がパーサーからの <a class="wiki-source-link" href="../../../../source/src/include/nodes/parsenodes.h.html#L3447" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__parsenodes_h__IndexStmt.html&quot;}, '*');"><code>IndexStmt</code></a> を受け取り、テーブルのロックと所有者権限の切り替えを行う。 2. **属性計算**: <a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L1871" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ComputeIndexAttrs.html&quot;}, '*');"><code>ComputeIndexAttrs</code></a> が演算子クラスや照合順序を解決し、<code>IndexInfo</code> 構造体を構築する。 3. **構築フェーズ**:</p>
+<ul>
+<li>通常: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/index.c.html#L725" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__index_c__index_create.html&quot;}, '*');"><code>index_create</code></a> を呼び出し、カタログ更新と物理構築を同期的に行う。</li>
+<li>並行: 複数トランザクションに分割。</li>
+<li>フェーズ1: カタログにインデックスを登録（<code>indisready=false</code>）。</li>
+<li>フェーズ2: <a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/lmgr.c.html#L988" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lmgr_c__WaitForLockers.html&quot;}, '*');"><code>WaitForLockers</code></a> で既存の書き込みトランザクションを待機し、物理構築を実行。</li>
+<li>フェーズ3: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/index.c.html#L3349" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__index_c__validate_index.html&quot;}, '*');"><code>validate_index</code></a> で不足エントリを補完。</li>
+<li>フェーズ4-6: インデックスの切り替え、古いインデックスの無効化と削除。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_index</code>, <code>pg_am</code>, <code>pg_opclass</code> 等のカタログ定義。</li>
+<li><code>access/</code>: <a class="wiki-source-link" href="../../../../source/src/include/access/amapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/amapi.h.html&quot;}, '*');"><code>amapi.h</code></a> (AM API), <a class="wiki-source-link" href="../../../../source/src/include/access/tableam.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/tableam.h.html&quot;}, '*');"><code>tableam.h</code></a> (テーブルアクセス), <a class="wiki-source-link" href="../../../../source/src/include/access/xact.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/xact.h.html&quot;}, '*');"><code>xact.h</code></a> (トランザクション管理)。</li>
+<li><code>storage/</code>: <a class="wiki-source-link" href="../../../../source/src/include/storage/lmgr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lmgr.h.html&quot;}, '*');"><code>lmgr.h</code></a> (ロック管理), <a class="wiki-source-link" href="../../../../source/src/include/storage/proc.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/proc.h.html&quot;}, '*');"><code>proc.h</code></a> (プロセス状態)。</li>
+<li><code>utils/</code>: <a class="wiki-source-link" href="../../../../source/src/include/utils/syscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/syscache.h.html&quot;}, '*');"><code>syscache.h</code></a> (システムキャッシュ), <a class="wiki-source-link" href="../../../../source/src/include/utils/lsyscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/lsyscache.h.html&quot;}, '*');"><code>lsyscache.h</code></a> (カタログルックアップ)。</li>
+<li><code>access/amapi.h</code></li>
+<li><code>access/gist.h</code></li>
+<li><code>access/heapam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/reloptions.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_inherits.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/comment.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_oper.h</code></li>
+<li><code>parser/parse_utilcmd.h</code></li>
+<li><code>partitioning/partdesc.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/partcache.h</code></li>
+<li><code>utils/pg_rusage.h</code></li>
+<li><code>utils/regproc.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/index.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/index.c.html&quot;}, '*');"><code>src/backend/catalog/index.c</code></a>: インデックスのカタログ操作の低レベル実装。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/access/index/indexam.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/index/indexam.c.html&quot;}, '*');"><code>src/backend/access/index/indexam.c</code></a>: インデックスアクセスメソッドの共通インターフェース。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/tablecmds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/tablecmds.c.html&quot;}, '*');"><code>src/backend/commands/tablecmds.c</code></a>: テーブルの DDL 操作全般。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/backend/commands/indexcmds.c.html#L3109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__commands__indexcmds_c__ReindexMultipleTables.html&quot;}, '*');"><code>ReindexMultipleTables</code></a> 等では、トランザクションを跨いで生存させる必要があるデータを <a class="wiki-source-link" href="../../../../source/src/backend/utils/mmgr/mcxt.c.html#L159" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>PortalContext</code></a> などの長寿命コンテキストに割り当てています。</li>
+<li>**並行構築の複雑性**: <code>REINDEX CONCURRENTLY</code> は、デッドロックを避けるためにセッションレベルのロック（<a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/lmgr.c.html#L390" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lmgr_c__LockRelationIdForSession.html&quot;}, '*');"><code>LockRelationIdForSession</code></a>）を使用し、複数のトランザクションに処理を分割しています。このフローを理解するには、<a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/lmgr.c.html#L988" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lmgr_c__WaitForLockers.html&quot;}, '*');"><code>WaitForLockers</code></a> と <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xact.c.html#L3156" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__CommitTransactionCommand.html&quot;}, '*');"><code>CommitTransactionCommand</code></a> の呼び出し順序が重要です。</li>
+<li>**省略された詳細**: インデックスの物理的なスキャンや挿入の詳細は <code>access/</code> 以下の各アクセスメソッド（B-tree, GiST 等）に委譲されており、本ファイルはあくまで「コマンドの実行制御」に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexIndexCallbackState.html" target="wiki-view"><code>ReindexIndexCallbackState</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexErrorInfo.html" target="wiki-view"><code>ReindexErrorInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CheckIndexCompatible.html" target="wiki-view"><code>CheckIndexCompatible</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CompareOpclassOptions.html" target="wiki-view"><code>CompareOpclassOptions</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__WaitForOlderSnapshots.html" target="wiki-view"><code>WaitForOlderSnapshots</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__DefineIndex.html" target="wiki-view"><code>DefineIndex</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__CheckPredicate.html" target="wiki-view"><code>CheckPredicate</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ComputeIndexAttrs.html" target="wiki-view"><code>ComputeIndexAttrs</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ResolveOpClass.html" target="wiki-view"><code>ResolveOpClass</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__GetDefaultOpClass.html" target="wiki-view"><code>GetDefaultOpClass</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ChooseRelationName.html" target="wiki-view"><code>ChooseRelationName</code></a></li>
+<li><a href="../../../symbols/src__backend__commands__indexcmds_c__ReindexIndexInfo.html" target="wiki-view"><code>ReindexIndexInfo</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

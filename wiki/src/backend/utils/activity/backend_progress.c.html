@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/utils/activity/backend_progress.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_progress.c.html&quot;}, '*');">src/backend/utils/activity/backend_progress.c</a></h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLにおける長時間実行コマンド（VACUUM, CREATE INDEX等）の進捗状況を追跡・公開するためのインフラストラクチャを提供します。各バックエンドプロセスが自身の進捗パラメータを共有メモリ上の <a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_status.h.html#L98" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__backend_status_h__PgBackendStatus.html&quot;}, '*');"><code>PgBackendStatus</code></a> に書き込むためのインターフェースを定義しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/activity</code> モジュールの一部として、バックエンドの状態管理（<a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_status.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>backend_status.c</code></a>）と統計情報収集（<a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/pgstat.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgstat.c</code></a>）の橋渡しをします。本ファイルは「進捗」という特定のコンテキストに特化した書き込み操作を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**進捗状態のライフサイクル管理**: コマンドの開始（<code>start</code>）から終了（<code>end</code>）までの状態遷移を管理します。</li>
+<li>**パラメータの更新**: 進捗状況を示す最大20個の <code>int64</code> 型パラメータ（<code>st_progress_param</code>）の更新、加算、一括更新を提供します。</li>
+<li>**並列処理のサポート**: パラレルワーカーがリーダープロセスに対して進捗更新を通知する仕組みを提供します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L26" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_start_command.html&quot;}, '*');"><code>pgstat_progress_start_command</code></a>: コマンド開始時に呼び出し、進捗パラメータを初期化します。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_param.html&quot;}, '*');"><code>pgstat_progress_update_param</code></a>: 特定の進捗パラメータを更新します。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L90" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_parallel_incr_param.html&quot;}, '*');"><code>pgstat_progress_parallel_incr_param</code></a>: パラレルワーカーがリーダー経由で進捗を更新するためのメッセージング処理を行います。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L120" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_multi_param.html&quot;}, '*');"><code>pgstat_progress_update_multi_param</code></a>: 複数のパラメータをアトミックに更新します。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L149" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_end_command.html&quot;}, '*');"><code>pgstat_progress_end_command</code></a>: コマンド終了時に進捗状態をリセットします。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L68" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_incr_param.html&quot;}, '*');"><code>pgstat_progress_incr_param</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **書き込み**: 各関数は <a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_status.c.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>MyBEEntry</code></a>（現在のバックエンドの共有メモリ状態）を取得し、<a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_status.h.html#L209" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/backend_status.h.html&quot;}, '*');"><code>PGSTAT_BEGIN_WRITE_ACTIVITY</code></a> マクロでロック（またはメモリバリア）を確保します。 2. **更新**: 共有メモリ上の <code>st_progress_param</code> 配列を直接操作します。 3. **並列処理**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L90" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_parallel_incr_param.html&quot;}, '*');"><code>pgstat_progress_parallel_incr_param</code></a> は、自身がワーカーであれば <a class="wiki-source-link" href="../../../../../source/src/include/libpq/protocol.h.html#L69" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/libpq/protocol.h.html&quot;}, '*');"><code>PqMsg_Progress</code></a> メッセージを送信し、リーダーであれば直接更新を行います。 4. **終了**: <a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_status.h.html#L216" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/backend_status.h.html&quot;}, '*');"><code>PGSTAT_END_WRITE_ACTIVITY</code></a> マクロで書き込みを完了させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/backend_status.h</code>: 共有メモリ上の <a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_status.h.html#L98" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__backend_status_h__PgBackendStatus.html&quot;}, '*');"><code>PgBackendStatus</code></a> 構造体定義および <a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_status.c.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>MyBEEntry</code></a> へのアクセス。</li>
+<li><code>libpq/pqformat.h</code>: パラレルワーカーからの進捗通知メッセージング用。</li>
+<li><code>access/parallel.h</code>: <code>IsParallelWorker()</code> チェック用。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/backend_progress.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_progress.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/backend_progress.h.html&quot;}, '*');"><code>src/include/utils/backend_progress.h</code></a>: 本ファイルのヘッダー。<a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_progress.h.html#L22" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__backend_progress_h__ProgressCommandType.html&quot;}, '*');"><code>ProgressCommandType</code></a> 列挙型が定義されています。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/commands/progress.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/commands/progress.h.html&quot;}, '*');"><code>src/include/commands/progress.h</code></a>: 各コマンド（VACUUM等）がどのインデックスに何を格納するかという「意味論」が定義されています。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_status.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>src/backend/utils/activity/backend_status.c</code></a>: <a class="wiki-source-link" href="../../../../../source/src/include/utils/backend_status.h.html#L98" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__backend_status_h__PgBackendStatus.html&quot;}, '*');"><code>PgBackendStatus</code></a> の管理基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**意味論の分離**: 本ファイルは進捗パラメータの「格納場所」を提供するだけで、各インデックス（0〜19）が何を意味するかは関知しません。意味論は各コマンドの実装側に依存します。</li>
+<li>**アトミック性**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_progress.c.html#L120" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_multi_param.html&quot;}, '*');"><code>pgstat_progress_update_multi_param</code></a> を使用すると、複数のパラメータを一度のロック期間で更新できるため、読み取り側（ビューなど）から見て不整合な状態が見えることを防げます。</li>
+<li>**パフォーマンス**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/activity/backend_status.c.html#L42" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>pgstat_track_activities</code></a> が無効な場合、これらの関数は即座にリターンするため、オーバーヘッドは最小限に抑えられています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_start_command.html" target="wiki-view"><code>pgstat_progress_start_command</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_param.html" target="wiki-view"><code>pgstat_progress_update_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_incr_param.html" target="wiki-view"><code>pgstat_progress_incr_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_parallel_incr_param.html" target="wiki-view"><code>pgstat_progress_parallel_incr_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_update_multi_param.html" target="wiki-view"><code>pgstat_progress_update_multi_param</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__activity__backend_progress_c__pgstat_progress_end_command.html" target="wiki-view"><code>pgstat_progress_end_command</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

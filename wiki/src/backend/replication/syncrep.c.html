@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/replication/syncrep.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/syncrep.c.html&quot;}, '*');">src/backend/replication/syncrep.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQLの同期レプリケーションにおける、プライマリ側での待機および解放ロジックを実装するモジュールです。トランザクションコミットが指定されたスタンバイサーバーへ確実にレプリケートされるまで、ユーザーバックエンドを待機させます。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication</code> サブシステムの一部として、WAL送信プロセス（<a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>walsender.c</code></a>）とユーザーバックエンド間の同期インターフェースを提供します。スタンバイ側は自身の耐久性要件を意識せず、プライマリ側がこのモジュールを通じて待機・解放を完全に制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**待機キューの管理**: 同期コミットを待機するバックエンドをLSN順に並べたキューの維持。</li>
+<li>**同期状態の判定**: <code>synchronous_standby_names</code> に基づき、どのスタンバイが同期対象かを判定（Priority/Quorum方式）。</li>
+<li>**待機解除の実行**: スタンバイからのWAL到達通知（Write/Flush/Apply）を受け取り、条件を満たしたバックエンドをウェイクアップ。</li>
+<li>**GUC設定の適用**: <code>synchronous_standby_names</code> のパース結果を反映し、同期レプリケーションの動作モードを切り替える。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><code>SyncRepWaitForLSN()</code>: ユーザーバックエンドがコミット時に呼び出し、同期完了まで待機するメイン関数。</li>
+<li><code>SyncRepReleaseWaiters()</code>: WAL送信プロセスが呼び出し、スタンバイの進捗に応じて待機中のバックエンドを解放する関数。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L97" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/syncrep.c.html&quot;}, '*');"><code>SyncRepConfig</code></a>: 現在の同期レプリケーション設定を保持する構造体。</li>
+<li><code>SyncRepLock</code>: 待機キューおよび同期状態を保護する排他制御用<a class="wiki-source-link" href="../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');">LWLock</a>。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L405" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepCancelWait.html&quot;}, '*');"><code>SyncRepCancelWait</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L415" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepCleanupAtProcExit.html&quot;}, '*');"><code>SyncRepCleanupAtProcExit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetCandidateStandbys.html&quot;}, '*');"><code>SyncRepGetCandidateStandbys</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L692" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetNthLatestSyncRecPtr.html&quot;}, '*');"><code>SyncRepGetNthLatestSyncRecPtr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L659" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetOldestSyncRecPtr.html&quot;}, '*');"><code>SyncRepGetOldestSyncRecPtr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L859" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetStandbyPriority.html&quot;}, '*');"><code>SyncRepGetStandbyPriority</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L585" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetSyncRecPtr.html&quot;}, '*');"><code>SyncRepGetSyncRecPtr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L444" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepInitConfig.html&quot;}, '*');"><code>SyncRepInitConfig</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L371" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepQueueInsert.html&quot;}, '*');"><code>SyncRepQueueInsert</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L473" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepReleaseWaiters.html&quot;}, '*');"><code>SyncRepReleaseWaiters</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L963" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepUpdateSyncStandbysDefined.html&quot;}, '*');"><code>SyncRepUpdateSyncStandbysDefined</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L147" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.html&quot;}, '*');"><code>SyncRepWaitForLSN</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **待機開始**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L147" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.html&quot;}, '*');"><code>SyncRepWaitForLSN</code></a> がバックエンドを <code>SyncRepQueue</code> に追加し、<code>MyLatch</code> で待機状態に入る。 2. **進捗報告**: スタンバイからWAL受信報告を受けた <code>walsender</code> が <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L473" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepReleaseWaiters.html&quot;}, '*');"><code>SyncRepReleaseWaiters</code></a> を実行。 3. **判定**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L585" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepGetSyncRecPtr.html&quot;}, '*');"><code>SyncRepGetSyncRecPtr</code></a> が現在の同期スタンバイ群の進捗（Write/Flush/Apply）を計算。 4. **解放**: 条件を満たしたバックエンドをキューから削除し、<a class="wiki-source-link" href="../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> でバックエンドを再開させる。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/syncrep.h</code>: 公開インターフェース定義。</li>
+<li><code>replication/walsender.h</code>, <a class="wiki-source-link" href="../../../../source/src/include/replication/walsender_private.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/replication/walsender_private.h.html&quot;}, '*');"><code>walsender_private.h</code></a>: WAL送信プロセスとの共有メモリ構造体へのアクセス。</li>
+<li><code>storage/proc.h</code>: バックエンドのプロセス状態（<code>PGPROC</code>）とラッチ制御。</li>
+<li><code>access/xact.h</code>: トランザクション状態の管理。</li>
+<li><code>common/int.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep_gram.y.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/backend/replication/syncrep_gram.y.html&quot;}, '*');"><code>src/backend/replication/syncrep_gram.y</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep_scanner.l.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/backend/replication/syncrep_scanner.l.html&quot;}, '*');"><code>syncrep_scanner.l</code></a>: <code>synchronous_standby_names</code> の構文解析器。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>src/backend/replication/walsender.c</code></a>: 本モジュールの関数を呼び出し、レプリケーションの進捗を通知する主要プロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**キューの順序**: 待機キューは常にLSN順にソートされており、<a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L371" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepQueueInsert.html&quot;}, '*');"><code>SyncRepQueueInsert</code></a> で挿入時に維持されます。</li>
+<li>**競合回避**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L963" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepUpdateSyncStandbysDefined.html&quot;}, '*');"><code>SyncRepUpdateSyncStandbysDefined</code></a> は、設定変更時にバックエンドが永久に待機し続けることを防ぐための重要なインターロックです。</li>
+<li>**読み方**: まず <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L147" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.html&quot;}, '*');"><code>SyncRepWaitForLSN</code></a> でバックエンド側のフローを追い、次に <a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html#L473" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__syncrep_c__SyncRepReleaseWaiters.html&quot;}, '*');"><code>SyncRepReleaseWaiters</code></a> でWALSender側の解放ロジックを確認すると全体像が把握しやすいです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepWaitForLSN.html" target="wiki-view"><code>SyncRepWaitForLSN</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepQueueInsert.html" target="wiki-view"><code>SyncRepQueueInsert</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepCancelWait.html" target="wiki-view"><code>SyncRepCancelWait</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepCleanupAtProcExit.html" target="wiki-view"><code>SyncRepCleanupAtProcExit</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepInitConfig.html" target="wiki-view"><code>SyncRepInitConfig</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepReleaseWaiters.html" target="wiki-view"><code>SyncRepReleaseWaiters</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetSyncRecPtr.html" target="wiki-view"><code>SyncRepGetSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetOldestSyncRecPtr.html" target="wiki-view"><code>SyncRepGetOldestSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetNthLatestSyncRecPtr.html" target="wiki-view"><code>SyncRepGetNthLatestSyncRecPtr</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetCandidateStandbys.html" target="wiki-view"><code>SyncRepGetCandidateStandbys</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepGetStandbyPriority.html" target="wiki-view"><code>SyncRepGetStandbyPriority</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__syncrep_c__SyncRepWakeQueue.html" target="wiki-view"><code>SyncRepWakeQueue</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

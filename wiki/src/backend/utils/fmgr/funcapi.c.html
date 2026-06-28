@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/utils/fmgr/funcapi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/fmgr/funcapi.c.html&quot;}, '*');">src/backend/utils/fmgr/funcapi.c</a></h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLの関数マネージャ（fmgr）において、集合を返す関数（SRF: Set Returning Functions）、複合型を返す関数、および多相型（Polymorphic <a class="wiki-source-link" href="../../../../../source/src/interfaces/ecpg/preproc/ecpg.c.html#L30" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/ecpg/preproc/ecpg.c.html&quot;}, '*');">types</a>）引数を扱うための高レベルなユーティリティ群を提供します。クエリ実行エンジンが関数の戻り値の型や構造を動的に解決・検証する際の主要なインターフェースとなります。</p>
+<h2>モジュール内での役割</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/fmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/fmgr/fmgr.c.html&quot;}, '*');"><code>fmgr.c</code></a> が関数呼び出しの低レベルなディスパッチとキャッシュを担うのに対し、本ファイルは「関数が何を返すか」「引数の多相型をどう解決するか」というメタデータレベルの責務を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**SRFライフサイクル管理**: <a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a> を用いた複数回呼び出しにわたる状態保持と、終了時のクリーンアップ。</li>
+<li>**型解決**: <code>RECORD</code> 型や多相型（<code>anyelement</code> 等）の具体的な型を、呼び出し時の引数情報から動的に推論。</li>
+<li>**メタデータ構築**: 関数定義（<code>pg_proc</code>）から戻り値の <code>TupleDesc</code> を生成・検証。</li>
+<li>**可変長引数処理**: <code>VARIADIC</code> 引数の展開と型変換。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>SRF管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__init_MultiFuncCall.html&quot;}, '*');"><code>init_MultiFuncCall</code></a>: SRFの初回呼び出し時に <a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a> を初期化し、メモリコンテキストを割り当てる。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L207" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__per_MultiFuncCall.html&quot;}, '*');"><code>per_MultiFuncCall</code></a>: 2回目以降の呼び出しでコンテキストを取得する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L219" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__end_MultiFuncCall.html&quot;}, '*');"><code>end_MultiFuncCall</code></a>: SRFの終了処理を行い、メモリコンテキストを解放する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L75" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__InitMaterializedSRF.html&quot;}, '*');"><code>InitMaterializedSRF</code></a>: <code>Tuplestore</code> を使用するマテリアライズドSRFの初期化を行う。</li>
+</ul>
+<h3>型解決・メタデータ</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L275" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html&quot;}, '*');"><code>get_call_result_type</code></a>: 関数呼び出し情報から戻り値の型と <code>TupleDesc</code> を特定する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L743" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__resolve_polymorphic_tupdesc.html&quot;}, '*');"><code>resolve_polymorphic_tupdesc</code></a>: 戻り値の <code>TupleDesc</code> 内の多相型を、実際の引数型で置換する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L1063" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__resolve_polymorphic_argtypes.html&quot;}, '*');"><code>resolve_polymorphic_argtypes</code></a>: 関数引数内の多相型を解決する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L1750" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__build_function_result_tupdesc_d.html&quot;}, '*');"><code>build_function_result_tupdesc_d</code></a>: <code>pg_proc</code> のカタログ情報から、<code>RECORD</code> 型関数の戻り値構造を構築する。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L35" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__polymorphic_actuals.html&quot;}, '*');"><code>polymorphic_actuals</code></a>: 多相型解決中に一時的な型マッピングを保持する構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L429" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__internal_get_result_type.html&quot;}, '*');"><code>internal_get_result_type</code></a>: 型解決のメインロジック。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **型解決フロー**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L275" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html&quot;}, '*');"><code>get_call_result_type</code></a> が呼び出されると、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L429" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__internal_get_result_type.html&quot;}, '*');"><code>internal_get_result_type</code></a> が <code>pg_proc</code> を検索し、戻り値が <code>RECORD</code> や多相型であるかを確認します。多相型の場合、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L743" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__resolve_polymorphic_tupdesc.html&quot;}, '*');"><code>resolve_polymorphic_tupdesc</code></a> を通じて、呼び出し側の <code>call_expr</code> から実際の型を逆引きします。 2. **SRF実行フロー**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__init_MultiFuncCall.html&quot;}, '*');"><code>init_MultiFuncCall</code></a> は <code>fn_extra</code> に <a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a> を格納し、<code>ExprContext</code> にシャットダウンコールバックを登録します。これにより、クエリが途中で中断されてもメモリリークを防ぐ不変条件を維持します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_proc.h</code>, <code>catalog/pg_type.h</code>: 関数定義と型情報の取得。</li>
+<li><code>utils/syscache.h</code>: システムカタログの高速検索。</li>
+<li><code>utils/typcache.h</code>: 型の属性や継承関係の解決。</li>
+<li><code>utils/tuplestore.h</code>: マテリアライズドSRFのデータ保持。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a>: 公開されているデータ構造（<a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L35" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__AttInMetadata.html&quot;}, '*');"><code>AttInMetadata</code></a>）の定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/fmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/fmgr/fmgr.c.html&quot;}, '*');"><code>src/backend/utils/fmgr/fmgr.c</code></a>: 関数呼び出しの基盤。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/executor/execSRF.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execSRF.c.html&quot;}, '*');"><code>src/backend/executor/execSRF.c</code></a>: SRFの実行エンジン側の処理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>src/backend/utils/cache/typcache.c</code></a>: 型情報の詳細なキャッシュ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: SRFのコンテキスト（<a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a>）は、<code>fn_mcxt</code>（関数呼び出しごとのメモリコンテキスト）ではなく、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__init_MultiFuncCall.html&quot;}, '*');"><code>init_MultiFuncCall</code></a> で作成された専用の長寿命コンテキストに割り当てられます。これにより、複数回の呼び出しをまたぐデータ保持が可能です。</li>
+<li>**多相型解決の限界**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L275" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html&quot;}, '*');"><code>get_call_result_type</code></a> は、呼び出し情報が不十分な場合（例: <code>call_expr</code> が NULL）、<code>TYPEFUNC_RECORD</code> を返し、型解決を諦めることがあります。</li>
+<li>**非推奨の関数**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L1902" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__TypeGetTupleDesc.html&quot;}, '*');"><code>TypeGetTupleDesc</code></a> は後方互換性のために残されていますが、新しいコードでは <a class="wiki-source-link" href="../../../../../source/src/backend/utils/fmgr/funcapi.c.html#L275" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html&quot;}, '*');"><code>get_call_result_type</code></a> 等の利用が推奨されます。</li>
+<li>**エラー処理**: 多相型の解決失敗は、多くの場合、関数シグネチャの不整合やパーサーの制約違反を示唆します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__polymorphic_actuals.html" target="wiki-view"><code>polymorphic_actuals</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__InitMaterializedSRF.html" target="wiki-view"><code>InitMaterializedSRF</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__init_MultiFuncCall.html" target="wiki-view"><code>init_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__per_MultiFuncCall.html" target="wiki-view"><code>per_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__end_MultiFuncCall.html" target="wiki-view"><code>end_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__shutdown_MultiFuncCall.html" target="wiki-view"><code>shutdown_MultiFuncCall</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_call_result_type.html" target="wiki-view"><code>get_call_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_expr_result_type.html" target="wiki-view"><code>get_expr_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__get_func_result_type.html" target="wiki-view"><code>get_func_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__internal_get_result_type.html" target="wiki-view"><code>internal_get_result_type</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__RelationNameGetTupleDesc.html" target="wiki-view"><code>RelationNameGetTupleDesc</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__fmgr__funcapi_c__TypeGetTupleDesc.html" target="wiki-view"><code>TypeGetTupleDesc</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

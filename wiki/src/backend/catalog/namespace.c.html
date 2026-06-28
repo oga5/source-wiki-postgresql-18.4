@@ -1,0 +1,140 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/catalog/namespace.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');">src/backend/catalog/namespace.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>namespace.c</code></a> は、PostgreSQL におけるオブジェクトの名前解決と可視性（Visibility）を制御する中核モジュールです。<code>search_path</code> に基づく名前空間の探索順序の管理、一時テーブル（TEMP）用名前空間のライフサイクル管理、および各オブジェクト型（テーブル、型、関数、演算子等）が現在の検索パスで可視であるかの判定機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムの一部として、<code>pg_namespace</code> カタログを直接操作する <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_namespace.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/pg_namespace.c.html&quot;}, '*');"><code>pg_namespace.c</code></a> とは異なり、本ファイルは「カタログ定義をどのように探索するか」という論理的な検索パスの抽象化を担当します。</p>
+<h2>責務</h2>
+<ul>
+<li>**検索パス管理**: GUC <code>search_path</code> の解析、キャッシュ、およびセッションごとの有効な検索パスの再計算。</li>
+<li>**名前解決**: 非修飾名（Unqualified <a class="wiki-source-link" href="../../../../source/src/include/c.h.html#L723" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/c.h.html&quot;}, '*');">Name</a>）からオブジェクト OID への変換。</li>
+<li>**可視性判定**: 指定された OID が現在の検索パスにおいて「最初に見つかるもの」であるかの判定。</li>
+<li>**一時名前空間管理**: セッションごとの <code>pg_temp_N</code> 名前空間の初期化、クリーンアップ、およびライフサイクル管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>検索パス状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L136" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>activeSearchPath</code></a>: 現在有効な名前空間 OID のリスト。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>activeCreationNamespace</code></a>: オブジェクト作成時のデフォルトターゲット名前空間。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L145" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>activePathGeneration</code></a>: 検索パスの変更を追跡するためのカウンタ。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L149" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>baseSearchPath</code></a>: <code>search_path</code> GUC から導出されたベースリスト。</li>
+</ul>
+<h3>一時名前空間</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L201" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>myTempNamespace</code></a>: 現在のセッションの一時テーブル用名前空間 OID。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L203" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>myTempToastNamespace</code></a>: 一時テーブルの TOAST 用名前空間 OID。</li>
+<li><code>AccessTempTableNamespace()</code>: 一時名前空間の遅延初期化を行う。</li>
+</ul>
+<h3>名前解決・可視性 API</h3>
+<ul>
+<li><code>RangeVarGetRelidExtended()</code>: <a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L72" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__RangeVar.html&quot;}, '*');"><code>RangeVar</code></a> からリレーション OID を解決するメイン関数。</li>
+<li><code>RelnameGetRelid()</code>: 非修飾リレーション名の解決。</li>
+<li><code>*IsVisible()</code>: 各オブジェクト型（<a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L912" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RelationIsVisible.html&quot;}, '*');"><code>RelationIsVisible</code></a>, <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L1039" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__TypeIsVisible.html&quot;}, '*');"><code>TypeIsVisible</code></a> 等）の可視性判定関数。</li>
+<li><code>FuncnameGetCandidates()</code>: 関数呼び出し時の候補リスト取得（オーバーロード解決用）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4560" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__AtEOSubXact_Namespace.html&quot;}, '*');"><code>AtEOSubXact_Namespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4514" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__AtEOXact_Namespace.html&quot;}, '*');"><code>AtEOXact_Namespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4392" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__InitTempTableNamespace.html&quot;}, '*');"><code>InitTempTableNamespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4738" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__InitializeSearchPath.html&quot;}, '*');"><code>InitializeSearchPath</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L845" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RangeVarAdjustRelationPersistence.html&quot;}, '*');"><code>RangeVarAdjustRelationPersistence</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L738" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RangeVarGetAndCheckCreationNamespace.html&quot;}, '*');"><code>RangeVarGetAndCheckCreationNamespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L653" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RangeVarGetCreationNamespace.html&quot;}, '*');"><code>RangeVarGetCreationNamespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L440" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RangeVarGetRelidExtended.html&quot;}, '*');"><code>RangeVarGetRelidExtended</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L884" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RelnameGetRelid.html&quot;}, '*');"><code>RelnameGetRelid</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4646" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__ResetTempTableNamespace.html&quot;}, '*');"><code>ResetTempTableNamespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__SearchPathCacheEntry.html&quot;}, '*');"><code>SearchPathCacheEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L167" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__SearchPathCacheKey.html&quot;}, '*');"><code>SearchPathCacheKey</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **パス再計算**: <code>recomputeNamespacePath()</code> が <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L158" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>baseSearchPathValid</code></a> をチェックし、無効であれば <code>cachedNamespacePath()</code> を呼び出す。 2. **キャッシュ**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L299" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>SearchPathCache</code></a>（<code>simplehash</code>）を用いて、<code>search_path</code> 文字列と <code>roleid</code> の組み合わせから計算済みパスを高速に取得する。 3. **名前解決**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L884" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__RelnameGetRelid.html&quot;}, '*');"><code>RelnameGetRelid</code></a> 等は <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L136" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>activeSearchPath</code></a> をイテレートし、各名前空間で <a class="wiki-source-link" href="../../../../source/src/backend/utils/cache/lsyscache.c.html#L2062" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__lsyscache_c__get_relname_relid.html&quot;}, '*');"><code>get_relname_relid</code></a> 等のカタログ検索を実行する。 4. **無効化**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4798" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__InvalidationCallback.html&quot;}, '*');"><code>InvalidationCallback</code></a> が <code>SysCache</code> の変更を検知し、<a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L158" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>baseSearchPathValid</code></a> を <a class="wiki-source-link" href="../../../../source/src/tools/pg_bsd_indent/indent_globs.h.html#L43" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/tools/pg_bsd_indent/indent_globs.h.html&quot;}, '*');"><code>false</code></a> に設定することで、次回の検索時にパスの再計算を強制する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/syscache.h</code>: カタログ検索の高速化。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化通知の受信。</li>
+<li><code>storage/lmgr.h</code>: 名前解決時のロック管理。</li>
+<li><code>lib/simplehash.h</code>: 検索パスキャッシュの実装。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_conversion.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_ts_parser.h</code></li>
+<li><code>catalog/pg_ts_template.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>common/hashfn_unstable.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_namespace.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/pg_namespace.c.html&quot;}, '*');"><code>pg_namespace.c</code></a>: <code>pg_namespace</code> カタログそのものの操作。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/aclchk.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/aclchk.c.html&quot;}, '*');"><code>aclchk.c</code></a>: 名前空間に対する <code>USAGE</code> や <code>CREATE</code> 権限の検証。</li>
+<li><code>commands/dbcommands.c</code>: データベースレベルの操作と名前空間の関連。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 検索パス関連のリストは <a class="wiki-source-link" href="../../../../source/src/backend/utils/mmgr/mcxt.c.html#L150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>TopMemoryContext</code></a> に保持されます。</li>
+<li>**一時テーブルの特殊性**: <code>pg_temp</code> は検索パスの先頭に暗黙的に挿入されますが、これはセッションごとに動的に生成されるため、<a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4364" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__AccessTempTableNamespace.html&quot;}, '*');"><code>AccessTempTableNamespace</code></a> による遅延初期化が重要です。</li>
+<li>**並列処理**: 並列ワーカーはリーダーの <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L201" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>myTempNamespace</code></a> を引き継ぎます（<a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L3823" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__SetTempNamespaceState.html&quot;}, '*');"><code>SetTempNamespaceState</code></a>）。</li>
+<li>**パフォーマンス**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L4301" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__recomputeNamespacePath.html&quot;}, '*');"><code>recomputeNamespacePath</code></a> は頻繁に呼ばれるため、<a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L145" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>activePathGeneration</code></a> による変更検知と <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L299" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>SearchPathCache</code></a> による計算結果の再利用が最適化の鍵となっています。</li>
+<li>**省略された詳細**: 本ファイルは非常に多くのオブジェクト型（TSParser, TSDictionary 等）の可視性判定を含みますが、これらはすべて <code>*IsVisibleExt</code> パターンに従う定型的な実装であるため、個別のロジックは省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__SearchPathCacheKey.html" target="wiki-view"><code>SearchPathCacheKey</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__SearchPathCacheEntry.html" target="wiki-view"><code>SearchPathCacheEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetRelidExtended.html" target="wiki-view"><code>RangeVarGetRelidExtended</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetCreationNamespace.html" target="wiki-view"><code>RangeVarGetCreationNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarGetAndCheckCreationNamespace.html" target="wiki-view"><code>RangeVarGetAndCheckCreationNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RangeVarAdjustRelationPersistence.html" target="wiki-view"><code>RangeVarAdjustRelationPersistence</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__RelnameGetRelid.html" target="wiki-view"><code>RelnameGetRelid</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__InitTempTableNamespace.html" target="wiki-view"><code>InitTempTableNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__AtEOXact_Namespace.html" target="wiki-view"><code>AtEOXact_Namespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__AtEOSubXact_Namespace.html" target="wiki-view"><code>AtEOSubXact_Namespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__ResetTempTableNamespace.html" target="wiki-view"><code>ResetTempTableNamespace</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__namespace_c__InitializeSearchPath.html" target="wiki-view"><code>InitializeSearchPath</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

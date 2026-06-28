@@ -1,0 +1,122 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/storage/lmgr/proc.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');">src/backend/storage/lmgr/proc.c</a></h1>
+<h2>概要</h2>
+<p><code>proc.c</code> は、PostgreSQL の各バックエンドプロセスが共有メモリ上で保持する状態構造体 <code>PGPROC</code> のライフサイクルと、プロセス間の同期（待機・起床）を管理する中核ファイルです。ロックマネージャ（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>lock.c</code></a>）と密接に連携し、ロック競合時のプロセススリープ、デッドロック検出のトリガー、およびプロセス終了時のリソース解放を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/lmgr</code> サブシステムにおいて、プロセスごとの「同期状態」を保持するデータ層です。軽量ロック（<a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');">LWLock</a>）や重量級ロック（LockManager）がプロセスを待機させる際、このモジュールが提供する <code>PGPROC</code> 構造体とラッチ（<a class="wiki-source-link" href="../../../../../source/src/include/storage/latch.h.html#L113" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__latch_h__Latch.html&quot;}, '*');">Latch</a>）メカニズムを利用して、プロセスを効率的にスリープ・起床させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**PGPROC 管理**: 共有メモリ上の <code>PGPROC</code> 配列の初期化、割り当て、および終了時の再利用（フリーリスト管理）。</li>
+<li>**プロセス同期**: ロック待ちキューへの挿入（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__JoinWaitQueue.html&quot;}, '*');"><code>JoinWaitQueue</code></a>）、スリープ（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1308" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcSleep.html&quot;}, '*');"><code>ProcSleep</code></a>）、および起床（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1710" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcWakeup.html&quot;}, '*');"><code>ProcWakeup</code></a>）の制御。</li>
+<li>**デッドロック検出の連携**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/deadlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/deadlock.c.html&quot;}, '*');"><code>deadlock.c</code></a> を呼び出し、ロック待ちグラフの循環を解消するためのシグナル処理。</li>
+<li>**プロセス終了処理**: バックエンド終了時に保持しているロックの解放、待機キューからの離脱、および共有メモリ上の状態リセット。</li>
+<li>**グループロック管理**: 並列クエリ実行時のロックグループ（リーダーとメンバー）の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス管理・初期化</h3>
+<ul>
+<li><code>PGPROC *MyProc</code>: 現在のバックエンドプロセスに対応する <code>PGPROC</code> 構造体へのポインタ。</li>
+<li><code>PROC_HDR *ProcGlobal</code>: 共有メモリ上のプロセス管理ヘッダー。フリーリストや全プロセスの配列を保持。</li>
+<li><code>InitProcGlobal()</code>: 共有メモリ上のプロセス関連構造体の初期化（Postmaster 起動時）。</li>
+<li><code>InitProcess()</code>: 個別バックエンド起動時に <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L66" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>MyProc</code></a> を割り当て、初期化。</li>
+</ul>
+<h3>同期・待機制御</h3>
+<ul>
+<li><code>JoinWaitQueue()</code>: ロック待ちキューへの挿入と、即時獲得の判定。</li>
+<li><code>ProcSleep()</code>: ラッチを使用してプロセスをスリープさせ、タイムアウトやデッドロックを監視。</li>
+<li><code>ProcWakeup()</code>: 待機中のプロセスを起床させる。</li>
+<li><code>ProcLockWakeup()</code>: ロック解放時に、次に獲得可能なプロセスをキューから探索して起床。</li>
+</ul>
+<h3>デッドロック・エラー処理</h3>
+<ul>
+<li><code>CheckDeadLock()</code>: デッドロック検出ロジックの実行。</li>
+<li><code>LockErrorCleanup()</code>: トランザクション異常終了時に、ロック待ちキューから安全に離脱し、整合性を保つ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L114" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__FastPathLockShmemSize.html&quot;}, '*');"><code>FastPathLockShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L765" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__GetStartupBufferPinWaitBufId.html&quot;}, '*');"><code>GetStartupBufferPinWaitBufId</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L781" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__HaveNFreeProcs.html&quot;}, '*');"><code>HaveNFreeProcs</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L614" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__InitAuxiliaryProcess.html&quot;}, '*');"><code>InitAuxiliaryProcess</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L191" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__InitProcGlobal.html&quot;}, '*');"><code>InitProcGlobal</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L389" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__InitProcess.html&quot;}, '*');"><code>InitProcess</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L579" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__InitProcessPhase2.html&quot;}, '*');"><code>InitProcessPhase2</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L812" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__LockErrorCleanup.html&quot;}, '*');"><code>LockErrorCleanup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L96" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__PGProcShmemSize.html&quot;}, '*');"><code>PGProcShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L156" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcGlobalSemas.html&quot;}, '*');"><code>ProcGlobalSemas</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L138" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcGlobalShmemSize.html&quot;}, '*');"><code>ProcGlobalShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__SetStartupBufferPinWaitBufId.html&quot;}, '*');"><code>SetStartupBufferPinWaitBufId</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ロック獲得**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lmgr.c.html&quot;}, '*');"><code>lmgr.c</code></a> 経由で <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__JoinWaitQueue.html&quot;}, '*');"><code>JoinWaitQueue</code></a> が呼ばれ、<code>PGPROC</code> がロックの待機キュー（<code>lock-&gt;waitProcs</code>）にリンクされます。 2. **スリープ**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1308" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcSleep.html&quot;}, '*');"><code>ProcSleep</code></a> が <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> を呼び出し、プロセスはシグナルまたはラッチセットまで停止します。 3. **起床**: ロックを解放するプロセスが <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1738" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcLockWakeup.html&quot;}, '*');"><code>ProcLockWakeup</code></a> を呼び出し、キュー内の <code>PGPROC</code> を特定して <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> を実行します。 4. **デッドロック**: <code>DEADLOCK_TIMEOUT</code> が発生すると <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1786" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__CheckDeadLock.html&quot;}, '*');"><code>CheckDeadLock</code></a> が呼ばれ、循環依存があれば <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2013" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__RemoveFromWaitQueue.html&quot;}, '*');"><code>RemoveFromWaitQueue</code></a> でプロセスをキューから強制排除し、エラーを発生させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: <code>PGPROC</code> 構造体の定義。</li>
+<li><code>storage/lock.h</code>: ロック管理のデータ構造。</li>
+<li><code>storage/lwlock.h</code>: 軽量ロックの管理。</li>
+<li><code>storage/spin.h</code>: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L75" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>ProcStructLock</code></a>（フリーリスト保護用スピンロック）。</li>
+<li><code>storage/ipc.h</code>: 共有メモリ管理。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/autovacuum.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>lock.c</code></a>: 重量級ロックのハッシュテーブル管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/deadlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/deadlock.c.html&quot;}, '*');"><code>deadlock.c</code></a>: デッドロック検出アルゴリズムの実装。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lwlock.c.html&quot;}, '*');"><code>lwlock.c</code></a>: 軽量ロックの待機制御。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/procarray.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/procarray.c.html&quot;}, '*');"><code>procarray.c</code></a>: トランザクション ID 管理とプロセス配列の可視性。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PGPROC</code> は共有メモリ上にあり、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L78" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>ProcGlobal</code></a> が所有します。各バックエンドは <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L389" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__InitProcess.html&quot;}, '*');"><code>InitProcess</code></a> でフリーリストから一つを借用し、終了時に返却します。</li>
+<li>**レイアウト**: <code>PGPROC</code> は非常にホットな構造体です。キャッシュラインの競合を避けるため、頻繁にアクセスされるフィールドの配置には注意が必要です。</li>
+<li>**デッドロック検出の制約**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1786" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__CheckDeadLock.html&quot;}, '*');"><code>CheckDeadLock</code></a> は <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> を保持した状態で実行されるため、デッドロック検出中に新たなロック競合が発生しないよう、厳密な順序でロックを取得する必要があります。</li>
+<li>**省略された詳細**: 本ファイルはプロセス管理の「枠組み」に集中しており、ロックの具体的な競合判定ロジック（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1527" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockCheckConflicts.html&quot;}, '*');"><code>LockCheckConflicts</code></a> 等）は <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>lock.c</code></a> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__PGProcShmemSize.html" target="wiki-view"><code>PGProcShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__FastPathLockShmemSize.html" target="wiki-view"><code>FastPathLockShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__ProcGlobalShmemSize.html" target="wiki-view"><code>ProcGlobalShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__ProcGlobalSemas.html" target="wiki-view"><code>ProcGlobalSemas</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcGlobal.html" target="wiki-view"><code>InitProcGlobal</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcess.html" target="wiki-view"><code>InitProcess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitProcessPhase2.html" target="wiki-view"><code>InitProcessPhase2</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__InitAuxiliaryProcess.html" target="wiki-view"><code>InitAuxiliaryProcess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__SetStartupBufferPinWaitBufId.html" target="wiki-view"><code>SetStartupBufferPinWaitBufId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__GetStartupBufferPinWaitBufId.html" target="wiki-view"><code>GetStartupBufferPinWaitBufId</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__HaveNFreeProcs.html" target="wiki-view"><code>HaveNFreeProcs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__proc_c__LockErrorCleanup.html" target="wiki-view"><code>LockErrorCleanup</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

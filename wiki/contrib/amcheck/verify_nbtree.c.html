@@ -1,0 +1,117 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>contrib/amcheck/verify_nbtree.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/amcheck/verify_nbtree.c.html&quot;}, '*');">contrib/amcheck/verify_nbtree.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/amcheck/verify_nbtree.c.html&quot;}, '*');"><code>verify_nbtree.c</code></a> は、PostgreSQL の B-tree インデックスの物理的・論理的な整合性を検証するコアモジュールです。インデックスページ内のキー順序、ページ間のリンク整合性、およびヒープとの整合性（<code>heapallindexed</code>）を不変条件に基づいてチェックします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/amcheck</code> サブシステムにおいて、B-tree インデックス特有の構造検証を担当します。<a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_common.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/amcheck/verify_common.c.html&quot;}, '*');"><code>verify_common.c</code></a> が提供するロック管理や権限チェックの基盤を利用し、インデックスのメタページからリーフページまでを走査して破損を検出します。</p>
+<h2>責務</h2>
+<ul>
+<li>**構造検証**: B-tree のページレベルおよびツリーレベルでの不変条件（キー順序、兄弟リンク、親子関係）の検証。</li>
+<li>**ヒープ整合性検証**: Bloom フィルタを用いて、インデックスに存在する全タプルがヒープにも存在することを保証。</li>
+<li>**一意性制約検証**: インデックスの一意性制約が論理的に維持されているかの確認。</li>
+<li>**エラー報告**: 破損検出時に、該当するブロック番号、オフセット、LSN を含む詳細な診断情報を出力。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>検証状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html&quot;}, '*');"><code>BtreeCheckState</code></a>: 検証プロセス全体の状態（リレーション、メモリコンテキスト、Bloom フィルタ、走査状態）を保持するメイン構造体。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L140" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeLevel.html&quot;}, '*');"><code>BtreeLevel</code></a>: 現在走査中のツリーレベルと、そのレベルの開始点（左端）を管理。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L156" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeLastVisibleEntry.html&quot;}, '*');"><code>BtreeLastVisibleEntry</code></a>: 一意性チェックにおいて、最後に確認された可視エントリの情報を保持。</li>
+</ul>
+<h3>公開インターフェース</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_check.html&quot;}, '*');"><code>bt_index_check</code></a>: <a class="wiki-source-link" href="../../../source/src/include/storage/lockdefs.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>AccessShareLock</code></a> を使用した軽量な検証用 SQL 関数。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L283" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_parent_check.html&quot;}, '*');"><code>bt_index_parent_check</code></a>: <a class="wiki-source-link" href="../../../source/src/include/storage/lockdefs.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>ShareLock</code></a> を使用し、親子関係の検証を含む厳密な検証用 SQL 関数。</li>
+</ul>
+<h3>内部検証ロジック</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L377" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_check_every_level.html&quot;}, '*');"><code>bt_check_every_level</code></a>: ツリー全体を走査するメインループ。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L1238" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_target_page_check.html&quot;}, '*');"><code>bt_target_page_check</code></a>: 個別ページ内のキー順序、タプルサイズ、高キー（High Key）不変条件を検証。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L2393" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_child_check.html&quot;}, '*');"><code>bt_child_check</code></a> / <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L2146" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_child_highkey_check.html&quot;}, '*');"><code>bt_child_highkey_check</code></a>: 親子間のリンクとキー範囲の整合性を検証。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L168" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BTCallbackState.html&quot;}, '*');"><code>BTCallbackState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L3533" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetHeapTIDCareful.html&quot;}, '*');"><code>BTreeTupleGetHeapTIDCareful</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L3581" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetPointsToTID.html&quot;}, '*');"><code>BTreeTupleGetPointsToTID</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html&quot;}, '*');"><code>BtreeCheckState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L156" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeLastVisibleEntry.html&quot;}, '*');"><code>BtreeLastVisibleEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L140" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeLevel.html&quot;}, '*');"><code>BtreeLevel</code></a></li>
+<li><code>PageGetItemIdCareful</code></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L377" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_check_every_level.html&quot;}, '*');"><code>bt_check_every_level</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L623" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_check_level_from_leftmost.html&quot;}, '*');"><code>bt_check_level_from_leftmost</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_check.html&quot;}, '*');"><code>bt_index_check</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L311" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_check_callback.html&quot;}, '*');"><code>bt_index_check_callback</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L283" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_parent_check.html&quot;}, '*');"><code>bt_index_parent_check</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L311" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_check_callback.html&quot;}, '*');"><code>bt_index_check_callback</code></a> が呼び出され、メタページからインデックスのバージョンや属性情報を取得。 2. **走査**: <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L377" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_check_every_level.html&quot;}, '*');"><code>bt_check_every_level</code></a> がツリーをルートからリーフへ、各レベルを左から右へ走査。 3. **ページ検証**: <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L623" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_check_level_from_leftmost.html&quot;}, '*');"><code>bt_check_level_from_leftmost</code></a> が各ページを <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L3291" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__palloc_btree_page.html&quot;}, '*');"><code>palloc_btree_page</code></a> でメモリに読み込み、<a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L1238" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_target_page_check.html&quot;}, '*');"><code>bt_target_page_check</code></a> を実行。 4. **データフロー**:</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html&quot;}, '*');"><code>BtreeCheckState</code></a> が走査中のコンテキストを保持。</li>
+<li><code>heapallindexed</code> が有効な場合、<a class="wiki-source-link" href="../../../source/src/backend/lib/bloomfilter.c.html#L134" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__lib__bloomfilter_c__bloom_add_element.html&quot;}, '*');"><code>bloom_add_element</code></a> でインデックスの全タプルを指紋化し、後続の <a class="wiki-source-link" href="../../../source/src/include/access/tableam.h.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__tableam_h__table_index_build_scan.html&quot;}, '*');"><code>table_index_build_scan</code></a> でヒープ側から検証。</li>
+<p>5. **エラーパス**: 整合性違反（<a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L3109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__invariant_l_offset.html&quot;}, '*');"><code>invariant_l_offset</code></a> 等の失敗）が検出されると、<code>ereport(ERROR, ...)</code> によりトランザクションを中断し、破損箇所を報告。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree の内部構造（ページレイアウト、メタページ定義）へのアクセス。</li>
+<li><code>lib/bloomfilter.h</code>: ヒープ整合性チェック用の指紋生成。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_common.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/amcheck/verify_common.h.html&quot;}, '*');"><code>verify_common.h</code></a>: <code>amcheck</code> モジュール共通のロック・権限管理ユーティリティ。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/tableam.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_opfamily_d.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/smgr.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_common.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/amcheck/verify_common.c.html&quot;}, '*');"><code>verify_common.c</code></a>: 検証実行の定型処理（ロック、権限昇格）。</li>
+<li><code>nbtree/nbtree.c</code>: B-tree の標準的な操作（挿入、検索、削除）。</li>
+<li><code>nbtree/nbtsearch.c</code>: インデックス走査のロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html&quot;}, '*');"><code>BtreeCheckState</code></a> 内の <code>targetcontext</code> はページごとにリセットされます。メモリリークを防ぐため、ページ処理の前後で適切に管理されています。</li>
+<li>**ロックの前提**: <code>readonly</code> モード（<a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_check.html&quot;}, '*');"><code>bt_index_check</code></a>）では <a class="wiki-source-link" href="../../../source/src/include/storage/lockdefs.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>AccessShareLock</code></a> のみを使用するため、検証中にインデックスが変更される可能性があります。より厳密な検証には <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L283" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__bt_index_parent_check.html&quot;}, '*');"><code>bt_index_parent_check</code></a> を使用してください。</li>
+<li>**未実装・浅い部分**: <code>!readonly</code> モードでの複雑なクロスレベル検証は、並行更新による誤検知を防ぐため意図的に制限されています。</li>
+<li>**不変条件**: <a class="wiki-source-link" href="../../../source/contrib/amcheck/verify_nbtree.c.html#L3109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__amcheck__verify_nbtree_c__invariant_l_offset.html&quot;}, '*');"><code>invariant_l_offset</code></a> 等の関数は、インデックスのキー順序が正しく保たれているかを検証する重要なガードレールです。これらは <a class="wiki-source-link" href="../../../source/src/backend/access/nbtree/nbtsearch.c.html#L692" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsearch_c___bt_compare.html&quot;}, '*');"><code>_bt_compare</code></a> を利用して論理的な順序を判定します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeCheckState.html" target="wiki-view"><code>BtreeCheckState</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeLevel.html" target="wiki-view"><code>BtreeLevel</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BtreeLastVisibleEntry.html" target="wiki-view"><code>BtreeLastVisibleEntry</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTCallbackState.html" target="wiki-view"><code>BTCallbackState</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_check.html" target="wiki-view"><code>bt_index_check</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_parent_check.html" target="wiki-view"><code>bt_index_parent_check</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_index_check_callback.html" target="wiki-view"><code>bt_index_check_callback</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_check_every_level.html" target="wiki-view"><code>bt_check_every_level</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__bt_check_level_from_leftmost.html" target="wiki-view"><code>bt_check_level_from_leftmost</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__PageGetItemIdCareful.html" target="wiki-view"><code>PageGetItemIdCareful</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetHeapTIDCareful.html" target="wiki-view"><code>BTreeTupleGetHeapTIDCareful</code></a></li>
+<li><a href="../../symbols/contrib__amcheck__verify_nbtree_c__BTreeTupleGetPointsToTID.html" target="wiki-view"><code>BTreeTupleGetPointsToTID</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/executor/nodeAgg.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/nodeAgg.c.html&quot;}, '*');">src/backend/executor/nodeAgg.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/nodeAgg.c.html&quot;}, '*');"><code>nodeAgg.c</code></a> は、PostgreSQL の集約（Aggregate）演算を実行するプランノードの実装です。SQL の <code>GROUP BY</code> や集約関数（<code>SUM</code>, <a class="wiki-source-link" href="../../../../source/src/common/sha1.c.html#L76" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/common/sha1.c.html&quot;}, '*');"><code>COUNT</code></a>, <code>AVG</code> 等）の計算を担い、ソートベースの集約とハッシュベースの集約の両方をサポートします。また、メモリ制限時のディスク退避（Spilling）や、並列クエリ実行時の統計情報共有といった高度な機能も内包しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、プランナが生成した <a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L1131" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__Agg.html&quot;}, '*');"><code>Agg</code></a> ノードを実行します。式評価エンジン（<a class="wiki-source-link" href="../../../../source/src/backend/executor/execExpr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExpr.c.html&quot;}, '*');"><code>execExpr.c</code></a>）と密接に連携し、集約関数の遷移関数（Transition Function）や最終関数（Final Function）を呼び出すことで、タプルストリームから集約結果を生成します。</p>
+<h2>責務</h2>
+<ul>
+<li>**集約戦略の実行**:</li>
+<li><code>AGG_SORTED</code>: ソート済み入力に対するグループ化。</li>
+<li><code>AGG_HASHED</code>: ハッシュテーブルを用いたグループ化。</li>
+<li><code>AGG_MIXED</code>: ソートとハッシュを組み合わせた複雑なグループ化。</li>
+<li>**メモリ管理**: 複数のグループ化セット（Grouping Sets）に対応したメモリコンテキストの切り替えと、ハッシュテーブルのメモリ制限管理。</li>
+<li>**ディスク退避（Spilling）**: ハッシュテーブルが <a class="wiki-source-link" href="../../../../source/src/backend/utils/init/globals.c.html#L131" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/init/globals.c.html&quot;}, '*');"><code>work_mem</code></a> を超過した場合の、パーティション分割によるディスクへの退避と再帰的な処理。</li>
+<li>**集約関数のライフサイクル**: 遷移関数の呼び出し、最終関数の適用、および <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4613" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__AggCheckCallContext.html&quot;}, '*');"><code>AggCheckCallContext</code></a> 等を通じた集約関数への実行コンテキストの提供。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/nodes/execnodes.h.html#L2521" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__execnodes_h__AggState.html&quot;}, '*');"><code>AggState</code></a>: 集約実行のルート構造体。実行フェーズ、ハッシュテーブル、メモリコンテキストを保持。</li>
+<li><code>AggStatePerTrans</code>: 集約の遷移状態（Transition State）情報。遷移関数やシリアライズ関数の情報を保持。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/nodes/execnodes.h.html#L2517" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__execnodes_h__AggStatePerGroup.html&quot;}, '*');"><code>AggStatePerGroup</code></a>: 各グループの現在の遷移値（<code>transValue</code>）を保持する構造体。</li>
+</ul>
+<h3>ハッシュ集約関連</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L332" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__HashAggSpill.html&quot;}, '*');"><code>HashAggSpill</code></a>: ディスク退避時のパーティション情報を管理。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L351" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__HashAggBatch.html&quot;}, '*');"><code>HashAggBatch</code></a>: 再処理が必要なバッチ処理単位。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__lookup_hash_entries.html&quot;}, '*');"><code>lookup_hash_entries</code></a>: 入力タプルをハッシュテーブルにマッピングし、必要に応じて退避処理をトリガーする。</li>
+</ul>
+<h3>集約関数 API</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4613" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__AggCheckCallContext.html&quot;}, '*');"><code>AggCheckCallContext</code></a>: 関数が集約として呼ばれているか確認し、メモリコンテキストを取得。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4657" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__AggGetAggref.html&quot;}, '*');"><code>AggGetAggref</code></a>: 実行中の集約式（<a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L458" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__Aggref.html&quot;}, '*');"><code>Aggref</code></a>）を取得。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4756" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__AggRegisterCallback.html&quot;}, '*');"><code>AggRegisterCallback</code></a>: 集約処理終了時のクリーンアップコールバックを登録。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4613" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__AggCheckCallContext.html&quot;}, '*');"><code>AggCheckCallContext</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2243" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecAgg.html&quot;}, '*');"><code>ExecAgg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4806" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeDSM.html&quot;}, '*');"><code>ExecAggInitializeDSM</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4831" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeWorker.html&quot;}, '*');"><code>ExecAggInitializeWorker</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4399" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecEndAgg.html&quot;}, '*');"><code>ExecEndAgg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L3278" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecInitAgg.html&quot;}, '*');"><code>ExecInitAgg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L4465" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecReScanAgg.html&quot;}, '*');"><code>ExecReScanAgg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L361" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__FindColsContext.html&quot;}, '*');"><code>FindColsContext</code></a></li>
+<li><code>GetAggInitVal</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L351" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__HashAggBatch.html&quot;}, '*');"><code>HashAggBatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L332" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__HashAggSpill.html&quot;}, '*');"><code>HashAggSpill</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L1999" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__hash_create_memory.html&quot;}, '*');"><code>hash_create_memory</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L3278" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecInitAgg.html&quot;}, '*');"><code>ExecInitAgg</code></a> がプランツリーを走査し、集約関数ごとの遷移関数や最終関数の情報を <code>FmgrInfo</code> としてキャッシュする。 2. **実行**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2243" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__ExecAgg.html&quot;}, '*');"><code>ExecAgg</code></a> が戦略に応じて <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2279" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__agg_retrieve_direct.html&quot;}, '*');"><code>agg_retrieve_direct</code></a>（ソート）または <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2834" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__agg_retrieve_hash_table.html&quot;}, '*');"><code>agg_retrieve_hash_table</code></a>（ハッシュ）を呼び出す。 3. **遷移処理**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L817" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__advance_aggregates.html&quot;}, '*');"><code>advance_aggregates</code></a> が式評価エンジンを呼び出し、入力タプルを遷移関数に渡す。 4. **ハッシュ退避**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L1866" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__hash_agg_check_limits.html&quot;}, '*');"><code>hash_agg_check_limits</code></a> がメモリ使用量を監視し、超過時に <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L1910" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__hash_agg_enter_spill_mode.html&quot;}, '*');"><code>hash_agg_enter_spill_mode</code></a> を呼び出してディスク退避を開始する。 5. **最終化**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L1292" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__finalize_aggregates.html&quot;}, '*');"><code>finalize_aggregates</code></a> が最終関数を呼び出し、結果を射影（Projection）用のスロットに格納する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execExpr.h</code>: 式評価エンジンとの連携。</li>
+<li><code>utils/dynahash.h</code>, <code>utils/tuplesort.h</code>: ハッシュテーブルおよびソート処理。</li>
+<li><code>utils/logtape.h</code>: ディスク退避時の論理テープ管理。</li>
+<li><code>catalog/pg_aggregate.h</code>: 集約関数のメタデータ定義。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>catalog/objectaccess.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>executor/nodeAgg.h</code></li>
+<li><code>lib/hyperloglog.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/expandeddatum.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/memutils_memorychunk.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/nodeAgg.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/nodeAgg.h.html&quot;}, '*');"><code>src/include/executor/nodeAgg.h</code></a>: <a class="wiki-source-link" href="../../../../source/src/include/nodes/execnodes.h.html#L2521" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__execnodes_h__AggState.html&quot;}, '*');"><code>AggState</code></a> 等のデータ構造定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExpr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExpr.c.html&quot;}, '*');"><code>src/backend/executor/execExpr.c</code></a>: 集約関数の実行ステップを構築する式評価ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/utils/sort/tuplesort.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/sort/tuplesort.c.html&quot;}, '*');"><code>src/backend/utils/sort/tuplesort.c</code></a>: ソートベース集約の基盤。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリコンテキスト**: 集約処理は非常にメモリを消費しやすいため、<code>aggcontexts</code>（グループ化セットごと）や <code>hashcontext</code>（ハッシュテーブル用）といった複数のコンテキストを使い分けています。これらは <code>ReScan</code> やグループ境界でリセットされます。</li>
+<li>**Spilling の複雑性**: ハッシュ集約のディスク退避は再帰的です。<a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html#L2082" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__nodeAgg_c__hash_choose_num_partitions.html&quot;}, '*');"><code>hash_choose_num_partitions</code></a> によるパーティション数の決定ロジックは、メモリ効率と I/O コストのバランスを取るための重要なヒューリスティックです。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大であるため、個別の集約関数（<code>SUM</code>, <code>AVG</code> 等）の具体的な実装ロジックは <code>pg_proc</code> に依存しており、ここでは抽象的な呼び出しインターフェースのみを扱っています。また、JIT コンパイルされた式評価の詳細は <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExpr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExpr.c.html&quot;}, '*');"><code>execExpr.c</code></a> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__HashAggSpill.html" target="wiki-view"><code>HashAggSpill</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__HashAggBatch.html" target="wiki-view"><code>HashAggBatch</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__FindColsContext.html" target="wiki-view"><code>FindColsContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__hash_create_memory.html" target="wiki-view"><code>hash_create_memory</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAgg.html" target="wiki-view"><code>ExecAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecInitAgg.html" target="wiki-view"><code>ExecInitAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__GetAggInitVal.html" target="wiki-view"><code>GetAggInitVal</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecEndAgg.html" target="wiki-view"><code>ExecEndAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecReScanAgg.html" target="wiki-view"><code>ExecReScanAgg</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__AggCheckCallContext.html" target="wiki-view"><code>AggCheckCallContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeDSM.html" target="wiki-view"><code>ExecAggInitializeDSM</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__nodeAgg_c__ExecAggInitializeWorker.html" target="wiki-view"><code>ExecAggInitializeWorker</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

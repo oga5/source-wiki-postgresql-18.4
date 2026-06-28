@@ -1,0 +1,101 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/nbtree/nbtsort.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtsort.c.html&quot;}, '*');">src/backend/access/nbtree/nbtsort.c</a></h1>
+<h2>概要</h2>
+<p>B-tree インデックスのバルクロード（<code>CREATE INDEX</code>）を効率的に行うための実装です。ヒープから読み込んだタプルをソートし、リーフページから順次構築することで、ツリーをボトムアップに生成します。バッファキャッシュを介さず <code>smgr</code> を直接利用して物理ページを書き込むため、高速かつ WAL 効率が高いのが特徴です。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムにおける「インデックス構築」フェーズを担当します。<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtree.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtree.c.html&quot;}, '*');"><code>nbtree.c</code></a> の <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__btbuild.html&quot;}, '*');"><code>btbuild</code></a> エントリポイントから呼び出され、ソート済みデータから B-tree 構造を物理的に配置する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**ソートとスプール**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/sort/tuplesort.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/sort/tuplesort.c.html&quot;}, '*');"><code>tuplesort.c</code></a> を利用したタプルのソートと、一意性チェックのための二重スプール管理。</li>
+<li>**ページ構築**: リーフページおよび内部ノードの動的生成と、ページ分割（ページが満杯になった際の親へのリンク追加）の制御。</li>
+<li>**並列処理の調整**: <code>ParallelContext</code> を用いた並列インデックス構築のライフサイクル管理（ワーカーの起動、同期、統計情報の集約）。</li>
+<li>**物理レイアウトの最適化**: フィルファクタに基づくページ充填率の制御、およびサフィックス切り詰めによるインデックスサイズの削減。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>構築状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L204" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTBuildState.html&quot;}, '*');"><code>BTBuildState</code></a>: インデックス構築全体のコンテキスト。並列構築時はリーダープロセスが保持。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L79" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTSpool.html&quot;}, '*');"><code>BTSpool</code></a>: ソート対象のタプルを保持する構造体。一意性制約がある場合は死んだタプル用に <code>spool2</code> を使用。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L231" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTPageState.html&quot;}, '*');"><code>BTPageState</code></a>: 構築中の各レベルのページ状態。親レベルへのリンクやページ内のオフセットを管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L246" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTWriteState.html&quot;}, '*');"><code>BTWriteState</code></a>: 物理書き込み時のグローバル状態。<code>BulkWriteState</code> を通じて <code>smgr</code> と連携。</li>
+</ul>
+<h3>並列処理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L93" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTShared.html&quot;}, '*');"><code>BTShared</code></a>: 共有メモリ上の状態。ワーカー間の同期、進捗、統計情報の集約に使用。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L167" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTLeader.html&quot;}, '*');"><code>BTLeader</code></a>: リーダープロセス専用の並列コンテキスト管理構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_parallel_build_main.html&quot;}, '*');"><code>_bt_parallel_build_main</code></a>: 並列ワーカーのメインエントリポイント。</li>
+</ul>
+<h3>ページ操作</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L607" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_blnewpage.html&quot;}, '*');"><code>_bt_blnewpage</code></a>: 新規ページを <code>smgr</code> から取得し、B-tree ヘッダーを初期化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L785" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_buildadd.html&quot;}, '*');"><code>_bt_buildadd</code></a>: ページにタプルを追加。容量不足時はページ分割を行い、親レベルへ再帰的にリンクを追加。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1064" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_uppershutdown.html&quot;}, '*');"><code>_bt_uppershutdown</code></a>: 構築完了時にルートページを確定させ、メタページを初期化。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L204" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTBuildState.html&quot;}, '*');"><code>BTBuildState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L167" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTLeader.html&quot;}, '*');"><code>BTLeader</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L231" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTPageState.html&quot;}, '*');"><code>BTPageState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L93" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTShared.html&quot;}, '*');"><code>BTShared</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L79" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTSpool.html&quot;}, '*');"><code>BTSpool</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L246" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTWriteState.html&quot;}, '*');"><code>BTWriteState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__btbuild.html&quot;}, '*');"><code>btbuild</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__btbuild.html&quot;}, '*');"><code>btbuild</code></a> が <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L204" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c__BTBuildState.html&quot;}, '*');"><code>BTBuildState</code></a> を初期化し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L364" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_spools_heapscan.html&quot;}, '*');"><code>_bt_spools_heapscan</code></a> を呼び出す。 2. **スキャンとソート**: <a class="wiki-source-link" href="../../../../../source/src/include/access/tableam.h.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__tableam_h__table_index_build_scan.html&quot;}, '*');"><code>table_index_build_scan</code></a> がヒープをスキャンし、<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L578" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_build_callback.html&quot;}, '*');"><code>_bt_build_callback</code></a> を経由して <code>tuplesort</code> にタプルを投入。 3. **構築**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L537" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_leafbuild.html&quot;}, '*');"><code>_bt_leafbuild</code></a> が <a class="wiki-source-link" href="../../../../../source/src/backend/utils/sort/tuplesort.c.html#L1362" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__sort__tuplesort_c__tuplesort_performsort.html&quot;}, '*');"><code>tuplesort_performsort</code></a> を実行後、<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1136" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_load.html&quot;}, '*');"><code>_bt_load</code></a> を呼び出す。 4. **ページ書き込み**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1136" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_load.html&quot;}, '*');"><code>_bt_load</code></a> はソート済みタプルを <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L785" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_buildadd.html&quot;}, '*');"><code>_bt_buildadd</code></a> に渡し、ページが溢れるたびに <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L647" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_pagestate.html&quot;}, '*');"><code>_bt_pagestate</code></a> で新規ページを作成し、親レベルを構築する。 5. **終了**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1064" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_uppershutdown.html&quot;}, '*');"><code>_bt_uppershutdown</code></a> が最上位レベルを処理し、メタページを書き込んで終了。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/bulk_write.h</code>: バッファキャッシュをバイパスした物理書き込み。</li>
+<li><code>utils/tuplesort.h</code>: インデックス構築用のソートエンジン。</li>
+<li><code>access/parallel.h</code>: 並列インデックス構築のための共有メモリ管理。</li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/relscan.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>commands/progress.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/sortsupport.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtinsert.c.html&quot;}, '*');"><code>nbtinsert.c</code></a>: 通常の挿入処理。<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtsort.c.html&quot;}, '*');"><code>nbtsort.c</code></a> はこれと類似したページレイアウト規則に従う。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtdedup.c.html&quot;}, '*');"><code>nbtdedup.c</code></a>: 重複排除ロジック。<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L1030" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_sort_dedup_finish_pending.html&quot;}, '*');"><code>_bt_sort_dedup_finish_pending</code></a> 等で利用。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtpage.c.html&quot;}, '*');"><code>nbtpage.c</code></a>: ページ構造の定義と低レベル操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L636" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_blwritepage.html&quot;}, '*');"><code>_bt_blwritepage</code></a> を呼び出すと、ページバッファの所有権は <code>smgr</code> に移ります。</li>
+<li>**制約**: 本ファイルは FSM（空き領域マップ）を更新しません。構築後のインデックスは「満杯」状態から開始されるため、構築直後の VACUUM は不要です。</li>
+<li>**省略箇所**: 並列構築時の詳細なロック競合回避や、<code>tuplesort</code> 内部のメモリ管理の詳細は <a class="wiki-source-link" href="../../../../../source/src/backend/utils/sort/tuplesort.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/sort/tuplesort.c.html&quot;}, '*');"><code>tuplesort.c</code></a> に委譲されているため、本ファイルでは高レベルな調整のみを記述しています。</li>
+<li>**注意**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsort.c.html#L785" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsort_c___bt_buildadd.html&quot;}, '*');"><code>_bt_buildadd</code></a> は再帰的に親レベルを構築しますが、これはツリーの高さが低い限りスタックオーバーフローのリスクは極めて低いです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTSpool.html" target="wiki-view"><code>BTSpool</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTShared.html" target="wiki-view"><code>BTShared</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTLeader.html" target="wiki-view"><code>BTLeader</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTBuildState.html" target="wiki-view"><code>BTBuildState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTPageState.html" target="wiki-view"><code>BTPageState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__BTWriteState.html" target="wiki-view"><code>BTWriteState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__nbtree__nbtsort_c__btbuild.html" target="wiki-view"><code>btbuild</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

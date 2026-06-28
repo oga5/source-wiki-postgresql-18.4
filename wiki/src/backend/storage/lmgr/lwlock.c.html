@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/storage/lmgr/lwlock.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lwlock.c.html&quot;}, '*');">src/backend/storage/lmgr/lwlock.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lwlock.c.html&quot;}, '*');"><code>lwlock.c</code></a> は、PostgreSQL の共有メモリデータ構造を保護するための軽量ロック（<a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');">LWLock</a>）メカニズムを実装する中核ファイルです。重量級ロック（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>lock.c</code></a>）とは異なり、デッドロック検出やトランザクション管理のオーバーヘッドを持たず、アトミック操作と OS のセマフォを組み合わせて高速な排他・共有制御を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>lmgr</code> サブシステムにおける同期プリミティブの最下層に近い位置にあります。スピンロック（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/s_lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/s_lock.c.html&quot;}, '*');"><code>s_lock.c</code></a>）よりも複雑な待機キュー管理を必要とする共有メモリ操作において、標準的な同期手段として利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロック管理**: 共有/排他モードでのロック獲得・解放、および条件付き獲得の提供。</li>
+<li>**待機キュー制御**: 競合発生時のプロセス待機（<code>PGPROC</code> への登録）と、ロック解放時の効率的な起床処理。</li>
+<li>**変数同期**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1731" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.html&quot;}, '*');"><code>LWLockUpdateVar</code></a> 等による、ロック状態と連動した値の更新と待機プロセスの通知。</li>
+<li>**リソース管理**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> 配列の共有メモリ上での初期化、および動的トランシェ（Tranche）の登録と管理。</li>
+<li>**エラーリカバリ**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1954" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockReleaseAll.html&quot;}, '*');"><code>LWLockReleaseAll</code></a> による、エラー発生時の保持ロックの安全な解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ロック操作・状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1179" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockAcquire.html&quot;}, '*');"><code>LWLockAcquire</code></a>: ロック獲得のメインエントリ。競合時は待機キューへ入る。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1899" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockRelease.html&quot;}, '*');"><code>LWLockRelease</code></a>: ロック解放。必要に応じて待機中のプロセスを起床させる。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L795" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockAttemptLock.html&quot;}, '*');"><code>LWLockAttemptLock</code></a>: アトミック操作によるロックの試行（Phase 1）。</li>
+<li><code>LWLockQueueSelf / DequeueSelf</code>: 待機キューへの登録・削除。</li>
+</ul>
+<h3>変数同期</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockWaitForVar.html&quot;}, '*');"><code>LWLockWaitForVar</code></a>: ロックが空くか、指定変数が更新されるまで待機。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1731" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.html&quot;}, '*');"><code>LWLockUpdateVar</code></a>: 変数を更新し、待機中のプロセスを起床させる。</li>
+</ul>
+<h3>初期化・管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L200" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lwlock.c.html&quot;}, '*');"><code>MainLWLockArray</code></a>: 共有メモリ上の全 <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');">LWLock</a> を保持する配列。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L718" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockInitialize.html&quot;}, '*');"><code>LWLockInitialize</code></a>: 個々の <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> 構造体の初期化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L681" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__RequestNamedLWLockTranche.html&quot;}, '*');"><code>RequestNamedLWLockTranche</code></a>: 拡張モジュール等が独自のロック群を要求するためのインターフェース。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L461" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__CreateLWLocks.html&quot;}, '*');"><code>CreateLWLocks</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L568" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__InitLWLockAccess.html&quot;}, '*');"><code>InitLWLockAccess</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L501" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__InitializeLWLocks.html&quot;}, '*');"><code>InitializeLWLocks</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L295" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LOG_LWDEBUG.html&quot;}, '*');"><code>LOG_LWDEBUG</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L211" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockHandle.html&quot;}, '*');"><code>LWLockHandle</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L718" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockInitialize.html&quot;}, '*');"><code>LWLockInitialize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1731" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.html&quot;}, '*');"><code>LWLockUpdateVar</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L221" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__NamedLWLockTrancheRequest.html&quot;}, '*');"><code>NamedLWLockTrancheRequest</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L416" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__NumLWLocksForNamedTranches.html&quot;}, '*');"><code>NumLWLocksForNamedTranches</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L273" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__PRINT_LWDEBUG.html&quot;}, '*');"><code>PRINT_LWDEBUG</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L256" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats.html&quot;}, '*');"><code>lwlock_stats</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L250" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats_key.html&quot;}, '*');"><code>lwlock_stats_key</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **獲得フロー**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1179" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockAcquire.html&quot;}, '*');"><code>LWLockAcquire</code></a> はまずアトミック操作でロックを試行。失敗した場合、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1047" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockQueueSelf.html&quot;}, '*');"><code>LWLockQueueSelf</code></a> で <code>PGPROC</code> を待機リストに追加し、再度試行してからセマフォでスリープする。 2. **解放フロー**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1899" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockRelease.html&quot;}, '*');"><code>LWLockRelease</code></a> はアトミックな減算を行い、ロックが空になった場合に <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L931" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockWakeup.html&quot;}, '*');"><code>LWLockWakeup</code></a> を呼び出す。 3. **起床フロー**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L931" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockWakeup.html&quot;}, '*');"><code>LWLockWakeup</code></a> は待機リストをロックし、起床可能なプロセスを特定してセマフォをアンロックする。 4. **データ構造**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> 構造体内の <code>state</code>（<code>pg_atomic_uint32</code>）がロックの所有状態とフラグ（<code>HAS_WAITERS</code>, <a class="wiki-source-link" href="../../../../../source/src/backend/regex/regexec.c.html#L55" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/regex/regexec.c.html&quot;}, '*');"><code>LOCKED</code></a> 等）を管理する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: プロセス管理（<code>PGPROC</code>）とセマフォ操作。</li>
+<li><code>storage/proclist.h</code>: 待機キューの双方向リスト操作。</li>
+<li><code>port/atomics.h</code>: ロック状態の競合を防ぐアトミック操作。</li>
+<li><code>storage/spin.h</code>: 待機リストの保護に使用するスピンロック。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pg_trace.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pg_trace.h.html&quot;}, '*');"><code>pg_trace.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/lwlocklist.h</code></li>
+<li><code>storage/procnumber.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lwlock.h.html&quot;}, '*');"><code>src/include/storage/lwlock.h</code></a>: 公開インターフェースと構造体定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlocklist.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lwlocklist.h.html&quot;}, '*');"><code>src/include/storage/lwlocklist.h</code></a>: ビルトインのロックトランシェ定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>src/backend/storage/lmgr/proc.c</code></a>: プロセスごとの待機状態管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリレイアウト**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> はキャッシュライン境界にアライメントされており、<a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L68" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLockPadded.html&quot;}, '*');"><code>LWLockPadded</code></a> を介して共有メモリに配置されます。</li>
+<li>**パフォーマンス**: 共有モードのロック獲得は、競合がない限りアトミック操作のみで完結する「Wait-free」な設計です。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> 保持中に <code>ereport(ERROR)</code> が発生すると、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html#L1954" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lwlock_c__LWLockReleaseAll.html&quot;}, '*');"><code>LWLockReleaseAll</code></a> が呼び出されます。この際、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/init/globals.c.html#L43" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/init/globals.c.html&quot;}, '*');"><code>InterruptHoldoffCount</code></a> を適切に維持することが重要です。</li>
+<li>**未実装・浅い領域**: <code>LWLOCK_STATS</code> が定義されている場合、統計情報が収集されますが、これはデバッグ用であり本番環境では無効化されるのが一般的です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockHandle.html" target="wiki-view"><code>LWLockHandle</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__NamedLWLockTrancheRequest.html" target="wiki-view"><code>NamedLWLockTrancheRequest</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats_key.html" target="wiki-view"><code>lwlock_stats_key</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__lwlock_stats.html" target="wiki-view"><code>lwlock_stats</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__PRINT_LWDEBUG.html" target="wiki-view"><code>PRINT_LWDEBUG</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LOG_LWDEBUG.html" target="wiki-view"><code>LOG_LWDEBUG</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__NumLWLocksForNamedTranches.html" target="wiki-view"><code>NumLWLocksForNamedTranches</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__CreateLWLocks.html" target="wiki-view"><code>CreateLWLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__InitializeLWLocks.html" target="wiki-view"><code>InitializeLWLocks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__InitLWLockAccess.html" target="wiki-view"><code>InitLWLockAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockInitialize.html" target="wiki-view"><code>LWLockInitialize</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lwlock_c__LWLockUpdateVar.html" target="wiki-view"><code>LWLockUpdateVar</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

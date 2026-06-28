@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/storage/ipc/latch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/latch.c.html&quot;}, '*');">src/backend/storage/ipc/latch.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/latch.c.html&quot;}, '*');"><code>latch.c</code></a> は、PostgreSQL におけるプロセス間通信（IPC）および同期のための「ラッチ（<a class="wiki-source-link" href="../../../../../source/src/include/storage/latch.h.html#L113" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__latch_h__Latch.html&quot;}, '*');">Latch</a>）」メカニズムを実装するファイルです。ラッチは、プロセスが特定のイベント（シグナルや共有メモリ上のフラグ更新など）を待機してスリープし、イベント発生時に効率的に起床するための軽量な同期プリミティブです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> モジュールにおいて、プロセスが待機状態に入る際の標準的なインターフェースを提供します。<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/waiteventset.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/waiteventset.c.html&quot;}, '*');"><code>waiteventset.c</code></a> と密接に連携し、OS 固有の待機システムコール（<code>epoll</code>, <code>kqueue</code>, <a class="wiki-source-link" href="../../../../../source/src/include/port/win32_port.h.html#L500" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>select</code></a> 等）を抽象化して、シグナルハンドラや他プロセスからの通知を確実に受け取れるようにします。</p>
+<h2>責務</h2>
+<ul>
+<li>**ラッチのライフサイクル管理**: ローカルラッチおよび共有ラッチの初期化、所有権の割り当て（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L125" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__OwnLatch.html&quot;}, '*');"><code>OwnLatch</code></a>）、解放（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L143" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__DisownLatch.html&quot;}, '*');"><code>DisownLatch</code></a>）。</li>
+<li>**待機と通知**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> による待機処理と、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> による他プロセス（または自身）への起床通知。</li>
+<li>**競合の回避**: メモリバリアを用いたフラグ更新の順序保証と、シグナルハンドラ内での安全な通知処理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/latch.h.html#L113" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__latch_h__Latch.html&quot;}, '*');"><code>Latch</code></a>: ラッチの状態を保持する構造体。<code>is_set</code>（状態）、<code>owner_pid</code>（所有者）、<code>is_shared</code>（共有フラグ）を含む。</li>
+<li><code>SetLatch(Latch *latch)</code>: ラッチをセットし、待機中のプロセスを起床させる。シグナルハンドラから呼び出し可能。</li>
+<li><code>WaitLatch(...)</code>: ラッチがセットされるか、タイムアウト、またはポストマスターの終了を待機する。</li>
+<li><code>ResetLatch(Latch *latch)</code>: ラッチをクリアする。待機ループの開始時に呼び出す必要がある。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L143" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__DisownLatch.html&quot;}, '*');"><code>DisownLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L62" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__InitLatch.html&quot;}, '*');"><code>InitLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L92" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__InitSharedLatch.html&quot;}, '*');"><code>InitSharedLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L34" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__InitializeLatchWaitSet.html&quot;}, '*');"><code>InitializeLatchWaitSet</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L125" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__OwnLatch.html&quot;}, '*');"><code>OwnLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L373" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__ResetLatch.html&quot;}, '*');"><code>ResetLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L222" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatchOrSocket.html&quot;}, '*');"><code>WaitLatchOrSocket</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **待機側**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L373" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__ResetLatch.html&quot;}, '*');"><code>ResetLatch</code></a> で状態をリセットし、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> を呼び出して待機状態へ移行します。<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> は内部で <code>WaitEventSet</code> を使用し、OS の待機プリミティブに登録されます。 2. **通知側**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> が呼び出されると、<code>is_set</code> フラグが真になり、必要に応じて <code>kill()</code> 等のシグナル送信や Windows の <code>SetEvent</code> を通じて待機側プロセスを起床させます。 3. **メモリバリア**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> と <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L373" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__ResetLatch.html&quot;}, '*');"><code>ResetLatch</code></a> の前後で <code>pg_memory_barrier()</code> を使用し、フラグの更新が他プロセスから正しく観測されることを保証します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/latch.h</code>: ラッチの定義とインターフェース。</li>
+<li><code>storage/waiteventset.h</code>: 待機イベントセットの管理。</li>
+<li><code>port/atomics.h</code>: メモリバリア操作。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a>: プロセス ID やポストマスター状態の取得。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/latch.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/latch.h.html&quot;}, '*');"><code>src/include/storage/latch.h</code></a>: ラッチの利用パターンや設計思想が詳細に記述されています。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/waiteventset.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/waiteventset.c.html&quot;}, '*');"><code>src/backend/storage/ipc/waiteventset.c</code></a>: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> が内部で利用する基盤実装。</li>
+<li><code>src/backend/storage/ipc/proc.c</code>: プロセス固有のラッチ（<code>PGPROC.procLatch</code>）の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**コーディングパターン**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> を使用する際は、必ず <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L373" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__ResetLatch.html&quot;}, '*');"><code>ResetLatch</code></a> をループの適切な位置（通常は <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__WaitLatch.html&quot;}, '*');"><code>WaitLatch</code></a> の前）に配置してください。これを怠ると、シグナルが <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L373" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__ResetLatch.html&quot;}, '*');"><code>ResetLatch</code></a> の直前に届いた場合にイベントを見逃す競合が発生します。</li>
+<li>**シグナルハンドラ**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__SetLatch.html&quot;}, '*');"><code>SetLatch</code></a> はシグナルハンドラから呼び出されることを想定しています。そのため、内部で <code>errno</code> を破壊しないよう注意が払われていますが、呼び出し側でも必要に応じて <code>errno</code> の保存・復元を行うのが安全です。</li>
+<li>**共有ラッチ**: 共有メモリ上のラッチを扱う際は、初期化順序と所有権の移譲に注意してください。<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/latch.c.html#L125" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__latch_c__OwnLatch.html&quot;}, '*');"><code>OwnLatch</code></a> はロックを伴わないため、呼び出し側の排他制御が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitializeLatchWaitSet.html" target="wiki-view"><code>InitializeLatchWaitSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitLatch.html" target="wiki-view"><code>InitLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__InitSharedLatch.html" target="wiki-view"><code>InitSharedLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__OwnLatch.html" target="wiki-view"><code>OwnLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__DisownLatch.html" target="wiki-view"><code>DisownLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__WaitLatch.html" target="wiki-view"><code>WaitLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__WaitLatchOrSocket.html" target="wiki-view"><code>WaitLatchOrSocket</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__SetLatch.html" target="wiki-view"><code>SetLatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__latch_c__ResetLatch.html" target="wiki-view"><code>ResetLatch</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

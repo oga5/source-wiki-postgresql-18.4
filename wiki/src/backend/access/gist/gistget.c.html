@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/gist/gistget.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistget.c.html&quot;}, '*');">src/backend/access/gist/gistget.c</a></h1>
+<h2>概要</h2>
+<p>GiST（Generalized Search Tree）インデックスにおけるスキャン実行時のタプル取得ロジックを実装するファイルです。インデックスページを辿り、検索条件に合致するタプルを抽出して上位層へ返却する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistscan.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistscan.c.html&quot;}, '*');"><code>gistscan.c</code></a> で初期化されたスキャン状態（<a class="wiki-source-link" href="../../../../../source/src/include/access/gist_private.h.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__gist_private_h__GISTScanOpaque.html&quot;}, '*');"><code>GISTScanOpaque</code></a>）を利用し、実際のインデックス走査を行います。<a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistproc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistproc.c.html&quot;}, '*');"><code>gistproc.c</code></a> が提供する演算子クラスのメソッド（Consistent/Distance）を呼び出し、検索の成否や順序を決定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプル検索**: インデックスページを走査し、検索条件（<code>ScanKey</code>）に合致するタプルを特定する。</li>
+<li>**順序付きスキャン**: <code>ORDER BY</code> 句がある場合、<a class="wiki-source-link" href="../../../../../source/src/include/lib/pairingheap.h.html#L71" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__lib__pairingheap_h__pairingheap.html&quot;}, '*');"><code>pairingheap</code></a> を用いて距離順にタプルを抽出する。</li>
+<li>**ビットマップスキャン**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L744" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistgetbitmap.html&quot;}, '*');"><code>gistgetbitmap</code></a> を通じて、条件に合致する全タプルの TID をビットマップへ効率的に格納する。</li>
+<li>**デッドタプル処理**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L37" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistkillitems.html&quot;}, '*');"><code>gistkillitems</code></a> を通じ、不要になったインデックスエントリのマーク付けを管理する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L611" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistgettuple.html&quot;}, '*');"><code>gistgettuple</code></a>: スキャンのメインエントリポイント。次の一致タプルを返却する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L744" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistgetbitmap.html&quot;}, '*');"><code>gistgetbitmap</code></a>: ビットマップスキャン用のエントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistScanPage.html&quot;}, '*');"><code>gistScanPage</code></a>: 指定されたインデックスページを読み込み、一致するタプルをキューに追加または返却する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistindex_keytest.html&quot;}, '*');"><code>gistindex_keytest</code></a>: 個々のインデックスタプルが検索条件を満たすか、および距離を計算する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/access/gist_private.h.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__gist_private_h__GISTScanOpaque.html&quot;}, '*');"><code>GISTScanOpaque</code></a>: スキャン中の状態（キュー、メモリコンテキスト、現在のページ情報など）を保持する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L537" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__getNextGISTSearchItem.html&quot;}, '*');"><code>getNextGISTSearchItem</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L559" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__getNextNearest.html&quot;}, '*');"><code>getNextNearest</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L796" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistcanreturn.html&quot;}, '*');"><code>gistcanreturn</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L37" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistkillitems.html&quot;}, '*');"><code>gistkillitems</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L611" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistgettuple.html&quot;}, '*');"><code>gistgettuple</code></a> が初回呼び出し時にルートページを <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistScanPage.html&quot;}, '*');"><code>gistScanPage</code></a> に渡す。 2. **ページ走査**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistScanPage.html&quot;}, '*');"><code>gistScanPage</code></a> がページを読み込み、<a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistindex_keytest.html&quot;}, '*');"><code>gistindex_keytest</code></a> で各タプルを評価する。 3. **キューイング**:</p>
+<ul>
+<li>非リーフページの場合、子ページを <a class="wiki-source-link" href="../../../../../source/src/include/lib/pairingheap.h.html#L71" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__lib__pairingheap_h__pairingheap.html&quot;}, '*');"><code>pairingheap</code></a> に追加する。</li>
+<li>リーフページの場合、一致した TID を <code>pageData</code> 配列またはビットマップに格納する。</li>
+<p>4. **順序付き検索**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L559" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__getNextNearest.html&quot;}, '*');"><code>getNextNearest</code></a> がキューから最小距離のアイテムを順次取り出し、ヒープタプルに到達するまで再帰的にページを掘り下げる。 5. **後処理**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L37" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistkillitems.html&quot;}, '*');"><code>gistkillitems</code></a> が、スキャン中に不要と判断されたタプルに対して <a class="wiki-source-link" href="../../../../../source/src/include/storage/itemid.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/itemid.h.html&quot;}, '*');"><code>LP_DEAD</code></a> フラグを立てる。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gist_private.h</code>: GiST 内部構造体および定数定義。</li>
+<li><code>lib/pairingheap.h</code>: 順序付きスキャン用の優先度付きキュー実装。</li>
+<li><code>access/genam.h</code>, <code>access/relscan.h</code>: インデックススキャンの共通インターフェース。</li>
+<li><code>storage/predicate.h</code>: 述語ロック管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistscan.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistscan.c.html&quot;}, '*');"><code>gistscan.c</code></a>: スキャン状態の初期化とメモリ管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistproc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistproc.c.html&quot;}, '*');"><code>gistproc.c</code></a>: 演算子クラスごとの <code>Consistent</code>（一致判定）および <code>Distance</code>（距離計算）メソッドの実装。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistutil.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/gist/gistutil.c.html&quot;}, '*');"><code>gistutil.c</code></a>: ページ操作やタプルデコードのユーティリティ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistindex_keytest.html&quot;}, '*');"><code>gistindex_keytest</code></a> などは短命なメモリコンテキストで実行されます。メモリリークを防ぐため、<code>giststate-&gt;tempCxt</code> 等の適切なコンテキスト切り替えが行われている点に注目してください。</li>
+<li>**並行性**: GiST はインデックスの分割（Split）が並行して発生し得るため、<a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistScanPage.html&quot;}, '*');"><code>gistScanPage</code></a> 内で <code>NSN</code>（Node Sequence Number）や <code>rightlink</code> を確認し、必要に応じて右兄弟ページをキューに追加するロジックが重要です。</li>
+<li>**LSN チェック**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/gist/gistget.c.html#L37" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__gist__gistget_c__gistkillitems.html&quot;}, '*');"><code>gistkillitems</code></a> は、ページが読み込み後に更新されていないことを LSN で確認してから <a class="wiki-source-link" href="../../../../../source/src/include/storage/itemid.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/itemid.h.html&quot;}, '*');"><code>LP_DEAD</code></a> を設定します。これは MVCC 下での安全な削除を保証するための重要なガードです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistkillitems.html" target="wiki-view"><code>gistkillitems</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistindex_keytest.html" target="wiki-view"><code>gistindex_keytest</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistScanPage.html" target="wiki-view"><code>gistScanPage</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__getNextGISTSearchItem.html" target="wiki-view"><code>getNextGISTSearchItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__getNextNearest.html" target="wiki-view"><code>getNextNearest</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistgettuple.html" target="wiki-view"><code>gistgettuple</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistgetbitmap.html" target="wiki-view"><code>gistgetbitmap</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__gist__gistget_c__gistcanreturn.html" target="wiki-view"><code>gistcanreturn</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

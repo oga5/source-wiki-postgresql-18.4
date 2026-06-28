@@ -1,0 +1,106 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/bin/pg_dump/parallel.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/parallel.c.html&quot;}, '*');">src/bin/pg_dump/parallel.c</a></h1>
+<h2>概要</h2>
+<p><code>parallel.c</code> は、<code>pg_dump</code> および <code>pg_restore</code> における並列処理の基盤を提供します。リーダープロセスが複数のワーカー（Unix ではプロセス、Windows ではスレッド）を管理し、パイプ経由でジョブをディスパッチして結果を収集する仕組みを実装しています。</p>
+<h2>モジュール内での役割</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_archiver.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_archiver.c.html&quot;}, '*');"><code>pg_backup_archiver.c</code></a> がアーカイブ全体の制御を行うのに対し、本ファイルは「並列実行の抽象化」に特化しています。アーカイブ形式に依存しない汎用的なジョブスケジューリングと、プラットフォーム固有の並列プリミティブ（<code>fork</code>/<code>pipe</code> vs <code>_beginthreadex</code>/<a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L495" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>socket</code></a>）の差異を吸収します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プロセス/スレッド管理**: ワーカーの起動、監視、および終了処理。</li>
+<li>**通信層**: リーダーとワーカー間のコマンド・応答メッセージの送受信（パイプ/ソケット抽象化）。</li>
+<li>**ジョブスケジューリング**: アイドル状態のワーカーの特定と、タスクの割り当て。</li>
+<li>**シグナル/割り込み処理**: ユーザーによる中断（Ctrl+C）時の安全な終了と、ワーカーへのキャンセル通知。</li>
+<li>**デッドロック回避**: ワーカースレッド/プロセスによるテーブルロック時の競合検出。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>並列状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.h.html#L55" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_h__ParallelState.html&quot;}, '*');"><code>ParallelState</code></a>: 並列処理全体の実行状態を保持する構造体。</li>
+<li><code>ParallelSlot</code>: 各ワーカーのステータス、パイプ、識別子（PID/ThreadID）を管理する内部構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L77" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__T_WorkerStatus.html&quot;}, '*');"><code>T_WorkerStatus</code></a>: ワーカーの状態（<code>WRKR_IDLE</code>, <code>WRKR_WORKING</code> 等）。</li>
+</ul>
+<h3>ライフサイクル管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L898" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.html&quot;}, '*');"><code>ParallelBackupStart</code></a>: ワーカーを生成し、並列処理を開始する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1060" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ParallelBackupEnd.html&quot;}, '*');"><code>ParallelBackupEnd</code></a>: 全ワーカーを終了させ、リソースを解放する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1206" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__DispatchJobForTocEntry.html&quot;}, '*');"><code>DispatchJobForTocEntry</code></a>: 特定の <code>TocEntry</code> に対するジョブをアイドル中のワーカーに割り当てる。</li>
+</ul>
+<h3>通信・制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1337" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__WaitForCommands.html&quot;}, '*');"><code>WaitForCommands</code></a>: ワーカー側のメインループ。リーダーからのコマンドを待機・実行する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1452" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__WaitForWorkers.html&quot;}, '*');"><code>WaitForWorkers</code></a>: リーダー側の待機ループ。ワーカーからの完了通知を待つ。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1517" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__getMessageFromLeader.html&quot;}, '*');"><code>getMessageFromLeader</code></a> / <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1645" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__sendMessageToWorker.html&quot;}, '*');"><code>sendMessageToWorker</code></a>: 通信チャネルの抽象化関数。</li>
+</ul>
+<h3>シグナル・エラー処理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L731" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__set_archive_cancel_info.html&quot;}, '*');"><code>set_archive_cancel_info</code></a>: キャンセル用接続情報を設定し、割り込みハンドラを初期化する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L396" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ShutdownWorkersHard.html&quot;}, '*');"><code>ShutdownWorkersHard</code></a>: 異常終了時にワーカーを強制停止させる。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L165" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__DumpSignalInformation.html&quot;}, '*');"><code>DumpSignalInformation</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L265" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__GetMyPSlot.html&quot;}, '*');"><code>GetMyPSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1060" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ParallelBackupEnd.html&quot;}, '*');"><code>ParallelBackupEnd</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L898" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.html&quot;}, '*');"><code>ParallelBackupStart</code></a></li>
+<li><code>ParallelSlot</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L830" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__RunWorker.html&quot;}, '*');"><code>RunWorker</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L148" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ShutdownInformation.html&quot;}, '*');"><code>ShutdownInformation</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L396" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ShutdownWorkersHard.html&quot;}, '*');"><code>ShutdownWorkersHard</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L77" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__T_WorkerStatus.html&quot;}, '*');"><code>T_WorkerStatus</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L447" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__WaitForTerminatingWorkers.html&quot;}, '*');"><code>WaitForTerminatingWorkers</code></a></li>
+<li><code>WorkerInfo</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L290" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__getThreadLocalPQExpBuffer.html&quot;}, '*');"><code>getThreadLocalPQExpBuffer</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L898" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.html&quot;}, '*');"><code>ParallelBackupStart</code></a> が <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.h.html#L55" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_h__ParallelState.html&quot;}, '*');"><code>ParallelState</code></a> を作成し、<a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1720" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__pgpipe.html&quot;}, '*');"><code>pgpipe</code></a> で通信路を確保後、<code>fork</code> または <code>_beginthreadex</code> でワーカーを生成。 2. **ディスパッチ**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1206" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__DispatchJobForTocEntry.html&quot;}, '*');"><code>DispatchJobForTocEntry</code></a> が <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1237" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__GetIdleWorker.html&quot;}, '*');"><code>GetIdleWorker</code></a> で空きスロットを探し、<a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__buildWorkerCommand.html&quot;}, '*');"><code>buildWorkerCommand</code></a> で生成した文字列を <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1645" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__sendMessageToWorker.html&quot;}, '*');"><code>sendMessageToWorker</code></a> で送信。 3. **実行**: ワーカーは <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1337" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__WaitForCommands.html&quot;}, '*');"><code>WaitForCommands</code></a> で待機し、コマンドを受信すると <code>AH-&gt;WorkerJobDumpPtr</code> 等を呼び出す。 4. **応答**: ワーカーは <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1157" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__buildWorkerResponse.html&quot;}, '*');"><code>buildWorkerResponse</code></a> で結果を構築し、<a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1528" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__sendMessageToLeader.html&quot;}, '*');"><code>sendMessageToLeader</code></a> で返信。 5. **収集**: リーダーは <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1399" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__ListenToWorkers.html&quot;}, '*');"><code>ListenToWorkers</code></a> でパイプを監視し、応答を受信するとコールバックを実行してスロットを <code>WRKR_IDLE</code> に戻す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres_fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres_fe.h.html&quot;}, '*');"><code>postgres_fe.h</code></a>: PostgreSQL フロントエンド共通定義。</li>
+<li><code>sys/select.h</code>, <code>sys/wait.h</code>, <code>signal.h</code>, <a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a>: Unix 系プロセス制御。</li>
+<li><code>parallel.h</code>: 公開インターフェース定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_utils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/pg_dump/pg_backup_utils.h.html&quot;}, '*');"><code>pg_backup_utils.h</code></a>: 共通ユーティリティ。</li>
+<li><code>fcntl.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_archiver.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_archiver.c.html&quot;}, '*');"><code>pg_backup_archiver.c</code></a>: 本モジュールの主要なクライアント。<code>ArchiveHandle</code> を通じてジョブの実行実体を保持。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_dump.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_dump.c.html&quot;}, '*');"><code>pg_dump.c</code></a> / <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_restore.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_restore.c.html&quot;}, '*');"><code>pg_restore.c</code></a>: 並列処理の開始・終了をトリガーするメインモジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.h.html#L55" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_h__ParallelState.html&quot;}, '*');"><code>ParallelState</code></a> および <code>ParallelSlot</code> はリーダープロセスが所有・管理します。ワーカーは <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_archiver.c.html#L5134" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__pg_backup_archiver_c__CloneArchive.html&quot;}, '*');"><code>CloneArchive</code></a> によって <code>ArchiveHandle</code> のコピーを保持し、独立したデータベース接続を使用します。</li>
+<li>**Windows 固有の制約**: Windows では <code>WaitForMultipleObjects</code> の制限（<code>MAXIMUM_WAIT_OBJECTS</code>）により、最大ジョブ数が制限されます。また、パイプの代わりにソケットを使用して <code>select()</code> を実現しています。</li>
+<li>**シグナルハンドラ**: 本ファイル内のシグナルハンドラは、<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-cancel.c.html#L547" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-cancel_c__PQcancel.html&quot;}, '*');"><code>PQcancel</code></a> を使用してデータベースバックエンドに直接キャンセルを要求します。これは非同期シグナル安全性を考慮した設計です。</li>
+<li>**未実装・浅い部分**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.c.html#L1109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_c__buildWorkerCommand.html&quot;}, '*');"><code>buildWorkerCommand</code></a> 等のメッセージフォーマットは現在単純な文字列ですが、将来的にアーカイブ形式ごとの拡張を許容する設計になっています。現在は <code>TocEntry</code> ID の受け渡しのみに限定されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__T_WorkerStatus.html" target="wiki-view"><code>T_WorkerStatus</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelSlot.html" target="wiki-view"><code>ParallelSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__WorkerInfo.html" target="wiki-view"><code>WorkerInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ShutdownInformation.html" target="wiki-view"><code>ShutdownInformation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__DumpSignalInformation.html" target="wiki-view"><code>DumpSignalInformation</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__GetMyPSlot.html" target="wiki-view"><code>GetMyPSlot</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__getThreadLocalPQExpBuffer.html" target="wiki-view"><code>getThreadLocalPQExpBuffer</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ShutdownWorkersHard.html" target="wiki-view"><code>ShutdownWorkersHard</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__WaitForTerminatingWorkers.html" target="wiki-view"><code>WaitForTerminatingWorkers</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__RunWorker.html" target="wiki-view"><code>RunWorker</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelBackupStart.html" target="wiki-view"><code>ParallelBackupStart</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__parallel_c__ParallelBackupEnd.html" target="wiki-view"><code>ParallelBackupEnd</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

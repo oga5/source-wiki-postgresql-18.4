@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/include/storage/predicate.h.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/include/storage/predicate.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/predicate.h.html&quot;}, '*');">src/include/storage/predicate.h</a></h1>
+<h2>概要</h2>
+<p>PostgreSQLにおける「述語ロック（Predicate Locking）」の公開インターフェースを定義するヘッダーファイルです。本ファイルは、SSI（Serializable <a class="wiki-source-link" href="../../../../source/src/include/utils/snapshot.h.html#L117" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__snapshot_h__Snapshot.html&quot;}, '*');">Snapshot</a> Isolation）を実現するために必要な、読み取りと書き込みの競合（rw-conflict）を追跡するための仕組みを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/include/storage</code> モジュールの一部として、トランザクション管理とストレージ層の橋渡しをします。通常のロック（<a class="wiki-source-link" href="../../../../source/src/include/storage/lock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lock.h.html&quot;}, '*');"><code>lock.h</code></a>）とは異なり、データそのものをブロックするのではなく、シリアライザブル分離レベルを維持するための「競合検知用フラグ」として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**述語ロックの管理**: トランザクションによる読み取り範囲（タプル、ページ、リレーション単位）の追跡。</li>
+<li>**競合検知**: 書き込み操作時に、既存の読み取り述語との競合が発生していないかを判定し、必要に応じてシリアライザブル違反（ロールバック）を発生させる。</li>
+<li>**ライフサイクル管理**: トランザクション終了後も、競合判定のために必要な情報を保持し、適切なタイミングで解放する。</li>
+<li>**並列クエリ・2相コミット対応**: 並列ワーカー間でのシリアライザブル状態の共有や、分散トランザクションにおける述語ロックの復旧をサポート。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/storage/predicate.h.html#L34" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__predicate_h__SerializableXactHandle.html&quot;}, '*');"><code>SerializableXactHandle</code></a>: 並列クエリ実行時に、シリアライザブルトランザクションの状態をワーカー間で共有するためのハンドル。</li>
+<li><code>PredicateLock...</code> 系関数: 述語ロックの取得、ページ分割/結合時の追跡、解放を行う主要なAPI群。</li>
+<li><code>CheckForSerializableConflict...</code> 系関数: 書き込み時に呼び出され、シリアライザブル制約に違反する読み取りがないかを検証する関数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ロック取得**: トランザクションがデータにアクセスする際、<a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/predicate.c.html#L2598" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__predicate_c__PredicateLockPage.html&quot;}, '*');"><code>PredicateLockPage</code></a> や <a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/predicate.c.html#L2620" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__predicate_c__PredicateLockTID.html&quot;}, '*');"><code>PredicateLockTID</code></a> が呼び出され、共有メモリ上の述語ロック構造体が更新されます。 2. **競合判定**: 書き込み操作が発生すると、<a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/predicate.c.html#L4022" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__predicate_c__CheckForSerializableConflictOut.html&quot;}, '*');"><code>CheckForSerializableConflictOut</code></a> 等が呼ばれ、対象データに対する既存の述語ロックを走査します。 3. **判定結果**: 競合が検出された場合、トランザクションはシリアライザブル失敗としてマークされ、最終的に <a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/predicate.c.html#L4702" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__predicate_c__PreCommit_CheckForSerializationFailure.html&quot;}, '*');"><code>PreCommit_CheckForSerializationFailure</code></a> でロールバックが強制されます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/itemptr.h</code>: タプル識別子（TID）の操作用。</li>
+<li><code>storage/lock.h</code>: ロック管理の基本定義。</li>
+<li><code>utils/relcache.h</code>: リレーションキャッシュへのアクセス。</li>
+<li><code>utils/snapshot.h</code>: トランザクションスナップショットの定義。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/storage/lmgr/predicate.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/predicate.c.html&quot;}, '*');"><code>src/backend/storage/lmgr/predicate.c</code></a>: 本ヘッダーで宣言された関数の実装。SSIのアルゴリズム詳細が記述されています。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/storage/predicate_internals.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/predicate_internals.h.html&quot;}, '*');"><code>src/include/storage/predicate_internals.h</code></a>: 述語ロックの内部構造体や共有メモリ管理の詳細。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/storage/lock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lock.h.html&quot;}, '*');"><code>src/include/storage/lock.h</code></a>: 通常のロックマネージャとの対比理解に必須。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>述語ロックは「ブロックしない」ことが最大の特徴です。ロックの取得は競合の「記録」であり、待機を発生させるものではありません。</li>
+<li>メモリ不足時には、細かい粒度のロックが粗い粒度（ページやリレーション）に統合（Coalescing）される可能性があるため、ロックの粒度は動的に変化します。</li>
+<li>読み取り専用トランザクションが「安全（Safe）」と判定された場合、述語ロックを早期解放する最適化が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__include__storage__predicate_h__SerializableXactHandle.html" target="wiki-view"><code>SerializableXactHandle</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

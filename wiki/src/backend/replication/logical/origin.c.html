@@ -1,0 +1,130 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/replication/logical/origin.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/origin.c.html&quot;}, '*');">src/backend/replication/logical/origin.c</a></h1>
+<h2>概要</h2>
+<p>論理レプリケーションにおける「起点（Origin）」の管理と、レプリケーション進捗（LSN）の追跡を担うモジュールです。リモートノードからの変更適用状況を永続化し、クラッシュリカバリ後も正確な再開位置を特定できるようにします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> サブシステムの一部として、論理デコーディングや適用プロセスが「どこまで処理したか」を記録するインフラを提供します。WALレコードと共有メモリを介して、適用プロセスの進捗を永続化・同期します。</p>
+<h2>責務</h2>
+<ul>
+<li>**起点管理**: ユーザー定義の論理起点（Origin）の作成・削除およびカタログ（<code>pg_replication_origin</code>）との同期。</li>
+<li>**進捗追跡**: リモートLSNとローカルLSNのペアを共有メモリ上で管理し、非同期コミット環境下でも整合性を維持。</li>
+<li>**永続化**: チェックポイント時に共有メモリ上の進捗状態をディスクへダンプし、起動時に復元。</li>
+<li>**WAL統合**: 起点の変更や進捗の更新をWALに記録し、スタンバイ側での状態同期をサポート。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理構造体</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationState.html&quot;}, '*');"><code>ReplicationState</code></a>: 共有メモリ上の各起点の進捗状態（LSN、ロック、条件変数）。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L154" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationStateCtl.html&quot;}, '*');"><code>ReplicationStateCtl</code></a>: 共有メモリ上の全状態を管理する制御構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L184" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/origin.c.html&quot;}, '*');"><code>session_replication_state</code></a>: 現在のバックエンドが使用中の起点へのポインタ。</li>
+</ul>
+<h3>起点操作API</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L256" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_create.html&quot;}, '*');"><code>replorigin_create</code></a>: 新規起点の作成とカタログ登録。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_drop_by_name.html&quot;}, '*');"><code>replorigin_drop_by_name</code></a>: 起点の削除と関連状態のクリア。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L225" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_by_name.html&quot;}, '*');"><code>replorigin_by_name</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L492" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_by_oid.html&quot;}, '*');"><code>replorigin_by_oid</code></a>: カタログからの起点検索。</li>
+</ul>
+<h3>進捗追跡API</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L910" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_advance.html&quot;}, '*');"><code>replorigin_advance</code></a>: 指定したノードの進捗を更新（WALログ出力含む）。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L1241" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_session_advance.html&quot;}, '*');"><code>replorigin_session_advance</code></a>: 現在のセッションの進捗を更新（最適化パス）。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L1036" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_get_progress.html&quot;}, '*');"><code>replorigin_get_progress</code></a>: 指定ノードの現在の進捗を取得。</li>
+</ul>
+<h3>ライフサイクル・永続化</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L548" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationOriginShmemInit.html&quot;}, '*');"><code>ReplicationOriginShmemInit</code></a>: 共有メモリの初期化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__CheckPointReplicationOrigin.html&quot;}, '*');"><code>CheckPointReplicationOrigin</code></a>: チェックポイント時の状態ファイル書き出し。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L721" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__StartupReplicationOrigin.html&quot;}, '*');"><code>StartupReplicationOrigin</code></a>: 起動時の状態ファイル読み込みと復元。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__CheckPointReplicationOrigin.html&quot;}, '*');"><code>CheckPointReplicationOrigin</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L208" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__IsReservedOriginName.html&quot;}, '*');"><code>IsReservedOriginName</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L1077" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationOriginExitCleanup.html&quot;}, '*');"><code>ReplicationOriginExitCleanup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L548" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationOriginShmemInit.html&quot;}, '*');"><code>ReplicationOriginShmemInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L533" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationOriginShmemSize.html&quot;}, '*');"><code>ReplicationOriginShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationState.html&quot;}, '*');"><code>ReplicationState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L154" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationStateCtl.html&quot;}, '*');"><code>ReplicationStateCtl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L147" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationStateOnDisk.html&quot;}, '*');"><code>ReplicationStateOnDisk</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L721" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__StartupReplicationOrigin.html&quot;}, '*');"><code>StartupReplicationOrigin</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_check_prerequisites.html&quot;}, '*');"><code>replorigin_check_prerequisites</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L256" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_create.html&quot;}, '*');"><code>replorigin_create</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L1036" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_get_progress.html&quot;}, '*');"><code>replorigin_get_progress</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L721" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__StartupReplicationOrigin.html&quot;}, '*');"><code>StartupReplicationOrigin</code></a> がチェックポイントファイルから状態を読み込み、共有メモリを初期化します。 2. **進捗更新**: 適用プロセスがトランザクションをコミットする際、<a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L1241" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_session_advance.html&quot;}, '*');"><code>replorigin_session_advance</code></a> を呼び出し、共有メモリ上の <code>remote_lsn</code> と <code>local_lsn</code> を更新します。 3. **永続化**: チェックポイント発生時、<a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__CheckPointReplicationOrigin.html&quot;}, '*');"><code>CheckPointReplicationOrigin</code></a> が全 <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationState.html&quot;}, '*');"><code>ReplicationState</code></a> を走査し、<code>local_lsn</code> がディスクにフラッシュされていることを確認した上でファイルへ書き出します。 4. **WAL再生**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L849" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_redo.html&quot;}, '*');"><code>replorigin_redo</code></a> がWALレコードを解析し、<a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L910" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_advance.html&quot;}, '*');"><code>replorigin_advance</code></a> を通じて共有メモリの状態を更新します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_replication_origin.h</code>: カタログ定義。</li>
+<li><code>storage/lmgr.h</code>: <code>ReplicationOriginLock</code> 等のロック管理。</li>
+<li><code>access/xloginsert.h</code>: WALへのレコード挿入。</li>
+<li><code>storage/condition_variable.h</code>: 適用プロセスの待機・通知。</li>
+<li><code>access/genam.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/execnodes.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/replication/origin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/replication/origin.h.html&quot;}, '*');"><code>src/include/replication/origin.h</code></a>: 公開API定義。</li>
+<li><code>src/backend/catalog/pg_replication_origin.c</code>: カタログ操作の基盤。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/worker.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/worker.c.html&quot;}, '*');"><code>src/backend/replication/logical/worker.c</code></a>: 本モジュールのAPIを利用して適用進捗を更新する主要な消費者。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリとロック**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__ReplicationState.html&quot;}, '*');"><code>ReplicationState</code></a> の各フィールドは <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> で保護されています。LSNの8バイト書き込みがアトミックでない環境を考慮し、必ずロックを取得してアクセスしてください。</li>
+<li>**パフォーマンス**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L184" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/origin.c.html&quot;}, '*');"><code>session_replication_state</code></a> を使用することで、共有メモリの検索コストを回避しています。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L104" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/origin.c.html&quot;}, '*');"><code>max_active_replication_origins</code></a> GUCにより、同時に追跡可能な起点の数が制限されます。</li>
+<li>**未実装・浅い部分**: WAL再生時の効率化（ローカルハッシュテーブルの利用など）は、必要性が証明されるまで未実装です。</li>
+<li>**注意**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/origin.c.html#L256" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__replorigin_create.html&quot;}, '*');"><code>replorigin_create</code></a> はカタログ操作を伴うため、トランザクション内で実行する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationState.html" target="wiki-view"><code>ReplicationState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationStateOnDisk.html" target="wiki-view"><code>ReplicationStateOnDisk</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationStateCtl.html" target="wiki-view"><code>ReplicationStateCtl</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__replorigin_check_prerequisites.html" target="wiki-view"><code>replorigin_check_prerequisites</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__IsReservedOriginName.html" target="wiki-view"><code>IsReservedOriginName</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__replorigin_create.html" target="wiki-view"><code>replorigin_create</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationOriginShmemSize.html" target="wiki-view"><code>ReplicationOriginShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationOriginShmemInit.html" target="wiki-view"><code>ReplicationOriginShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__CheckPointReplicationOrigin.html" target="wiki-view"><code>CheckPointReplicationOrigin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__StartupReplicationOrigin.html" target="wiki-view"><code>StartupReplicationOrigin</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__replorigin_get_progress.html" target="wiki-view"><code>replorigin_get_progress</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__origin_c__ReplicationOriginExitCleanup.html" target="wiki-view"><code>ReplicationOriginExitCleanup</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

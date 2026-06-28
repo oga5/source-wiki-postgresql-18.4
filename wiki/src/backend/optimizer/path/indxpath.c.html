@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/optimizer/path/indxpath.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/indxpath.c.html&quot;}, '*');">src/backend/optimizer/path/indxpath.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/indxpath.c.html&quot;}, '*');"><code>indxpath.c</code></a> は、PostgreSQL プランナにおいて、特定のテーブル（<code>RelOptInfo</code>）に対して利用可能なインデックスを特定し、それらを用いた物理的な <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__Path.html&quot;}, '*');"><code>Path</code></a>（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1842" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__IndexPath.html&quot;}, '*');"><code>IndexPath</code></a> や <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1917" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__BitmapHeapPath.html&quot;}, '*');"><code>BitmapHeapPath</code></a>）を生成する責務を負うモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、論理的なクエリ条件（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L2699" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__RestrictInfo.html&quot;}, '*');"><code>RestrictInfo</code></a> や <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1442" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__EquivalenceClass.html&quot;}, '*');"><code>EquivalenceClass</code></a>）を物理的なインデックススキャン操作に変換する役割を担います。<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/allpaths.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/allpaths.c.html&quot;}, '*');"><code>allpaths.c</code></a> から呼び出され、生成されたパスは <code>RelOptInfo</code> の <code>pathlist</code> に追加されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**インデックス適合性判定**: クエリの制限条件（<code>WHERE</code>）や結合条件が、インデックスのキーや述語（<code>indpred</code>）と一致するかを判定。</li>
+<li>**パス生成**:</li>
+<li>**Plain <a class="wiki-source-link" href="../../../../../source/src/include/nodes/plannodes.h.html#L536" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__IndexScan.html&quot;}, '*');">IndexScan</a>**: 単一のインデックスを用いたスキャン。</li>
+<li>**Parameterized <a class="wiki-source-link" href="../../../../../source/src/include/nodes/plannodes.h.html#L536" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__IndexScan.html&quot;}, '*');">IndexScan</a>**: 結合条件を利用した、外部リレーションに依存するスキャン。</li>
+<li>**Bitmap <a class="wiki-source-link" href="../../../../../source/src/include/nodes/plannodes.h.html#L470" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__Scan.html&quot;}, '*');">Scan</a>**: 複数のインデックスを組み合わせて（AND/OR）ビットマップを作成し、ヒープをスキャンする手法。</li>
+<li>**コスト見積もり**: インデックススキャンの実行コストを算出し、最適なパスの組み合わせを選択。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L54" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html&quot;}, '*');"><code>IndexClauseSet</code></a>: インデックスの各カラムに対して適合する条件式（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1888" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__IndexClause.html&quot;}, '*');"><code>IndexClause</code></a>）を保持するコンテナ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L62" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__PathClauseUsage.html&quot;}, '*');"><code>PathClauseUsage</code></a>: ビットマップスキャンのコスト評価時に、使用された条件式を追跡するための構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L1180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__OrArgIndexMatch.html&quot;}, '*');"><code>OrArgIndexMatch</code></a>: <code>OR</code> 条件の引数をグループ化し、効率的にインデックス適合を判定するための補助構造。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><code>create_index_paths()</code>: 本ファイルのメインエントリポイント。リレーションに対する全インデックスを走査し、パス生成を統括する。</li>
+<li><code>build_index_paths()</code>: 特定のインデックスと条件セットから <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1842" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__IndexPath.html&quot;}, '*');"><code>IndexPath</code></a> を生成する。</li>
+<li><code>generate_bitmap_or_paths()</code>: <code>OR</code> 条件を解析し、<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1942" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__BitmapOrPath.html&quot;}, '*');"><code>BitmapOrPath</code></a> を生成する。</li>
+<li><code>choose_bitmap_and()</code>: 複数のビットマップパスから、コスト最小となる <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1929" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__BitmapAndPath.html&quot;}, '*');"><code>BitmapAndPath</code></a> を構築する。</li>
+<li><code>match_clause_to_indexcol()</code>: 条件式がインデックスカラムに適合するかを判定するディスパッチャ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L54" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html&quot;}, '*');"><code>IndexClauseSet</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L2791" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__IsBooleanOpfamily.html&quot;}, '*');"><code>IsBooleanOpfamily</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L1180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__OrArgIndexMatch.html&quot;}, '*');"><code>OrArgIndexMatch</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L62" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__PathClauseUsage.html&quot;}, '*');"><code>PathClauseUsage</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L46" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__ScanTypeControl.html&quot;}, '*');"><code>ScanTypeControl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L436" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_clauses.html&quot;}, '*');"><code>consider_index_join_clauses</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L502" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_outer_rels.html&quot;}, '*');"><code>consider_index_join_outer_rels</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L239" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__create_index_paths.html&quot;}, '*');"><code>create_index_paths</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L72" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__ec_member_matches_arg.html&quot;}, '*');"><code>ec_member_matches_arg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L683" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__eclass_already_used.html&quot;}, '*');"><code>eclass_already_used</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L715" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__get_index_paths.html&quot;}, '*');"><code>get_index_paths</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L605" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__get_join_index_paths.html&quot;}, '*');"><code>get_join_index_paths</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L239" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__create_index_paths.html&quot;}, '*');"><code>create_index_paths</code></a> がリレーションの全インデックスをループ。 2. **条件マッチング**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L2465" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__match_restriction_clauses_to_index.html&quot;}, '*');"><code>match_restriction_clauses_to_index</code></a> 等で、インデックスキーに適合する条件を <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L54" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html&quot;}, '*');"><code>IndexClauseSet</code></a> に収集。 3. **パス構築**:</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L715" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__get_index_paths.html&quot;}, '*');"><code>get_index_paths</code></a> が適合条件に基づき <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1842" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__IndexPath.html&quot;}, '*');"><code>IndexPath</code></a> を生成。</li>
+<li>結合条件がある場合、<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L436" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_clauses.html&quot;}, '*');"><code>consider_index_join_clauses</code></a> がパラメータ化されたパスを生成。</li>
+<p>4. **ビットマップ最適化**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L1628" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__generate_bitmap_or_paths.html&quot;}, '*');"><code>generate_bitmap_or_paths</code></a> で <code>OR</code> を処理し、<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L1784" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__choose_bitmap_and.html&quot;}, '*');"><code>choose_bitmap_and</code></a> で複数のインデックス条件を AND 結合してコストを最適化。 5. **登録**: 生成されたパスを <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/util/pathnode.c.html#L463" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__util__pathnode_c__add_path.html&quot;}, '*');"><code>add_path</code></a> でリレーションの候補リストに追加。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>optimizer/pathnode.h</code>, <code>optimizer/paths.h</code>: パス生成の基本インターフェース。</li>
+<li><code>catalog/pg_am.h</code>, <code>catalog/pg_amop.h</code>: インデックスアクセスメソッドおよび演算子族の定義。</li>
+<li><code>optimizer/restrictinfo.h</code>: クエリ条件のメタデータ。</li>
+<li><code>utils/selfuncs.h</code>: 選択率（Selectivity）計算用。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>math.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>nodes/supportnodes.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/placeholder.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/lsyscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/allpaths.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/allpaths.c.html&quot;}, '*');"><code>allpaths.c</code></a>: パス生成の全体的な制御フロー。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/costsize.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/costsize.c.html&quot;}, '*');"><code>costsize.c</code></a>: インデックススキャンのコスト計算モデル。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/equivclass.c.html&quot;}, '*');"><code>equivclass.c</code></a>: 等価クラスを用いたインデックス適合条件の推論。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PlannerInfo</code> のメモリコンテキスト（<code>planner_cxt</code>）上で動作するため、個別のメモリ解放は不要ですが、大量のパス生成時にはメモリ消費に注意が必要です。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L54" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html&quot;}, '*');"><code>IndexClauseSet</code></a> は <a class="wiki-source-link" href="../../../../../source/src/include/pg_config_manual.h.html#L69" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pg_config_manual.h.html&quot;}, '*');"><code>INDEX_MAX_KEYS</code></a>（通常 32）までのカラムしか扱えません。</li>
+<li>**省略された詳細**: 本ファイルは非常に広範な条件マッチングロジック（<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L2903" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__match_opclause_to_indexcol.html&quot;}, '*');"><code>match_opclause_to_indexcol</code></a> 等）を含みますが、これらは演算子族やサポート関数（<code>prosupport</code>）の仕様に強く依存しており、個別の演算子ごとの詳細は各 AM（Access Method）の実装に委ねられています。</li>
+<li>**性能**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html#L1784" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__indxpath_c__choose_bitmap_and.html&quot;}, '*');"><code>choose_bitmap_and</code></a> は O(N^2) のヒューリスティックを用いており、インデックスが多い場合に計算コストが増大する可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__ScanTypeControl.html" target="wiki-view"><code>ScanTypeControl</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__IndexClauseSet.html" target="wiki-view"><code>IndexClauseSet</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__PathClauseUsage.html" target="wiki-view"><code>PathClauseUsage</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__ec_member_matches_arg.html" target="wiki-view"><code>ec_member_matches_arg</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__create_index_paths.html" target="wiki-view"><code>create_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_clauses.html" target="wiki-view"><code>consider_index_join_clauses</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__consider_index_join_outer_rels.html" target="wiki-view"><code>consider_index_join_outer_rels</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__get_join_index_paths.html" target="wiki-view"><code>get_join_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__eclass_already_used.html" target="wiki-view"><code>eclass_already_used</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__get_index_paths.html" target="wiki-view"><code>get_index_paths</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__OrArgIndexMatch.html" target="wiki-view"><code>OrArgIndexMatch</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__indxpath_c__IsBooleanOpfamily.html" target="wiki-view"><code>IsBooleanOpfamily</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

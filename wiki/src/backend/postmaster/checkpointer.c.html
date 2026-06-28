@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/postmaster/checkpointer.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/checkpointer.c.html&quot;}, '*');">src/backend/postmaster/checkpointer.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQL 9.2 で導入されたチェックポインタープロセスを実装するファイルです。データベースの整合性を維持するためのチェックポイント処理を定期的に、あるいは要求に応じて実行します。また、バックエンドプロセスからのファイル同期（<a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a>）要求を収集し、効率的に処理する役割も担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、補助プロセス（Auxiliary Process）として動作します。バッファマネージャーや WAL 管理サブシステムと密接に連携し、共有メモリを介して他のバックエンドプロセスと通信します。</p>
+<h2>責務</h2>
+<ul>
+<li>**チェックポイント実行**: 定期的なタイムアウト、またはバックエンドからの明示的な要求に基づくチェックポイント（またはリカバリ中のリスタートポイント）の実行。</li>
+<li>**<a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求の集約**: バックエンドが直接ファイル書き込みを行った際に発生する <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求をキューイングし、重複排除を行ってから同期処理へ渡す。</li>
+<li>**プロセス間通信**: 共有メモリ上のフラグとラッチを用いた、チェックポイント開始・完了の同期。</li>
+<li>**設定管理**: <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L158" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>SIGHUP</code></a> 受信時の設定再読み込みと、共有メモリへの設定反映。</li>
+<li>**シャットダウン処理**: サーバー停止時の最終チェックポイント実行と、統計情報の書き出し。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有メモリ構造体</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L113" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemStruct.html&quot;}, '*');"><code>CheckpointerShmemStruct</code></a>: チェックポインターとバックエンド間の通信用共有メモリ。</li>
+<li><code>ckpt_lck</code>: チェックポイント状態フィールドを保護するスピンロック。</li>
+<li><code>ckpt_started</code>, <code>ckpt_done</code>, <code>ckpt_failed</code>: チェックポイントの進行状況を追跡するカウンタ。</li>
+<li><code>requests[]</code>: バックエンドから送られた <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求のリングバッファ。</li>
+</ul>
+<h3>メインループ・制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html&quot;}, '*');"><code>CheckpointerMain</code></a>: プロセスのエントリポイント。シグナルハンドラの設定、メモリコンテキストの初期化、メインループの実行を行う。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L641" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ProcessCheckpointerInterrupts.html&quot;}, '*');"><code>ProcessCheckpointerInterrupts</code></a>: 設定再読み込みやログ出力要求などの割り込みを処理。</li>
+</ul>
+<h3>要求・同期処理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1002" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__RequestCheckpoint.html&quot;}, '*');"><code>RequestCheckpoint</code></a>: バックエンドがチェックポイントを要求する際に呼び出す関数。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1152" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ForwardSyncRequest.html&quot;}, '*');"><code>ForwardSyncRequest</code></a>: バックエンドが <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求をキューに送るためのインターフェース。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1329" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__AbsorbSyncRequests.html&quot;}, '*');"><code>AbsorbSyncRequests</code></a>: キューに溜まった <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求を同期メカニズムへ転送する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1219" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CompactCheckpointerRequestQueue.html&quot;}, '*');"><code>CompactCheckpointerRequestQueue</code></a>: キューが溢れた際に重複を排除して圧縮する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L683" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckArchiveTimeout.html&quot;}, '*');"><code>CheckArchiveTimeout</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L771" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointWriteDelay.html&quot;}, '*');"><code>CheckpointWriteDelay</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html&quot;}, '*');"><code>CheckpointerMain</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L107" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerRequest.html&quot;}, '*');"><code>CheckpointerRequest</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L959" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemInit.html&quot;}, '*');"><code>CheckpointerShmemInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L937" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemSize.html&quot;}, '*');"><code>CheckpointerShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L113" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemStruct.html&quot;}, '*');"><code>CheckpointerShmemStruct</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1222" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerSlotMapping.html&quot;}, '*');"><code>CheckpointerSlotMapping</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L744" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ImmediateCheckpointRequested.html&quot;}, '*');"><code>ImmediateCheckpointRequested</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__IsCheckpointOnSchedule.html&quot;}, '*');"><code>IsCheckpointOnSchedule</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L641" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ProcessCheckpointerInterrupts.html&quot;}, '*');"><code>ProcessCheckpointerInterrupts</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L920" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ReqShutdownXLOG.html&quot;}, '*');"><code>ReqShutdownXLOG</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **チェックポイント開始**: <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html&quot;}, '*');"><code>CheckpointerMain</code></a> ループ内で <code>ckpt_flags</code> を監視。フラグが立っていれば <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L6926" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CreateCheckPoint.html&quot;}, '*');"><code>CreateCheckPoint</code></a> を呼び出す。 2. **<a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> 要求フロー**:</p>
+<ul>
+<li>バックエンドが <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1152" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__ForwardSyncRequest.html&quot;}, '*');"><code>ForwardSyncRequest</code></a> を呼び出し、共有メモリの <code>requests</code> 配列に書き込む。</li>
+<li>チェックポインターは <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1329" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__AbsorbSyncRequests.html&quot;}, '*');"><code>AbsorbSyncRequests</code></a> を定期的に呼び出し、キューを空にして <a class="wiki-source-link" href="../../../../source/src/backend/storage/sync/sync.c.html#L486" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__sync__sync_c__RememberSyncRequest.html&quot;}, '*');"><code>RememberSyncRequest</code></a>（<code>storage/smgr.h</code> 経由）へ渡す。</li>
+<p>3. **同期**: バックエンドは <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1002" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__RequestCheckpoint.html&quot;}, '*');"><code>RequestCheckpoint</code></a> 内で <a class="wiki-source-link" href="../../../../source/src/include/storage/condition_variable.h.html#L28" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__condition_variable_h__ConditionVariable.html&quot;}, '*');"><code>ConditionVariable</code></a> を使用し、チェックポインターが <code>ckpt_done</code> を更新するまで待機する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>, <code>access/xlog_internal.h</code>: WAL 関連の制御。</li>
+<li><code>storage/bufmgr.h</code>, <code>storage/smgr.h</code>: バッファおよびストレージマネージャーの操作。</li>
+<li><code>storage/shmem.h</code>, <code>storage/lwlock.h</code>, <code>storage/spin.h</code>: 共有メモリとロック管理。</li>
+<li><code>postmaster/pmsignal.h</code>: プロセス間シグナル通信。</li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/auxprocess.h</code></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>src/backend/access/transam/xlog.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L6926" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CreateCheckPoint.html&quot;}, '*');"><code>CreateCheckPoint</code></a> の実体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/storage/buffer/bufmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/buffer/bufmgr.c.html&quot;}, '*');"><code>src/backend/storage/buffer/bufmgr.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/backend/storage/buffer/bufmgr.c.html#L3343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__buffer__bufmgr_c__BufferSync.html&quot;}, '*');"><code>BufferSync</code></a> 等、チェックポイント中に呼び出されるバッファ管理関数。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/bgwriter.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/bgwriter.c.html&quot;}, '*');"><code>src/backend/postmaster/bgwriter.c</code></a>: 役割は異なるが、同様にバックグラウンドでバッファを処理する補助プロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L181" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html&quot;}, '*');"><code>CheckpointerMain</code></a> は専用の <code>MemoryContext</code> を作成し、エラー発生時にリセットすることでメモリリークを防いでいます。</li>
+<li>**エラー処理**: <a class="wiki-source-link" href="../../../../source/src/include/c.h.html#L1343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/c.h.html&quot;}, '*');"><code>sigsetjmp</code></a> を使用してエラーからの復帰を実装しています。エラー発生時は <a class="wiki-source-link" href="../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> やバッファの解放を明示的に行う必要があります。</li>
+<li>**<a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');">fsync</a> キュー**: <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/checkpointer.c.html&quot;}, '*');"><code>MAX_CHECKPOINT_REQUESTS</code></a> は <a class="wiki-source-link" href="../../../../source/src/backend/utils/init/globals.c.html#L142" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/init/globals.c.html&quot;}, '*');"><code>NBuffers</code></a> に基づいて動的に決定されます。キューが満杯になった際の <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/checkpointer.c.html#L1219" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__checkpointer_c__CompactCheckpointerRequestQueue.html&quot;}, '*');"><code>CompactCheckpointerRequestQueue</code></a> は、ハッシュテーブルを使用して重複を排除するコストのかかる処理であるため、高負荷時には注意が必要です。</li>
+<li>**省略された詳細**: <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L6926" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CreateCheckPoint.html&quot;}, '*');"><code>CreateCheckPoint</code></a> 内部の複雑な WAL 書き込みロジックや、<code>smgr</code> レベルの物理的なファイル操作の詳細は本ファイルには含まれていません。これらは <code>access/</code> および <code>storage/</code> 配下の各モジュールに委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerRequest.html" target="wiki-view"><code>CheckpointerRequest</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemStruct.html" target="wiki-view"><code>CheckpointerShmemStruct</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerMain.html" target="wiki-view"><code>CheckpointerMain</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ProcessCheckpointerInterrupts.html" target="wiki-view"><code>ProcessCheckpointerInterrupts</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckArchiveTimeout.html" target="wiki-view"><code>CheckArchiveTimeout</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ImmediateCheckpointRequested.html" target="wiki-view"><code>ImmediateCheckpointRequested</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointWriteDelay.html" target="wiki-view"><code>CheckpointWriteDelay</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__IsCheckpointOnSchedule.html" target="wiki-view"><code>IsCheckpointOnSchedule</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__ReqShutdownXLOG.html" target="wiki-view"><code>ReqShutdownXLOG</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemSize.html" target="wiki-view"><code>CheckpointerShmemSize</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerShmemInit.html" target="wiki-view"><code>CheckpointerShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__postmaster__checkpointer_c__CheckpointerSlotMapping.html" target="wiki-view"><code>CheckpointerSlotMapping</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

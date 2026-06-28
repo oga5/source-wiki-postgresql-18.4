@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>modules/src__backend__utils__activity.md</title><link rel="stylesheet" href="../../styles.css"></head><body><h1>src/backend/utils/activity</h1>
+<h2>システム内での役割</h2>
+<p><code>src/backend/utils/activity</code> は、PostgreSQLの統計情報収集（Cumulative Statistics System）およびバックエンドの活動監視（Activity Tracking）の中核を担うモジュールです。システム全体の稼働状況、I/O、トランザクション、待機イベントなどのメトリクスを収集・集計し、共有メモリを介してバックエンド間で共有するインフラを提供します。</p>
+<h2>責務</h2>
+<ul>
+<li>**統計のライフサイクル管理**: サーバー起動時の初期化、バックエンド終了時のクリーンアップ、シャットダウン時の永続化。</li>
+<li>**統計の集約と同期**: 各バックエンドがローカルに蓄積した統計を、共有メモリ上の構造体へ定期的にフラッシュ（同期）。</li>
+<li>**活動監視の提供**: <code>pg_stat_activity</code> 等のシステムビューのデータソースとなる、バックエンドの現在状態の公開。</li>
+<li>**拡張性の提供**: 組み込み統計に加え、拡張モジュールによるカスタム統計や待機イベントの登録・管理。</li>
+</ul>
+<h2>このモジュールのファイル</h2>
+<p>本モジュールは、統計システムの司令塔である <a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgstat.c</code></a> と、各統計種別（リレーション、データベース、I/O、WAL、SLRU、レプリケーションスロット等）および活動監視（<a class="wiki-source-link" href="../../source/src/backend/utils/activity/backend_status.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>backend_status.c</code></a>, <a class="wiki-source-link" href="../../source/src/backend/utils/activity/wait_event.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/wait_event.c.html&quot;}, '*');"><code>wait_event.c</code></a>）を担当する個別のファイル群で構成されています。</p>
+<h2>主要なデータ構造</h2>
+<ul>
+<li>**統計管理**: <a class="wiki-source-link" href="../../source/src/include/utils/pgstat_internal.h.html#L202" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__pgstat_internal_h__PgStat_KindInfo.html&quot;}, '*');"><code>PgStat_KindInfo</code></a>（統計種別の振る舞い定義）、<a class="wiki-source-link" href="../../source/src/include/utils/pgstat_internal.h.html#L135" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__pgstat_internal_h__PgStat_EntryRef.html&quot;}, '*');"><code>PgStat_EntryRef</code></a>（共有メモリ上の統計エントリへの参照）。</li>
+<li>**活動監視**: <a class="wiki-source-link" href="../../source/src/include/utils/backend_status.h.html#L98" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__backend_status_h__PgBackendStatus.html&quot;}, '*');"><code>PgBackendStatus</code></a>（バックエンドの現在状態）、<a class="wiki-source-link" href="../../source/src/backend/utils/activity/wait_event.c.html#L84" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__activity__wait_event_c__WaitEventCustomCounterData.html&quot;}, '*');"><code>WaitEventCustomCounterData</code></a>（カスタム待機イベントの管理）。</li>
+<li>**共有メモリ**: <code>dshash</code>（共有メモリ上のハッシュテーブル）を用いた統計エントリの管理。</li>
+</ul>
+<h2>主なフロー</h2>
+<p>1. **蓄積**: 各バックエンドは処理の過程でローカルメモリ（<a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat.c.html#L243" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgStatPending</code></a> 等）に統計を蓄積。 2. **フラッシュ**: <code>pgstat_report_stat()</code> 等の関数が、一定間隔でローカルの統計を共有メモリへ書き出し（<code>flush_pending_cb</code>）。 3. **スナップショット**: SQLビュー等からの参照時、共有メモリからローカルメモリへ統計をコピーし、一貫性を保ったスナップショットを作成。 4. **永続化**: シャットダウン時、チェックポインターが共有メモリ上の全統計をファイルへシリアライズ。</p>
+<h2>外部依存</h2>
+<ul>
+<li><code>lib/dshash.h</code>, <code>lib/simplehash.h</code>: 共有メモリおよびローカルキャッシュのハッシュ管理。</li>
+<li><code>storage/lwlock.h</code>: 統計エントリへのアクセス保護。</li>
+<li><code>storage/shmem.h</code>, <code>storage/dsa.h</code>: 共有メモリ領域の確保と管理。</li>
+<li><code>access/xact.h</code>: トランザクション終了時の統計フラッシュ処理との連携。</li>
+</ul>
+<h2>内部構成</h2>
+<p>本モジュールは、<a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgstat.c</code></a> を中心としたハブ・アンド・スポーク構成をとっています。各 <code>pgstat_*.c</code> ファイルは、特定の統計カテゴリに関する詳細なロジックをカプセル化し、<a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgstat.c</code></a> が提供する共通のコールバックインターフェースを通じて統合されます。</p>
+<h2>推奨読書順</h2>
+<p>1. <a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat.c.html&quot;}, '*');"><code>pgstat.c</code></a>（統計システムの全体像とライフサイクル） 2. <a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat_shmem.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat_shmem.c.html&quot;}, '*');"><code>pgstat_shmem.c</code></a>（共有メモリ管理と同期の基盤） 3. <a class="wiki-source-link" href="../../source/src/backend/utils/activity/backend_status.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/backend_status.c.html&quot;}, '*');"><code>backend_status.c</code></a>（バックエンドの活動監視） 4. <a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat_relation.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat_relation.c.html&quot;}, '*');"><code>pgstat_relation.c</code></a> / <a class="wiki-source-link" href="../../source/src/backend/utils/activity/pgstat_database.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/pgstat_database.c.html&quot;}, '*');"><code>pgstat_database.c</code></a>（主要な統計カテゴリの実装） 5. <a class="wiki-source-link" href="../../source/src/backend/utils/activity/wait_event.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/activity/wait_event.c.html&quot;}, '*');"><code>wait_event.c</code></a>（待機イベントの追跡メカニズム） 6. 各種 <code>pgstat_*.c</code>（I/O, WAL, SLRU等の詳細実装）</p>
+<h2>未解決の問い</h2>
+<ul>
+<li>LLM ベースのモジュール合成を追加した後で、責務とフローを精緻化する。</li>
+<li>統計情報の取得頻度とパフォーマンスへの影響（<a class="wiki-source-link" href="../../source/src/backend/utils/misc/guc_tables.c.html#L259" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/misc/guc_tables.c.html&quot;}, '*');"><code>stats_fetch_consistency</code></a>）に関する詳細なトレードオフの文書化。</li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/backup/basebackup.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/basebackup.c.html&quot;}, '*');">src/backend/backup/basebackup.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/basebackup.c.html&quot;}, '*');"><code>basebackup.c</code></a> は、PostgreSQLの物理ベースバックアップ（<code>BASE_BACKUP</code> コマンド）の実行エンジンです。データディレクトリの走査、チェックサム検証、および <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> インターフェースを介したデータストリームのパイプライン処理をオーケストレーションします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/backup</code> サブシステムの中核であり、バックアップのライフサイクル（開始・データ転送・終了）を制御します。<a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a>（転送パイプライン）や <code>backup_manifest</code>（整合性管理）、<code>basebackup_incremental</code>（増分バックアップ）といった各コンポーネントを統合する上位レイヤーとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バックアップ実行のオーケストレーション**: <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L8841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__do_pg_backup_start.html&quot;}, '*');"><code>do_pg_backup_start</code></a> から <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L9169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__do_pg_backup_stop.html&quot;}, '*');"><code>do_pg_backup_stop</code></a> までのバックアップセッション管理。</li>
+<li>**ファイルシステム走査**: データディレクトリおよびテーブルスペースの再帰的な走査と、バックアップ対象外ファイルのフィルタリング。</li>
+<li>**データ転送パイプラインの構築**: 圧縮、スロットリング、進捗報告などの <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> チェーンの組み立て。</li>
+<li>**整合性検証**: ページ単位のチェックサム検証と、バックアップマニフェストへの記録。</li>
+<li>**WALアーカイブの統合**: バックアップ期間中に生成されたWALセグメントの特定とストリームへの追加。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>バックアップ制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L989" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__SendBaseBackup.html&quot;}, '*');"><code>SendBaseBackup</code></a>: バックアップコマンドのメインエントリーポイント。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__perform_base_backup.html&quot;}, '*');"><code>perform_base_backup</code></a>: バックアップのメインループ。リソース所有権の管理とエラーハンドリングを包含。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L62" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__basebackup_options.html&quot;}, '*');"><code>basebackup_options</code></a>: コマンド引数を保持する構造体。</li>
+</ul>
+<h3>データ転送・走査</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1188" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__sendDir.html&quot;}, '*');"><code>sendDir</code></a>: ディレクトリを再帰的に走査し、ファイルを <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> へ送る。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1573" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__sendFile.html&quot;}, '*');"><code>sendFile</code></a>: 個別のファイルを読み込み、必要に応じてチェックサム検証を行い、<a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> へ転送。</li>
+<li><code>_tarWriteHeader</code>: tarヘッダーを生成し、シンクへ書き込む。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1993" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__verify_page_checksum.html&quot;}, '*');"><code>verify_page_checksum</code></a>: ページ単位のチェックサム検証。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1849" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__read_file_data_into_buffer.html&quot;}, '*');"><code>read_file_data_into_buffer</code></a>: ファイル読み込みとチェックサム検証の統合ヘルパー。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1952" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__push_to_sink.html&quot;}, '*');"><code>push_to_sink</code></a>: バッファリングを考慮したデータ転送ヘルパー。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L989" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__SendBaseBackup.html&quot;}, '*');"><code>SendBaseBackup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L62" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__basebackup_options.html&quot;}, '*');"><code>basebackup_options</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L2115" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__basebackup_read_file.html&quot;}, '*');"><code>basebackup_read_file</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L685" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__compareWalFileNames.html&quot;}, '*');"><code>compareWalFileNames</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L2098" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__convert_link_to_directory.html&quot;}, '*');"><code>convert_link_to_directory</code></a></li>
+<li><code>exclude_list_item</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L697" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__parse_basebackup_options.html&quot;}, '*');"><code>parse_basebackup_options</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__perform_base_backup.html&quot;}, '*');"><code>perform_base_backup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1952" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__push_to_sink.html&quot;}, '*');"><code>push_to_sink</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1849" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__read_file_data_into_buffer.html&quot;}, '*');"><code>read_file_data_into_buffer</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1074" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__sendFileWithContent.html&quot;}, '*');"><code>sendFileWithContent</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1993" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__verify_page_checksum.html&quot;}, '*');"><code>verify_page_checksum</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L989" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__SendBaseBackup.html&quot;}, '*');"><code>SendBaseBackup</code></a> がオプションをパースし、<a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> チェーン（圧縮→スロットリング→送信）を構築。 2. **開始**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__perform_base_backup.html&quot;}, '*');"><code>perform_base_backup</code></a> が <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L8841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__do_pg_backup_start.html&quot;}, '*');"><code>do_pg_backup_start</code></a> を呼び出し、バックアップモードへ移行。 3. **転送**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1188" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__sendDir.html&quot;}, '*');"><code>sendDir</code></a> がファイルシステムを走査。各ファイルは <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1573" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__sendFile.html&quot;}, '*');"><code>sendFile</code></a> を経由し、<a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> パイプラインへ流し込まれる。 4. **WAL統合**: バックアップ終了後、<a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__perform_base_backup.html&quot;}, '*');"><code>perform_base_backup</code></a> が <code>pg_wal</code> をスキャンし、必要なWALセグメントをストリームの末尾に追加。 5. **終了**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/backup_manifest.c.html#L316" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__backup_manifest_c__SendBackupManifest.html&quot;}, '*');"><code>SendBackupManifest</code></a> でマニフェストを送信し、<a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L9169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__do_pg_backup_stop.html&quot;}, '*');"><code>do_pg_backup_stop</code></a> でバックアップモードを解除。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>backup/basebackup_sink.h</code>: <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> インターフェース定義。</li>
+<li><code>backup/backup_manifest.h</code>: マニフェスト生成ロジック。</li>
+<li><code>access/xlogbackup.h</code>: WALバックアップ関連の内部定義。</li>
+<li><code>storage/checksum.h</code>: ページチェックサム計算。</li>
+<li><code>replication/walsender.h</code>: WAL送信プロセスとの連携。</li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>backup/basebackup_incremental.h</code></li>
+<li><code>backup/basebackup_target.h</code></li>
+<li><code>catalog/pg_tablespace_d.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/compression.h</code></li>
+<li><code>common/file_perm.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/pg_list.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgtar.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pgtar.h.html&quot;}, '*');"><code>pgtar.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/syslogger.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>storage/bufpage.h</code></li>
+<li><code>storage/dsm_impl.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/reinit.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/relcache.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup_sink.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/basebackup_sink.c.html&quot;}, '*');"><code>src/backend/backup/basebackup_sink.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> の実装基盤。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup_incremental.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/basebackup_incremental.c.html&quot;}, '*');"><code>src/backend/backup/basebackup_incremental.c</code></a>: 増分バックアップのブロックフィルタリングロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/backup/backup_manifest.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/backup_manifest.c.html&quot;}, '*');"><code>src/backend/backup/backup_manifest.c</code></a>: マニフェストの構造と生成。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__perform_base_backup.html&quot;}, '*');"><code>perform_base_backup</code></a> 内で <a class="wiki-source-link" href="../../../../source/src/backend/utils/resowner/resowner.c.html#L176" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/resowner/resowner.c.html&quot;}, '*');"><code>AuxProcessResourceOwner</code></a> を使用してリソースを管理しています。エラー発生時は <a class="wiki-source-link" href="../../../../source/src/include/storage/ipc.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/ipc.h.html&quot;}, '*');"><code>PG_ENSURE_ERROR_CLEANUP</code></a> によりバックアップが確実に中断されるよう設計されています。</li>
+<li>**メモリレイアウト**: <a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L60" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/backup/basebackup.c.html&quot;}, '*');"><code>SINK_BUFFER_LENGTH</code></a> は <code>BLCKSZ</code> の倍数であることが要求されます。</li>
+<li>**エッジケース**: </li>
+<li>バックアップ中にスタンバイが昇格した場合、<a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html#L123" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>CHECK_FOR_INTERRUPTS</code></a> と <code>RecoveryInProgress()</code> のチェックによりバックアップを即座に中断します。</li>
+<li>読み込み中のファイルが並行して切り詰められた場合、<a class="wiki-source-link" href="../../../../source/src/backend/backup/basebackup.c.html#L1849" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__backup__basebackup_c__read_file_data_into_buffer.html&quot;}, '*');"><code>read_file_data_into_buffer</code></a> はEOFを検出し、ゼロパディングで補完します。</li>
+<li>**省略箇所**: <a class="wiki-source-link" href="../../../../source/src/include/backup/basebackup_sink.h.html#L36" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__backup__basebackup_sink_h__bbsink.html&quot;}, '*');"><code>bbsink</code></a> の各実装（gzip, lz4, zstd等）の詳細は別ファイルに分離されており、本ファイルはそれらの抽象インターフェースのみを扱います。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__basebackup_options.html" target="wiki-view"><code>basebackup_options</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__exclude_list_item.html" target="wiki-view"><code>exclude_list_item</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__perform_base_backup.html" target="wiki-view"><code>perform_base_backup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__compareWalFileNames.html" target="wiki-view"><code>compareWalFileNames</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__parse_basebackup_options.html" target="wiki-view"><code>parse_basebackup_options</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__SendBaseBackup.html" target="wiki-view"><code>SendBaseBackup</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__sendFileWithContent.html" target="wiki-view"><code>sendFileWithContent</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__read_file_data_into_buffer.html" target="wiki-view"><code>read_file_data_into_buffer</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__push_to_sink.html" target="wiki-view"><code>push_to_sink</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__verify_page_checksum.html" target="wiki-view"><code>verify_page_checksum</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__convert_link_to_directory.html" target="wiki-view"><code>convert_link_to_directory</code></a></li>
+<li><a href="../../../symbols/src__backend__backup__basebackup_c__basebackup_read_file.html" target="wiki-view"><code>basebackup_read_file</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

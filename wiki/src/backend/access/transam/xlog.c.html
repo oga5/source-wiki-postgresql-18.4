@@ -1,0 +1,171 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/transam/xlog.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');">src/backend/access/transam/xlog.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQLのWrite-Ahead Log (WAL) 管理の中核となるファイルです。データベースの起動、チェックポイントの実行、WALバッファの管理、およびクラッシュリカバリの調整を担います。WALの物理的な書き込み、同期、およびアーカイブ・リカバリの制御フローを統括する巨大なモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおける「WALの司令塔」です。</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xloginsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xloginsert.c.html&quot;}, '*');"><code>xloginsert.c</code></a>: WALレコードの構築（高レベルAPI）</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlogrecovery.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlogrecovery.c.html&quot;}, '*');"><code>xlogrecovery.c</code></a>: リカバリ・スタンバイ時のWAL適用</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlogreader.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlogreader.c.html&quot;}, '*');"><code>xlogreader.c</code></a>: WALの読み込みと解析</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlogutils.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlogutils.c.html&quot;}, '*');"><code>xlogutils.c</code></a>: リカバリ用ヘルパー</li>
+<p>これらと連携し、共有メモリ上のWALバッファ管理とディスクI/Oの調停を行います。</p>
+</ul>
+<h2>責務</h2>
+<ul>
+<li>**WALバッファ管理**: 共有メモリ上のWALバッファの初期化、ページ置換、ディスクへのフラッシュ。</li>
+<li>**チェックポイント制御**: チェックポイントの開始・終了、統計情報の収集、およびリカバリ時の再開ポイント（RestartPoint）の管理。</li>
+<li>**WAL挿入の調停**: 複数のバックエンドによる並列WAL挿入の同期（WAL挿入ロック）。</li>
+<li>**リカバリ・スタンバイ制御**: 起動時のリカバリ状態の判定、タイムラインの切り替え、およびリカバリ終了処理。</li>
+<li>**アーカイブ管理**: WALセグメントの作成、リサイクル、削除、およびアーカイブ通知。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>共有状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L567" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>XLogCtl</code></a>: WAL管理の全状態を保持する共有メモリ上のグローバル構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L368" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WALInsertLock.html&quot;}, '*');"><code>WALInsertLock</code></a>: WAL挿入を並列化するためのロック配列。<code>insertingAt</code> で挿入進捗を追跡し、フラッシュ時のデッドロックを防止。</li>
+<li><code>ControlFile</code>: <code>pg_control</code> の共有メモリ上のイメージ。</li>
+</ul>
+<h3>WAL挿入・フラッシュ</h3>
+<ul>
+<li><code>XLogInsertRecord()</code>: WALレコードを共有バッファに挿入するメインエントリーポイント。</li>
+<li><code>XLogFlush()</code>: 指定したLSNまでWALをディスクにフラッシュする。</li>
+<li><code>XLogWrite()</code>: 実際にファイルシステムへWALを書き出す低レベル関数。</li>
+</ul>
+<h3>リカバリ・状態判定</h3>
+<ul>
+<li><code>StartupXLOG()</code>: データベース起動時のリカバリプロセスを統括するメイン関数。</li>
+<li><code>RecoveryInProgress()</code>: 現在リカバリ中かどうかを判定。</li>
+<li><code>XLogInsertAllowed()</code>: 現在のプロセスがWAL挿入可能か判定。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L4199" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__InitControlFile.html&quot;}, '*');"><code>InitControlFile</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L4821" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__InitializeWalConsistencyChecking.html&quot;}, '*');"><code>InitializeWalConsistencyChecking</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L368" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WALInsertLock.html&quot;}, '*');"><code>WALInsertLock</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L382" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WALInsertLockPadded.html&quot;}, '*');"><code>WALInsertLockPadded</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L560" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WalInsertClass.html&quot;}, '*');"><code>WalInsertClass</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L4955" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLOGShmemInit.html&quot;}, '*');"><code>XLOGShmemInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L451" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogCtlData.html&quot;}, '*');"><code>XLogCtlData</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L397" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogCtlInsert.html&quot;}, '*');"><code>XLogCtlInsert</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L3375" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogFileInit.html&quot;}, '*');"><code>XLogFileInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L5251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogInitNewTimeline.html&quot;}, '*');"><code>XLogInitNewTimeline</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L326" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogwrtResult.html&quot;}, '*');"><code>XLogwrtResult</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L320" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogwrtRqst.html&quot;}, '*');"><code>XLogwrtRqst</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **WAL挿入**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L747" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogInsertRecord.html&quot;}, '*');"><code>XLogInsertRecord</code></a> が <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L368" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WALInsertLock.html&quot;}, '*');"><code>WALInsertLock</code></a> を取得し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L1110" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__ReserveXLogInsertLocation.html&quot;}, '*');"><code>ReserveXLogInsertLocation</code></a> でWAL領域を予約。その後、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L1227" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CopyXLogRecordToWAL.html&quot;}, '*');"><code>CopyXLogRecordToWAL</code></a> でバッファへコピー。 2. **バッファ管理**: バッファが不足すると <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L1987" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__AdvanceXLInsertBuffer.html&quot;}, '*');"><code>AdvanceXLInsertBuffer</code></a> が呼ばれ、古いページをディスクへフラッシュ（<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L2303" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogWrite.html&quot;}, '*');"><code>XLogWrite</code></a>）して再利用する。 3. **フラッシュ**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L2779" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogFlush.html&quot;}, '*');"><code>XLogFlush</code></a> は <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L1506" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WaitXLogInsertionsToFinish.html&quot;}, '*');"><code>WaitXLogInsertionsToFinish</code></a> で挿入完了を待ち、<code>WALWriteLock</code> を取得してディスクへ書き出す。 4. **チェックポイント**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L6926" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CreateCheckPoint.html&quot;}, '*');"><code>CreateCheckPoint</code></a> が <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L7549" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__CheckPointGuts.html&quot;}, '*');"><code>CheckPointGuts</code></a> を呼び出し、全バッファをフラッシュ。その後、<a class="wiki-source-link" href="../../../../../source/src/include/catalog/pg_control.h.html#L68" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/catalog/pg_control.h.html&quot;}, '*');"><code>XLOG_CHECKPOINT_SHUTDOWN</code></a> などのレコードを書き込む。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/storage/bufmgr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/bufmgr.h.html&quot;}, '*');"><code>bufmgr.h</code></a> (バッファ管理), <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lwlock.h.html&quot;}, '*');"><code>lwlock.h</code></a> (ロック), <a class="wiki-source-link" href="../../../../../source/src/include/storage/fd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/fd.h.html&quot;}, '*');"><code>fd.h</code></a> (ファイルI/O)</li>
+<li><code>access/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/access/xloginsert.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/xloginsert.h.html&quot;}, '*');"><code>xloginsert.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/access/xlogreader.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/access/xlogreader.h.html&quot;}, '*');"><code>xlogreader.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/access/xlogrecovery.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/access/xlogrecovery.h.html&quot;}, '*');"><code>xlogrecovery.h</code></a></li>
+<li><code>catalog/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/catalog/pg_control.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/catalog/pg_control.h.html&quot;}, '*');"><code>pg_control.h</code></a> (制御ファイル定義)</li>
+<li><code>access/clog.h</code></li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/rewriteheap.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogarchive.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogreader.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>catalog/catversion.h</code></li>
+<li><code>catalog/pg_control.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>common/controldata_utils.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>executor/instrument.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>math.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pg_trace.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pg_trace.h.html&quot;}, '*');"><code>pg_trace.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><code>port/atomics.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/bgwriter.h</code></li>
+<li><code>postmaster/startup.h</code></li>
+<li><code>postmaster/walsummarizer.h</code></li>
+<li><code>postmaster/walwriter.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/slot.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/large_object.h</code></li>
+<li><code>storage/latch.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/reinit.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>storage/sync.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/guc_hooks.h</code></li>
+<li><code>utils/guc_tables.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pgstat_internal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/varlena.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/access/xlog.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/access/xlog.h.html&quot;}, '*');"><code>src/include/access/xlog.h</code></a>: WAL関連の定数、GUC変数、構造体定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/postmaster/walwriter.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');"><code>src/backend/postmaster/walwriter.c</code></a>: WALのバックグラウンドフラッシュをトリガーするプロセス。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/postmaster/checkpointer.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/checkpointer.c.html&quot;}, '*');"><code>src/backend/postmaster/checkpointer.c</code></a>: チェックポイントを定期実行するプロセス。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L567" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>XLogCtl</code></a> は共有メモリ上にあり、全バックエンドからアクセスされます。<code>info_lck</code>（スピンロック）や <a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> による厳密な同期が必要です。</li>
+<li>**レイアウト**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L382" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__WALInsertLockPadded.html&quot;}, '*');"><code>WALInsertLockPadded</code></a> はキャッシュライン境界を意識してパディングされており、CPUキャッシュの競合を最小化しています。</li>
+<li>**注意点**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L747" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogInsertRecord.html&quot;}, '*');"><code>XLogInsertRecord</code></a> は非常にクリティカルなパスです。ロックの保持時間を最小化するため、複雑な計算はロック外で行う設計になっています。</li>
+<li>**省略**: 本ファイルは非常に巨大なため、アーカイブコマンドの実行詳細や、特定のリカバリ時のエッジケース（特定のレコードタイプごとのredoロジック）は詳細を省略しています。これらは <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlogrecovery.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlogrecovery.c.html&quot;}, '*');"><code>xlogrecovery.c</code></a> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogwrtRqst.html" target="wiki-view"><code>XLogwrtRqst</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogwrtResult.html" target="wiki-view"><code>XLogwrtResult</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WALInsertLock.html" target="wiki-view"><code>WALInsertLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WALInsertLockPadded.html" target="wiki-view"><code>WALInsertLockPadded</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogCtlInsert.html" target="wiki-view"><code>XLogCtlInsert</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogCtlData.html" target="wiki-view"><code>XLogCtlData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__WalInsertClass.html" target="wiki-view"><code>WalInsertClass</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogFileInit.html" target="wiki-view"><code>XLogFileInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__InitControlFile.html" target="wiki-view"><code>InitControlFile</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__InitializeWalConsistencyChecking.html" target="wiki-view"><code>InitializeWalConsistencyChecking</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLOGShmemInit.html" target="wiki-view"><code>XLOGShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xlog_c__XLogInitNewTimeline.html" target="wiki-view"><code>XLogInitNewTimeline</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

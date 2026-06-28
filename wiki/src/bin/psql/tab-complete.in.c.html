@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/bin/psql/tab-complete.in.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.in.c.html&quot;}, '*');">src/bin/psql/tab-complete.in.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.in.c.html&quot;}, '*');"><code>tab-complete.in.c</code></a> は、<code>psql</code> の対話型シェルにおけるタブ補完機能を実装するソースファイルです。ユーザーが入力した SQL コマンドやメタコマンドの文脈を解析し、データベースのカタログ情報（テーブル名、列名、関数名など）や SQL キーワードを動的に提案します。</p>
+<p>このファイルは非常に巨大ですが、これは SQL の広範な構文を網羅的に補完するためです。また、<a class="wiki-source-link" href="../../../../source/src/bin/psql/gen_tabcomplete.pl.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/psql/gen_tabcomplete.pl.html&quot;}, '*');"><code>gen_tabcomplete.pl</code></a> スクリプトによって前処理されることを前提としており、複雑な <code>if-else</code> チェーンを <code>switch</code> 文に変換することでコンパイル時の負荷を軽減する仕組みを持っています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/psql</code> モジュールにおいて、ユーザーの入力体験（UX）を向上させるためのフロントエンド層に位置します。<a class="wiki-source-link" href="../../../../source/src/bin/psql/input.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/input.c.html&quot;}, '*');"><code>input.c</code></a> や <a class="wiki-source-link" href="../../../../source/src/bin/psql/mainloop.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/mainloop.c.html&quot;}, '*');"><code>mainloop.c</code></a> と密接に連携し、<code>readline</code> ライブラリの補完フックとして動作します。</p>
+<h2>責務</h2>
+<ul>
+<li>**文脈解析**: 現在の入力行を単語単位に分割し、直前の単語に基づいて補完候補を決定する。</li>
+<li>**クエリ生成**: 補完候補を取得するために、システムカタログ（<code>pg_class</code>, <code>pg_proc</code> 等）に対する SQL クエリを動的に構築・実行する。</li>
+<li>**補完ディスパッチ**: SQL コマンド、メタコマンド、ファイル名、変数名など、入力内容に応じた適切な補完ロジックの選択。</li>
+<li>**クエリ結果の整形**: データベースから取得した候補を、SQL 識別子の引用符ルールに従って整形する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L107" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__VersionedQuery.html&quot;}, '*');"><code>VersionedQuery</code></a>: サーバーのバージョンに応じてクエリを切り替えるための構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L129" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__SchemaQuery.html&quot;}, '*');"><code>SchemaQuery</code></a>: スキーマ修飾されたオブジェクト名を取得するためのクエリ構成要素を保持する構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1254" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__pgsql_thing_t.html&quot;}, '*');"><code>pgsql_thing_t</code></a>: <code>CREATE</code>/<code>DROP</code> コマンドの後に続くオブジェクトの種類を定義する構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1364" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__TCPattern.html&quot;}, '*');"><code>TCPattern</code></a>: <a class="wiki-source-link" href="../../../../source/src/bin/psql/gen_tabcomplete.pl.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/psql/gen_tabcomplete.pl.html&quot;}, '*');"><code>gen_tabcomplete.pl</code></a> が生成する、補完ルールを定義する構造体。</li>
+</ul>
+<h3>補完ディスパッチ用マクロ</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L256" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.in.c.html&quot;}, '*');"><code>COMPLETE_WITH_QUERY</code></a> 系: SQL クエリ結果を補完候補とする。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L307" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.in.c.html&quot;}, '*');"><code>COMPLETE_WITH_SCHEMA_QUERY</code></a> 系: スキーマ情報を考慮したオブジェクト名補完を行う。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L367" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.in.c.html&quot;}, '*');"><code>COMPLETE_WITH_LIST</code></a> 系: 静的なキーワードリストを補完候補とする。</li>
+</ul>
+<h3>コールバック関数</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1828" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__psql_completion.html&quot;}, '*');"><code>psql_completion</code></a>: <code>readline</code> から呼び出されるメインの補完エントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L2150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__match_previous_words.html&quot;}, '*');"><code>match_previous_words</code></a>: 直前の単語に基づいて補完ルールをマッチングする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1675" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__HeadMatchesArray.html&quot;}, '*');"><code>HeadMatchesArray</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1698" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__HeadMatchesImpl.html&quot;}, '*');"><code>HeadMatchesImpl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1728" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__MatchesArray.html&quot;}, '*');"><code>MatchesArray</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1785" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__MatchesImpl.html&quot;}, '*');"><code>MatchesImpl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L129" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__SchemaQuery.html&quot;}, '*');"><code>SchemaQuery</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1364" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__TCPattern.html&quot;}, '*');"><code>TCPattern</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1348" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__TCPatternKind.html&quot;}, '*');"><code>TCPatternKind</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1625" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__TailMatchesArray.html&quot;}, '*');"><code>TailMatchesArray</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1648" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__TailMatchesImpl.html&quot;}, '*');"><code>TailMatchesImpl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L107" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__VersionedQuery.html&quot;}, '*');"><code>VersionedQuery</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1494" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__initialize_readline.html&quot;}, '*');"><code>initialize_readline</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1254" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__pgsql_thing_t.html&quot;}, '*');"><code>pgsql_thing_t</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **トリガー**: ユーザーが <code>TAB</code> キーを押すと、<code>readline</code> が <a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L1828" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__psql_completion.html&quot;}, '*');"><code>psql_completion</code></a> を呼び出す。 2. **解析**: <a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L6661" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__get_previous_words.html&quot;}, '*');"><code>get_previous_words</code></a> が現在の入力行を単語リストに分解する。 3. **マッチング**: <a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L2150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__match_previous_words.html&quot;}, '*');"><code>match_previous_words</code></a> が現在の単語リストと定義済みのパターン（<code>tcpatterns</code>）を照合する。 4. **候補取得**: マッチしたパターンに応じて、<a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L5658" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c___complete_from_query.html&quot;}, '*');"><code>_complete_from_query</code></a> がデータベースへクエリを送信し、結果を取得する。 5. **整形**: <a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L6506" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c__requote_identifier.html&quot;}, '*');"><code>requote_identifier</code></a> 等を用いて、SQL 識別子として適切な形式に変換し、<code>readline</code> に返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>readline/editline</code>: 補完インターフェースの基盤。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/libpq-fe.h.html&quot;}, '*');"><code>libpq-fe.h</code></a>: 補完候補取得のためのデータベース通信。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/settings.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/psql/settings.h.html&quot;}, '*');"><code>settings.h</code></a>: <a class="wiki-source-link" href="../../../../source/src/bin/psql/startup.c.html#L32" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/startup.c.html&quot;}, '*');"><code>pset</code></a> グローバル変数を通じた接続状態や設定の参照。</li>
+<li><code>common.h</code>: 共通ユーティリティ関数。</li>
+<li><code>catalog/pg_am_d.h</code></li>
+<li><code>catalog/pg_class_d.h</code></li>
+<li><code>common/keywords.h</code></li>
+<li><code>ctype.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/input.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/input.h.html&quot;}, '*');"><code>input.h</code></a></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres_fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres_fe.h.html&quot;}, '*');"><code>postgres_fe.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/pqexpbuffer.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/pqexpbuffer.h.html&quot;}, '*');"><code>pqexpbuffer.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/stringutils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/psql/stringutils.h.html&quot;}, '*');"><code>stringutils.h</code></a></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/tab-complete.h.html&quot;}, '*');"><code>tab-complete.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/input.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/input.c.html&quot;}, '*');"><code>input.c</code></a>: <code>readline</code> の初期化と入力ループの管理。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/gen_tabcomplete.pl.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/psql/gen_tabcomplete.pl.html&quot;}, '*');"><code>gen_tabcomplete.pl</code></a>: 本ファイルの複雑なロジックを最適化するための前処理スクリプト。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/psql/psqlscanslash.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/psql/psqlscanslash.h.html&quot;}, '*');"><code>psqlscanslash.h</code></a>: メタコマンドのトークン化ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/bin/psql/tab-complete.in.c.html#L5658" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__psql__tab-complete_in_c___complete_from_query.html&quot;}, '*');"><code>_complete_from_query</code></a> 等で生成される文字列は <code>readline</code> が解放するため、<a class="wiki-source-link" href="../../../../source/src/include/snowball/header.h.html#L50" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/snowball/header.h.html&quot;}, '*');"><code>malloc</code></a> されたメモリの所有権には注意が必要です。</li>
+<li>**副作用**: タブ補完はデータベースへのクエリ実行を伴います。補完候補の取得中にサーバーが重いクエリを処理すると、補完が遅延する可能性があります。</li>
+<li>**設計の制約**: <code>readline</code> の仕様上、補完関数に状態を渡すことが困難なため、多くのグローバル変数（<code>completion_charp</code> 等）が使用されています。これはスレッドセーフではないため、将来的な並列化には注意が必要です。</li>
+<li>**未実装部分**: 複雑な SQL 構文（サブクエリや複雑な結合）の完全な解析は行っておらず、あくまで「よく使われるパターン」の補完に特化しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__VersionedQuery.html" target="wiki-view"><code>VersionedQuery</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__SchemaQuery.html" target="wiki-view"><code>SchemaQuery</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__pgsql_thing_t.html" target="wiki-view"><code>pgsql_thing_t</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__TCPatternKind.html" target="wiki-view"><code>TCPatternKind</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__TCPattern.html" target="wiki-view"><code>TCPattern</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__initialize_readline.html" target="wiki-view"><code>initialize_readline</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__TailMatchesArray.html" target="wiki-view"><code>TailMatchesArray</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__TailMatchesImpl.html" target="wiki-view"><code>TailMatchesImpl</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__HeadMatchesArray.html" target="wiki-view"><code>HeadMatchesArray</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__HeadMatchesImpl.html" target="wiki-view"><code>HeadMatchesImpl</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__MatchesArray.html" target="wiki-view"><code>MatchesArray</code></a></li>
+<li><a href="../../../symbols/src__bin__psql__tab-complete_in_c__MatchesImpl.html" target="wiki-view"><code>MatchesImpl</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

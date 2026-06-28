@@ -1,0 +1,120 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/executor/execExprInterp.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExprInterp.c.html&quot;}, '*');">src/backend/executor/execExprInterp.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExprInterp.c.html&quot;}, '*');"><code>execExprInterp.c</code></a> は、PostgreSQL の式評価エンジンにおける「インタプリタ」実装です。プランナが生成した <code>ExprState</code>（評価ステップのリスト）を解釈し、CPU 上で直接実行します。パフォーマンスを最大化するため、コンパイラの機能（Computed Gotos）を活用したスレッド化コード（Threaded Code）技術を採用しています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> モジュールにおいて、式評価の実行フェーズを担います。<a class="wiki-source-link" href="../../../../source/src/backend/executor/execExpr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExpr.c.html&quot;}, '*');"><code>execExpr.c</code></a> が式ツリーを評価ステップのリストにコンパイルするのに対し、本ファイルはそのリストを高速に走査・実行します。JIT コンパイルが有効でない場合や、単純な式に対しては本ファイルが主役となります。</p>
+<h2>責務</h2>
+<ul>
+<li>**命令ディスパッチ**: <a class="wiki-source-link" href="../../../../source/src/include/executor/execExpr.h.html#L300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execExpr_h__ExprEvalStep.html&quot;}, '*');"><code>ExprEvalStep</code></a> に格納されたオペコードに基づき、適切な評価ロジックへジャンプする。</li>
+<li>**高速パスの提供**: 頻出する単純な式（変数参照、定数など）に対して、インタプリタのオーバーヘッドを回避する <code>ExecJust*</code> 関数群を提供。</li>
+<li>**複雑な評価の委譲**: 複雑な関数呼び出しや集約処理など、インライン化に適さない処理を専用のヘルパー関数へルーティング。</li>
+<li>**実行時検証**: スキーマ変更等による実行計画の不整合を検出するための検証ロジックの実行。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ディスパッチ制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExprInterp.c.html&quot;}, '*');"><code>EEO_USE_COMPUTED_GOTO</code></a>: コンパイラがサポートする場合、<code>goto</code> を用いた直接スレッド化（Direct Threading）を有効にするマクロ。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html&quot;}, '*');"><code>ExecInterpExpr</code></a>: インタプリタのメインループ。<a class="wiki-source-link" href="../../../../source/src/include/executor/execExpr.h.html#L300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execExpr_h__ExprEvalStep.html&quot;}, '*');"><code>ExprEvalStep</code></a> を順次実行する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L249" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecReadyInterpretedExpr.html&quot;}, '*');"><code>ExecReadyInterpretedExpr</code></a>: 式の初期化を行い、最適化された <code>evalfunc</code>（高速パスまたはインタプリタ）を割り当てる。</li>
+</ul>
+<h3>高速パス関数</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2570" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecJustInnerVar.html&quot;}, '*');"><code>ExecJustInnerVar</code></a>, <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2577" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecJustOuterVar.html&quot;}, '*');"><code>ExecJustOuterVar</code></a>, <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2584" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecJustScanVar.html&quot;}, '*');"><code>ExecJustScanVar</code></a>: スロットからの変数抽出を最適化した関数。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2676" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecJustConst.html&quot;}, '*');"><code>ExecJustConst</code></a>: 定数評価のショートカット。</li>
+<li><code>ExecJustHash*</code>: ハッシュ結合等で頻出するハッシュ計算の最適化版。</li>
+</ul>
+<h3>実行ヘルパー</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L4108" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecEvalArrayCompareInternal.html&quot;}, '*');"><code>ExecEvalArrayCompareInternal</code></a>: <code>ANY</code>/<code>ALL</code> 比較の共通ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L5906" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecAggPlainTransByVal.html&quot;}, '*');"><code>ExecAggPlainTransByVal</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L5938" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecAggPlainTransByRef.html&quot;}, '*');"><code>ExecAggPlainTransByRef</code></a>: 集約関数の遷移関数呼び出し（値渡し/参照渡し）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L4905" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecEvalJsonExprPath.html&quot;}, '*');"><code>ExecEvalJsonExprPath</code></a>: SQL/JSON パス式の評価。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2314" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__CheckExprStillValid.html&quot;}, '*');"><code>CheckExprStillValid</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2440" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__CheckOpSlotCompatibility.html&quot;}, '*');"><code>CheckOpSlotCompatibility</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2385" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__CheckVarSlotCompatibility.html&quot;}, '*');"><code>CheckVarSlotCompatibility</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__EEO_CASE.html&quot;}, '*');"><code>EEO_CASE</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L5686" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecAggInitGroup.html&quot;}, '*');"><code>ExecAggInitGroup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2935" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInitInterpreter.html&quot;}, '*');"><code>ExecInitInterpreter</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html&quot;}, '*');"><code>ExecInterpExpr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L2294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExprStillValid.html&quot;}, '*');"><code>ExecInterpExprStillValid</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L249" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecReadyInterpretedExpr.html&quot;}, '*');"><code>ExecReadyInterpretedExpr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L105" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExprEvalOpLookup.html&quot;}, '*');"><code>ExprEvalOpLookup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L203" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ScalarArrayOpExprHashEntry.html&quot;}, '*');"><code>ScalarArrayOpExprHashEntry</code></a></li>
+<li><code>ScalarArrayOpExprHashTable</code></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L249" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecReadyInterpretedExpr.html&quot;}, '*');"><code>ExecReadyInterpretedExpr</code></a> が式を解析し、単純なパターンであれば <code>ExecJust*</code> を <code>state-&gt;evalfunc_private</code> に設定。それ以外は <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html&quot;}, '*');"><code>ExecInterpExpr</code></a> を設定し、<a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExprInterp.c.html&quot;}, '*');"><code>EEO_USE_COMPUTED_GOTO</code></a> が有効ならオペコードをジャンプ先アドレスに変換。 2. **実行**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html&quot;}, '*');"><code>ExecInterpExpr</code></a> が呼び出されると、<code>op</code> ポインタが現在のステップを指し、<code>EEO_DISPATCH()</code> マクロで該当する <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__EEO_CASE.html&quot;}, '*');"><code>EEO_CASE</code></a> へジャンプ。 3. **ステップ実行**: 各 <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L1741" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__EEO_CASE.html&quot;}, '*');"><code>EEO_CASE</code></a> は <a class="wiki-source-link" href="../../../../source/src/include/executor/execExpr.h.html#L300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execExpr_h__ExprEvalStep.html&quot;}, '*');"><code>ExprEvalStep</code></a> のデータ（<code>op-&gt;d</code>）を参照し、結果を <code>op-&gt;resvalue</code> / <code>op-&gt;resnull</code> に書き込む。 4. **遷移**: <code>EEO_NEXT()</code> で次のステップへ進むか、<code>EEO_JUMP()</code> で条件分岐やループを行う。 5. **終了**: <code>EEOP_DONE_RETURN</code> に到達すると評価結果を返す。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>executor/execExpr.h</code>: 式評価のデータ構造定義。</li>
+<li><code>utils/</code>: メモリ管理 (<a class="wiki-source-link" href="../../../../source/src/include/utils/memutils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/memutils.h.html&quot;}, '*');"><code>memutils.h</code></a>)、データ型 (<a class="wiki-source-link" href="../../../../source/src/include/utils/datum.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/datum.h.html&quot;}, '*');"><code>datum.h</code></a>)、キャッシュ (<a class="wiki-source-link" href="../../../../source/src/include/utils/lsyscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/lsyscache.h.html&quot;}, '*');"><code>lsyscache.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/utils/typcache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/typcache.h.html&quot;}, '*');"><code>typcache.h</code></a>) 等のユーティリティ。</li>
+<li><code>lib/simplehash.h</code>: <code>EEOP_HASHED_SCALARARRAYOP</code> 用のハッシュテーブル生成。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/sequence.h</code></li>
+<li><code>executor/nodeSubplan.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/miscnodes.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/array.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/date.h</code></li>
+<li><code>utils/datum.h</code></li>
+<li><code>utils/expandedrecord.h</code></li>
+<li><code>utils/json.h</code></li>
+<li><code>utils/jsonfuncs.h</code></li>
+<li><code>utils/jsonpath.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+<li><code>utils/xml.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execExpr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExpr.c.html&quot;}, '*');"><code>src/backend/executor/execExpr.c</code></a>: 式のコンパイル（<code>ExprState</code> の構築）を担当。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execMain.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execMain.c.html&quot;}, '*');"><code>src/backend/executor/execMain.c</code></a>: 実行エンジンのエントリーポイント。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeAgg.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/nodeAgg.c.html&quot;}, '*');"><code>src/backend/executor/nodeAgg.c</code></a>: 集約ノードの実行ロジック。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**パフォーマンス**: 本ファイルは PostgreSQL のホットパスです。<a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html&quot;}, '*');"><code>ExecInterpExpr</code></a> 内の <code>switch</code> 文や <code>goto</code> は、コンパイラの最適化を強く意識して記述されています。</li>
+<li>**メモリ管理**: 遷移関数の結果などは <code>aggcontext</code> や <code>per-tuple</code> コンテキストを適切に切り替えて管理されます。<a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L5739" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execExprInterp_c__ExecAggCopyTransValue.html&quot;}, '*');"><code>ExecAggCopyTransValue</code></a> 等のメモリ操作は、メモリリークや二重解放を防ぐための重要な箇所です。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execExprInterp.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execExprInterp.c.html&quot;}, '*');"><code>EEO_USE_COMPUTED_GOTO</code></a> が利用できない環境（一部のコンパイラ）では、標準的な <code>switch</code> 文によるディスパッチにフォールバックされます。</li>
+<li>**未実装/浅い部分**: 一部の複雑なノード（<code>XMLEXPR</code> や <code>JSON</code> 関連）は、コードサイズと複雑性の観点からインライン化されず、外部関数への呼び出しに留まっています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExprEvalOpLookup.html" target="wiki-view"><code>ExprEvalOpLookup</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__EEO_CASE.html" target="wiki-view"><code>EEO_CASE</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ScalarArrayOpExprHashEntry.html" target="wiki-view"><code>ScalarArrayOpExprHashEntry</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ScalarArrayOpExprHashTable.html" target="wiki-view"><code>ScalarArrayOpExprHashTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecReadyInterpretedExpr.html" target="wiki-view"><code>ExecReadyInterpretedExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInterpExpr.html" target="wiki-view"><code>ExecInterpExpr</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInterpExprStillValid.html" target="wiki-view"><code>ExecInterpExprStillValid</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckExprStillValid.html" target="wiki-view"><code>CheckExprStillValid</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckVarSlotCompatibility.html" target="wiki-view"><code>CheckVarSlotCompatibility</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__CheckOpSlotCompatibility.html" target="wiki-view"><code>CheckOpSlotCompatibility</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecInitInterpreter.html" target="wiki-view"><code>ExecInitInterpreter</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execExprInterp_c__ExecAggInitGroup.html" target="wiki-view"><code>ExecAggInitGroup</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

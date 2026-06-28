@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>contrib/pageinspect/ginfuncs.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/pageinspect/ginfuncs.c.html&quot;}, '*');">contrib/pageinspect/ginfuncs.c</a></h1>
+<h2>概要</h2>
+<p>GIN（Generalized Inverted Index）インデックスの物理ページ内容を調査するための SQL 関数群を提供します。低レベルなページ構造を解析し、メタデータやフラグ、リーフページ内のポストリストを可視化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/pageinspect</code> モジュールの一部として、GIN インデックスの内部構造をデバッグ・解析するためのインターフェースを提供します。他の <code>*funcs.c</code> ファイルと同様、SQL レベルから PostgreSQL の内部データ構造へアクセスするブリッジとして機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**メタデータ解析**: GIN メタページからインデックスの統計情報やバージョンを抽出する。</li>
+<li>**フラグ解析**: ページヘッダーの不透明領域（Opaque）から、GIN 固有のフラグを人間が読み取れる形式に変換する。</li>
+<li>**リーフページ走査**: 圧縮されたポストリスト（Posting List）をデコードし、インデックスに含まれるアイテムポインタを列挙する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L27" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_metapage_info.html&quot;}, '*');"><code>gin_metapage_info</code></a>: メタページの内容を構造体として返す関数。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L95" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_page_opaque_info.html&quot;}, '*');"><code>gin_page_opaque_info</code></a>: ページフラグと <code>rightlink</code> 等の情報を返す関数。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items.html&quot;}, '*');"><code>gin_leafpage_items</code></a>: SRF（Set Returning Function）として、リーフページ内の全ポストリストを順次返す関数。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L171" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items_state.html&quot;}, '*');"><code>gin_leafpage_items_state</code></a>: <a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items.html&quot;}, '*');"><code>gin_leafpage_items</code></a> の呼び出し間で状態を保持するためのコンテキスト構造体。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **入力**: 全関数とも <a class="wiki-source-link" href="../../../source/src/include/c.h.html#L678" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__c_h__bytea.html&quot;}, '*');"><code>bytea</code></a> 型の raw ページデータを受け取り、<code>get_page_from_raw()</code> でメモリ上の <a class="wiki-source-link" href="../../../source/src/include/storage/bufpage.h.html#L82" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__bufpage_h__Page.html&quot;}, '*');"><code>Page</code></a> 構造体に変換します。 2. **検証**: <code>PageGetSpecialSize()</code> とフラグチェックにより、対象ページが期待される GIN ページタイプ（メタ、データ等）であるかを確認します。 3. **抽出**:</p>
+<ul>
+<li>メタページや Opaque 情報は、<code>GinPageGetMeta()</code> や <code>GinPageGetOpaque()</code> マクロを使用して直接メモリから読み取ります。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items.html&quot;}, '*');"><code>gin_leafpage_items</code></a> は <code>SRF_IS_FIRSTCALL()</code> で初期化を行い、<code>GinDataLeafPageGetPostingList()</code> を起点にセグメントを走査します。</li>
+<p>4. **出力**: <code>heap_form_tuple()</code> を用いて PostgreSQL の行形式に変換し、結果を返します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/gin_private.h</code>: GIN インデックスの内部構造体定義。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/pageinspect.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/contrib/pageinspect/pageinspect.h.html&quot;}, '*');"><code>pageinspect.h</code></a>: <code>pageinspect</code> モジュール共通のユーティリティ関数。</li>
+<li><a class="wiki-source-link" href="../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a>: SRF 実装のための API。</li>
+<li><code>utils/array.h</code>: ポストリストの配列構築に使用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><code>src/backend/access/gin/</code>: GIN インデックスの主要な実装コード。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/rawpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/pageinspect/rawpage.c.html&quot;}, '*');"><code>contrib/pageinspect/rawpage.c</code></a>: raw ページを読み込むための基盤関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>本ファイル内の関数はスーパーユーザー権限を要求します。これは raw ページへのアクセスがセキュリティ上のリスクを伴うためです。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/pageinspect/ginfuncs.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items.html&quot;}, '*');"><code>gin_leafpage_items</code></a> は圧縮されたポストリストをデコードするため、他の関数よりも複雑な状態管理（<a class="wiki-source-link" href="../../../source/src/include/funcapi.h.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__funcapi_h__FuncCallContext.html&quot;}, '*');"><code>FuncCallContext</code></a>）を行っています。</li>
+<li>GIN インデックスの構造（メタページ、データページ、ポストリストの圧縮形式）に関する知識があると、コードの意図がより明確に理解できます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__pageinspect__ginfuncs_c__gin_metapage_info.html" target="wiki-view"><code>gin_metapage_info</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__ginfuncs_c__gin_page_opaque_info.html" target="wiki-view"><code>gin_page_opaque_info</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items_state.html" target="wiki-view"><code>gin_leafpage_items_state</code></a></li>
+<li><a href="../../symbols/contrib__pageinspect__ginfuncs_c__gin_leafpage_items.html" target="wiki-view"><code>gin_leafpage_items</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

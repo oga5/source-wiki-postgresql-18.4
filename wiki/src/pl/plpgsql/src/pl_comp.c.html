@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/pl/plpgsql/src/pl_comp.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_comp.c.html&quot;}, '*');">src/pl/plpgsql/src/pl_comp.c</a></h1>
+<h2>概要</h2>
+<p>PL/pgSQL のコンパイラ実装です。SQL 関数や <a class="wiki-source-link" href="../../../../../source/src/timezone/zic.c.html#L2438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/timezone/zic.c.html&quot;}, '*');"><code>DO</code></a> ブロックのソースコードを解析し、実行エンジンが利用する抽象構文木（AST）およびデータ構造（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__plpgsql_h__PLpgSQL_function.html&quot;}, '*');"><code>PLpgSQL_function</code></a>）を構築します。本ファイルは、構文解析器（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_scanner.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_scanner.c.html&quot;}, '*');"><code>pl_scanner.c</code></a>）と実行エンジン（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_exec.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_exec.c.html&quot;}, '*');"><code>pl_exec.c</code></a>）の橋渡しを行い、名前解決、型チェック、およびメモリ管理を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p>PL/pgSQL サブシステムにおける「コンパイルフェーズ」を担当します。<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_handler.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_handler.c.html&quot;}, '*');"><code>pl_handler.c</code></a> から呼び出され、システムカタログから取得したソースコードを、実行可能な内部表現へと変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数コンパイル**: <code>CREATE FUNCTION</code> 等のソースを解析し、<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__plpgsql_h__PLpgSQL_function.html&quot;}, '*');"><code>PLpgSQL_function</code></a> 構造体を生成。</li>
+<li>**名前空間管理**: 変数、レコード、パラメータのスコープ解決および名前解決。</li>
+<li>**型システム統合**: PostgreSQL の型システムと PL/pgSQL の変数型のマッピングおよび検証。</li>
+<li>**エラーハンドリング**: コンパイル時の構文エラーに対するコンテキスト情報の付与。</li>
+<li>**リソース管理**: コンパイル中に使用するメモリコンテキストの管理と、成功時の永続化。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>コンパイルエントリーポイント</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L105" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile.html&quot;}, '*');"><code>plpgsql_compile</code></a>: 関数コンパイルのメインインターフェース。キャッシュ済みの場合は即座に返却。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L166" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_callback.html&quot;}, '*');"><code>plpgsql_compile_callback</code></a>: コンパイルの主処理。AST 構築、名前空間初期化、型解決を行う。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L738" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_inline.html&quot;}, '*');"><code>plpgsql_compile_inline</code></a>: <a class="wiki-source-link" href="../../../../../source/src/timezone/zic.c.html#L2438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/timezone/zic.c.html&quot;}, '*');"><code>DO</code></a> ブロック（匿名コードブロック）用のコンパイル処理。</li>
+</ul>
+<h3>名前解決・パーサーフック</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L984" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_parser_setup.html&quot;}, '*');"><code>plpgsql_parser_setup</code></a>: SQL 式内の変数参照を解決するためのパーサーフック設定。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1082" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__resolve_column_ref.html&quot;}, '*');"><code>resolve_column_ref</code></a>: SQL 式内の識別子を PL/pgSQL 変数またはレコードフィールドとして解決。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1293" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_parse_word.html&quot;}, '*');"><code>plpgsql_parse_word</code></a> / <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1348" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_parse_dblword.html&quot;}, '*');"><code>plpgsql_parse_dblword</code></a>: 字句解析器が識別子を検出した際の変数ルックアップ。</li>
+</ul>
+<h3>データ構造構築</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1747" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_build_variable.html&quot;}, '*');"><code>plpgsql_build_variable</code></a>: 変数（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html#L332" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__plpgsql_h__PLpgSQL_var.html&quot;}, '*');"><code>PLpgSQL_var</code></a>）またはレコード（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html#L412" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__plpgsql_h__PLpgSQL_rec.html&quot;}, '*');"><code>PLpgSQL_rec</code></a>）の生成と登録。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1951" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_build_datatype.html&quot;}, '*');"><code>plpgsql_build_datatype</code></a>: PostgreSQL の型情報から PL/pgSQL の型構造体を構築。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1837" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__build_row_from_vars.html&quot;}, '*');"><code>build_row_from_vars</code></a>: 複数の変数を束ねる行（Row）構造体の生成。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L105" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile.html&quot;}, '*');"><code>plpgsql_compile</code></a> が <code>func_cxt</code>（メモリコンテキスト）を作成し、<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_funcs.c.html#L42" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_funcs_c__plpgsql_ns_init.html&quot;}, '*');"><code>plpgsql_ns_init</code></a> で名前空間を初期化。 2. **解析**: <code>plpgsql_yyparse</code> を呼び出し、字句解析器と連携して AST を生成。 3. **変数登録**: <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L2199" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_start_datums.html&quot;}, '*');"><code>plpgsql_start_datums</code></a> でデータム配列を準備し、解析過程で <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L1747" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_build_variable.html&quot;}, '*');"><code>plpgsql_build_variable</code></a> 等を用いて変数を登録。 4. **解決**: SQL 式が含まれる場合、パーサーフック（<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L997" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_pre_column_ref.html&quot;}, '*');"><code>plpgsql_pre_column_ref</code></a> 等）を通じて、SQL 内の識別子を <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_funcs.c.html#L129" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_funcs_c__plpgsql_ns_lookup.html&quot;}, '*');"><code>plpgsql_ns_lookup</code></a> で変数にバインド。 5. **完了**: <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L2233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_finish_datums.html&quot;}, '*');"><code>plpgsql_finish_datums</code></a> でデータムを関数構造体にコピーし、メモリコンテキストを <a class="wiki-source-link" href="../../../../../source/src/backend/utils/mmgr/mcxt.c.html#L153" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>CacheMemoryContext</code></a> に昇格させて永続化。</p>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/plpgsql.h.html&quot;}, '*');"><code>plpgsql.h</code></a>: コアデータ構造の定義。</li>
+<li><code>parser/parse_node.h</code>: SQL パーサーのノード定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>catalog/</code>: システムカタログ（<code>pg_proc</code>, <code>pg_type</code>）へのアクセス。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_scanner.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_scanner.c.html&quot;}, '*');"><code>pl_scanner.c</code></a>: 字句解析器。本ファイルの <code>plpgsql_parse_*</code> 系関数を呼び出す。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_funcs.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_funcs.c.html&quot;}, '*');"><code>pl_funcs.c</code></a>: 名前空間管理（<code>plpgsql_ns_*</code>）や AST 走査ユーティリティ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_exec.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_exec.c.html&quot;}, '*');"><code>pl_exec.c</code></a>: コンパイルされた <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/plpgsql.h.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plpgsql__src__plpgsql_h__PLpgSQL_function.html&quot;}, '*');"><code>PLpgSQL_function</code></a> を実行するエンジン。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: コンパイル中のメモリは <a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_comp.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plpgsql/src/pl_comp.c.html&quot;}, '*');"><code>plpgsql_compile_tmp_cxt</code></a> で管理され、失敗時には自動的にクリーンアップされます。成功時のみ <a class="wiki-source-link" href="../../../../../source/src/backend/utils/mmgr/mcxt.c.html#L642" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextSetParent.html&quot;}, '*');"><code>MemoryContextSetParent</code></a> で永続化される設計です。</li>
+<li>**再入不可**: 本ファイル内のコンパイルロジックは再入可能（re-entrant）ではありません。コンパイル中に別の PL/pgSQL 関数が呼び出されることは想定されていません。</li>
+<li>**型解決**: ポリモーフィック型（<code>ANYELEMENT</code> 等）の解決は、コンパイル時に呼び出し元の情報に基づいて行われます。</li>
+<li>**省略された詳細**: <code>plerrcodes.h</code> に依存する例外ラベルの全リストや、個別のステートメント（<code>IF</code>, <code>LOOP</code> 等）の具体的な AST 構築ロジックは、<a class="wiki-source-link" href="../../../../../source/src/pl/plpgsql/src/pl_gram.y.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plpgsql/src/pl_gram.y.html&quot;}, '*');"><code>pl_gram.y</code></a>（パーサー定義）側に委譲されているため、本ファイルでは主に「変数と型の管理」に焦点を当てています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__ExceptionLabelMap.html" target="wiki-view"><code>ExceptionLabelMap</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile.html" target="wiki-view"><code>plpgsql_compile</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__compile_error_callback_arg.html" target="wiki-view"><code>compile_error_callback_arg</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_callback.html" target="wiki-view"><code>plpgsql_compile_callback</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_inline.html" target="wiki-view"><code>plpgsql_compile_inline</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_compile_error_callback.html" target="wiki-view"><code>plpgsql_compile_error_callback</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__add_parameter_name.html" target="wiki-view"><code>add_parameter_name</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__add_dummy_return.html" target="wiki-view"><code>add_dummy_return</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_parser_setup.html" target="wiki-view"><code>plpgsql_parser_setup</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_pre_column_ref.html" target="wiki-view"><code>plpgsql_pre_column_ref</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_post_column_ref.html" target="wiki-view"><code>plpgsql_post_column_ref</code></a></li>
+<li><a href="../../../../symbols/src__pl__plpgsql__src__pl_comp_c__plpgsql_param_ref.html" target="wiki-view"><code>plpgsql_param_ref</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

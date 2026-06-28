@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/optimizer/path/equivclass.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/equivclass.c.html&quot;}, '*');">src/backend/optimizer/path/equivclass.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/equivclass.c.html&quot;}, '*');"><code>equivclass.c</code></a> は、PostgreSQL プランナにおける「等価クラス（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1442" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__EquivalenceClass.html&quot;}, '*');">EquivalenceClass</a>: EC）」の管理と推論を行う中核モジュールです。クエリ内の <code>A = B</code> や <code>B = C</code> といった等価関係を推論し、推移律（<code>A = C</code>）を適用することで、冗長な条件の排除や、結合順序の最適化、インデックススキャンの効率化を実現します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/optimizer/path</code> サブシステムの一部として、プランナの初期フェーズでクエリ内の等価条件を収集・正規化します。ここで構築された EC は、<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/pathkeys.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/pathkeys.c.html&quot;}, '*');"><code>pathkeys.c</code></a> によるソート順序の管理や、<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/joinpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/joinpath.c.html&quot;}, '*');"><code>joinpath.c</code></a> における結合条件の生成、<a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/indxpath.c.html&quot;}, '*');"><code>indxpath.c</code></a> におけるインデックス利用の判断に利用されます。</p>
+<h2>責務</h2>
+<ul>
+<li>**等価関係の統合**: UNION-FIND アルゴリズム的に等価クラスをマージし、正規化された集合を維持する。</li>
+<li>**推論と導出**: 等価関係から導出可能な制限条件（Restriction Clause）や結合条件（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/plannodes.h.html#L916" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__Join.html&quot;}, '*');">Join</a> Clause）を生成する。</li>
+<li>**正規化**: 式の型や照合順序（Collation）を正規化し、異なる表現の等価性を判定可能にする。</li>
+<li>**子リレーション対応**: <code>AppendRel</code>（継承や UNION ALL）における子リレーションへの等価関係の伝播。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1442" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__EquivalenceClass.html&quot;}, '*');"><code>EquivalenceClass</code></a>: 等価な式の集合。<code>ec_members</code>（式）、<code>ec_sources</code>（元となった条件）、<code>ec_derives_list</code>（推論された条件）を保持。</li>
+<li><code>EquivalenceMember</code>: EC 内の個別の式。定数や特定のリレーションの式を表現。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L108" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__ECDerivesKey.html&quot;}, '*');"><code>ECDerivesKey</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L116" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__ECDerivesEntry.html&quot;}, '*');"><code>ECDerivesEntry</code></a>: 導出された条件を高速検索するためのハッシュテーブル構造。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__process_equivalence.html&quot;}, '*');"><code>process_equivalence</code></a>: 新たな等価条件を EC に登録・マージするメインエントリ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1187" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__generate_base_implied_equalities.html&quot;}, '*');"><code>generate_base_implied_equalities</code></a>: ベースリレーションに対する制限条件を EC から生成。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1549" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__generate_join_implied_equalities.html&quot;}, '*');"><code>generate_join_implied_equalities</code></a>: 結合ノードで必要な結合条件を EC から生成。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L735" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__get_eclass_for_sort_expr.html&quot;}, '*');"><code>get_eclass_for_sort_expr</code></a>: ソート順序（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__PathKey.html&quot;}, '*');">PathKey</a>）に対応する EC を検索・生成。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L544" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__canonicalize_ec_expression.html&quot;}, '*');"><code>canonicalize_ec_expression</code></a>: 式を EC 比較に適した型・照合順序に変換。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L116" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__ECDerivesEntry.html&quot;}, '*');"><code>ECDerivesEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L108" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__ECDerivesKey.html&quot;}, '*');"><code>ECDerivesKey</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L660" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__add_child_eq_member.html&quot;}, '*');"><code>add_child_eq_member</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L627" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__add_eq_member.html&quot;}, '*');"><code>add_eq_member</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L544" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__canonicalize_ec_expression.html&quot;}, '*');"><code>canonicalize_ec_expression</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L990" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__find_computable_ec_member.html&quot;}, '*');"><code>find_computable_ec_member</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L915" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__find_ec_member_matching_expr.html&quot;}, '*');"><code>find_ec_member_matching_expr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1187" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__generate_base_implied_equalities.html&quot;}, '*');"><code>generate_base_implied_equalities</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L735" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__get_eclass_for_sort_expr.html&quot;}, '*');"><code>get_eclass_for_sort_expr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L591" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__make_eq_member.html&quot;}, '*');"><code>make_eq_member</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__process_equivalence.html&quot;}, '*');"><code>process_equivalence</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1076" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__relation_can_be_sorted_early.html&quot;}, '*');"><code>relation_can_be_sorted_early</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **登録**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__process_equivalence.html&quot;}, '*');"><code>process_equivalence</code></a> がクエリ内の <code>WHERE</code> 句等を走査し、等価関係を <code>eq_classes</code> リストに蓄積。 2. **正規化**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L544" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__canonicalize_ec_expression.html&quot;}, '*');"><code>canonicalize_ec_expression</code></a> により、異なる型や照合順序を持つ式を比較可能な形式に統一。 3. **導出**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1187" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__generate_base_implied_equalities.html&quot;}, '*');"><code>generate_base_implied_equalities</code></a> が、EC 内のメンバー間を繋ぐ等価条件を <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L2699" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__RestrictInfo.html&quot;}, '*');"><code>RestrictInfo</code></a> として生成し、プランナの条件リストへ注入。 4. **結合時**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L1549" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__generate_join_implied_equalities.html&quot;}, '*');"><code>generate_join_implied_equalities</code></a> が、結合対象のリレーションに応じて必要な結合条件を動的に生成。 5. **検索**: <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L3854" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__ec_search_clause_for_ems.html&quot;}, '*');"><code>ec_search_clause_for_ems</code></a> 等が、既存の導出条件をハッシュテーブルまたはリストから検索し、重複生成を回避。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>: ノードの走査・比較。</li>
+<li><code>optimizer/restrictinfo.h</code>: 導出された条件を保持する <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L2699" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__RestrictInfo.html&quot;}, '*');"><code>RestrictInfo</code></a> の操作。</li>
+<li><code>utils/lsyscache.h</code>: 型や演算子の情報取得。</li>
+<li><code>lib/simplehash.h</code>: 導出条件の高速検索用ハッシュテーブル。</li>
+<li><code>access/stratnum.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>common/hashfn.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/clauses.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/pathnode.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>rewrite/rewriteManip.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/pathkeys.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/pathkeys.c.html&quot;}, '*');"><code>pathkeys.c</code></a>: EC を用いたソート順序の正規化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/joinpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/joinpath.c.html&quot;}, '*');"><code>joinpath.c</code></a>: EC から生成された結合条件を利用したパス生成。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/indxpath.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/indxpath.c.html&quot;}, '*');"><code>indxpath.c</code></a>: EC を利用したインデックススキャンの条件抽出。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: EC は <code>PlannerInfo-&gt;planner_cxt</code> 上に構築されます。GEQO 等の探索フェーズでは注意が必要です。</li>
+<li>**不変条件**: <code>ec_merging_done</code> フラグが立つと、EC のマージは禁止されます。これ以降は <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L735" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__optimizer__path__equivclass_c__get_eclass_for_sort_expr.html&quot;}, '*');"><code>get_eclass_for_sort_expr</code></a> 等による追加のみが許可されます。</li>
+<li>**ハッシュテーブル**: 導出条件が <a class="wiki-source-link" href="../../../../../source/src/backend/optimizer/path/equivclass.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/optimizer/path/equivclass.c.html&quot;}, '*');"><code>EC_DERIVES_HASH_THRESHOLD</code></a> (32) を超えると、線形リストからハッシュテーブルへ切り替わり、検索効率を維持します。</li>
+<li>**制約**: <code>ec_broken</code> フラグが立った EC は、推論に失敗したことを示します。この場合、元の <code>ec_sources</code> を再利用するフォールバック処理が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__ECDerivesKey.html" target="wiki-view"><code>ECDerivesKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__ECDerivesEntry.html" target="wiki-view"><code>ECDerivesEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__process_equivalence.html" target="wiki-view"><code>process_equivalence</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__canonicalize_ec_expression.html" target="wiki-view"><code>canonicalize_ec_expression</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__make_eq_member.html" target="wiki-view"><code>make_eq_member</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__add_eq_member.html" target="wiki-view"><code>add_eq_member</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__add_child_eq_member.html" target="wiki-view"><code>add_child_eq_member</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__get_eclass_for_sort_expr.html" target="wiki-view"><code>get_eclass_for_sort_expr</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__find_ec_member_matching_expr.html" target="wiki-view"><code>find_ec_member_matching_expr</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__find_computable_ec_member.html" target="wiki-view"><code>find_computable_ec_member</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__relation_can_be_sorted_early.html" target="wiki-view"><code>relation_can_be_sorted_early</code></a></li>
+<li><a href="../../../../symbols/src__backend__optimizer__path__equivclass_c__generate_base_implied_equalities.html" target="wiki-view"><code>generate_base_implied_equalities</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/storage/ipc/standby.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/standby.c.html&quot;}, '*');">src/backend/storage/ipc/standby.c</a></h1>
+<h2>概要</h2>
+<p>ホットスタンバイ（Hot Standby）モードにおけるトランザクション管理と、リカバリ処理とクエリ実行間の競合解決を担うモジュールです。プライマリから送られてくる WAL レコード（<code>RM_STANDBY_ID</code>）を解釈し、スタンバイ側でロックの再現やスナップショットの構築を行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/storage/ipc</code> 内で、リカバリ中のスタートアッププロセスがクエリ実行プロセスと協調するための「調停者」として機能します。ロックマネージャやプロセス管理と連携し、リカバリの進行を妨げるクエリを検出し、必要に応じてキャンセルするロジックをカプセル化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**リカバリ環境の管理**: スタートアッププロセス用の仮想トランザクション環境の初期化・終了。</li>
+<li>**ロックの再現**: プライマリで発生した <a class="wiki-source-link" href="../../../../../source/src/include/storage/lockdefs.h.html#L45" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>AccessExclusiveLock</code></a> をスタンバイ側で再現し、クエリの整合性を保護。</li>
+<li>**競合解決**: バッファピン、ロック、スナップショット、テーブルスペース、データベース削除に伴うリカバリ競合の検出と、該当バックエンドのキャンセル。</li>
+<li>**WAL 記録**: スタンバイ状態（実行中トランザクション、ロック、無効化メッセージ）を WAL に書き出し、スタンバイ起動時の状態復元を支援。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理とハッシュテーブル</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L65" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/standby.c.html&quot;}, '*');"><code>RecoveryLockHash</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L66" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/standby.c.html&quot;}, '*');"><code>RecoveryLockXidHash</code></a>: 再現された <a class="wiki-source-link" href="../../../../../source/src/include/storage/lockdefs.h.html#L45" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>AccessExclusiveLock</code></a> を管理するハッシュテーブル。XID 単位でのロック検索を効率化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlogutils.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlogutils.c.html&quot;}, '*');"><code>standbyState</code></a>: 現在のスタンバイモードの状態（初期化中、稼働中など）。</li>
+</ul>
+<h3>競合解決（ResolveRecoveryConflict...）</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshot.html&quot;}, '*');"><code>ResolveRecoveryConflictWithSnapshot</code></a>: 指定された Horizon 以前の XID を参照するクエリをキャンセル。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L622" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithLock.html&quot;}, '*');"><code>ResolveRecoveryConflictWithLock</code></a>: リレーションロック待ちの際に、競合するバックエンドをキャンセルまたはデッドロックチェックを要求。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L792" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithBufferPin.html&quot;}, '*');"><code>ResolveRecoveryConflictWithBufferPin</code></a>: バッファピンによるリカバリ停止を解消するため、ピンを保持するバックエンドをキャンセル。</li>
+</ul>
+<h3>WAL 記録・適用</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L1162" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__standby_redo.html&quot;}, '*');"><code>standby_redo</code></a>: <code>RM_STANDBY_ID</code> 関連の WAL レコードをディスパッチするメインエントリ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L1281" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__LogStandbySnapshot.html&quot;}, '*');"><code>LogStandbySnapshot</code></a>: チェックポイント時に実行中トランザクションとロック情報を WAL に書き出す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L200" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__GetStandbyLimitTime.html&quot;}, '*');"><code>GetStandbyLimitTime</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L94" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__InitRecoveryTransactionEnvironment.html&quot;}, '*');"><code>InitRecoveryTransactionEnvironment</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L273" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__LogRecoveryConflict.html&quot;}, '*');"><code>LogRecoveryConflict</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__RecoveryLockEntry.html&quot;}, '*');"><code>RecoveryLockEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L59" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__RecoveryLockXidEntry.html&quot;}, '*');"><code>RecoveryLockXidEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L568" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithDatabase.html&quot;}, '*');"><code>ResolveRecoveryConflictWithDatabase</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L467" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshot.html&quot;}, '*');"><code>ResolveRecoveryConflictWithSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L511" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshotFullXid.html&quot;}, '*');"><code>ResolveRecoveryConflictWithSnapshotFullXid</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L538" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithTablespace.html&quot;}, '*');"><code>ResolveRecoveryConflictWithTablespace</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.html&quot;}, '*');"><code>ResolveRecoveryConflictWithVirtualXIDs</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L160" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ShutdownRecoveryTransactionEnvironment.html&quot;}, '*');"><code>ShutdownRecoveryTransactionEnvironment</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__WaitExceedsMaxStandbyDelay.html&quot;}, '*');"><code>WaitExceedsMaxStandbyDelay</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **WAL 適用**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L1162" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__standby_redo.html&quot;}, '*');"><code>standby_redo</code></a> が WAL レコードを読み取り、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L985" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__StandbyAcquireAccessExclusiveLock.html&quot;}, '*');"><code>StandbyAcquireAccessExclusiveLock</code></a> 等を呼び出して共有メモリ上のロック状態を更新します。 2. **競合検出**: リカバリ中に <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L807" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockAcquire.html&quot;}, '*');"><code>LockAcquire</code></a> や <a class="wiki-source-link" href="../../../../../source/src/backend/storage/buffer/bufmgr.c.html#L5679" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__buffer__bufmgr_c__LockBufferForCleanup.html&quot;}, '*');"><code>LockBufferForCleanup</code></a> が競合を検知すると、本モジュールの <code>Resolve...</code> 関数が呼び出されます。 3. **待機とキャンセル**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.html&quot;}, '*');"><code>ResolveRecoveryConflictWithVirtualXIDs</code></a> が中心となり、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__WaitExceedsMaxStandbyDelay.html&quot;}, '*');"><code>WaitExceedsMaxStandbyDelay</code></a> で設定されたタイムアウトまで待機し、期限超過時に <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/procarray.c.html#L3490" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__procarray_c__CancelVirtualTransaction.html&quot;}, '*');"><code>CancelVirtualTransaction</code></a> を発行して対象プロセスを終了させます。 4. **デッドロック検知**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L622" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithLock.html&quot;}, '*');"><code>ResolveRecoveryConflictWithLock</code></a> 等は <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>DeadlockTimeout</code></a> を監視し、タイムアウト時に <code>PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK</code> シグナルを送信して、クエリ側で <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L904" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__CheckRecoveryConflictDeadlock.html&quot;}, '*');"><code>CheckRecoveryConflictDeadlock</code></a> を誘発させます。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog...</code>: WAL の読み書きおよびリカバリ制御。</li>
+<li><code>storage/procarray.h</code>: 実行中トランザクションの管理とスナップショット構築。</li>
+<li><code>storage/lmgr.h</code> (<a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lock.h.html&quot;}, '*');">lock.h</a>): ロックの取得・解放。</li>
+<li><code>utils/timeout.h</code>: 競合解決時のタイムアウト管理。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>replication/slot.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/sinvaladt.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/standby.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/standby.h.html&quot;}, '*');"><code>src/include/storage/standby.h</code></a>: 公開インターフェース定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xact.c.html&quot;}, '*');"><code>src/backend/access/transam/xact.c</code></a>: トランザクションのコミット/アボート時のロック解放トリガー。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>src/backend/storage/lmgr/proc.c</code></a>: プロセス間シグナル（<code>PROCSIG_...</code>）の受信側処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L65" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/standby.c.html&quot;}, '*');"><code>RecoveryLockHash</code></a> 等のハッシュテーブルはスタートアッププロセスが管理する共有メモリ領域に存在します。</li>
+<li>**デッドロックの扱い**: 本モジュールは「リカバリを止めているクエリ」を排除する責務を持ちます。デッドロックチェックは、スタートアッププロセスとクエリプロセスの間でシグナルを介して行われるため、非常に複雑な非同期フローになっています。</li>
+<li>**省略された詳細**: <code>InjectionPoint</code> を用いたテスト用コードや、詳細な WAL レコードのバイナリレイアウトについては、実装の主目的ではないため簡略化しています。</li>
+<li>**注意点**: <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/standby.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.html&quot;}, '*');"><code>ResolveRecoveryConflictWithVirtualXIDs</code></a> は、対象プロセスが終了するまで待機するループを含むため、リカバリの進行をブロックする可能性があります。<code>max_standby_..._delay</code> GUC パラメータによるタイムアウト設定が重要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__RecoveryLockEntry.html" target="wiki-view"><code>RecoveryLockEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__RecoveryLockXidEntry.html" target="wiki-view"><code>RecoveryLockXidEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__InitRecoveryTransactionEnvironment.html" target="wiki-view"><code>InitRecoveryTransactionEnvironment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ShutdownRecoveryTransactionEnvironment.html" target="wiki-view"><code>ShutdownRecoveryTransactionEnvironment</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__GetStandbyLimitTime.html" target="wiki-view"><code>GetStandbyLimitTime</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__WaitExceedsMaxStandbyDelay.html" target="wiki-view"><code>WaitExceedsMaxStandbyDelay</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__LogRecoveryConflict.html" target="wiki-view"><code>LogRecoveryConflict</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithVirtualXIDs.html" target="wiki-view"><code>ResolveRecoveryConflictWithVirtualXIDs</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshot.html" target="wiki-view"><code>ResolveRecoveryConflictWithSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithSnapshotFullXid.html" target="wiki-view"><code>ResolveRecoveryConflictWithSnapshotFullXid</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithTablespace.html" target="wiki-view"><code>ResolveRecoveryConflictWithTablespace</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__ipc__standby_c__ResolveRecoveryConflictWithDatabase.html" target="wiki-view"><code>ResolveRecoveryConflictWithDatabase</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

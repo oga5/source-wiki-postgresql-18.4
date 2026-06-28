@@ -1,0 +1,142 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/replication/walsender.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');">src/backend/replication/walsender.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>walsender.c</code></a> は、PostgreSQLのプライマリサーバーにおいて、WAL（Write-Ahead Log）をスタンバイサーバーや論理レプリケーションサブスクライバーへストリーミング送信するプロセス（<code>walsender</code>）の実装です。Postmasterによって起動され、レプリケーションプロトコルを介してクライアントと通信します。</p>
+<h2>モジュール内での役割</h2>
+<p>レプリケーションサブシステムの送信側中核コンポーネントです。<code>walreceiver</code>（受信側）からの接続を受け付け、物理的なWAL転送または論理デコーディングによるデータ変換・送信を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**WALストリーミング**: 物理レプリケーション（WALの直接転送）および論理レプリケーション（デコーディングコンテキストを通じたデータ送信）の実行。</li>
+<li>**レプリケーションコマンド処理**: <code>START_REPLICATION</code>, <code>CREATE_REPLICATION_SLOT</code>, <code>IDENTIFY_SYSTEM</code> などのレプリケーション専用SQLコマンドの解析と実行。</li>
+<li>**同期レプリケーション制御**: 同期レプリケーション待機キューとの連携およびスタンバイの進捗報告に基づく待機解除。</li>
+<li>**ラグ追跡**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L226" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__LagTracker.html&quot;}, '*');"><code>LagTracker</code></a> を用いたレプリケーションラグ（Write/Flush/Apply）の計算と統計情報提供。</li>
+<li>**ライフサイクル管理**: プロセス終了時の正常なシャットダウン（残存WALの送信完了）とリソース解放。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プロセス状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L114" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>WalSndCtl</code></a>: 全 <code>walsender</code> プロセスの状態を保持する共有メモリ上の制御構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L117" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>MyWalSnd</code></a>: 現在のプロセスが使用する共有メモリ上の <a class="wiki-source-link" href="../../../../source/src/include/replication/walsender_private.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__replication__walsender_private_h__WalSnd.html&quot;}, '*');"><code>WalSnd</code></a> スロット。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L211" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>replication_active</code></a>: ストリーミング中であることを示すフラグ。</li>
+</ul>
+<h3>ストリーミング制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L170" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>sentPtr</code></a>: 現在までに送信済みのWAL位置（LSN）。</li>
+<li><code>xlogreader</code>: 物理レプリケーションで使用されるWAL読み取り用リーダー。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L213" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>logical_decoding_ctx</code></a>: 論理レプリケーションで使用されるデコーディングコンテキスト。</li>
+</ul>
+<h3>統計・ラグ追跡</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L226" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__LagTracker.html&quot;}, '*');"><code>LagTracker</code></a>: WALの書き込み時刻とLSNを記録し、スタンバイからのフィードバックに基づいてラグを算出する構造体。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>CreateReplicationSlot</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L3619" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__HandleWalSndInitStopping.html&quot;}, '*');"><code>HandleWalSndInitStopping</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L396" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__IdentifySystem.html&quot;}, '*');"><code>IdentifySystem</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L296" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__InitWalSender.html&quot;}, '*');"><code>InitWalSender</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L2947" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__InitWalSenderSlot.html&quot;}, '*');"><code>InitWalSenderSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L226" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__LagTracker.html&quot;}, '*');"><code>LagTracker</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndErrorCleanup.html&quot;}, '*');"><code>WalSndErrorCleanup</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L3804" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndInitStopping.html&quot;}, '*');"><code>WalSndInitStopping</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L255" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndSendDataCallback.html&quot;}, '*');"><code>WalSndSendDataCallback</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L3680" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndShmemInit.html&quot;}, '*');"><code>WalSndShmemInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L379" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndShutdown.html&quot;}, '*');"><code>WalSndShutdown</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L216" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalTimeSample.html&quot;}, '*');"><code>WalTimeSample</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L296" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__InitWalSender.html&quot;}, '*');"><code>InitWalSender</code></a> で共有メモリ上のスロットを確保し、Postmasterに状態を通知。 2. **コマンドループ**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L1989" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__exec_replication_command.html&quot;}, '*');"><code>exec_replication_command</code></a> がクライアントからのリクエストを解析し、適切なハンドラ（<a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L808" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__StartReplication.html&quot;}, '*');"><code>StartReplication</code></a> 等）へディスパッチ。 3. **ストリーミングループ**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L2805" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndLoop.html&quot;}, '*');"><code>WalSndLoop</code></a> がメインループとなり、<a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L3117" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__XLogSendPhysical.html&quot;}, '*');"><code>XLogSendPhysical</code></a> または <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L3427" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__XLogSendLogical.html&quot;}, '*');"><code>XLogSendLogical</code></a> をコールバックとして呼び出し、WALを読み取ってネットワークへ送信。 4. **フィードバック処理**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L2245" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__ProcessRepliesIfAny.html&quot;}, '*');"><code>ProcessRepliesIfAny</code></a> がスタンバイからの <code>CopyData</code> メッセージ（<code>r</code>型: Reply, <code>h</code>型: Hot Standby Feedback）を解析し、<a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L170" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>sentPtr</code></a> や <code>xmin</code> を更新。 5. **待機制御**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L1812" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__WalSndWaitForWal.html&quot;}, '*');"><code>WalSndWaitForWal</code></a> がWALの生成を待ち、必要に応じてスタンバイの進捗を待機。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/slot.h</code>: レプリケーションスロットの管理。</li>
+<li><code>replication/syncrep.h</code>: 同期レプリケーションの待機制御。</li>
+<li><code>access/xlogreader.h</code>: WALの解析と読み取り。</li>
+<li><code>libpq/pqformat.h</code>: レプリケーションプロトコルのメッセージ構築。</li>
+<li><code>storage/proc.h</code>: プロセス間通信とラッチ管理。</li>
+<li><code>access/timeline.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog_internal.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>backup/basebackup.h</code></li>
+<li><code>backup/basebackup_incremental.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>libpq/libpq.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/replnodes.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>replication/decode.h</code></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/slotsync.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/walreceiver.h</code></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>replication/walsender_private.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>storage/pmsignal.h</code></li>
+<li><code>tcop/dest.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/pg_lsn.h</code></li>
+<li><code>utils/pgstat_internal.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/slot.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/slot.c.html&quot;}, '*');"><code>src/backend/replication/slot.c</code></a>: スロットの永続化と共有メモリ管理。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/syncrep.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/syncrep.c.html&quot;}, '*');"><code>src/backend/replication/syncrep.c</code></a>: 同期レプリケーションのキュー管理。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/replication/walreceiver.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walreceiver.c.html&quot;}, '*');"><code>src/backend/replication/walreceiver.c</code></a>: 対となる受信側の実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L152" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>uploaded_manifest</code></a> 等のデータは専用のメモリコンテキスト（<a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L153" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>uploaded_manifest_mcxt</code></a>）で管理され、コマンド終了時に適切に解放されます。</li>
+<li>**シャットダウン**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L203" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/walsender.c.html&quot;}, '*');"><code>got_STOPPING</code></a> フラグが立つと、<code>walsender</code> は残存WALをすべて送信し終えるまで終了を待機します。これはチェックポイント処理と連動しています。</li>
+<li>**ラグ追跡の制限**: <a class="wiki-source-link" href="../../../../source/src/backend/replication/walsender.c.html#L226" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__walsender_c__LagTracker.html&quot;}, '*');"><code>LagTracker</code></a> は循環バッファを使用しており、スタンバイの応答が極端に遅い場合、古いサンプルが上書きされる可能性があります。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であるため、各レプリケーションコマンドの詳細なパースロジックや、論理デコーディングのプラグインインターフェースの詳細は省略しています。これらは <code>replication/logical.h</code> や <a class="wiki-source-link" href="../../../../source/src/include/replication/decode.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/replication/decode.h.html&quot;}, '*');"><code>decode.h</code></a> を参照してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalTimeSample.html" target="wiki-view"><code>WalTimeSample</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__LagTracker.html" target="wiki-view"><code>LagTracker</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndSendDataCallback.html" target="wiki-view"><code>WalSndSendDataCallback</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__InitWalSender.html" target="wiki-view"><code>InitWalSender</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndErrorCleanup.html" target="wiki-view"><code>WalSndErrorCleanup</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndShutdown.html" target="wiki-view"><code>WalSndShutdown</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__IdentifySystem.html" target="wiki-view"><code>IdentifySystem</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__CreateReplicationSlot.html" target="wiki-view"><code>CreateReplicationSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__InitWalSenderSlot.html" target="wiki-view"><code>InitWalSenderSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__HandleWalSndInitStopping.html" target="wiki-view"><code>HandleWalSndInitStopping</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndShmemInit.html" target="wiki-view"><code>WalSndShmemInit</code></a></li>
+<li><a href="../../../symbols/src__backend__replication__walsender_c__WalSndInitStopping.html" target="wiki-view"><code>WalSndInitStopping</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

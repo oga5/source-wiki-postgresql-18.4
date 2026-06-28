@@ -1,0 +1,133 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>contrib/postgres_fdw/postgres_fdw.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/postgres_fdw.c.html&quot;}, '*');">contrib/postgres_fdw/postgres_fdw.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/postgres_fdw.c.html&quot;}, '*');"><code>postgres_fdw.c</code></a> は、PostgreSQL の外部データラッパー（FDW）のメインエントリポイントです。リモートの PostgreSQL サーバーに対するクエリのプランニング、実行、およびデータ操作（DML）のライフサイクルを管理します。本ファイルは、PostgreSQL コアのプランナやエグゼキュータから呼び出されるコールバック関数群を実装し、リモートサーバーとの通信やクエリの変換を調整するハブの役割を果たします。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postgres_fdw</code> モジュールにおける「司令塔」です。<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/deparse.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/deparse.c.html&quot;}, '*');"><code>deparse.c</code></a>（SQL生成）、<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/connection.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/connection.c.html&quot;}, '*');"><code>connection.c</code></a>（接続管理）、<code>option.c</code>（設定検証）といった各サブコンポーネントを統合し、プランナが生成したパスを実際の実行プランに変換したり、実行時のタプル変換やエラーハンドリングを制御します。</p>
+<h2>責務</h2>
+<ul>
+<li>**プランニング**: <code>GetForeignRelSize</code> や <code>GetForeignPaths</code> を通じて、リモートテーブルのコスト見積もりと実行パスの生成を行う。</li>
+<li>**実行**: <code>BeginForeignScan</code> / <code>IterateForeignScan</code> を介したリモートカーソルの管理とタプル取得。</li>
+<li>**データ操作**: <code>PlanForeignModify</code> や <code>ExecForeignInsert</code> 等によるリモート DML 操作の実行と、RETURNING 句の処理。</li>
+<li>**最適化**: リモートサーバーの統計情報を利用したコスト見積もり（<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L3110" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__estimate_path_cost_size.html&quot;}, '*');"><code>estimate_path_cost_size</code></a>）と、結合・集約のプッシュダウン判定。</li>
+<li>**リソース管理**: リモート接続のライフサイクル管理と、実行コンテキスト（メモリコンテキスト）の管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プランニング用構造体</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.h.html#L30" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_h__PgFdwRelationInfo.html&quot;}, '*');"><code>PgFdwRelationInfo</code></a>: プランナが使用するリモートテーブルの最適化情報（コスト、条件、プッシュダウン可否など）。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwPathExtraData.html&quot;}, '*');"><code>PgFdwPathExtraData</code></a>: コスト見積もり時に使用する追加情報（LIMIT、ソート情報など）。</li>
+</ul>
+<h3>実行状態管理構造体</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwScanState.html&quot;}, '*');"><code>PgFdwScanState</code></a>: <a class="wiki-source-link" href="../../../source/src/include/nodes/plannodes.h.html#L822" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__ForeignScan.html&quot;}, '*');"><code>ForeignScan</code></a> ノードの実行状態（接続、カーソル、タプルバッファ）。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L182" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwModifyState.html&quot;}, '*');"><code>PgFdwModifyState</code></a>: <a class="wiki-source-link" href="../../../source/src/include/nodes/plannodes.h.html#L281" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__ModifyTable.html&quot;}, '*');"><code>ModifyTable</code></a> ノードの実行状態（INSERT/UPDATE/DELETE 用）。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L220" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwDirectModifyState.html&quot;}, '*');"><code>PgFdwDirectModifyState</code></a>: 直接的なリモート更新（UPDATE/DELETE）の実行状態。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L257" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwAnalyzeState.html&quot;}, '*');"><code>PgFdwAnalyzeState</code></a>: <code>ANALYZE</code> 実行時のサンプリング状態。</li>
+</ul>
+<h3>コールバック関数群</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L555" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgres_fdw_handler.html&quot;}, '*');"><code>postgres_fdw_handler</code></a>: FDW の全コールバック関数を登録するエントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L625" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresGetForeignRelSize.html&quot;}, '*');"><code>postgresGetForeignRelSize</code></a> / <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1016" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresGetForeignPaths.html&quot;}, '*');"><code>postgresGetForeignPaths</code></a>: プランナが呼び出すパス生成の起点。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1230" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresGetForeignPlan.html&quot;}, '*');"><code>postgresGetForeignPlan</code></a>: プランナが最終的な <a class="wiki-source-link" href="../../../source/src/include/nodes/plannodes.h.html#L822" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__ForeignScan.html&quot;}, '*');"><code>ForeignScan</code></a> ノードを作成する際に呼び出す。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1604" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresIterateForeignScan.html&quot;}, '*');"><code>postgresIterateForeignScan</code></a>: エグゼキュータがタプルをフェッチする際に呼び出す。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L307" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__ConversionLocation.html&quot;}, '*');"><code>ConversionLocation</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__FdwDirectModifyPrivateIndex.html&quot;}, '*');"><code>FdwDirectModifyPrivateIndex</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L101" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__FdwModifyPrivateIndex.html&quot;}, '*');"><code>FdwModifyPrivateIndex</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L285" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__FdwPathPrivateIndex.html&quot;}, '*');"><code>FdwPathPrivateIndex</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L73" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__FdwScanPrivateIndex.html&quot;}, '*');"><code>FdwScanPrivateIndex</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L257" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwAnalyzeState.html&quot;}, '*');"><code>PgFdwAnalyzeState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L220" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwDirectModifyState.html&quot;}, '*');"><code>PgFdwDirectModifyState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L182" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwModifyState.html&quot;}, '*');"><code>PgFdwModifyState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwPathExtraData.html&quot;}, '*');"><code>PgFdwPathExtraData</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwScanState.html&quot;}, '*');"><code>PgFdwScanState</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L315" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__ec_member_foreign_arg.html&quot;}, '*');"><code>ec_member_foreign_arg</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L2124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresExecForeignDelete.html&quot;}, '*');"><code>postgresExecForeignDelete</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **プランニング**: <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L625" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresGetForeignRelSize.html&quot;}, '*');"><code>postgresGetForeignRelSize</code></a> が <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.h.html#L30" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_h__PgFdwRelationInfo.html&quot;}, '*');"><code>PgFdwRelationInfo</code></a> を初期化し、<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/deparse.c.html#L215" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__deparse_c__classifyConditions.html&quot;}, '*');"><code>classifyConditions</code></a> でプッシュダウン可能な条件を分離します。<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L3110" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__estimate_path_cost_size.html&quot;}, '*');"><code>estimate_path_cost_size</code></a> がリモートの <code>EXPLAIN</code> を実行してコストを算出します。 2. **実行**: <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1499" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresBeginForeignScan.html&quot;}, '*');"><code>postgresBeginForeignScan</code></a> でリモート接続を確立し、<code>DECLARE CURSOR</code> を発行します。<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1604" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresIterateForeignScan.html&quot;}, '*');"><code>postgresIterateForeignScan</code></a> が <code>FETCH</code> を繰り返し、<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L7595" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__make_tuple_from_result_row.html&quot;}, '*');"><code>make_tuple_from_result_row</code></a> でリモートのテキスト形式データをローカルのタプル形式に変換します。 3. **DML**: <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L1780" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__postgresPlanForeignModify.html&quot;}, '*');"><code>postgresPlanForeignModify</code></a> がリモート SQL を生成し、<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L4116" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__execute_foreign_modify.html&quot;}, '*');"><code>execute_foreign_modify</code></a> がプリペアドステートメントを使用して実行します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>libpq</code>: リモートサーバーとの通信。</li>
+<li><code>nodes/pathnodes.h</code>, <code>optimizer/pathnode.h</code>: プランナのノード定義。</li>
+<li><code>foreign/fdwapi.h</code>: FDW API の定義。</li>
+<li><code>utils/memutils.h</code>: メモリコンテキスト管理。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/sysattr.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/explain_format.h</code></li>
+<li><code>commands/explain_state.h</code></li>
+<li><code>executor/execAsync.h</code></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>limits.h</code></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>optimizer/appendinfo.h</code></li>
+<li><code>optimizer/cost.h</code></li>
+<li><code>optimizer/inherit.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>optimizer/paths.h</code></li>
+<li><code>optimizer/planmain.h</code></li>
+<li><code>optimizer/prep.h</code></li>
+<li><code>optimizer/restrictinfo.h</code></li>
+<li><code>optimizer/tlist.h</code></li>
+<li><code>parser/parsetree.h</code></li>
+<li><a class="wiki-source-link" href="../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/postgres_fdw.h.html&quot;}, '*');"><code>postgres_fdw.h</code></a></li>
+<li><code>storage/latch.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/float.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/sampling.h</code></li>
+<li><code>utils/selfuncs.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/deparse.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/deparse.c.html&quot;}, '*');"><code>deparse.c</code></a>: SQL 生成ロジックの心臓部。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/connection.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/connection.c.html&quot;}, '*');"><code>connection.c</code></a>: <code>GetConnection</code> 等の接続管理ロジック。</li>
+<li><code>option.c</code>: <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L6247" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__apply_server_options.html&quot;}, '*');"><code>apply_server_options</code></a> 等の設定処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwScanState.html&quot;}, '*');"><code>PgFdwScanState</code></a> 等の構造体は <code>estate-&gt;es_query_cxt</code> に割り当てられ、クエリ終了時に自動解放されます。タプル変換には <code>temp_cxt</code> を使用し、メモリリークを防いでいます。</li>
+<li>**エラーハンドリング**: リモートエラーは <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/connection.c.html#L977" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__connection_c__pgfdw_report_error.html&quot;}, '*');"><code>pgfdw_report_error</code></a> を通じてローカルの PostgreSQL エラーとして報告されます。<a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/postgres_fdw.c.html#L7752" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__postgres_fdw__postgres_fdw_c__conversion_error_callback.html&quot;}, '*');"><code>conversion_error_callback</code></a> により、変換失敗時にどのカラムでエラーが起きたか特定可能です。</li>
+<li>**制約**: <code>postgres_fdw</code> はリモートのトランザクション状態をローカルと同期させますが、分散トランザクションの完全な原子性は保証されません。</li>
+<li>**未実装**: 複雑な結合や集約のプッシュダウンは <a class="wiki-source-link" href="../../../source/contrib/postgres_fdw/deparse.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/postgres_fdw/deparse.c.html&quot;}, '*');"><code>deparse.c</code></a> に依存しており、本ファイルはそれらの実行を仲介する役割に徹しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwScanPrivateIndex.html" target="wiki-view"><code>FdwScanPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwModifyPrivateIndex.html" target="wiki-view"><code>FdwModifyPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwDirectModifyPrivateIndex.html" target="wiki-view"><code>FdwDirectModifyPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwScanState.html" target="wiki-view"><code>PgFdwScanState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwModifyState.html" target="wiki-view"><code>PgFdwModifyState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwDirectModifyState.html" target="wiki-view"><code>PgFdwDirectModifyState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwAnalyzeState.html" target="wiki-view"><code>PgFdwAnalyzeState</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__FdwPathPrivateIndex.html" target="wiki-view"><code>FdwPathPrivateIndex</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__PgFdwPathExtraData.html" target="wiki-view"><code>PgFdwPathExtraData</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__ConversionLocation.html" target="wiki-view"><code>ConversionLocation</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__ec_member_foreign_arg.html" target="wiki-view"><code>ec_member_foreign_arg</code></a></li>
+<li><a href="../../symbols/contrib__postgres_fdw__postgres_fdw_c__postgresExecForeignDelete.html" target="wiki-view"><code>postgresExecForeignDelete</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

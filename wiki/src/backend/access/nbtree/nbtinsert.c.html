@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/nbtree/nbtinsert.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtinsert.c.html&quot;}, '*');">src/backend/access/nbtree/nbtinsert.c</a></h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQL の B-tree インデックスにおける単一タプルの挿入ロジックを実装しています。Lehman &amp; Yao のアルゴリズムに基づき、インデックスの検索、挿入位置の特定、ページ分割、および一意性制約のチェックを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>nbtree</code> サブシステムにおける「書き込み」の主要エントリポイントです。<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtree.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtree.c.html&quot;}, '*');"><code>nbtree.c</code></a> から呼び出され、インデックスの物理的な整合性を維持しながら、新しいタプルを適切なリーフページに配置する責任を負います。</p>
+<h2>責務</h2>
+<ul>
+<li>**挿入フローの制御**: 検索から挿入、必要に応じたページ分割までの一連のプロセスを管理。</li>
+<li>**一意性制約の検証**: 重複キーのチェックと、並行トランザクションとの競合解決。</li>
+<li>**ページ管理と最適化**: ページ容量不足時の分割、および重複排除（Dedup）やボトムアップ削除によるページ再利用の促進。</li>
+<li>**並行性制御**: ページ分割中や右移動（Move Right）時のロック管理と、インデックスの物理構造の整合性維持。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>挿入制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L101" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_doinsert.html&quot;}, '*');"><code>_bt_doinsert</code></a>: 挿入の公開インターフェース。一意性チェックの有無を判断し、挿入プロセス全体を駆動する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L316" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_search_insert.html&quot;}, '*');"><code>_bt_search_insert</code></a>: 挿入対象のリーフページを検索。高速パス（Fastpath）最適化により、右端ページへの連続挿入を効率化。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L814" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_findinsertloc.html&quot;}, '*');"><code>_bt_findinsertloc</code></a>: 挿入すべき正確なページとオフセットを特定。必要に応じてページを右へ移動する。</li>
+</ul>
+<h3>ページ操作・分割</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1104" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_insertonpg.html&quot;}, '*');"><code>_bt_insertonpg</code></a>: ページへのタプル挿入を実行。容量不足時は <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1466" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_split.html&quot;}, '*');"><code>_bt_split</code></a> を呼び出し、親への再帰的な挿入を行う。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1466" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_split.html&quot;}, '*');"><code>_bt_split</code></a>: ページを分割し、新しい右兄弟ページを作成。サフィックス切り詰め（Suffix Truncation）を行い、親ページへのダウンリンクを準備する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L2098" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_insert_parent.html&quot;}, '*');"><code>_bt_insert_parent</code></a>: 分割後の親ページへのダウンリンク挿入を処理。</li>
+</ul>
+<h3>メンテナンス・検証</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L407" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_check_unique.html&quot;}, '*');"><code>_bt_check_unique</code></a>: 一意性制約の違反をチェック。競合時はトランザクションの終了を待機する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L2682" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_delete_or_dedup_one_page.html&quot;}, '*');"><code>_bt_delete_or_dedup_one_page</code></a>: ページ分割を回避するため、不要なタプルの削除や重複排除を試みる。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L316" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_search_insert.html&quot;}, '*');"><code>_bt_search_insert</code></a> がルートからリーフへ降下。右端ページへの挿入時はキャッシュを利用して検索を省略。 2. **一意性チェック**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L407" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_check_unique.html&quot;}, '*');"><code>_bt_check_unique</code></a> が必要に応じて実行され、競合するタプルが存在する場合はロックを解放して待機（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lmgr.c.html#L662" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lmgr_c__XactLockTableWait.html&quot;}, '*');"><code>XactLockTableWait</code></a>）。 3. **位置特定**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L814" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_findinsertloc.html&quot;}, '*');"><code>_bt_findinsertloc</code></a> が挿入位置を決定。必要なら <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1026" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_stepright.html&quot;}, '*');"><code>_bt_stepright</code></a> でページを右へ移動。 4. **挿入/分割**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1104" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_insertonpg.html&quot;}, '*');"><code>_bt_insertonpg</code></a> がページ容量をチェック。不足時は <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L1466" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_split.html&quot;}, '*');"><code>_bt_split</code></a> でページを分割し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L2098" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtinsert_c___bt_insert_parent.html&quot;}, '*');"><code>_bt_insert_parent</code></a> で親ページを更新する。 5. **WAL 記録**: 各操作はクリティカルセクション内で WAL に記録され、物理的な整合性が保証される。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/nbtree.h</code>: B-tree の基本構造体とマクロ。</li>
+<li><code>storage/lmgr.h</code>: ロック管理（ページロック）。</li>
+<li><code>access/xloginsert.h</code>: WAL ログの生成。</li>
+<li><code>storage/predicate.h</code>: シリアライザブル・トランザクションの競合チェック。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsearch.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtsearch.c.html&quot;}, '*');"><code>nbtsearch.c</code></a>: 検索アルゴリズムの基盤。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtpage.c.html&quot;}, '*');"><code>nbtpage.c</code></a>: ページレベルの低レイヤー操作。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsplitloc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtsplitloc.c.html&quot;}, '*');"><code>nbtsplitloc.c</code></a>: ページ分割位置の決定ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtdedup.c.html&quot;}, '*');"><code>nbtdedup.c</code></a>: 重複排除の具体的な実装。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../../source/src/include/access/nbtree.h.html#L750" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__nbtree_h__BTStack.html&quot;}, '*');"><code>BTStack</code></a> は挿入プロセス中に動的に確保され、終了時に解放されます。</li>
+<li>**ロックの順序**: デッドロックを避けるため、常に左から右（ページ番号の昇順）へロックを取得します。</li>
+<li>**高速パス**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html#L30" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtinsert.c.html&quot;}, '*');"><code>BTREE_FASTPATH_MIN_LEVEL</code></a> 以上の高さを持つインデックスでは、右端ページへの挿入が最適化されます。</li>
+<li>**省略された詳細**: 本ファイルは挿入の「制御」に特化しており、具体的なタプルの比較ロジック（<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsearch.c.html#L692" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsearch_c___bt_compare.html&quot;}, '*');"><code>_bt_compare</code></a>）や、ページ内のバイナリサーチ（<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsearch.c.html#L347" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtsearch_c___bt_binsrch.html&quot;}, '*');"><code>_bt_binsrch</code></a>）は他ファイルに委譲されています。</li>
+<li>**不変条件**: ページ分割中、<a class="wiki-source-link" href="../../../../../source/src/include/access/nbtree.h.html#L84" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/nbtree.h.html&quot;}, '*');"><code>BTP_INCOMPLETE_SPLIT</code></a> フラグが設定され、親への挿入が完了するまでこのフラグが維持されます。</li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

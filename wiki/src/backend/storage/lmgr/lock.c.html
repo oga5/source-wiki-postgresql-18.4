@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/storage/lmgr/lock.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');">src/backend/storage/lmgr/lock.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQL の重量級ロック（Heavyweight Lock）管理の中核を担うファイルです。共有メモリ上のハッシュテーブルを用いて、データベースオブジェクト（テーブル、ページ、タプル等）に対するロックの獲得・解放・競合判定を管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>lmgr</code> サブシステムにおいて、ロックの物理的な状態管理と競合解決を担当します。高レベルなインターフェース（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lmgr.c.html&quot;}, '*');"><code>lmgr.c</code></a>）と、低レベルなプロセス管理（<code>proc.c</code>）や軽量ロック（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lwlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lwlock.c.html&quot;}, '*');"><code>lwlock.c</code></a>）の間に位置し、ロックのハッシュテーブル操作やファストパス（Fast <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__Path.html&quot;}, '*');">Path</a>）ロジックをカプセル化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ロックテーブル管理**: 共有メモリ上の <a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L309" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__LOCK.html&quot;}, '*');"><code>LOCK</code></a>（オブジェクト単位）および <a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L370" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__PROCLOCK.html&quot;}, '*');"><code>PROCLOCK</code></a>（プロセス×オブジェクト単位）ハッシュテーブルの初期化と操作。</li>
+<li>**ファストパス（Fast <a class="wiki-source-link" href="../../../../../source/src/include/nodes/pathnodes.h.html#L1753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__Path.html&quot;}, '*');">Path</a>）最適化**: 競合が少ないロックを各バックエンドのローカルメモリで高速に処理し、必要に応じて共有メモリへ転送する仕組みの管理。</li>
+<li>**競合判定**: ロックモード間の競合テーブルに基づく、獲得可否の判定。</li>
+<li>**待機キュー制御**: ロック獲得待ちプロセスの管理と、ロック解放時の起床処理。</li>
+<li>**2PC（二相コミット）対応**: 準備済みトランザクションのロック状態の永続化と復旧。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ロック管理・状態</h3>
+<ul>
+<li><code>LockMethodLockHash</code>, <code>LockMethodProcLockHash</code>: 共有メモリ上のロック管理用ハッシュテーブル。</li>
+<li><code>LockMethodLocalHash</code>: 各バックエンドのローカルメモリにあるロック管理用ハッシュテーブル。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L65" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>LockConflicts</code></a>: ロックモード間の競合を定義するビットマスク配列。</li>
+</ul>
+<h3>ロック操作（公開API）</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L807" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockAcquire.html&quot;}, '*');"><code>LockAcquire</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L834" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockAcquireExtended.html&quot;}, '*');"><code>LockAcquireExtended</code></a>: ロック獲得のメインエントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2069" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockRelease.html&quot;}, '*');"><code>LockRelease</code></a>: ロック解放のメインエントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2274" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockReleaseAll.html&quot;}, '*');"><code>LockReleaseAll</code></a>: 特定のトランザクションに関連する全ロックの解放。</li>
+</ul>
+<h3>ファストパス関連</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2749" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__FastPathGrantRelationLock.html&quot;}, '*');"><code>FastPathGrantRelationLock</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2792" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__FastPathUnGrantRelationLock.html&quot;}, '*');"><code>FastPathUnGrantRelationLock</code></a>: ファストパスによるロックの獲得・解放。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2828" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__FastPathTransferRelationLocks.html&quot;}, '*');"><code>FastPathTransferRelationLocks</code></a>: ファストパスからメインロックテーブルへのロック移行。</li>
+<li><code>FastPathStrongRelationLocks</code>: ファストパスを無効化する「強力なロック」のカウント管理。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L3445" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__AtPrepare_Locks.html&quot;}, '*');"><code>AtPrepare_Locks</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L306" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__FastPathStrongRelationLockData.html&quot;}, '*');"><code>FastPathStrongRelationLockData</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L525" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__GetLocksMethodTable.html&quot;}, '*');"><code>GetLocksMethodTable</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L503" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__InitLockManagerAccess.html&quot;}, '*');"><code>InitLockManagerAccess</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L358" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LOCK_DEBUG_ENABLED.html&quot;}, '*');"><code>LOCK_DEBUG_ENABLED</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L369" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LOCK_PRINT.html&quot;}, '*');"><code>LOCK_PRINT</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L442" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockManagerShmemInit.html&quot;}, '*');"><code>LockManagerShmemInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L393" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__PROCLOCK_PRINT.html&quot;}, '*');"><code>PROCLOCK_PRINT</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L3360" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__PerLockTagEntry.html&quot;}, '*');"><code>PerLockTagEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L3541" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__PostPrepare_Locks.html&quot;}, '*');"><code>PostPrepare_Locks</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1905" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__ResetAwaitedLock.html&quot;}, '*');"><code>ResetAwaitedLock</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L158" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__TwoPhaseLockRecord.html&quot;}, '*');"><code>TwoPhaseLockRecord</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **獲得フロー**:</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L807" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockAcquire.html&quot;}, '*');"><code>LockAcquire</code></a> が呼ばれると、まず <code>LockMethodLocalHash</code> を確認。</li>
+<li>競合がなければ、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L267" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/lock.c.html&quot;}, '*');"><code>EligibleForRelationFastPath</code></a> を判定し、可能ならファストパスで処理。</li>
+<li>競合がある場合、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1281" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__SetupLockInTable.html&quot;}, '*');"><code>SetupLockInTable</code></a> で共有メモリ上の <a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L309" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__LOCK.html&quot;}, '*');"><code>LOCK</code></a>/<a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L370" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__PROCLOCK.html&quot;}, '*');"><code>PROCLOCK</code></a> を確保し、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1527" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockCheckConflicts.html&quot;}, '*');"><code>LockCheckConflicts</code></a> で競合判定。</li>
+<li>競合時は <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__JoinWaitQueue.html&quot;}, '*');"><code>JoinWaitQueue</code></a> を経由して <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1930" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__WaitOnLock.html&quot;}, '*');"><code>WaitOnLock</code></a>（<code>proc.c</code> の <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1308" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcSleep.html&quot;}, '*');"><code>ProcSleep</code></a>）で待機。</li>
+<p>2. **解放フロー**:</p>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L2069" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LockRelease.html&quot;}, '*');"><code>LockRelease</code></a> が呼ばれると、ローカルの <code>nLocks</code> を減算。</li>
+<li>0 になれば、共有メモリ上の <a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1679" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__UnGrantLock.html&quot;}, '*');"><code>UnGrantLock</code></a> を呼び出し、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L1736" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__CleanUpLock.html&quot;}, '*');"><code>CleanUpLock</code></a> で待機中の他プロセスを起床（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1738" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__ProcLockWakeup.html&quot;}, '*');"><code>ProcLockWakeup</code></a>）。</li>
+<p>3. **データ構造のライフサイクル**:</p>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L309" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__LOCK.html&quot;}, '*');"><code>LOCK</code></a> はオブジェクトに対する最初の要求時に作成され、最後の要求が解放されると削除される（ガベージコレクション）。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/proc.h</code>: プロセス管理（<code>PGPROC</code>）。</li>
+<li><code>storage/lwlock.h</code>: 軽量ロックによるハッシュテーブルの保護。</li>
+<li><code>access/twophase.h</code>: 2PC 状態の管理。</li>
+<li><code>utils/resowner.h</code>: リソース所有者によるロックの追跡。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase_rmgr.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pg_trace.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pg_trace.h.html&quot;}, '*');"><code>pg_trace.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>signal.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/spin.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/ps_status.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/proc.c.html&quot;}, '*');"><code>src/backend/storage/lmgr/proc.c</code></a>: プロセスの待機・起床ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/deadlock.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/lmgr/deadlock.c.html&quot;}, '*');"><code>src/backend/storage/lmgr/deadlock.c</code></a>: デッドロック検出。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lock.h.html&quot;}, '*');"><code>src/include/storage/lock.h</code></a>: ロック管理のデータ構造定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L309" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__LOCK.html&quot;}, '*');"><code>LOCK</code></a> および <a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L370" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__PROCLOCK.html&quot;}, '*');"><code>PROCLOCK</code></a> は共有メモリ上に存在し、<a class="wiki-source-link" href="../../../../../source/src/include/storage/lwlock.h.html#L41" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lwlock_h__LWLock.html&quot;}, '*');"><code>LWLock</code></a> で保護されます。<a class="wiki-source-link" href="../../../../../source/src/include/storage/lock.h.html#L427" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__lock_h__LOCALLOCK.html&quot;}, '*');"><code>LOCALLOCK</code></a> はバックエンドのローカルメモリに存在します。</li>
+<li>**ファストパスの注意点**: ファストパスは「競合が少ない」場合に最適化されます。<a class="wiki-source-link" href="../../../../../source/src/include/storage/lockdefs.h.html#L39" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>ShareUpdateExclusiveLock</code></a> などの自己競合するロックはファストパスの対象外です。</li>
+<li>**デッドロック**: 本ファイルはデッドロック検出のロジック自体は持ちませんが、<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/proc.c.html#L1139" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__proc_c__JoinWaitQueue.html&quot;}, '*');"><code>JoinWaitQueue</code></a> を通じてデッドロック検出器と連携します。</li>
+<li>**省略箇所**: 本ファイルは非常に巨大であるため、デバッグ用関数（<a class="wiki-source-link" href="../../../../../source/src/backend/storage/lmgr/lock.c.html#L369" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__lmgr__lock_c__LOCK_PRINT.html&quot;}, '*');"><code>LOCK_PRINT</code></a> 等）や、詳細な WAL 記録ロジックの細部は省略しています。これらはロックの整合性維持という本質的な責務の周辺機能です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__TwoPhaseLockRecord.html" target="wiki-view"><code>TwoPhaseLockRecord</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__FastPathStrongRelationLockData.html" target="wiki-view"><code>FastPathStrongRelationLockData</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LOCK_DEBUG_ENABLED.html" target="wiki-view"><code>LOCK_DEBUG_ENABLED</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LOCK_PRINT.html" target="wiki-view"><code>LOCK_PRINT</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PROCLOCK_PRINT.html" target="wiki-view"><code>PROCLOCK_PRINT</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__LockManagerShmemInit.html" target="wiki-view"><code>LockManagerShmemInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__InitLockManagerAccess.html" target="wiki-view"><code>InitLockManagerAccess</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__GetLocksMethodTable.html" target="wiki-view"><code>GetLocksMethodTable</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__ResetAwaitedLock.html" target="wiki-view"><code>ResetAwaitedLock</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PerLockTagEntry.html" target="wiki-view"><code>PerLockTagEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__AtPrepare_Locks.html" target="wiki-view"><code>AtPrepare_Locks</code></a></li>
+<li><a href="../../../../symbols/src__backend__storage__lmgr__lock_c__PostPrepare_Locks.html" target="wiki-view"><code>PostPrepare_Locks</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/interfaces/libpq/fe-connect.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-connect.c.html&quot;}, '*');">src/interfaces/libpq/fe-connect.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-connect.c.html&quot;}, '*');"><code>fe-connect.c</code></a> は、PostgreSQL クライアントライブラリ <code>libpq</code> における接続確立プロセスの中心的な実装です。接続文字列（または URI）のパース、環境変数や設定ファイルからのデフォルト値の解決、物理的なソケット接続、および認証ネゴシエーション（SSL/GSSAPI/SASL）のライフサイクルを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> の接続管理層の基盤であり、<code>PGconn</code> 構造体の初期化と状態遷移を担います。<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-exec.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-exec.c.html&quot;}, '*');"><code>fe-exec.c</code></a> がクエリ実行を担うのに対し、本ファイルは「接続が確立され、認証が完了し、クエリ実行可能な状態になるまで」の準備を完結させます。</p>
+<h2>責務</h2>
+<ul>
+<li>**接続パラメータの管理**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-fe.h.html#L271" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__libpq-fe_h__PQconninfoOption.html&quot;}, '*');"><code>PQconninfoOption</code></a> を用いた接続オプションのパース、検証、および <code>PGconn</code> への適用。</li>
+<li>**接続ライフサイクル**: 同期・非同期接続の開始、ポーリング（<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2907" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectPoll.html&quot;}, '*');"><code>PQconnectPoll</code></a>）、および接続のクリーンアップ。</li>
+<li>**認証・セキュリティのネゴシエーション**: SSL/TLS、GSSAPI、SASL 認証のネゴシエーションと状態管理。</li>
+<li>**環境統合**: <code>.pgpass</code> ファイルの読み込み、LDAP サービスルックアップ、環境変数からのデフォルト値解決。</li>
+<li>**プラットフォーム抽象化**: Windows (Winsock) と Unix 間のソケット操作や keepalive 設定の差異を吸収。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>接続管理・ライフサイクル</h3>
+<ul>
+<li><code>PGconn</code>: 接続状態を保持するメイン構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L764" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectdbParams.html&quot;}, '*');"><code>PQconnectdbParams</code></a> / <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L866" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectStartParams.html&quot;}, '*');"><code>PQconnectStartParams</code></a>: 接続開始の公開 API。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2907" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectPoll.html&quot;}, '*');"><code>PQconnectPoll</code></a>: 非同期接続の進捗を管理する状態マシン。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L526" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__pqDropConnection.html&quot;}, '*');"><code>pqDropConnection</code></a>: 物理的なソケットを閉じ、認証状態をリセットする内部関数。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L5253" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__pqClosePGconn.html&quot;}, '*');"><code>pqClosePGconn</code></a>: 接続を閉じ、再接続可能な状態へリセットする関数。</li>
+</ul>
+<h3>オプション管理</h3>
+<ul>
+<li><code>PQconninfoOptions[]</code>: サポートされる全接続オプションの定義（環境変数、デフォルト値、<code>PGconn</code> へのオフセット）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__internalPQconninfoOption.html&quot;}, '*');"><code>internalPQconninfoOption</code></a>: <code>PGconn</code> 構造体へのマッピング情報を含む内部定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L6289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__conninfo_parse.html&quot;}, '*');"><code>conninfo_parse</code></a> / <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L6758" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__conninfo_uri_parse.html&quot;}, '*');"><code>conninfo_uri_parse</code></a>: 接続文字列や URI をパースしてオプション配列を生成する関数群。</li>
+</ul>
+<h3>認証・セキュリティ</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-connect.c.html&quot;}, '*');"><code>supported_sasl_mechs</code></a>: 利用可能な SASL 認証メカニズムのリスト。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L4695" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__init_allowed_encryption_methods.html&quot;}, '*');"><code>init_allowed_encryption_methods</code></a>: <code>sslmode</code> や <code>gssencmode</code> に基づき、試行すべき暗号化方式を決定する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L72" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__LDAP_TIMEVAL.html&quot;}, '*');"><code>LDAP_TIMEVAL</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2192" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconndefaults.html&quot;}, '*');"><code>PQconndefaults</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L947" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectStart.html&quot;}, '*');"><code>PQconnectStart</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L866" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectStartParams.html&quot;}, '*');"><code>PQconnectStartParams</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L819" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectdb.html&quot;}, '*');"><code>PQconnectdb</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L764" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectdbParams.html&quot;}, '*');"><code>PQconnectdbParams</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L7458" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconninfoFree.html&quot;}, '*');"><code>PQconninfoFree</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L835" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQping.html&quot;}, '*');"><code>PQping</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L782" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQpingParams.html&quot;}, '*');"><code>PQpingParams</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2230" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQsetdbLogin.html&quot;}, '*');"><code>PQsetdbLogin</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L6196" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__conninfo_init.html&quot;}, '*');"><code>conninfo_init</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L178" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__internalPQconninfoOption.html&quot;}, '*');"><code>internalPQconninfoOption</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L947" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectStart.html&quot;}, '*');"><code>PQconnectStart</code></a> が <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L4939" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__pqMakeEmptyPGconn.html&quot;}, '*');"><code>pqMakeEmptyPGconn</code></a> で <code>PGconn</code> を確保し、<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L1072" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__connectOptions1.html&quot;}, '*');"><code>connectOptions1</code></a> でオプションをパース・適用する。 2. **解決**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L1246" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__pqConnectOptions2.html&quot;}, '*');"><code>pqConnectOptions2</code></a> がホスト名解決、ポート決定、認証情報の取得（<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L7905" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__passwordFromFile.html&quot;}, '*');"><code>passwordFromFile</code></a>）を行い、接続先リストを構築する。 3. **接続試行**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2907" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectPoll.html&quot;}, '*');"><code>PQconnectPoll</code></a> が状態マシンとして動作し、<code>CONNECTION_NEEDED</code> から順次状態を遷移させる。</p>
+<ul>
+<li><code>CONNECTION_STARTED</code>: ソケット作成と <code>connect()</code> の実行。</li>
+<li><code>CONNECTION_MADE</code>: 暗号化（SSL/GSSAPI）のネゴシエーション。</li>
+<li><code>CONNECTION_AWAITING_RESPONSE</code>: スタートアップパケット送信と認証要求の待機。</li>
+<p>4. **終了**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L5300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQfinish.html&quot;}, '*');"><code>PQfinish</code></a> が <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L5253" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__pqClosePGconn.html&quot;}, '*');"><code>pqClosePGconn</code></a> を呼び出し、リソースを解放する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li>**内部**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-int.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/libpq-int.h.html&quot;}, '*');"><code>libpq-int.h</code></a> (構造体定義), <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-auth.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-auth.h.html&quot;}, '*');"><code>fe-auth.h</code></a> (認証), <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-secure.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-secure.c.html&quot;}, '*');"><code>fe-secure.c</code></a> (SSL/GSSAPI 抽象化)。</li>
+<li>**外部**: <code>sys/socket.h</code>, <a class="wiki-source-link" href="../../../../source/src/include/port/win32/netdb.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32/netdb.h.html&quot;}, '*');"><code>netdb.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a> (ネットワーク I/O), <code>win32.h</code> (Windows 互換層)。</li>
+<li><code>common/base64.h</code></li>
+<li><code>common/ip.h</code></li>
+<li><code>common/link-canary.h</code></li>
+<li><code>common/scram-common.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-auth-oauth.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-auth-oauth.h.html&quot;}, '*');"><code>fe-auth-oauth.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-gssapi-common.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-gssapi-common.h.html&quot;}, '*');"><code>fe-gssapi-common.h</code></a></li>
+<li><code>ldap.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/libpq-fe.h.html&quot;}, '*');"><code>libpq-fe.h</code></a></li>
+<li><code>limits.h</code></li>
+<li><code>mb/pg_wchar.h</code></li>
+<li><code>mstcpip.h</code></li>
+<li><code>netinet/in.h</code></li>
+<li><code>netinet/tcp.h</code></li>
+<li><code>pg_config_paths.h</code></li>
+<li><code>port/pg_bswap.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres_fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres_fe.h.html&quot;}, '*');"><code>postgres_fe.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/port/pthread-win32.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/port/pthread-win32.h.html&quot;}, '*');"><code>pthread-win32.h</code></a></li>
+<li><code>pthread.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32/pwd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32/pwd.h.html&quot;}, '*');"><code>pwd.h</code></a></li>
+<li><code>shlobj.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+<li><code>winldap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-exec.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-exec.c.html&quot;}, '*');"><code>fe-exec.c</code></a>: 接続後のクエリ実行。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-protocol3.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-protocol3.c.html&quot;}, '*');"><code>fe-protocol3.c</code></a>: プロトコル v3.0 のメッセージ解析。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-secure.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-secure.c.html&quot;}, '*');"><code>fe-secure.c</code></a>: SSL/TLS および GSSAPI の具体的なハンドシェイク実装。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-auth.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/fe-auth.c.html&quot;}, '*');"><code>fe-auth.c</code></a>: 認証フローのディスパッチ。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>PGconn</code> 内の文字列メンバは <code>strdup</code> されており、<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L5039" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__freePGconn.html&quot;}, '*');"><code>freePGconn</code></a> で解放されます。<a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-fe.h.html#L271" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__libpq-fe_h__PQconninfoOption.html&quot;}, '*');"><code>PQconninfoOption</code></a> 配列は <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L7458" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconninfoFree.html&quot;}, '*');"><code>PQconninfoFree</code></a> で解放する必要があります。</li>
+<li>**状態マシン**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2907" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectPoll.html&quot;}, '*');"><code>PQconnectPoll</code></a> は非ブロッキング I/O を前提としています。<code>select()</code> 等でソケットの状態を監視し、必要に応じてこの関数を再呼び出しする設計です。</li>
+<li>**省略された詳細**: LDAP 関連の複雑なパース処理や、特定のプラットフォーム固有の keepalive 設定の詳細は、実装の保守性を考慮して関数化されています。</li>
+<li>**注意点**: <a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/fe-connect.c.html#L2907" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__libpq__fe-connect_c__PQconnectPoll.html&quot;}, '*');"><code>PQconnectPoll</code></a> 内の <code>goto keep_going</code> は、状態遷移をループ内で継続させるための制御構造であり、複雑な状態遷移をフラットに記述するために使用されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__LDAP_TIMEVAL.html" target="wiki-view"><code>LDAP_TIMEVAL</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__internalPQconninfoOption.html" target="wiki-view"><code>internalPQconninfoOption</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconnectdbParams.html" target="wiki-view"><code>PQconnectdbParams</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQpingParams.html" target="wiki-view"><code>PQpingParams</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconnectdb.html" target="wiki-view"><code>PQconnectdb</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQping.html" target="wiki-view"><code>PQping</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconnectStartParams.html" target="wiki-view"><code>PQconnectStartParams</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconnectStart.html" target="wiki-view"><code>PQconnectStart</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconndefaults.html" target="wiki-view"><code>PQconndefaults</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQsetdbLogin.html" target="wiki-view"><code>PQsetdbLogin</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__conninfo_init.html" target="wiki-view"><code>conninfo_init</code></a></li>
+<li><a href="../../../symbols/src__interfaces__libpq__fe-connect_c__PQconninfoFree.html" target="wiki-view"><code>PQconninfoFree</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

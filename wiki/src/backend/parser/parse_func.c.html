@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/parser/parse_func.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/parser/parse_func.c.html&quot;}, '*');">src/backend/parser/parse_func.c</a></h1>
+<h2>概要</h2>
+<p>SQL 解析フェーズにおいて、関数呼び出し、プロシージャ呼び出し、および集約関数・ウィンドウ関数の解決を担う中核モジュールです。SQL 内の関数名と引数リストをシステムカタログ（<code>pg_proc</code> 等）と照合し、適切な関数 OID の特定、型変換の挿入、および構文上の制約チェックを行います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/parser</code> サブシステムの一部として、<a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_expr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/parser/parse_expr.c.html&quot;}, '*');"><code>parse_expr.c</code></a> から呼び出される関数解決の専門家です。名前解決の結果に基づき、<a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L765" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__FuncExpr.html&quot;}, '*');"><code>FuncExpr</code></a>（通常関数）、<a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L458" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__Aggref.html&quot;}, '*');"><code>Aggref</code></a>（集約）、<a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L582" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__WindowFunc.html&quot;}, '*');"><code>WindowFunc</code></a>（ウィンドウ関数）といったノードを生成し、プランナが処理可能な形式へ変換します。</p>
+<h2>責務</h2>
+<ul>
+<li>**関数・プロシージャ解決**: 名前と引数型に基づき、オーバーロードされた関数から最適な候補を選択する。</li>
+<li>**型整合性の確保**: 引数の型を関数の宣言型に合わせるための暗黙的キャスト（<a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1824" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__make_fn_arguments.html&quot;}, '*');"><code>make_fn_arguments</code></a>）の挿入。</li>
+<li>**構文制約の検証**: <code>WITHIN GROUP</code>、<code>FILTER</code>、<code>OVER</code> 句の配置が関数種別に対して妥当かどうかのチェック。</li>
+<li>**特殊な構文の解釈**: <code>tab.col</code> と <code>col(tab)</code> の等価性（列プロジェクション）の解決。</li>
+<li>**SRF（Set-Returning Function）の配置制限**: SRF が許可されていない場所（WHERE 句など）での使用を禁止する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>関数解決のメインエントリ</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseFuncOrColumn.html&quot;}, '*');"><code>ParseFuncOrColumn</code></a>: 本ファイルのメイン関数。関数呼び出し、列参照、型キャストのいずれであるかを判別し、適切なノードを生成する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1394" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_get_detail.html&quot;}, '*');"><code>func_get_detail</code></a>: システムカタログを検索し、関数候補のリストから最適なものを特定する。</li>
+</ul>
+<h3>候補選択とマッチング</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L922" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_match_argtypes.html&quot;}, '*');"><code>func_match_argtypes</code></a>: 候補リストから、引数型が一致（またはキャスト可能）なものだけを抽出する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1007" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_select_candidate.html&quot;}, '*');"><code>func_select_candidate</code></a>: 複数の候補がある場合に、型優先度やカテゴリに基づき「最も適切な」関数を選択する。</li>
+</ul>
+<h3>ユーティリティ・検証</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1824" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__make_fn_arguments.html&quot;}, '*');"><code>make_fn_arguments</code></a>: 引数リストに対して必要な型変換ノードを挿入する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1740" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__unify_hypothetical_args.html&quot;}, '*');"><code>unify_hypothetical_args</code></a>: 仮説的集約（Hypothetical-set aggregate）の引数型を統一する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L2510" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__check_srf_call_placement.html&quot;}, '*');"><code>check_srf_call_placement</code></a>: SRF が現在の構文コンテキストで許可されているか検証する。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L39" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__FuncLookupError.html&quot;}, '*');"><code>FuncLookupError</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1880" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__FuncNameAsType.html&quot;}, '*');"><code>FuncNameAsType</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L2143" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__LookupFuncName.html&quot;}, '*');"><code>LookupFuncName</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L2048" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__LookupFuncNameInternal.html&quot;}, '*');"><code>LookupFuncNameInternal</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L2205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__LookupFuncWithArgs.html&quot;}, '*');"><code>LookupFuncWithArgs</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1911" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseComplexProjection.html&quot;}, '*');"><code>ParseComplexProjection</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseFuncOrColumn.html&quot;}, '*');"><code>ParseFuncOrColumn</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1394" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_get_detail.html&quot;}, '*');"><code>func_get_detail</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L922" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_match_argtypes.html&quot;}, '*');"><code>func_match_argtypes</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1007" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_select_candidate.html&quot;}, '*');"><code>func_select_candidate</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1824" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__make_fn_arguments.html&quot;}, '*');"><code>make_fn_arguments</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1740" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__unify_hypothetical_args.html&quot;}, '*');"><code>unify_hypothetical_args</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseFuncOrColumn.html&quot;}, '*');"><code>ParseFuncOrColumn</code></a> が引数リストを走査し、型情報を抽出。 2. **候補検索**: <a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1394" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_get_detail.html&quot;}, '*');"><code>func_get_detail</code></a> が <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L1191" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__FuncnameGetCandidates.html&quot;}, '*');"><code>FuncnameGetCandidates</code></a> を呼び出し、カタログから候補を取得。 3. **解決**:</p>
+<ul>
+<li>候補が単一ならそれを採用。</li>
+<li>候補が複数なら <a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1007" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_select_candidate.html&quot;}, '*');"><code>func_select_candidate</code></a> で絞り込み。</li>
+<li>候補なしの場合、列プロジェクション（<a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1911" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseComplexProjection.html&quot;}, '*');"><code>ParseComplexProjection</code></a>）や型キャストの可能性を検討。</li>
+<p>4. **変換**: <a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1824" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__make_fn_arguments.html&quot;}, '*');"><code>make_fn_arguments</code></a> が引数ノードにキャストを適用。 5. **ノード生成**: 最終的に <a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L765" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__FuncExpr.html&quot;}, '*');"><code>FuncExpr</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L458" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__Aggref.html&quot;}, '*');"><code>Aggref</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L582" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__WindowFunc.html&quot;}, '*');"><code>WindowFunc</code></a> のいずれかを生成して返す。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/</code>: <code>pg_proc</code>, <code>pg_aggregate</code> 等のシステムカタログ定義。</li>
+<li><code>parser/</code>: <a class="wiki-source-link" href="../../../../source/src/include/parser/parse_coerce.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/parser/parse_coerce.h.html&quot;}, '*');"><code>parse_coerce.h</code></a> (型変換), <a class="wiki-source-link" href="../../../../source/src/include/parser/parse_expr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/parser/parse_expr.h.html&quot;}, '*');"><code>parse_expr.h</code></a> (式解析), <a class="wiki-source-link" href="../../../../source/src/include/parser/parse_relation.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/parser/parse_relation.h.html&quot;}, '*');"><code>parse_relation.h</code></a> (名前解決)。</li>
+<li><code>utils/</code>: <a class="wiki-source-link" href="../../../../source/src/include/utils/lsyscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/lsyscache.h.html&quot;}, '*');"><code>lsyscache.h</code></a> (キャッシュ検索), <a class="wiki-source-link" href="../../../../source/src/include/utils/syscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/syscache.h.html&quot;}, '*');"><code>syscache.h</code></a>。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>catalog/pg_aggregate.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>lib/stringinfo.h</code></li>
+<li><code>nodes/makefuncs.h</code></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><code>parser/parse_agg.h</code></li>
+<li><code>parser/parse_clause.h</code></li>
+<li><code>parser/parse_coerce.h</code></li>
+<li><code>parser/parse_expr.h</code></li>
+<li><code>parser/parse_func.h</code></li>
+<li><code>parser/parse_relation.h</code></li>
+<li><code>parser/parse_target.h</code></li>
+<li><code>parser/parse_type.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_expr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/parser/parse_expr.c.html&quot;}, '*');"><code>src/backend/parser/parse_expr.c</code></a>: 式解析の起点。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_coerce.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/parser/parse_coerce.c.html&quot;}, '*');"><code>src/backend/parser/parse_coerce.c</code></a>: 型変換のロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_agg.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/parser/parse_agg.c.html&quot;}, '*');"><code>src/backend/parser/parse_agg.c</code></a>: 集約・ウィンドウ関数特有の変換ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/namespace.c.html&quot;}, '*');"><code>src/backend/catalog/namespace.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/namespace.c.html#L1191" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__namespace_c__FuncnameGetCandidates.html&quot;}, '*');"><code>FuncnameGetCandidates</code></a> の実装元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 本モジュールで生成されるノードは <code>ParseState</code> のメモリコンテキストに割り当てられます。</li>
+<li>**エラーハンドリング**: <code>ereport(ERROR, ...)</code> を多用し、解析エラーを即座に報告します。<a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_node.c.html#L105" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_node_c__parser_errposition.html&quot;}, '*');"><code>parser_errposition</code></a> を用いて SQL 内の正確な位置を特定するよう設計されています。</li>
+<li>**未実装・制限**: </li>
+<li>集約関数における名前付き引数のサポートは現在制限されています。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1911" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__ParseComplexProjection.html&quot;}, '*');"><code>ParseComplexProjection</code></a> は、複雑な型（RECORD 等）の解決において <a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_target.c.html#L1521" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_target_c__expandRecordVariable.html&quot;}, '*');"><code>expandRecordVariable</code></a> に依存しており、ここが解析のボトルネックになる場合があります。</li>
+<li>**設計思想**: PostgreSQL の関数解決は、単なる名前一致ではなく、型優先度やカテゴリに基づく複雑なヒューリスティックを用いており、<a class="wiki-source-link" href="../../../../source/src/backend/parser/parse_func.c.html#L1007" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__parser__parse_func_c__func_select_candidate.html&quot;}, '*');"><code>func_select_candidate</code></a> がその心臓部です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__FuncLookupError.html" target="wiki-view"><code>FuncLookupError</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__ParseFuncOrColumn.html" target="wiki-view"><code>ParseFuncOrColumn</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_match_argtypes.html" target="wiki-view"><code>func_match_argtypes</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_select_candidate.html" target="wiki-view"><code>func_select_candidate</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__func_get_detail.html" target="wiki-view"><code>func_get_detail</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__unify_hypothetical_args.html" target="wiki-view"><code>unify_hypothetical_args</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__make_fn_arguments.html" target="wiki-view"><code>make_fn_arguments</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__FuncNameAsType.html" target="wiki-view"><code>FuncNameAsType</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__ParseComplexProjection.html" target="wiki-view"><code>ParseComplexProjection</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncNameInternal.html" target="wiki-view"><code>LookupFuncNameInternal</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncName.html" target="wiki-view"><code>LookupFuncName</code></a></li>
+<li><a href="../../../symbols/src__backend__parser__parse_func_c__LookupFuncWithArgs.html" target="wiki-view"><code>LookupFuncWithArgs</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

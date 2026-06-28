@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/transam/slru.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/slru.c.html&quot;}, '*');">src/backend/access/transam/slru.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/slru.c.html&quot;}, '*');"><code>slru.c</code></a> は、PostgreSQLにおける「Simple LRU (SLRU)」キャッシュ機構を実装する汎用モジュールです。トランザクション状態（CLOG）、サブトランザクション（SUBTRANS）、マルチトランザクション（MultiXact）、コミット時刻（CommitTS）など、トランザクションIDに関連する永続的なメタデータをディスク上のファイルと共有メモリバッファ間で管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュール内のメタデータ永続化層の基盤です。各メタデータ管理ファイル（<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/clog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/clog.c.html&quot;}, '*');"><code>clog.c</code></a> 等）は、このモジュールを初期化し、ページ単位の読み書きを委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**バッファ管理**: 共有メモリ上の固定長スロットを用いたLRUキャッシュの制御。</li>
+<li>**I/O 抽象化**: ページ単位の物理ファイル読み書きと、エラーハンドリング。</li>
+<li>**並行制御**: バンク単位のロック（<code>bank_locks</code>）とスロット単位のロック（<code>buffer_locks</code>）による細粒度な排他制御。</li>
+<li>**ライフサイクル管理**: ページの初期化（Zeroing）、フラッシュ（WriteAll）、および不要になったセグメントファイルの削除（Truncate）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>初期化・制御</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruInit.html&quot;}, '*');"><code>SimpleLruInit</code></a>: 共有メモリ構造の初期化と、SLRU制御構造体（<a class="wiki-source-link" href="../../../../../source/src/include/access/slru.h.html#L166" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__slru_h__SlruCtl.html&quot;}, '*');"><code>SlruCtl</code></a>）の設定。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L197" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruShmemSize.html&quot;}, '*');"><code>SimpleLruShmemSize</code></a>: 必要な共有メモリサイズの計算。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L230" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruAutotuneBuffers.html&quot;}, '*');"><code>SimpleLruAutotuneBuffers</code></a>: システムの <code>shared_buffers</code> に基づくバッファ数の自動調整。</li>
+</ul>
+<h3>ページアクセス</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L501" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruReadPage.html&quot;}, '*');"><code>SimpleLruReadPage</code></a>: ページを読み込み、必要に応じてLRUアルゴリズムでスロットを確保。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L604" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruReadPage_ReadOnly.html&quot;}, '*');"><code>SimpleLruReadPage_ReadOnly</code></a>: 読み取り専用の高速パス。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L374" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruZeroPage.html&quot;}, '*');"><code>SimpleLruZeroPage</code></a>: 新規ページをゼロクリアして初期化。</li>
+</ul>
+<h3>永続化・保守</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L731" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruWritePage.html&quot;}, '*');"><code>SimpleLruWritePage</code></a>: 特定の dirty ページをフラッシュ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1321" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruWriteAll.html&quot;}, '*');"><code>SimpleLruWriteAll</code></a>: チェックポイント時などに全 dirty ページをフラッシュ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1407" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruTruncate.html&quot;}, '*');"><code>SimpleLruTruncate</code></a>: 指定したページより古いセグメントファイルを削除。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L230" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruAutotuneBuffers.html&quot;}, '*');"><code>SimpleLruAutotuneBuffers</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruInit.html&quot;}, '*');"><code>SimpleLruInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L197" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruShmemSize.html&quot;}, '*');"><code>SimpleLruShmemSize</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1525" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruDeleteSegment.html&quot;}, '*');"><code>SlruDeleteSegment</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L164" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruErrorCause.html&quot;}, '*');"><code>SlruErrorCause</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L90" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruFileName.html&quot;}, '*');"><code>SlruFileName</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1502" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruInternalDeleteSegment.html&quot;}, '*');"><code>SlruInternalDeleteSegment</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1602" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruMayDeleteSegment.html&quot;}, '*');"><code>SlruMayDeleteSegment</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1743" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteAll.html&quot;}, '*');"><code>SlruScanDirCbDeleteAll</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1727" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteCutoff.html&quot;}, '*');"><code>SlruScanDirCbDeleteCutoff</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruWriteAll.html&quot;}, '*');"><code>SlruWriteAll</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L125" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruWriteAllData.html&quot;}, '*');"><code>SlruWriteAllData</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ページ要求**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L501" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SimpleLruReadPage.html&quot;}, '*');"><code>SimpleLruReadPage</code></a> が呼ばれると、まず <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1168" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruSelectLRUPage.html&quot;}, '*');"><code>SlruSelectLRUPage</code></a> で対象ページがメモリにあるか確認。 2. **スロット確保**: メモリにない場合、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1168" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruSelectLRUPage.html&quot;}, '*');"><code>SlruSelectLRUPage</code></a> がバンク内のLRUカウンタに基づき victim スロットを決定。必要なら <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L651" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruInternalWritePage.html&quot;}, '*');"><code>SlruInternalWritePage</code></a> で既存の dirty ページを追い出す。 3. **I/O 実行**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L803" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruPhysicalReadPage.html&quot;}, '*');"><code>SlruPhysicalReadPage</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L875" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruPhysicalWritePage.html&quot;}, '*');"><code>SlruPhysicalWritePage</code></a> が <code>storage/fd.h</code> を介して物理ファイル操作を行う。 4. **ロック階層**:</p>
+<ul>
+<li><code>bank_locks</code>: バンク内の状態（LRUカウンタ等）を保護。</li>
+<li><code>buffer_locks</code>: 個別のスロットのI/O状態を保護。</li>
+<li>読み書き時はバンクロックを解放してI/Oを行い、完了後に再取得して状態を更新する。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>storage/fd.h</code>: 物理ファイルI/O。</li>
+<li><code>storage/shmem.h</code>: 共有メモリ割り当て。</li>
+<li><code>access/xlog.h</code>: WALフラッシュ（<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html#L2779" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogFlush.html&quot;}, '*');"><code>XLogFlush</code></a>）のトリガー。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a>: SLRU統計情報の更新。</li>
+<li><code>access/slru.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/guc.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/access/slru.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/slru.h.html&quot;}, '*');"><code>src/include/access/slru.h</code></a>: 公開インターフェースとデータ構造定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/clog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/clog.c.html&quot;}, '*');"><code>clog.c</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/subtrans.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/subtrans.c.html&quot;}, '*');"><code>subtrans.c</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/multixact.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/multixact.c.html&quot;}, '*');"><code>multixact.c</code></a>: 本モジュールの主要な利用者。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/include/access/slru.h.html#L61" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__slru_h__SlruSharedData.html&quot;}, '*');"><code>SlruSharedData</code></a> は共有メモリ上に配置され、全バックエンドで共有されます。<a class="wiki-source-link" href="../../../../../source/src/include/access/slru.h.html#L166" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__slru_h__SlruCtl.html&quot;}, '*');"><code>SlruCtl</code></a> は各バックエンドのローカルメモリに存在し、共有メモリへのポインタを保持します。</li>
+<li>**レイアウト**: ページ番号は <a class="wiki-source-link" href="../../../../../source/src/include/access/slru.h.html#L39" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/slru.h.html&quot;}, '*');"><code>SLRU_PAGES_PER_SEGMENT</code></a> (デフォルト32) ごとにファイルセグメントに分割されます。</li>
+<li>**エッジケース**: </li>
+<li><code>latest_page_number</code> はアトミックに管理され、LRUの追い出し対象から除外されます。</li>
+<li>クラッシュリカバリ中、存在しないセグメントへのアクセスはゼロクリアされたページとして扱われます。</li>
+<li>**浅い領域**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/slru.c.html#L1790" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__slru_c__SlruScanDirectory.html&quot;}, '*');"><code>SlruScanDirectory</code></a> はディレクトリ走査を行う汎用関数ですが、ロックを保持しないため、呼び出し側で適切な排他制御（チェックポイント中など）が必要です。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruFileName.html" target="wiki-view"><code>SlruFileName</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruWriteAllData.html" target="wiki-view"><code>SlruWriteAllData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruWriteAll.html" target="wiki-view"><code>SlruWriteAll</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruErrorCause.html" target="wiki-view"><code>SlruErrorCause</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruShmemSize.html" target="wiki-view"><code>SimpleLruShmemSize</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruAutotuneBuffers.html" target="wiki-view"><code>SimpleLruAutotuneBuffers</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SimpleLruInit.html" target="wiki-view"><code>SimpleLruInit</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruInternalDeleteSegment.html" target="wiki-view"><code>SlruInternalDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruDeleteSegment.html" target="wiki-view"><code>SlruDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruMayDeleteSegment.html" target="wiki-view"><code>SlruMayDeleteSegment</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteCutoff.html" target="wiki-view"><code>SlruScanDirCbDeleteCutoff</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__slru_c__SlruScanDirCbDeleteAll.html" target="wiki-view"><code>SlruScanDirCbDeleteAll</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

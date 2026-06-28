@@ -1,0 +1,119 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/replication/logical/snapbuild.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/snapbuild.c.html&quot;}, '*');">src/backend/replication/logical/snapbuild.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/snapbuild.c.html&quot;}, '*');"><code>snapbuild.c</code></a> は、論理デコーディングにおいてWALから「歴史的カタログスナップショット」を構築・管理するためのインフラです。WALレコードをデコードする際、その時点のシステムカタログの状態を再現するために、MVCCスナップショットをWALストリームから動的に再構築します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/replication/logical</code> サブシステムにおいて、<a class="wiki-source-link" href="../../../../../source/src/include/replication/reorderbuffer.h.html#L471" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__replication__reorderbuffer_h__ReorderBuffer.html&quot;}, '*');"><code>ReorderBuffer</code></a> がトランザクションの変更を保持するのに対し、<code>SnapBuild</code> はそれらの変更がどのカタログ状態に対して適用されるべきかを定義する「可視性制御」の役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**スナップショット状態遷移**: WALの <a class="wiki-source-link" href="../../../../../source/src/include/storage/standbydefs.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__standbydefs_h__xl_running_xacts.html&quot;}, '*');"><code>xl_running_xacts</code></a> レコードを解析し、デコーディング可能な状態（<code>CONSISTENT</code>）へ至るまでの状態遷移を管理。</li>
+<li>**カタログ可視性の再現**: カタログ変更トランザクションを追跡し、特定のLSNにおけるカタログの可視性を保証するスナップショットを構築。</li>
+<li>**永続化と復旧**: 構築したスナップショットをディスクにシリアライズし、再起動時やスロットの再開時に復元。</li>
+<li>**リソース管理**: スナップショットの参照カウント管理および、不要になった古いスナップショットファイルのクリーンアップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクル管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L184" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__AllocateSnapshotBuilder.html&quot;}, '*');"><code>AllocateSnapshotBuilder</code></a>: <code>SnapBuild</code> 構造体の初期化とメモリコンテキストの作成。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L232" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__FreeSnapshotBuilder.html&quot;}, '*');"><code>FreeSnapshotBuilder</code></a>: スナップショット構築器の破棄とリソース解放。</li>
+</ul>
+<h3>スナップショット操作</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildBuildSnapshot.html&quot;}, '*');"><code>SnapBuildBuildSnapshot</code></a>: 現在の <code>committed</code> トランザクションリストに基づき、新しい <code>SNAPSHOT_HISTORIC_MVCC</code> を構築。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L439" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildInitialSnapshot.html&quot;}, '*');"><code>SnapBuildInitialSnapshot</code></a>: スロット作成時に、WALから構築したスナップショットを通常のMVCCスナップショットへ変換。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L578" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildGetOrBuildSnapshot.html&quot;}, '*');"><code>SnapBuildGetOrBuildSnapshot</code></a>: 現在のトランザクション用のスナップショットを取得または生成。</li>
+</ul>
+<h3>状態遷移とWAL処理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L1135" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildProcessRunningXacts.html&quot;}, '*');"><code>SnapBuildProcessRunningXacts</code></a>: <a class="wiki-source-link" href="../../../../../source/src/include/storage/standbydefs.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__standbydefs_h__xl_running_xacts.html&quot;}, '*');"><code>xl_running_xacts</code></a> を読み込み、<code>START</code> → <code>BUILDING_SNAPSHOT</code> → <code>FULL_SNAPSHOT</code> → <code>CONSISTENT</code> の状態遷移を制御。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L939" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildCommitTxn.html&quot;}, '*');"><code>SnapBuildCommitTxn</code></a>: トランザクションコミット時に、カタログ変更の有無を判定し、必要に応じてスナップショットを更新・配布。</li>
+</ul>
+<h3>永続化</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L1496" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSerialize.html&quot;}, '*');"><code>SnapBuildSerialize</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L1840" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildRestore.html&quot;}, '*');"><code>SnapBuildRestore</code></a>: スナップショット状態のディスクへの書き出しと読み込み。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L1969" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__CheckPointSnapBuild.html&quot;}, '*');"><code>CheckPointSnapBuild</code></a>: 不要になった古いスナップショットファイルの削除。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L184" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__AllocateSnapshotBuilder.html&quot;}, '*');"><code>AllocateSnapshotBuilder</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L232" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__FreeSnapshotBuilder.html&quot;}, '*');"><code>FreeSnapshotBuilder</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildBuildSnapshot.html&quot;}, '*');"><code>SnapBuildBuildSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L276" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildCurrentState.html&quot;}, '*');"><code>SnapBuildCurrentState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L251" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildFreeSnapshot.html&quot;}, '*');"><code>SnapBuildFreeSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L285" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildGetTwoPhaseAt.html&quot;}, '*');"><code>SnapBuildGetTwoPhaseAt</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L439" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildInitialSnapshot.html&quot;}, '*');"><code>SnapBuildInitialSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L626" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildResetExportedSnapshotState.html&quot;}, '*');"><code>SnapBuildResetExportedSnapshotState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L294" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSetTwoPhaseAt.html&quot;}, '*');"><code>SnapBuildSetTwoPhaseAt</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapDecRefcount.html&quot;}, '*');"><code>SnapBuildSnapDecRefcount</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L315" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapIncRefcount.html&quot;}, '*');"><code>SnapBuildSnapIncRefcount</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L303" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildXactNeedsSkip.html&quot;}, '*');"><code>SnapBuildXactNeedsSkip</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L184" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__AllocateSnapshotBuilder.html&quot;}, '*');"><code>AllocateSnapshotBuilder</code></a> で専用のメモリコンテキストを確保。 2. **状態遷移**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L1135" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildProcessRunningXacts.html&quot;}, '*');"><code>SnapBuildProcessRunningXacts</code></a> がWALをスキャンし、<code>running_xacts</code> レコードに基づいて <a class="wiki-source-link" href="../../../../../source/src/include/replication/snapbuild.h.html#L22" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__replication__snapbuild_h__SnapBuildState.html&quot;}, '*');"><code>SnapBuildState</code></a> を進める。 3. **変更追跡**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L939" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildCommitTxn.html&quot;}, '*');"><code>SnapBuildCommitTxn</code></a> がコミットレコードを処理し、カタログ変更を行ったXIDを <code>committed</code> リストに追加。 4. **スナップショット構築**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildBuildSnapshot.html&quot;}, '*');"><code>SnapBuildBuildSnapshot</code></a> が <code>committed</code> リストをソートし、<a class="wiki-source-link" href="../../../../../source/src/include/utils/snapshot.h.html#L138" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__snapshot_h__SnapshotData.html&quot;}, '*');"><code>SnapshotData</code></a> を生成。 5. **配布**: <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L730" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildDistributeSnapshotAndInval.html&quot;}, '*');"><code>SnapBuildDistributeSnapshotAndInval</code></a> が、現在実行中のトランザクションに対して新しいスナップショットと無効化メッセージを配布し、カタログキャッシュの整合性を保つ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>replication/reorderbuffer.h</code>: トランザクションの変更蓄積とカタログ変更の追跡。</li>
+<li><code>access/heapam_xlog.h</code>: <a class="wiki-source-link" href="../../../../../source/src/include/access/heapam_xlog.h.html#L66" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/heapam_xlog.h.html&quot;}, '*');"><code>XLOG_HEAP2_NEW_CID</code></a> 等のWALレコード解析。</li>
+<li><code>storage/procarray.h</code>: <a class="wiki-source-link" href="../../../../../source/src/include/storage/standbydefs.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__standbydefs_h__xl_running_xacts.html&quot;}, '*');"><code>xl_running_xacts</code></a> の解析とXID horizonの管理。</li>
+<li><code>utils/snapshot.h</code>: <a class="wiki-source-link" href="../../../../../source/src/include/utils/snapshot.h.html#L138" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__snapshot_h__SnapshotData.html&quot;}, '*');"><code>SnapshotData</code></a> 構造体と可視性判定の基盤。</li>
+<li><code>access/transam.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>common/file_utils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/snapbuild_internal.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/standby.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/reorderbuffer.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/reorderbuffer.c.html&quot;}, '*');"><code>reorderbuffer.c</code></a>: <code>SnapBuild</code> が構築したスナップショットを実際に利用してデコードを行う。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/decode.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/decode.c.html&quot;}, '*');"><code>decode.c</code></a>: WALレコードを読み込み、<code>SnapBuild</code> の各関数を呼び出すメインループ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/logical.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/logical/logical.c.html&quot;}, '*');"><code>logical.c</code></a>: 論理レプリケーションスロットの管理と <code>SnapBuild</code> の連携。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>SnapBuild</code> は独自のメモリコンテキストを持ち、<a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L232" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__FreeSnapshotBuilder.html&quot;}, '*');"><code>FreeSnapshotBuilder</code></a> で一括解放されます。スナップショット自体は参照カウント (<code>active_count</code>) で管理され、<a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L327" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapDecRefcount.html&quot;}, '*');"><code>SnapBuildSnapDecRefcount</code></a> を通じて解放されます。</li>
+<li>**不変条件**: <code>CONSISTENT</code> 状態に達するまでは、カタログのデコードは行えません。また、<code>SnapBuild</code> が構築するスナップショットは <code>SNAPSHOT_HISTORIC_MVCC</code> 型であり、通常のMVCCスナップショットとは可視性判定ロジックが異なります。</li>
+<li>**エッジケース**: <a class="wiki-source-link" href="../../../../../source/src/include/storage/standbydefs.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__standbydefs_h__xl_running_xacts.html&quot;}, '*');"><code>xl_running_xacts</code></a> が存在しない場合や、カタログ変更が頻繁に発生する場合のパフォーマンスに注意が必要です。特に <a class="wiki-source-link" href="../../../../../source/src/backend/replication/logical/snapbuild.c.html#L862" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__snapbuild_c__SnapBuildPurgeOlderTxn.html&quot;}, '*');"><code>SnapBuildPurgeOlderTxn</code></a> によるリストの整理は、トランザクション数が多い場合にコストがかかります。</li>
+<li>**省略箇所**: <code>SnapBuild</code> 内部の <code>bsearch</code> や <a class="wiki-source-link" href="../../../../../source/src/include/port.h.html#L479" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port.h.html&quot;}, '*');"><code>qsort</code></a> を用いたXIDリストの操作は、コードの可読性を優先して詳細なアルゴリズム解説を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__AllocateSnapshotBuilder.html" target="wiki-view"><code>AllocateSnapshotBuilder</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__FreeSnapshotBuilder.html" target="wiki-view"><code>FreeSnapshotBuilder</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildFreeSnapshot.html" target="wiki-view"><code>SnapBuildFreeSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildCurrentState.html" target="wiki-view"><code>SnapBuildCurrentState</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildGetTwoPhaseAt.html" target="wiki-view"><code>SnapBuildGetTwoPhaseAt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSetTwoPhaseAt.html" target="wiki-view"><code>SnapBuildSetTwoPhaseAt</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildXactNeedsSkip.html" target="wiki-view"><code>SnapBuildXactNeedsSkip</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapIncRefcount.html" target="wiki-view"><code>SnapBuildSnapIncRefcount</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildSnapDecRefcount.html" target="wiki-view"><code>SnapBuildSnapDecRefcount</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildBuildSnapshot.html" target="wiki-view"><code>SnapBuildBuildSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildInitialSnapshot.html" target="wiki-view"><code>SnapBuildInitialSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__replication__logical__snapbuild_c__SnapBuildResetExportedSnapshotState.html" target="wiki-view"><code>SnapBuildResetExportedSnapshotState</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

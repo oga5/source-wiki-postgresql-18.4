@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/bin/pg_basebackup/pg_createsubscriber.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_basebackup/pg_createsubscriber.c.html&quot;}, '*');">src/bin/pg_basebackup/pg_createsubscriber.c</a></h1>
+<h2>概要</h2>
+<p><code>pg_createsubscriber</code> は、既存の物理スタンバイサーバーを論理レプリケーションのサブスクライバー（ターゲット）へ変換するためのツールです。物理レプリケーションの停止、論理レプリケーション用オブジェクト（パブリケーション、スロット、サブスクリプション）の作成、およびシステム識別子のリセットを自動化します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/bin/pg_basebackup</code> サブシステムの一部として、物理バックアップから論理レプリケーションへの移行という特殊な運用タスクを担います。<code>streamutil</code> や <code>receivelog</code> とは異なり、ストリーミングそのものではなく、サーバーのライフサイクル管理（<code>pg_ctl</code>）とカタログ操作を主軸とします。</p>
+<h2>責務</h2>
+<ul>
+<li>**環境検証**: パブリッシャーとサブスクライバーの構成（<a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L132" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>wal_level</code></a>, <a class="wiki-source-link" href="../../../../source/src/backend/replication/slot.c.html#L150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/replication/slot.c.html&quot;}, '*');"><code>max_replication_slots</code></a> 等）が論理レプリケーションに適しているかを確認。</li>
+<li>**レプリケーション設定**: パブリッシャー側でのパブリケーションと論理レプリケーションスロットの作成。</li>
+<li>**リカバリ制御**: 物理スタンバイを特定の LSN で昇格させるためのリカバリ設定（<code>recovery_target_lsn</code> 等）の注入。</li>
+<li>**サブスクリプション構築**: サブスクライバー側でのサブスクリプション作成、レプリケーション開始位置の調整、および不要なオブジェクトのクリーンアップ。</li>
+<li>**システム識別子管理**: 変換後のサーバーが元のパブリッシャーと混同されないよう、<code>pg_resetwal</code> を用いたシステム識別子の変更。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>設定・コンテキスト管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L35" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__CreateSubscriberOptions.html&quot;}, '*');"><code>CreateSubscriberOptions</code></a>: コマンドライン引数を保持する構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html&quot;}, '*');"><code>LogicalRepInfo</code></a>: データベースごとのパブリケーション/サブスクリプション情報を保持。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfos.html&quot;}, '*');"><code>LogicalRepInfos</code></a>: 全データベースで共有される設定（<a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_recvlogical.c.html#L44" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_basebackup/pg_recvlogical.c.html&quot;}, '*');"><code>two_phase</code></a> 等）と <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html&quot;}, '*');"><code>LogicalRepInfo</code></a> の配列。</li>
+</ul>
+<h3>サーバー制御・検証</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1510" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__start_standby_server.html&quot;}, '*');"><code>start_standby_server</code></a> / <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1558" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__stop_standby_server.html&quot;}, '*');"><code>stop_standby_server</code></a>: <code>pg_ctl</code> を呼び出し、制限付きアクセスモードでサーバーを起動・停止。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L876" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_publisher.html&quot;}, '*');"><code>check_publisher</code></a> / <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1015" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_subscriber.html&quot;}, '*');"><code>check_subscriber</code></a>: サーバーの GUC 設定を検証し、論理レプリケーションの要件を満たしているかチェック。</li>
+</ul>
+<h3>オブジェクト操作</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L769" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__setup_publisher.html&quot;}, '*');"><code>setup_publisher</code></a>: パブリケーションとスロットを作成し、同期 LSN を取得。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__setup_subscriber.html&quot;}, '*');"><code>setup_subscriber</code></a>: サブスクリプションを作成し、<a class="wiki-source-link" href="../../../../source/src/backend/replication/logical/origin.c.html#L1478" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__replication__logical__origin_c__pg_replication_origin_advance.html&quot;}, '*');"><code>pg_replication_origin_advance</code></a> で開始位置を調整。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L657" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__modify_subscriber_sysid.html&quot;}, '*');"><code>modify_subscriber_sysid</code></a>: <code>pg_resetwal</code> を実行し、システム識別子を更新。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L35" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__CreateSubscriberOptions.html&quot;}, '*');"><code>CreateSubscriberOptions</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html&quot;}, '*');"><code>LogicalRepInfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfos.html&quot;}, '*');"><code>LogicalRepInfos</code></a></li>
+<li><code>WaitPMResult</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L406" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_data_directory.html&quot;}, '*');"><code>check_data_directory</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L176" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__cleanup_objects_atexit.html&quot;}, '*');"><code>cleanup_objects_atexit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__concat_conninfo_dbname.html&quot;}, '*');"><code>concat_conninfo_dbname</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L535" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__connect_database.html&quot;}, '*');"><code>connect_database</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_base_conninfo.html&quot;}, '*');"><code>get_base_conninfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L370" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_exec_path.html&quot;}, '*');"><code>get_exec_path</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L344" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_sub_conninfo.html&quot;}, '*');"><code>get_sub_conninfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L462" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__store_pub_sub_info.html&quot;}, '*');"><code>store_pub_sub_info</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: 引数解析後、<a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L462" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__store_pub_sub_info.html&quot;}, '*');"><code>store_pub_sub_info</code></a> で各 DB の接続情報を構築。 2. **検証**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L876" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_publisher.html&quot;}, '*');"><code>check_publisher</code></a> と <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1015" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_subscriber.html&quot;}, '*');"><code>check_subscriber</code></a> でレプリケーション要件を検証。 3. **準備**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L769" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__setup_publisher.html&quot;}, '*');"><code>setup_publisher</code></a> でパブリッシャー側にスロットを作成し、昇格の基準となる LSN を取得。 4. **リカバリ設定**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1241" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__setup_recovery.html&quot;}, '*');"><code>setup_recovery</code></a> で <code>recovery.conf</code>（または <code>postgresql.auto.conf</code>）を生成し、昇格ターゲットを設定。 5. **昇格**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1510" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__start_standby_server.html&quot;}, '*');"><code>start_standby_server</code></a> でサーバーを起動し、<a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1582" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__wait_for_end_recovery.html&quot;}, '*');"><code>wait_for_end_recovery</code></a> で昇格完了を待機。 6. **論理構築**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L1205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__setup_subscriber.html&quot;}, '*');"><code>setup_subscriber</code></a> でサブスクリプションを有効化し、レプリケーションを開始。 7. **最終化**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L657" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__modify_subscriber_sysid.html&quot;}, '*');"><code>modify_subscriber_sysid</code></a> でシステム識別子をリセットし、物理レプリケーションとの関連を完全に断つ。</p>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/interfaces/libpq/libpq-fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/interfaces/libpq/libpq-fe.h.html&quot;}, '*');"><code>libpq-fe.h</code></a>: サーバーとの通信および SQL 実行。</li>
+<li><code>fe_utils/recovery_gen.h</code>: リカバリ設定の生成。</li>
+<li><code>common/controldata_utils.h</code>: <code>pg_control</code> ファイルの読み書き。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/getopt_long.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/getopt_long.h.html&quot;}, '*');"><code>getopt_long.h</code></a>: コマンドライン引数解析。</li>
+<li><code>common/connect.h</code></li>
+<li><code>common/logging.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>common/restricted_token.h</code></li>
+<li><code>fe_utils/simple_list.h</code></li>
+<li><code>fe_utils/string_utils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres_fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres_fe.h.html&quot;}, '*');"><code>postgres_fe.h</code></a></li>
+<li><code>sys/stat.h</code></li>
+<li><code>sys/time.h</code></li>
+<li><code>sys/wait.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/streamutil.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_basebackup/streamutil.c.html&quot;}, '*');"><code>src/bin/pg_basebackup/streamutil.c</code></a>: 接続管理の共通基盤。</li>
+<li><code>src/bin/pg_ctl/</code>: サーバー起動・停止のバックエンド。</li>
+<li><code>src/bin/pg_resetwal/</code>: システム識別子リセットのバックエンド。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L53" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html&quot;}, '*');"><code>LogicalRepInfo</code></a> 配列は <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L142" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_basebackup/pg_createsubscriber.c.html&quot;}, '*');"><code>num_dbs</code></a> に基づき動的に確保されます。エラー発生時は <a class="wiki-source-link" href="../../../../source/src/bin/pg_basebackup/pg_createsubscriber.c.html#L176" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_basebackup__pg_createsubscriber_c__cleanup_objects_atexit.html&quot;}, '*');"><code>cleanup_objects_atexit</code></a> が登録されており、作成済みのパブリケーションやスロットを可能な限り削除しようと試みます。</li>
+<li>**制約**: 本ツールは物理スタンバイが停止している状態で実行する必要があります。また、昇格後のサーバーは物理レプリケーションのターゲットとしては使用できなくなるため、失敗時のリカバリには物理バックアップからの再構築が必要です。</li>
+<li>**設計の意図**: <code>pg_ctl</code> を介してサーバーを再起動する際、<code>listen_addresses=&#x27;&#x27;</code> や <code>max_logical_replication_workers=0</code> を指定することで、変換プロセス中の意図しない外部接続やレプリケーション開始を防止しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__CreateSubscriberOptions.html" target="wiki-view"><code>CreateSubscriberOptions</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfo.html" target="wiki-view"><code>LogicalRepInfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__LogicalRepInfos.html" target="wiki-view"><code>LogicalRepInfos</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__WaitPMResult.html" target="wiki-view"><code>WaitPMResult</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__cleanup_objects_atexit.html" target="wiki-view"><code>cleanup_objects_atexit</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_base_conninfo.html" target="wiki-view"><code>get_base_conninfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_sub_conninfo.html" target="wiki-view"><code>get_sub_conninfo</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__get_exec_path.html" target="wiki-view"><code>get_exec_path</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__check_data_directory.html" target="wiki-view"><code>check_data_directory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__concat_conninfo_dbname.html" target="wiki-view"><code>concat_conninfo_dbname</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__store_pub_sub_info.html" target="wiki-view"><code>store_pub_sub_info</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_basebackup__pg_createsubscriber_c__connect_database.html" target="wiki-view"><code>connect_database</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

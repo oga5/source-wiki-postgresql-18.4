@@ -1,0 +1,145 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/catalog/pg_shdepend.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/pg_shdepend.c.html&quot;}, '*');">src/backend/catalog/pg_shdepend.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/pg_shdepend.c.html&quot;}, '*');"><code>pg_shdepend.c</code></a> は、データベースクラスタ全体で共有されるオブジェクト（ロール、テーブルスペース、データベースなど）と、それらに依存するオブジェクト間の関係を管理する <code>pg_shdepend</code> システムカタログの操作を担います。<code>pg_depend</code> がデータベースローカルな依存関係を扱うのに対し、本ファイルはクラスタ横断的な依存関係（特に所有権や権限）を追跡し、<code>DROP</code> や <code>REASSIGN OWNED</code> などの DDL 操作の整合性を保証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/catalog</code> サブシステムの一部として、オブジェクトのライフサイクル管理における「共有依存関係」のレイヤーを提供します。<code>commands/</code> 以下の DDL ハンドラ（<a class="wiki-source-link" href="../../../../source/src/backend/commands/dbcommands.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/dbcommands.c.html&quot;}, '*');"><code>dbcommands.c</code></a>, <a class="wiki-source-link" href="../../../../source/src/backend/commands/tablecmds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/tablecmds.c.html&quot;}, '*');"><code>tablecmds.c</code></a> 等）から呼び出され、オブジェクト削除時の連鎖チェックや、所有者変更時の依存関係更新を抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**依存関係の記録**: オブジェクト間の共有依存関係（所有者、ACL、テーブルスペース等）の挿入・更新・削除。</li>
+<li>**削除整合性の検証**: オブジェクト削除時に、依存する共有オブジェクトが存在しないかを確認し、エラーメッセージを生成。</li>
+<li>**一括操作のサポート**: <code>DROP OWNED</code> や <code>REASSIGN OWNED</code> による、特定のロールに関連する全オブジェクトの特定と一括処理。</li>
+<li>**テンプレートデータベースの複製**: 新規データベース作成時に、テンプレートデータベースの共有依存関係をコピー。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>依存関係操作（パブリックAPI）</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordSharedDependencyOn.html&quot;}, '*');"><code>recordSharedDependencyOn</code></a>: 2つのオブジェクト間の共有依存関係を記録。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L167" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordDependencyOnOwner.html&quot;}, '*');"><code>recordDependencyOnOwner</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L369" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordDependencyOnTablespace.html&quot;}, '*');"><code>recordDependencyOnTablespace</code></a>: 特定の属性（所有者、テーブルスペース）の依存関係を記録するラッパー。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L315" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__changeDependencyOnOwner.html&quot;}, '*');"><code>changeDependencyOnOwner</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L390" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__changeDependencyOnTablespace.html&quot;}, '*');"><code>changeDependencyOnTablespace</code></a>: 属性変更に伴う依存関係の更新。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L490" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__updateAclDependencies.html&quot;}, '*');"><code>updateAclDependencies</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L511" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__updateInitAclDependencies.html&quot;}, '*');"><code>updateInitAclDependencies</code></a>: ACL 更新時の依存関係の同期。</li>
+</ul>
+<h3>削除・一括処理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L675" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__checkSharedDependencies.html&quot;}, '*');"><code>checkSharedDependencies</code></a>: オブジェクト削除前に依存関係をチェックし、エラー詳細を生成。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1341" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepDropOwned.html&quot;}, '*');"><code>shdepDropOwned</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1529" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned.html&quot;}, '*');"><code>shdepReassignOwned</code></a>: ロールに関連するオブジェクトの削除または所有者変更。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L998" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__dropDatabaseDependencies.html&quot;}, '*');"><code>dropDatabaseDependencies</code></a>: データベース削除時の関連レコードクリーンアップ。</li>
+</ul>
+<h3>内部ヘルパー</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1068" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepAddDependency.html&quot;}, '*');"><code>shdepAddDependency</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1123" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepDropDependency.html&quot;}, '*');"><code>shdepDropDependency</code></a>: <code>pg_shdepend</code> への低レベルな挿入・削除。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepChangeDep.html&quot;}, '*');"><code>shdepChangeDep</code></a>: 既存の依存関係を更新するワークホース。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1210" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepLockAndCheckObject.html&quot;}, '*');"><code>shdepLockAndCheckObject</code></a>: 依存先オブジェクトの存在確認とロック。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L74" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__ShDependObjectInfo.html&quot;}, '*');"><code>ShDependObjectInfo</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L67" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__SharedDependencyObjectType.html&quot;}, '*');"><code>SharedDependencyObjectType</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L315" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__changeDependencyOnOwner.html&quot;}, '*');"><code>changeDependencyOnOwner</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L420" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__getOidListDiff.html&quot;}, '*');"><code>getOidListDiff</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L167" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordDependencyOnOwner.html&quot;}, '*');"><code>recordDependencyOnOwner</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordSharedDependencyOn.html&quot;}, '*');"><code>recordSharedDependencyOn</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L600" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__remoteDep.html&quot;}, '*');"><code>remoteDep</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L609" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shared_dependency_comparator.html&quot;}, '*');"><code>shared_dependency_comparator</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepChangeDep.html&quot;}, '*');"><code>shdepChangeDep</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1733" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_InitAcl.html&quot;}, '*');"><code>shdepReassignOwned_InitAcl</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1646" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_Owner.html&quot;}, '*');"><code>shdepReassignOwned_Owner</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L511" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__updateInitAclDependencies.html&quot;}, '*');"><code>updateInitAclDependencies</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **DDL 実行時**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__recordSharedDependencyOn.html&quot;}, '*');"><code>recordSharedDependencyOn</code></a> 等が呼ばれ、<code>pg_shdepend</code> を <a class="wiki-source-link" href="../../../../source/src/include/storage/lockdefs.h.html#L38" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>RowExclusiveLock</code></a> で開きます。 2. **更新フロー**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepChangeDep.html&quot;}, '*');"><code>shdepChangeDep</code></a> がインデックス（<code>SharedDependDependerIndexId</code>）を使用して既存レコードを検索し、存在すれば <a class="wiki-source-link" href="../../../../source/src/backend/catalog/indexing.c.html#L312" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__indexing_c__CatalogTupleUpdate.html&quot;}, '*');"><code>CatalogTupleUpdate</code></a>、なければ <a class="wiki-source-link" href="../../../../source/src/backend/catalog/indexing.c.html#L232" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__indexing_c__CatalogTupleInsert.html&quot;}, '*');"><code>CatalogTupleInsert</code></a> を実行します。 3. **削除チェック**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L675" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__checkSharedDependencies.html&quot;}, '*');"><code>checkSharedDependencies</code></a> は <code>SharedDependReferenceIndexId</code> を使用して、削除対象オブジェクトを「参照している」レコードをスキャンします。見つかった依存オブジェクトは <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L74" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__ShDependObjectInfo.html&quot;}, '*');"><code>ShDependObjectInfo</code></a> 構造体に格納され、<a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L609" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shared_dependency_comparator.html&quot;}, '*');"><code>shared_dependency_comparator</code></a> でソートされた後、エラーメッセージとして整形されます。 4. **一括処理**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1341" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepDropOwned.html&quot;}, '*');"><code>shdepDropOwned</code></a> は、指定されたロールを参照する全レコードをスキャンし、<code>ObjectAddresses</code> リストに収集してから <a class="wiki-source-link" href="../../../../source/src/backend/catalog/dependency.c.html#L331" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__dependency_c__performMultipleDeletions.html&quot;}, '*');"><code>performMultipleDeletions</code></a> で一括削除します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>catalog/pg_shdepend.h</code>: カタログ定義とインデックス定義。</li>
+<li><code>access/table.h</code> / <code>access/genam.h</code>: テーブルアクセスおよびインデックススキャン用。</li>
+<li><code>utils/syscache.h</code>: オブジェクトの存在確認用。</li>
+<li><code>commands/</code> 各種ヘッダ: <code>ALTER</code> や <code>DROP</code> 処理の呼び出し用。</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/catalog.h</code></li>
+<li><code>catalog/dependency.h</code></li>
+<li><code>catalog/indexing.h</code></li>
+<li><code>catalog/pg_auth_members.h</code></li>
+<li><code>catalog/pg_authid.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>catalog/pg_conversion.h</code></li>
+<li><code>catalog/pg_database.h</code></li>
+<li><code>catalog/pg_default_acl.h</code></li>
+<li><code>catalog/pg_event_trigger.h</code></li>
+<li><code>catalog/pg_extension.h</code></li>
+<li><code>catalog/pg_foreign_data_wrapper.h</code></li>
+<li><code>catalog/pg_foreign_server.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_largeobject.h</code></li>
+<li><code>catalog/pg_namespace.h</code></li>
+<li><code>catalog/pg_opclass.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_opfamily.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_statistic_ext.h</code></li>
+<li><code>catalog/pg_subscription.h</code></li>
+<li><code>catalog/pg_tablespace.h</code></li>
+<li><code>catalog/pg_ts_config.h</code></li>
+<li><code>catalog/pg_ts_dict.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>catalog/pg_user_mapping.h</code></li>
+<li><code>commands/alter.h</code></li>
+<li><code>commands/dbcommands.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>commands/event_trigger.h</code></li>
+<li><code>commands/policy.h</code></li>
+<li><code>commands/publicationcmds.h</code></li>
+<li><code>commands/schemacmds.h</code></li>
+<li><code>commands/subscriptioncmds.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/tablespace.h</code></li>
+<li><code>commands/typecmds.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/memutils.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/catalog/pg_shdepend.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/catalog/pg_shdepend.h.html&quot;}, '*');"><code>src/include/catalog/pg_shdepend.h</code></a>: カタログスキーマ定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/catalog/dependency.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/catalog/dependency.c.html&quot;}, '*');"><code>src/backend/catalog/dependency.c</code></a>: ローカルな依存関係（<code>pg_depend</code>）の管理。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/commands/dbcommands.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/commands/dbcommands.c.html&quot;}, '*');"><code>src/backend/commands/dbcommands.c</code></a>: データベース削除時の依存関係処理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1529" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned.html&quot;}, '*');"><code>shdepReassignOwned</code></a> 等のループ処理では、メモリリークを防ぐために <a class="wiki-source-link" href="../../../../source/src/include/utils/memutils.h.html#L124" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/memutils.h.html&quot;}, '*');"><code>AllocSetContextCreate</code></a> を使用してコンテキストを切り替えています。</li>
+<li>**ロック**: <code>pg_shdepend</code> への操作は常に適切なロック（<a class="wiki-source-link" href="../../../../source/src/include/storage/lockdefs.h.html#L38" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/storage/lockdefs.h.html&quot;}, '*');"><code>RowExclusiveLock</code></a> 等）を伴います。また、依存先オブジェクトの存在確認には <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L1210" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__shdepLockAndCheckObject.html&quot;}, '*');"><code>shdepLockAndCheckObject</code></a> を経由して同時削除を防いでいます。</li>
+<li>**制約**: <code>pg_shdepend</code> は「共有オブジェクト」への依存を記録するため、<code>dbid</code> が 0 のレコードはクラスタ全体で有効です。</li>
+<li>**未実装/浅い部分**: <a class="wiki-source-link" href="../../../../source/src/backend/catalog/pg_shdepend.c.html#L600" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__catalog__pg_shdepend_c__remoteDep.html&quot;}, '*');"><code>remoteDep</code></a> の管理は単純なリスト構造で行われており、データベース数が多い場合のパフォーマンスは考慮されていません（現状の想定では十分と判断）。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__SharedDependencyObjectType.html" target="wiki-view"><code>SharedDependencyObjectType</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__ShDependObjectInfo.html" target="wiki-view"><code>ShDependObjectInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__recordSharedDependencyOn.html" target="wiki-view"><code>recordSharedDependencyOn</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__recordDependencyOnOwner.html" target="wiki-view"><code>recordDependencyOnOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepChangeDep.html" target="wiki-view"><code>shdepChangeDep</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__changeDependencyOnOwner.html" target="wiki-view"><code>changeDependencyOnOwner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__getOidListDiff.html" target="wiki-view"><code>getOidListDiff</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__updateInitAclDependencies.html" target="wiki-view"><code>updateInitAclDependencies</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__remoteDep.html" target="wiki-view"><code>remoteDep</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shared_dependency_comparator.html" target="wiki-view"><code>shared_dependency_comparator</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_Owner.html" target="wiki-view"><code>shdepReassignOwned_Owner</code></a></li>
+<li><a href="../../../symbols/src__backend__catalog__pg_shdepend_c__shdepReassignOwned_InitAcl.html" target="wiki-view"><code>shdepReassignOwned_InitAcl</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

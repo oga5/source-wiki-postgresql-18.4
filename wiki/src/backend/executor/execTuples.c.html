@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/executor/execTuples.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');">src/backend/executor/execTuples.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>execTuples.c</code></a> は、PostgreSQL のクエリ実行エンジンにおけるデータ伝播の基盤である <code>TupleTableSlot</code> (TTS) の管理と操作を担うモジュールです。物理的なタプル（ヒープ、最小タプル、ディスク上のタプル）と、実行エンジン内で効率的に扱われる「仮想タプル」を抽象化し、ゼロコピーに近いデータ受け渡しを実現します。</p>
+<h2>モジュール内での役割</h2>
+<p>実行エンジン（<code>src/backend/executor</code>）において、プランノード間のデータ受け渡しを仲介します。各プランノードはタプルそのものではなく、このスロットを介してデータにアクセスすることで、メモリコピーの削減やバッファピンの適切な管理を行います。</p>
+<h2>責務</h2>
+<ul>
+<li>**スロットのライフサイクル管理**: スロットの作成、初期化、リセット、および破棄。</li>
+<li>**データ抽象化**: 物理タプル（<code>HeapTuple</code>, <a class="wiki-source-link" href="../../../../source/src/include/access/htup.h.html#L27" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__htup_h__MinimalTuple.html&quot;}, '*');"><code>MinimalTuple</code></a>）と仮想タプルの変換およびアクセス。</li>
+<li>**属性の遅延評価（Deforming）**: 必要になるまでタプルの属性を抽出しない「遅延デフォーミング」の実行。</li>
+<li>**メモリ管理**: スロットが所有するタプルのメモリ解放（<code>shouldFree</code> フラグによる制御）およびメモリコンテキストの管理。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>スロット操作インターフェース (<a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html#L111" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__tuptable_h__TupleTableSlotOps.html&quot;}, '*');"><code>TupleTableSlotOps</code></a>)</h3>
+<p>スロットの型ごとに定義された関数ポインタ群。</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L84" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>TTSOpsVirtual</code></a>: 仮想タプル用。メモリ上に展開された Datum を保持。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L85" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>TTSOpsHeapTuple</code></a>: 通常のヒープタプル用。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L86" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>TTSOpsMinimalTuple</code></a>: 最小タプル（ヘッダを簡略化したもの）用。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L87" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>TTSOpsBufferHeapTuple</code></a>: バッファ上のタプル用。バッファピンの管理を伴う。</li>
+</ul>
+<h3>スロット作成・管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__MakeTupleTableSlot.html&quot;}, '*');"><code>MakeTupleTableSlot</code></a>: スロットの生成と初期化。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1379" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecResetTupleTable.html&quot;}, '*');"><code>ExecResetTupleTable</code></a>: 実行終了時にスロット群のリソース（ピン、メモリ）を解放。</li>
+<li><code>ExecStore...</code>: 各種タプルをスロットに格納する関数群。</li>
+</ul>
+<h3>属性アクセス</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html#L358" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__tuptable_h__slot_getsomeattrs.html&quot;}, '*');"><code>slot_getsomeattrs</code></a>: スロット内のタプルから指定された数までの属性を抽出。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1121" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__slot_deform_heap_tuple.html&quot;}, '*');"><code>slot_deform_heap_tuple</code></a>: ヒープタプルの属性抽出（高速化のためインライン化された内部関数を使用）。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1359" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecAllocTableSlot.html&quot;}, '*');"><code>ExecAllocTableSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1442" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecDropSingleTupleTableSlot.html&quot;}, '*');"><code>ExecDropSingleTupleTableSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L2019" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitExtraTupleSlot.html&quot;}, '*');"><code>ExecInitExtraTupleSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L2035" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitNullTupleSlot.html&quot;}, '*');"><code>ExecInitNullTupleSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1967" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitResultSlot.html&quot;}, '*');"><code>ExecInitResultSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1987" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitResultTupleSlotTL.html&quot;}, '*');"><code>ExecInitResultTupleSlotTL</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1943" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitResultTypeTL.html&quot;}, '*');"><code>ExecInitResultTypeTL</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1999" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecInitScanTupleSlot.html&quot;}, '*');"><code>ExecInitScanTupleSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1379" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecResetTupleTable.html&quot;}, '*');"><code>ExecResetTupleTable</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1477" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecSetSlotDescriptor.html&quot;}, '*');"><code>ExecSetSlotDescriptor</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1426" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__MakeSingleTupleTableSlot.html&quot;}, '*');"><code>MakeSingleTupleTableSlot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__MakeTupleTableSlot.html&quot;}, '*');"><code>MakeTupleTableSlot</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1300" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__MakeTupleTableSlot.html&quot;}, '*');"><code>MakeTupleTableSlot</code></a> でスロットを確保し、<code>TupleDesc</code> を関連付ける。 2. **格納**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1540" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecStoreHeapTuple.html&quot;}, '*');"><code>ExecStoreHeapTuple</code></a> 等により、物理タプルへのポインタをスロットに保持。この際、<a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html#L99" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/tuptable.h.html&quot;}, '*');"><code>TTS_FLAG_SHOULDFREE</code></a> を確認し、所有権を判断する。 3. **アクセス**: <a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html#L358" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__tuptable_h__slot_getsomeattrs.html&quot;}, '*');"><code>slot_getsomeattrs</code></a> が呼ばれると、<a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1121" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__slot_deform_heap_tuple.html&quot;}, '*');"><code>slot_deform_heap_tuple</code></a> が起動。属性のオフセットをキャッシュしつつ、必要に応じて <code>tts_values</code> 配列に Datum を展開する。 4. **変換**: <code>materialize</code> メソッドにより、仮想タプルやバッファ上のタプルをメモリコンテキストにコピーし、独立した状態にする。 5. **終了**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1379" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecResetTupleTable.html&quot;}, '*');"><code>ExecResetTupleTable</code></a> が各スロットの <code>release</code> を呼び出し、バッファピンの解放やメモリの pfree を行う。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <a class="wiki-source-link" href="../../../../source/src/include/access/heaptoast.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/heaptoast.h.html&quot;}, '*');"><code>heaptoast.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/access/htup_details.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/htup_details.h.html&quot;}, '*');"><code>htup_details.h</code></a> 等によるタプル構造の操作。</li>
+<li><code>storage/bufmgr.h</code>: バッファピンの管理。</li>
+<li><code>utils/</code>: <a class="wiki-source-link" href="../../../../source/src/include/utils/typcache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/typcache.h.html&quot;}, '*');"><code>typcache.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/utils/expandeddatum.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/expandeddatum.h.html&quot;}, '*');"><code>expandeddatum.h</code></a> 等による型情報とメモリ管理。</li>
+<li><code>access/heaptoast.h</code></li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/tupdesc_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>nodes/nodeFuncs.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/expandeddatum.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/tuptable.h.html&quot;}, '*');"><code>src/include/executor/tuptable.h</code></a>: <code>TupleTableSlot</code> 構造体の定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execProcnode.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execProcnode.c.html&quot;}, '*');"><code>src/backend/executor/execProcnode.c</code></a>: スロットを用いたプランノード間のデータ受け渡し。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/access/common/heaptuple.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/common/heaptuple.c.html&quot;}, '*');"><code>src/backend/access/common/heaptuple.c</code></a>: 物理タプルの低レベル操作。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../source/src/include/executor/tuptable.h.html#L99" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/tuptable.h.html&quot;}, '*');"><code>TTS_FLAG_SHOULDFREE</code></a> フラグが重要です。これが立っている場合、スロットは保持しているタプルのメモリ解放責任を持ちます。</li>
+<li>**パフォーマンス**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1121" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__slot_deform_heap_tuple.html&quot;}, '*');"><code>slot_deform_heap_tuple</code></a> は非常に頻繁に呼ばれるため、インライン化と属性オフセットのキャッシュ（<code>attcacheoff</code>）によって最適化されています。</li>
+<li>**省略された詳細**: 本ファイルはスロットの「管理」に特化しており、タプルそのものの物理的な格納形式（<code>HeapTupleHeaderData</code> の詳細など）は <code>access/</code> モジュールに委譲されています。</li>
+<li>**注意点**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execTuples.c.html#L1580" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execTuples_c__ExecStoreBufferHeapTuple.html&quot;}, '*');"><code>ExecStoreBufferHeapTuple</code></a> を使用する場合、スロットがクリアされるまでバッファピンが保持されるため、長期間スロットを保持するとバッファ不足を招く可能性があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__MakeTupleTableSlot.html" target="wiki-view"><code>MakeTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecAllocTableSlot.html" target="wiki-view"><code>ExecAllocTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecResetTupleTable.html" target="wiki-view"><code>ExecResetTupleTable</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__MakeSingleTupleTableSlot.html" target="wiki-view"><code>MakeSingleTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecDropSingleTupleTableSlot.html" target="wiki-view"><code>ExecDropSingleTupleTableSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecSetSlotDescriptor.html" target="wiki-view"><code>ExecSetSlotDescriptor</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultTypeTL.html" target="wiki-view"><code>ExecInitResultTypeTL</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultSlot.html" target="wiki-view"><code>ExecInitResultSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitResultTupleSlotTL.html" target="wiki-view"><code>ExecInitResultTupleSlotTL</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitScanTupleSlot.html" target="wiki-view"><code>ExecInitScanTupleSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitExtraTupleSlot.html" target="wiki-view"><code>ExecInitExtraTupleSlot</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execTuples_c__ExecInitNullTupleSlot.html" target="wiki-view"><code>ExecInitNullTupleSlot</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

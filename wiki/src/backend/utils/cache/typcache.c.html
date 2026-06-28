@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/utils/cache/typcache.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');">src/backend/utils/cache/typcache.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>typcache.c</code></a> は、データ型のメタデータ（<code>pg_type</code> に直接含まれない情報）をメモリ上にキャッシュし、クエリ実行時のルックアップを高速化するモジュールです。特に、演算子クラス（btree/hash）、比較関数、複合型のタプル記述子（TupleDesc）、ドメイン制約、列挙型のソート順などを管理します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/cache</code> サブシステムの一部として、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/syscache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/syscache.c.html&quot;}, '*');"><code>syscache.c</code></a>（カタログキャッシュ）の上位層に位置します。カタログキャッシュがタプル単位のキャッシュであるのに対し、本モジュールはそれらを統合・加工した「型情報」という高レベルなオブジェクトを管理します。</p>
+<h2>責務</h2>
+<ul>
+<li>**型情報の集約**: <code>pg_type</code>, <code>pg_opclass</code>, <code>pg_constraint</code> 等から情報を集約し、<a class="wiki-source-link" href="../../../../../source/src/include/utils/typcache.h.html#L31" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__typcache_h__TypeCacheEntry.html&quot;}, '*');"><code>TypeCacheEntry</code></a> として保持。</li>
+<li>**演算子・関数の解決**: 型に応じたデフォルトの比較演算子やハッシュ関数を特定し、<code>FmgrInfo</code> をキャッシュして実行時のオーバーヘッドを削減。</li>
+<li>**複合型・ドメイン管理**: 複合型の <code>TupleDesc</code> やドメインの制約式を管理し、DDL変更時に適切に無効化。</li>
+<li>**並列クエリ対応**: <code>SharedRecordTypmodRegistry</code> を通じて、パラレルワーカー間でレコード型の定義を共有。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>キャッシュ管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L79" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>TypeCacheHash</code></a>: 型OIDをキーとするメインのハッシュテーブル。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L87" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>RelIdToTypeIdCacheHash</code></a>: リレーションOIDから複合型OIDへのマッピング。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/utils/typcache.h.html#L31" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__typcache_h__TypeCacheEntry.html&quot;}, '*');"><code>TypeCacheEntry</code></a>: 型情報を保持する中心的な構造体。</li>
+</ul>
+<h3>ドメイン・列挙型</h3>
+<ul>
+<li><code>DomainConstraintCache</code>: ドメインの制約式（<a class="wiki-source-link" href="../../../../../source/src/include/nodes/primnodes.h.html#L188" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__Expr.html&quot;}, '*');"><code>Expr</code></a>）を保持。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L153" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__TypeCacheEnumData.html&quot;}, '*');"><code>TypeCacheEnumData</code></a>: 列挙型のソート順序を高速比較するためのビットマップと配列。</li>
+</ul>
+<h3>レコード型（匿名型）</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L295" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>RecordCacheHash</code></a>: <code>TupleDesc</code> をキーにレコード型を検索するハッシュテーブル。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L304" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>RecordCacheArray</code></a>: <code>typmod</code> をインデックスとして <code>TupleDesc</code> を高速取得する配列。</li>
+<li><code>SharedRecordTypmodRegistry</code>: 並列クエリ用の共有メモリ上のレコード型レジストリ。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>DomainConstraintCache</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L147" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__EnumItem.html&quot;}, '*');"><code>EnumItem</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L1401" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__InitDomainConstraintRef.html&quot;}, '*');"><code>InitDomainConstraintRef</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L297" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__RecordCacheArrayEntry.html&quot;}, '*');"><code>RecordCacheArrayEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L172" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__RecordCacheEntry.html&quot;}, '*');"><code>RecordCacheEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L89" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__RelIdToTypeIdCacheEntry.html&quot;}, '*');"><code>RelIdToTypeIdCacheEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L211" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedRecordTableEntry.html&quot;}, '*');"><code>SharedRecordTableEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L197" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedRecordTableKey.html&quot;}, '*');"><code>SharedRecordTableKey</code></a></li>
+<li><code>SharedRecordTypmodRegistry</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L2196" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistryInit.html&quot;}, '*');"><code>SharedRecordTypmodRegistryInit</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L220" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedTypmodTableEntry.html&quot;}, '*');"><code>SharedTypmodTableEntry</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L153" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__TypeCacheEnumData.html&quot;}, '*');"><code>TypeCacheEnumData</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **検索**: <code>lookup_type_cache(type_id, flags)</code> がエントリを検索。存在しない場合はシステムカタログから構築。 2. **遅延初期化**: <code>flags</code> で指定された情報（<a class="wiki-source-link" href="../../../../../source/src/include/utils/typcache.h.html#L146" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/typcache.h.html&quot;}, '*');"><code>TYPECACHE_TUPDESC</code></a> 等）が未ロードの場合、各 <code>load_*</code> 関数（<a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L968" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__load_typcache_tupdesc.html&quot;}, '*');"><code>load_typcache_tupdesc</code></a> 等）が呼ばれ、必要なカタログ情報を取得。 3. **無効化**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L2419" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__TypeCacheRelCallback.html&quot;}, '*');"><code>TypeCacheRelCallback</code></a> 等のコールバックが <a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/inval.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/inval.c.html&quot;}, '*');"><code>inval.c</code></a> から呼び出され、カタログ更新時にキャッシュフラグをクリア。 4. **並列共有**: リーダープロセスが <a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L2196" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistryInit.html&quot;}, '*');"><code>SharedRecordTypmodRegistryInit</code></a> で共有メモリを初期化し、ワーカーが <a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L2295" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistryAttach.html&quot;}, '*');"><code>SharedRecordTypmodRegistryAttach</code></a> で接続。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>utils/syscache.h</code>: カタログキャッシュへのアクセス。</li>
+<li><code>utils/inval.h</code>: キャッシュ無効化イベントの受信。</li>
+<li><code>access/htup_details.h</code>: システムカタログタプルの解析。</li>
+<li><code>lib/dshash.h</code> / <code>storage/dsm.h</code>: 並列クエリ用の共有メモリ管理。</li>
+<li><code>access/hash.h</code></li>
+<li><code>access/nbtree.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/relation.h</code></li>
+<li><code>access/session.h</code></li>
+<li><code>access/table.h</code></li>
+<li><code>catalog/pg_am.h</code></li>
+<li><code>catalog/pg_constraint.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/pg_operator.h</code></li>
+<li><code>catalog/pg_range.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>commands/defrem.h</code></li>
+<li><code>common/int.h</code></li>
+<li><code>executor/executor.h</code></li>
+<li><code>limits.h</code></li>
+<li><code>optimizer/optimizer.h</code></li>
+<li><code>port/pg_bitutils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/lwlock.h</code></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/catcache.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/injection_point.h</code></li>
+<li><code>utils/lsyscache.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/utils/typcache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/typcache.h.html&quot;}, '*');"><code>src/include/utils/typcache.h</code></a>: 公開構造体とAPI定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/syscache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/syscache.c.html&quot;}, '*');"><code>src/backend/utils/cache/syscache.c</code></a>: 基盤となるカタログキャッシュ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/relcache.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/relcache.c.html&quot;}, '*');"><code>src/backend/utils/cache/relcache.c</code></a>: リレーション記述子の管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <a class="wiki-source-link" href="../../../../../source/src/include/utils/typcache.h.html#L31" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__typcache_h__TypeCacheEntry.html&quot;}, '*');"><code>TypeCacheEntry</code></a> はバックエンドの生存期間中永続します。<code>TupleDesc</code> は参照カウント管理されますが、<code>typcache</code> 内の参照はリソースオーナーに紐付けない特殊な管理が行われます。</li>
+<li>**無効化の挙動**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/cache/typcache.c.html#L122" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/cache/typcache.c.html&quot;}, '*');"><code>TCFLAGS_OPERATOR_FLAGS</code></a> 等のフラグをクリアすることで、次回アクセス時に再ロードを強制する仕組みです。</li>
+<li>**制約事項**: <code>record</code> 型の匿名性は、<code>typmod</code> を通じて管理されます。並列クエリ環境では、リーダーが作成した <code>typmod</code> をワーカーが共有する設計になっています。</li>
+<li>**省略された詳細**: <code>injection_point</code> や一部のデバッグ用アサーションロジックは、コードの主要な責務から外れるため詳細な説明を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RelIdToTypeIdCacheEntry.html" target="wiki-view"><code>RelIdToTypeIdCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__DomainConstraintCache.html" target="wiki-view"><code>DomainConstraintCache</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__EnumItem.html" target="wiki-view"><code>EnumItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__TypeCacheEnumData.html" target="wiki-view"><code>TypeCacheEnumData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RecordCacheEntry.html" target="wiki-view"><code>RecordCacheEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistry.html" target="wiki-view"><code>SharedRecordTypmodRegistry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTableKey.html" target="wiki-view"><code>SharedRecordTableKey</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTableEntry.html" target="wiki-view"><code>SharedRecordTableEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedTypmodTableEntry.html" target="wiki-view"><code>SharedTypmodTableEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__RecordCacheArrayEntry.html" target="wiki-view"><code>RecordCacheArrayEntry</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__InitDomainConstraintRef.html" target="wiki-view"><code>InitDomainConstraintRef</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__cache__typcache_c__SharedRecordTypmodRegistryInit.html" target="wiki-view"><code>SharedRecordTypmodRegistryInit</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

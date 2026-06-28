@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/partitioning/partprune.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/partitioning/partprune.c.html&quot;}, '*');">src/backend/partitioning/partprune.c</a></h1>
+<h2>概要</h2>
+<p>本ファイルは、PostgreSQLのパーティションプルーニング（不要なパーティションの除外）ロジックの中核を担います。クエリの <code>WHERE</code> 句（<a class="wiki-source-link" href="../../../../source/src/include/nodes/pathnodes.h.html#L2699" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__pathnodes_h__RestrictInfo.html&quot;}, '*');"><code>RestrictInfo</code></a>）を解析し、実行時にパーティションを特定するための「プルーニングステップ」を生成・実行する機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>partitioning</code> サブシステムにおいて、<a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partbounds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/partitioning/partbounds.c.html&quot;}, '*');"><code>partbounds.c</code></a> が境界値の数学的定義を管理するのに対し、本ファイルはそれらの境界をクエリ条件と照らし合わせる「最適化エンジン」として機能します。プランナによる静的プルーニングと、エグゼキュータによる動的プルーニングの両方をサポートします。</p>
+<h2>責務</h2>
+<ul>
+<li>**プルーニングステップの生成**: <code>WHERE</code> 句を解析し、パーティションキーとの比較条件を <a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L1664" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__PartitionPruneStep.html&quot;}, '*');"><code>PartitionPruneStep</code></a>（演算用または結合用）に変換する。</li>
+<li>**実行時プルーニングの最適化**: プランナが決定できない条件（<code>PARAM_EXEC</code> 等）を検出し、実行時に評価可能なステップを生成する。</li>
+<li>**境界値との照合**: 生成されたステップを境界情報（<a class="wiki-source-link" href="../../../../source/src/include/partitioning/partdefs.h.html#L16" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__partitioning__partdefs_h__PartitionBoundInfo.html&quot;}, '*');"><code>PartitionBoundInfo</code></a>）と照合し、スキャン対象のパーティションインデックスを特定する。</li>
+<li>**論理的矛盾の検出**: クエリ条件がパーティション定義と矛盾する場合（例：<code>x=1</code> かつ <code>x=2</code>）、プルーニングを早期終了させる。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>プルーニングコンテキストと状態</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L111" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__GeneratePruningStepsContext.html&quot;}, '*');"><code>GeneratePruningStepsContext</code></a>: ステップ生成中の状態保持用。<code>target</code>（プランナ/初期/実行時）に応じて生成ロジックを切り替える。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L63" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__PartClauseInfo.html&quot;}, '*');"><code>PartClauseInfo</code></a>: パーティションキーとマッチした句のメタデータ（演算子、式、比較関数）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L128" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__PruneStepResult.html&quot;}, '*');"><code>PruneStepResult</code></a>: ステップ実行結果。対象となる境界オフセットと、デフォルト/NULLパーティションのスキャン要否を保持。</li>
+</ul>
+<h3>ステップ生成・実行関数</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L224" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__make_partition_pruneinfo.html&quot;}, '*');"><code>make_partition_pruneinfo</code></a>: プランナが呼び出すエントリポイント。実行時プルーニングのための情報を <code>PlannerInfo</code> に付与する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L743" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__gen_partprune_steps.html&quot;}, '*');"><code>gen_partprune_steps</code></a>: クエリ句を解析し、ステップを生成する。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L846" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__get_matching_partitions.html&quot;}, '*');"><code>get_matching_partitions</code></a>: 実際にステップを実行し、生存するパーティションの <a class="wiki-source-link" href="../../../../source/src/include/nodes/bitmapset.h.html#L49" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__bitmapset_h__Bitmapset.html&quot;}, '*');"><code>Bitmapset</code></a> を返す。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L3457" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__perform_pruning_base_step.html&quot;}, '*');"><code>perform_pruning_base_step</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L3605" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__perform_pruning_combine_step.html&quot;}, '*');"><code>perform_pruning_combine_step</code></a>: ステップの種類に応じた実行ロジック。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **解析**: <a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L743" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__gen_partprune_steps.html&quot;}, '*');"><code>gen_partprune_steps</code></a> が <code>WHERE</code> 句を走査し、<a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L1828" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__match_clause_to_partition_key.html&quot;}, '*');"><code>match_clause_to_partition_key</code></a> を用いてキーとマッチする式を抽出。 2. **ステップ構築**: 抽出された式から <a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L1699" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__PartitionPruneStepOp.html&quot;}, '*');"><code>PartitionPruneStepOp</code></a> を生成。複数のステップは <a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L1721" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__PartitionPruneStepCombine.html&quot;}, '*');"><code>PartitionPruneStepCombine</code></a>（AND/ORに対応するINTERSECT/UNION）で結合される。 3. **実行**: <a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html#L846" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__partitioning__partprune_c__get_matching_partitions.html&quot;}, '*');"><code>get_matching_partitions</code></a> がステップを順次評価。</p>
+<ul>
+<li>演算ステップは <code>get_matching_[hash|list|range]_bounds</code> を呼び出し、境界値と照合。</li>
+<li>結合ステップは <a class="wiki-source-link" href="../../../../source/src/backend/nodes/bitmapset.c.html#L916" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__nodes__bitmapset_c__bms_add_members.html&quot;}, '*');"><code>bms_add_members</code></a> (UNION) または <a class="wiki-source-link" href="../../../../source/src/backend/nodes/bitmapset.c.html#L1108" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__nodes__bitmapset_c__bms_int_members.html&quot;}, '*');"><code>bms_int_members</code></a> (INTERSECT) で結果をマージ。</li>
+<p>4. **結果**: 最終的な <a class="wiki-source-link" href="../../../../source/src/include/nodes/bitmapset.h.html#L49" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__bitmapset_h__Bitmapset.html&quot;}, '*');"><code>Bitmapset</code></a> が、スキャン対象のパーティションインデックスとして返される。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>nodes/nodeFuncs.h</code>, <code>optimizer/</code> 系: 式ツリーの操作およびプランナとの連携。</li>
+<li><code>partitioning/partbounds.h</code>: 境界値の検索・比較ロジック。</li>
+<li><code>utils/lsyscache.h</code>: 型情報や演算子情報の取得。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partbounds.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/partitioning/partbounds.c.html&quot;}, '*');"><code>src/backend/partitioning/partbounds.c</code></a>: 境界値の計算ロジック（本ファイルの実行エンジンが依存）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execPartition.c.html&quot;}, '*');"><code>src/backend/executor/execPartition.c</code></a>: 実行時に <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partprune.h.html#L49" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__partitioning__partprune_h__PartitionPruneContext.html&quot;}, '*');"><code>PartitionPruneContext</code></a> を初期化し、<a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/partitioning/partprune.c.html&quot;}, '*');"><code>partprune.c</code></a> の関数を呼び出す側。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partprune.h.html#L49" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__partitioning__partprune_h__PartitionPruneContext.html&quot;}, '*');"><code>PartitionPruneContext</code></a> 内の <code>ppccontext</code> は、FmgrInfo などの永続的なデータ保持に使用されます。実行時の式評価は <code>ExprContext</code> を介して行われます。</li>
+<li>**制約**: <code>PARTTARGET_PLANNER</code> は定数のみを扱いますが、<code>PARTTARGET_EXEC</code> は <code>PARAM_EXEC</code> を含む動的な式を扱います。</li>
+<li>**境界の不変性**: <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partdefs.h.html#L16" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__partitioning__partdefs_h__PartitionBoundInfo.html&quot;}, '*');"><code>PartitionBoundInfo</code></a> はキャッシュされた不変データとして扱われます。</li>
+<li>**未実装/浅い部分**: <code>NOT</code> 句の複雑な組み合わせに対するプルーニングは限定的です。また、<a class="wiki-source-link" href="../../../../source/src/include/nodes/primnodes.h.html#L912" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__primnodes_h__ScalarArrayOpExpr.html&quot;}, '*');"><code>ScalarArrayOpExpr</code></a>（<code>IN</code> 句など）の処理は、定数配列に対しては最適化されていますが、動的な配列に対しては制限があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseInfo.html" target="wiki-view"><code>PartClauseInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseMatchStatus.html" target="wiki-view"><code>PartClauseMatchStatus</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PartClauseTarget.html" target="wiki-view"><code>PartClauseTarget</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__GeneratePruningStepsContext.html" target="wiki-view"><code>GeneratePruningStepsContext</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__PruneStepResult.html" target="wiki-view"><code>PruneStepResult</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__make_partition_pruneinfo.html" target="wiki-view"><code>make_partition_pruneinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__add_part_relids.html" target="wiki-view"><code>add_part_relids</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__make_partitionedrel_pruneinfo.html" target="wiki-view"><code>make_partitionedrel_pruneinfo</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__gen_partprune_steps.html" target="wiki-view"><code>gen_partprune_steps</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__prune_append_rel_partitions.html" target="wiki-view"><code>prune_append_rel_partitions</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__get_matching_partitions.html" target="wiki-view"><code>get_matching_partitions</code></a></li>
+<li><a href="../../../symbols/src__backend__partitioning__partprune_c__gen_partprune_steps_internal.html" target="wiki-view"><code>gen_partprune_steps_internal</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

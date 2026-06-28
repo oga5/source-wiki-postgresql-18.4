@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>contrib/bloom/blvacuum.c.md</title><link rel="stylesheet" href="../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/blvacuum.c.html&quot;}, '*');">contrib/bloom/blvacuum.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/blvacuum.c.html&quot;}, '*');"><code>blvacuum.c</code></a> は、Bloom フィルタインデックスに対する <code>VACUUM</code> 操作を実装するソースファイルです。インデックス内の不要になったタプルを削除し、空になったページを再利用可能な状態にするためのロジックを提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>contrib/bloom</code> モジュールにおいて、インデックスのメンテナンスフェーズを担当します。<a class="wiki-source-link" href="../../../source/contrib/bloom/blinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/blinsert.c.html&quot;}, '*');"><code>blinsert.c</code></a> がインデックスの構築と挿入を行うのに対し、本ファイルはインデックスの肥大化を抑制し、ストレージ効率を維持する役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**バルク削除 (<a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L29" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blbulkdelete.html&quot;}, '*');"><code>blbulkdelete</code></a>)**: <code>VACUUM</code> 中に呼び出され、指定されたヒープタプルに対応する Bloom インデックスエントリを削除します。</li>
+<li>**クリーンアップ (<a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L164" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blvacuumcleanup.html&quot;}, '*');"><code>blvacuumcleanup</code></a>)**: <code>VACUUM</code> の終了時に呼び出され、削除されたページを Free Space Map (FSM) に登録し、統計情報を更新します。</li>
+<li>**メタページの更新**: 削除処理の結果に基づき、インデックスのメタページにある「空き領域を持つページリスト」を再構築します。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L29" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blbulkdelete.html&quot;}, '*');"><code>blbulkdelete</code></a>: インデックススキャンを行い、コールバック関数に基づいて不要なタプルを物理的に削除します。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L164" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blvacuumcleanup.html&quot;}, '*');"><code>blvacuumcleanup</code></a>: インデックス全体のページを走査し、削除済みページを FSM に解放します。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/bloom.h.html#L118" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__bloom_h__BloomMetaPageData.html&quot;}, '*');"><code>BloomMetaPageData</code></a>: メタページ内の <code>notFullPage</code> 配列を管理し、挿入時の効率化に寄与します。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **<a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L29" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blbulkdelete.html&quot;}, '*');"><code>blbulkdelete</code></a>**:</p>
+<ul>
+<li>インデックスの全ページを走査し、各ページに対して排他ロックを取得します。</li>
+<li><a class="wiki-source-link" href="../../../source/src/tools/ifaddrs/test_ifaddrs.c.html#L45" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__tools__ifaddrs__test_ifaddrs_c__callback.html&quot;}, '*');"><code>callback</code></a> を用いて削除対象のタプルを判定し、<code>memmove</code> でページ内のタプルを詰め直します。</li>
+<li>ページが空になった場合は <a class="wiki-source-link" href="../../../source/contrib/bloom/bloom.h.html#L66" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/bloom.h.html&quot;}, '*');"><code>BloomPageSetDeleted</code></a> をマークします。</li>
+<li>最後にメタページを更新し、空き領域があるページ情報を最新化します。</li>
+<p>2.  **<a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L164" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blvacuumcleanup.html&quot;}, '*');"><code>blvacuumcleanup</code></a>**:</p>
+<li>全ページを走査し、<a class="wiki-source-link" href="../../../source/contrib/bloom/bloom.h.html#L64" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/bloom.h.html&quot;}, '*');"><code>BloomPageIsDeleted</code></a> が真であるページを <a class="wiki-source-link" href="../../../source/src/backend/storage/freespace/indexfsm.c.html#L51" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__freespace__indexfsm_c__RecordFreeIndexPage.html&quot;}, '*');"><code>RecordFreeIndexPage</code></a> で FSM に登録します。</li>
+<li>最終的に <a class="wiki-source-link" href="../../../source/src/backend/storage/freespace/indexfsm.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__storage__freespace__indexfsm_c__IndexFreeSpaceMapVacuum.html&quot;}, '*');"><code>IndexFreeSpaceMapVacuum</code></a> を呼び出し、インデックス全体の空き領域管理を完了させます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a>: PostgreSQL の基本定義。</li>
+<li><code>access/genam.h</code>: インデックスアクセスメソッドの共通定義。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/bloom.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/bloom.h.html&quot;}, '*');"><code>bloom.h</code></a>: Bloom インデックス固有のデータ構造とマクロ。</li>
+<li><code>commands/vacuum.h</code>: <code>VACUUM</code> 関連の構造体と関数。</li>
+<li><code>storage/bufmgr.h</code>: バッファマネージャによるページ読み込み。</li>
+<li><code>storage/indexfsm.h</code>: インデックスの空き領域管理（FSM）へのアクセス。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/blutils.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/blutils.c.html&quot;}, '*');"><code>blutils.c</code></a>: <a class="wiki-source-link" href="../../../source/contrib/bloom/blutils.c.html#L165" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blutils_c__initBloomState.html&quot;}, '*');"><code>initBloomState</code></a> など、インデックスの状態管理を行うヘルパー関数群。</li>
+<li><a class="wiki-source-link" href="../../../source/contrib/bloom/blinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/bloom/blinsert.c.html&quot;}, '*');"><code>blinsert.c</code></a>: <a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L29" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blbulkdelete.html&quot;}, '*');"><code>blbulkdelete</code></a> が更新したメタページの <code>notFullPage</code> リストを参照して挿入を行う。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**WAL ログ**: <code>GenericXLog</code> を使用して、ページ変更を WAL に記録しています。削除が発生しない場合は <a class="wiki-source-link" href="../../../source/src/backend/access/transam/generic_xlog.c.html#L443" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__generic_xlog_c__GenericXLogAbort.html&quot;}, '*');"><code>GenericXLogAbort</code></a> でログ出力を抑制し、効率化を図っています。</li>
+<li>**並行性**: <a class="wiki-source-link" href="../../../source/contrib/bloom/blvacuum.c.html#L29" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/contrib__bloom__blvacuum_c__blbulkdelete.html&quot;}, '*');"><code>blbulkdelete</code></a> はインデックスの排他ロックをページ単位で取得します。<code>VACUUM</code> 中のインデックススキャンと並行して挿入が行われる可能性があるため、メタページの更新順序には注意が必要です。</li>
+<li>**削除の定義**: Bloom インデックスでは、ページ内のタプルを詰めることで削除を実現します。ページが完全に空になった場合のみ「削除済み」としてマークされ、FSM に戻されます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../symbols/contrib__bloom__blvacuum_c__blbulkdelete.html" target="wiki-view"><code>blbulkdelete</code></a></li>
+<li><a href="../../symbols/contrib__bloom__blvacuum_c__blvacuumcleanup.html" target="wiki-view"><code>blvacuumcleanup</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

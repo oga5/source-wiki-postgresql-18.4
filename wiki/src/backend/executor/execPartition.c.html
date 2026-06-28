@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/executor/execPartition.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execPartition.c.html&quot;}, '*');">src/backend/executor/execPartition.c</a></h1>
+<h2>概要</h2>
+<p>パーティションテーブルに対するタプルルーティング（挿入先パーティションの動的決定）および実行時パーティションプルーニング（不要なパーティションの除外）を実装するモジュールです。クエリ実行中にタプルの値を評価し、適切なパーティションを特定、またはクエリの条件に基づいてスキャン対象のパーティションを絞り込むための基盤を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/executor</code> サブシステムの一部として、<a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L281" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__ModifyTable.html&quot;}, '*');"><code>ModifyTable</code></a> ノード（INSERT/UPDATE/MERGE）や <a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L341" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__Append.html&quot;}, '*');"><code>Append</code></a>/<a class="wiki-source-link" href="../../../../source/src/include/nodes/plannodes.h.html#L369" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__nodes__plannodes_h__MergeAppend.html&quot;}, '*');"><code>MergeAppend</code></a> ノード（SELECT）の実行を支援します。プランナが生成した静的な情報と、実行時に取得されるリレーション情報を橋渡しする役割を担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**タプルルーティング**: 挿入対象のタプルからパーティションキーを抽出し、階層構造を辿って適切なリーフパーティションを特定する。</li>
+<li>**リソース管理**: ルーティングに必要な <code>ResultRelInfo</code> や <a class="wiki-source-link" href="../../../../source/src/include/executor/execPartition.h.html#L22" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execPartition_h__PartitionDispatch.html&quot;}, '*');"><code>PartitionDispatch</code></a> の遅延初期化とメモリ管理。</li>
+<li>**実行時プルーニング**: クエリ実行中にパラメータが変化した際、不要なサブプランを動的に除外する。</li>
+<li>**データ変換**: 親テーブルと子パーティション間で列順序や型が異なる場合のタプル変換（<a class="wiki-source-link" href="../../../../source/src/include/access/tupconvert.h.html#L24" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__tupconvert_h__TupleConversionMap.html&quot;}, '*');"><code>TupleConversionMap</code></a>）の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>タプルルーティング関連</h3>
+<ul>
+<li><code>PartitionTupleRouting</code>: ルーティング全体の状態を保持するルート構造体。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L143" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__PartitionDispatchData.html&quot;}, '*');"><code>PartitionDispatchData</code></a>: パーティション階層の各レベルにおけるディスパッチ情報（キー、記述子、変換マップ）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L217" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecSetupPartitionTupleRouting.html&quot;}, '*');"><code>ExecSetupPartitionTupleRouting</code></a>: ルーティング環境の初期化。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L264" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecFindPartition.html&quot;}, '*');"><code>ExecFindPartition</code></a>: タプルから適切なリーフパーティションの <code>ResultRelInfo</code> を特定・初期化するメイン関数。</li>
+</ul>
+<h3>パーティションプルーニング関連</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/execPartition.h.html#L121" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execPartition_h__PartitionPruneState.html&quot;}, '*');"><code>PartitionPruneState</code></a>: 実行時のプルーニング状態を保持。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/execPartition.h.html#L63" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__executor__execPartition_h__PartitionedRelPruningData.html&quot;}, '*');"><code>PartitionedRelPruningData</code></a>: 特定のパーティション階層におけるプルーニング情報。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1823" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecDoInitialPruning.html&quot;}, '*');"><code>ExecDoInitialPruning</code></a>: 実行開始時に一度だけ行うプルーニング。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1879" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecInitPartitionExecPruning.html&quot;}, '*');"><code>ExecInitPartitionExecPruning</code></a>: 実行中のパラメータ変化に応じたプルーニングの初期化。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L2497" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecFindMatchingSubPlans.html&quot;}, '*');"><code>ExecFindMatchingSubPlans</code></a>: 現在のパラメータ値に基づいて有効なサブプランを特定。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **ルーティング**:</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L264" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecFindPartition.html&quot;}, '*');"><code>ExecFindPartition</code></a> がタプルを受け取り、<a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1301" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__FormPartitionKeyDatum.html&quot;}, '*');"><code>FormPartitionKeyDatum</code></a> でキーを抽出。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1398" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__get_partition_for_tuple.html&quot;}, '*');"><code>get_partition_for_tuple</code></a> がパーティション境界を検索。</li>
+<li>未初期化のパーティションであれば <a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L501" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecInitPartitionInfo.html&quot;}, '*');"><code>ExecInitPartitionInfo</code></a> が <code>ResultRelInfo</code> を構築し、<a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L993" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecInitRoutingInfo.html&quot;}, '*');"><code>ExecInitRoutingInfo</code></a> が変換マップや FDW 情報を設定。</li>
+<p>2. **プルーニング**:</p>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1823" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecDoInitialPruning.html&quot;}, '*');"><code>ExecDoInitialPruning</code></a> がプランノード初期化時に実行され、不要なサブプランをビットマップで特定。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L2497" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecFindMatchingSubPlans.html&quot;}, '*');"><code>ExecFindMatchingSubPlans</code></a> が再帰的に階層を辿り、<a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L2570" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__find_matching_subplans_recurse.html&quot;}, '*');"><code>find_matching_subplans_recurse</code></a> を通じて有効なパーティションを特定。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>partitioning/</code>: <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partbounds.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/partitioning/partbounds.h.html&quot;}, '*');"><code>partbounds.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partdesc.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/partitioning/partdesc.h.html&quot;}, '*');"><code>partdesc.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/partitioning/partprune.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/partitioning/partprune.h.html&quot;}, '*');"><code>partprune.h</code></a>（パーティションの境界定義やプルーニングロジック）。</li>
+<li><code>access/</code>: <a class="wiki-source-link" href="../../../../source/src/include/access/table.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/table.h.html&quot;}, '*');"><code>table.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/access/tableam.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/tableam.h.html&quot;}, '*');"><code>tableam.h</code></a>（テーブルアクセス層の抽象化）。</li>
+<li><code>executor/</code>: <a class="wiki-source-link" href="../../../../source/src/include/executor/nodeModifyTable.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/nodeModifyTable.h.html&quot;}, '*');"><code>nodeModifyTable.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/executor/executor.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/executor.h.html&quot;}, '*');"><code>executor.h</code></a>（実行ノードとの連携）。</li>
+<li><code>utils/</code>: <a class="wiki-source-link" href="../../../../source/src/include/utils/partcache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/partcache.h.html&quot;}, '*');"><code>partcache.h</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/utils/lsyscache.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/lsyscache.h.html&quot;}, '*');"><code>lsyscache.h</code></a>（リレーションキャッシュやシステムカタログの参照）。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/executor/execPartition.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/executor/execPartition.h.html&quot;}, '*');"><code>src/include/executor/execPartition.h</code></a>: 本ファイルの公開インターフェース。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/partitioning/partprune.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/partitioning/partprune.c.html&quot;}, '*');"><code>src/backend/partitioning/partprune.c</code></a>: プルーニングの核心的なロジック。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/executor/nodeModifyTable.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/nodeModifyTable.c.html&quot;}, '*');"><code>src/backend/executor/nodeModifyTable.c</code></a>: ルーティング結果を利用して実際に挿入を行うノード。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>PartitionTupleRouting</code> は <code>estate-&gt;es_query_cxt</code> を使用してメモリを確保します。<a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1240" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecCleanupTupleRouting.html&quot;}, '*');"><code>ExecCleanupTupleRouting</code></a> を呼び出さないとメモリリークが発生します。</li>
+<li>**遅延初期化**: パフォーマンス最適化のため、パーティションの <code>ResultRelInfo</code> は実際にタプルがルーティングされるまで作成されません。</li>
+<li>**キャッシュ**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1398" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__get_partition_for_tuple.html&quot;}, '*');"><code>get_partition_for_tuple</code></a> には <a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L1356" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execPartition.c.html&quot;}, '*');"><code>PARTITION_CACHED_FIND_THRESHOLD</code></a> を用いたキャッシュ機構があり、連続するタプルが同じパーティションに属する場合の検索を高速化します。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../source/src/backend/executor/execPartition.c.html#L264" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__executor__execPartition_c__ExecFindPartition.html&quot;}, '*');"><code>ExecFindPartition</code></a> はデフォルトパーティションへのルーティング時にパーティション制約チェックを強制します。</li>
+<li>**省略箇所**: 本ファイルはルーティングとプルーニングの「実行時サポート」に特化しており、プランナによる静的なプルーニング計画の生成ロジックは含まれていません。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__PartitionTupleRouting.html" target="wiki-view"><code>PartitionTupleRouting</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__PartitionDispatchData.html" target="wiki-view"><code>PartitionDispatchData</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecSetupPartitionTupleRouting.html" target="wiki-view"><code>ExecSetupPartitionTupleRouting</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecFindPartition.html" target="wiki-view"><code>ExecFindPartition</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionInfo.html" target="wiki-view"><code>ExecInitPartitionInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitRoutingInfo.html" target="wiki-view"><code>ExecInitRoutingInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionDispatchInfo.html" target="wiki-view"><code>ExecInitPartitionDispatchInfo</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecDoInitialPruning.html" target="wiki-view"><code>ExecDoInitialPruning</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__ExecInitPartitionExecPruning.html" target="wiki-view"><code>ExecInitPartitionExecPruning</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__CreatePartitionPruneState.html" target="wiki-view"><code>CreatePartitionPruneState</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__InitPartitionPruneContext.html" target="wiki-view"><code>InitPartitionPruneContext</code></a></li>
+<li><a href="../../../symbols/src__backend__executor__execPartition_c__InitExecPartitionPruneContexts.html" target="wiki-view"><code>InitExecPartitionPruneContexts</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

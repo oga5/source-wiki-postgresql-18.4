@@ -1,0 +1,221 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/pl/plperl/plperl.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');">src/pl/plperl/plperl.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>plperl.c</code></a> は、PostgreSQL の手続き言語である **PL/Perl**（信頼された <code>plperl</code> および信頼されない <code>plperlu</code>）のコア実装ファイルです。このファイルが巨大である理由は、PostgreSQL の拡張言語ハンドラとしてのライフサイクル管理、Perl インタプリタのサンドボックス化とセキュリティ境界の維持、PostgreSQL と Perl 間の複雑なデータ型双方向変換、および SPI（Server Programming Interface）を介したデータベースアクセスの調停処理がすべてここに集約されているためです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/pl/plperl</code> ディレクトリにおいて、本ファイルは手続き言語のメインエントリポイントとして機能します。</p>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.h.html&quot;}, '*');"><code>plperl.h</code></a> で定義されたインライン変換関数（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.h.html#L88" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_h__sv2cstr.html&quot;}, '*');"><code>sv2cstr</code></a>, <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.h.html#L146" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_h__cstr2sv.html&quot;}, '*');"><code>cstr2sv</code></a> など）を実質的に駆動します。</li>
+<li>同ディレクトリ内の <code>.xs</code> ファイル（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/SPI.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/SPI.xs.html&quot;}, '*');"><code>SPI.xs</code></a> や <a class="wiki-source-link" href="../../../../source/src/pl/plperl/Util.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/Util.xs.html&quot;}, '*');"><code>Util.xs</code></a>）から呼び出される C レベルのバックエンド API を提供します。</li>
+<li>PostgreSQL の関数マネージャ（fmgr）に対して、呼び出しハンドラ、インラインハンドラ、およびバリデータ関数を公開します。</li>
+</ul>
+<h2>責務</h2>
+<h3>インタプリタ管理とセキュリティ (Interpreter Lifecycle &amp; Security)</h3>
+<ul>
+<li>**インタプリタの分離**: 信頼された（trusted）関数に対しては、実行時の SQL ユーザーID（<code>GetUserId()</code>）ごとに独立した Perl インタプリタを割り当ててキャッシュします。信頼されない（untrusted）関数に対しては、システム全体で単一の共有インタプリタ（ユーザーID <code>0</code>）を使用します。これにより、権限昇格攻撃を防ぎます。</li>
+<li>**サンドボックス化**: 信頼されたインタプリタの初期化時（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_trusted_init.html&quot;}, '*');"><code>plperl_trusted_init</code></a>）に、安全でないオペコード（ファイル入出力やシステムコールなど）を <code>plperl_opmask</code> を用いてマスクし、<code>require</code> や <code>dofile</code> を安全な代替関数（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L881" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__pp_require_safe.html&quot;}, '*');"><code>pp_require_safe</code></a>）に差し替えます。また、<code>DynaLoader</code> などの名前空間を削除して外部共有ライブラリのロードを禁止します。</li>
+<li>**遅延初期化**: <code>plperl.on_init</code> GUC を用いた事前ロードを可能にするため、初期インタプリタ（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L230" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>plperl_held_interp</code></a>）を「保持」状態（信頼/非信頼が未決定の状態）で作成し、最初の関数実行時に完全な初期化を行います。</li>
+</ul>
+<h3>関数のコンパイルとキャッシュ (Function Compilation &amp; Caching)</h3>
+<ul>
+<li>**メタデータキャッシュ**: コンパイルされた関数の情報を <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L102" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_proc_desc.html&quot;}, '*');"><code>plperl_proc_desc</code></a> 構造体にキャッシュし、<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L226" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>plperl_proc_hash</code></a> で管理します。</li>
+<li>**キャッシュの検証**: <code>CREATE OR REPLACE FUNCTION</code> などによって関数定義が変更された場合、システムカタログ（<code>pg_proc</code>）の <code>xmin</code> および <code>TID</code> を比較してキャッシュの有効性を検証します（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L2668" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__validate_plperl_function.html&quot;}, '*');"><code>validate_plperl_function</code></a>）。</li>
+<li>**サブルーチンの生成**: <code>PostgreSQL::InServer::mkfunc</code> を Perl 空間で実行し、SQL 関数のソーステキストを無名サブルーチンとしてコンパイルします。</li>
+</ul>
+<h3>データ型変換 (Data <a class="wiki-source-link" href="../../../../source/src/include/parser/parse_type.h.html#L20" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__parser__parse_type_h__Type.html&quot;}, '*');">Type</a> Conversion)</h3>
+<ul>
+<li>**PostgreSQL → Perl**:</li>
+<li>スカラー値を文字列または適切な Perl 表現に変換。</li>
+<li>複合型（行データ）を Perl のハッシュ参照（HV）に変換（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L3023" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_hash_from_tuple.html&quot;}, '*');"><code>plperl_hash_from_tuple</code></a>）。</li>
+<li>配列を Perl の配列参照（AV）に変換（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L1481" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_ref_from_pg_array.html&quot;}, '*');"><code>plperl_ref_from_pg_array</code></a>）。多次元配列は再帰的に処理されます。</li>
+<li>**Perl → PostgreSQL**:</li>
+<li>Perl の SV/AV/HV から PostgreSQL の Datum への変換（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L1324" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_sv_to_datum.html&quot;}, '*');"><code>plperl_sv_to_datum</code></a>）。</li>
+<li>ドメイン制約のチェック（<a class="wiki-source-link" href="../../../../source/src/backend/utils/adt/domains.c.html#L345" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__adt__domains_c__domain_check.html&quot;}, '*');"><code>domain_check</code></a>）や、SQL/JSON 変換（Transform）の適用。</li>
+</ul>
+<h3>実行制御とコンテキスト管理 (Execution Dispatch &amp; Contexts)</h3>
+<ul>
+<li>通常の関数、トリガー、イベントトリガー、および匿名コードブロック（<a class="wiki-source-link" href="../../../../source/src/timezone/zic.c.html#L2438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/timezone/zic.c.html&quot;}, '*');"><code>DO</code></a> ステートメント）の実行をハンドリングします。</li>
+<li>実行中のコールスタック状態を <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_call_data.html&quot;}, '*');"><code>plperl_call_data</code></a> 構造体で追跡し、エラー発生時のコンテキスト情報を提供します。</li>
+</ul>
+<h3>SPI 連携 (SPI &amp; Transaction Integration)</h3>
+<ul>
+<li>Perl 空間から呼び出される SQL 実行（<code>spi_exec_query</code> など）の実体となる C 関数群（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L3133" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_spi_exec.html&quot;}, '*');"><code>plperl_spi_exec</code></a> など）を提供します。</li>
+<li>SPI 実行をサブトランザクションで包むことで、Perl 内部でのエラー捕捉（<code>eval</code>）と PostgreSQL のトランザクション整合性を両立させます。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>ライフサイクル・コンテキスト管理</h3>
+<ul>
+<li><code>void _PG_init(void)</code>: モジュールロード時の初期化。GUC の登録、ハッシュテーブルの作成、および初期「保持」インタプリタの作成を行います。</li>
+<li><code>static PerlInterpreter *plperl_init_interp(void)</code>: 新しい Perl インタプリタを割り当て、基本初期化（<code>PLC_PERLBOOT</code> の実行など）を行います。</li>
+<li><code>static void select_perl_context(bool trusted)</code>: 実行コンテキストに応じたインタプリタを選択・有効化し、必要に応じて初期化（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_trusted_init.html&quot;}, '*');"><code>plperl_trusted_init</code></a> / <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L1039" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_untrusted_init.html&quot;}, '*');"><code>plperl_untrusted_init</code></a>）を行います。</li>
+<li><code>static void activate_interpreter(plperl_interp_desc *interp_desc)</code>: アクティブな Perl インタプリタを切り替えます。</li>
+</ul>
+<h3>SQL 関数インターフェース (エントリポイント)</h3>
+<ul>
+<li><code>Datum plperl_call_handler(PG_FUNCTION_ARGS)</code>: 通常の PL/Perl 関数およびトリガーの実行ハンドラ。</li>
+<li><code>Datum plperl_inline_handler(PG_FUNCTION_ARGS)</code>: <a class="wiki-source-link" href="../../../../source/src/timezone/zic.c.html#L2438" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/timezone/zic.c.html&quot;}, '*');"><code>DO</code></a> ブロック（匿名コード）の実行ハンドラ。</li>
+<li><code>Datum plperl_validator(PG_FUNCTION_ARGS)</code>: <code>CREATE FUNCTION</code> 時の構文・定義検証ハンドラ。</li>
+</ul>
+<h3>コンパイル・キャッシュ</h3>
+<ul>
+<li><code>struct plperl_proc_desc</code>: コンパイルされた関数のメタデータ、Perl サブルーチンへの参照（<code>SV *reference</code>）、引数/戻り値の変換情報を保持する構造体。</li>
+<li><code>static plperl_proc_desc *compile_plperl_function(...)</code>: <code>pg_proc</code> からソースを読み込み、Perl サブルーチンを生成してキャッシュに登録します。</li>
+<li><code>static void plperl_create_sub(plperl_proc_desc *prodesc, const char *s, Oid fn_oid)</code>: Perl 側のコンパイラを呼び出してサブルーチンを生成します。</li>
+</ul>
+<h3>データ変換</h3>
+<ul>
+<li><code>static Datum plperl_sv_to_datum(SV *sv, Oid typid, int32 typmod, ...)</code>: Perl の SV を PostgreSQL の Datum に変換する中心的な関数。</li>
+<li><code>static SV *plperl_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc, bool include_generated)</code>: PostgreSQL のタプルを Perl のハッシュ参照に変換します。</li>
+<li><code>static SV *plperl_ref_from_pg_array(Datum arg, Oid typid)</code>: PostgreSQL の配列を Perl の配列参照に変換します。</li>
+</ul>
+<h3>SPI 連携</h3>
+<ul>
+<li><code>HV *plperl_spi_exec(char *query, int limit)</code>: Perl から渡されたクエリを SPI で実行します。</li>
+<li><code>SV *plperl_spi_prepare(char *query, int argc, SV **argv)</code>: プリペアドステートメントを作成し、インタプリタ固有の <code>query_hash</code> に登録します。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L313" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__SvREFCNT_dec_current.html&quot;}, '*');"><code>SvREFCNT_dec_current</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L210" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_array_info.html&quot;}, '*');"><code>plperl_array_info</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_call_data.html&quot;}, '*');"><code>plperl_call_data</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L2095" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_create_sub.html&quot;}, '*');"><code>plperl_create_sub</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L706" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_init_interp.html&quot;}, '*');"><code>plperl_init_interp</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L2168" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_init_shared_libs.html&quot;}, '*');"><code>plperl_init_shared_libs</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L85" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_interp_desc.html&quot;}, '*');"><code>plperl_interp_desc</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L102" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_proc_desc.html&quot;}, '*');"><code>plperl_proc_desc</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L151" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_proc_key.html&quot;}, '*');"><code>plperl_proc_key</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L163" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_proc_ptr.html&quot;}, '*');"><code>plperl_proc_ptr</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L188" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_query_desc.html&quot;}, '*');"><code>plperl_query_desc</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L201" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_query_entry.html&quot;}, '*');"><code>plperl_query_entry</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<h3>1. 関数実行の制御フロー</h3>
+<p>通常関数の実行時、制御は以下の流れで遷移します。</p>
+<pre><code>[SQL 実行エンジン]
+       │
+       ▼
+plperl_call_handler(fcinfo)
+       │
+       ├─► compile_plperl_function() ──► (キャッシュにあれば再利用)
+       │         │
+       │         ▼ (キャッシュミス時)
+       │   select_perl_context() ──► [Perl インタプリタの選択/初期化]
+       │         │
+       │         ▼
+       │   plperl_create_sub() ──► [Perl 空間で sub をコンパイル]
+       │
+       ├─► activate_interpreter() ──► [Perl コンテキストの切り替え]
+       │
+       ├─► (引数の変換: Datum -&gt; SV) ──► plperl_hash_from_datum / plperl_ref_from_pg_array
+       │
+       ├─► plperl_call_perl_func() ──► [perl_run / call_sv() で実行]
+       │
+       ├─► (戻り値の変換: SV -&gt; Datum) ──► plperl_sv_to_datum()
+       │
+       ▼
+[PG_FINALLY] ──► activate_interpreter(oldinterp) &amp; 参照カウントのデクリメント</code></pre>
+<h3>2. SPI 実行のデータフローとエラーパス</h3>
+<p>Perl コード内から SQL を実行する際、PostgreSQL のエラーハンドリング（<a class="wiki-source-link" href="../../../../source/src/include/c.h.html#L1343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/c.h.html&quot;}, '*');"><code>sigsetjmp</code></a>）と Perl の例外（<code>croak</code>）を安全に仲介するため、以下のフローを辿ります。</p>
+<p>1. **SPI 呼び出し**: Perl 側から <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L3133" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_spi_exec.html&quot;}, '*');"><code>plperl_spi_exec</code></a> が呼び出されます。 2. **安全性の検証**: <code>check_spi_usage_allowed()</code> が走り、END ブロック内や関数コンパイル中の不正な SPI 使用を拒否します。 3. **サブトランザクションの開始**: <code>BeginInternalSubTransaction(NULL)</code> を呼び出し、現在のメモリコンテキストを保存します。 4. **<a class="wiki-source-link" href="../../../../source/src/include/utils/elog.h.html#L385" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');">PG_TRY</a> ブロック**:</p>
+<ul>
+<li><code>SPI_execute()</code> を実行。</li>
+<li>成功した場合、<code>plperl_spi_execute_fetch_result()</code> が結果タプルを Perl のハッシュ配列（HV の AV）に変換します。</li>
+<li><code>ReleaseCurrentSubTransaction()</code> でサブトランザクションをコミットします。</li>
+<p>5. **<a class="wiki-source-link" href="../../../../source/src/include/utils/elog.h.html#L395" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');">PG_CATCH</a> ブロック**:</p>
+<li>エラーが発生した場合、<code>CopyErrorData()</code> でエラー情報を退避し、<code>FlushErrorState()</code> で PostgreSQL のエラー状態をクリアします。</li>
+<li><code>RollbackAndReleaseCurrentSubTransaction()</code> でサブトランザクションをロールバックします。</li>
+<li>退避したエラーメッセージを <code>croak_cstr()</code> に渡し、Perl 側の例外としてスロー（<code>die</code>）させます。</li>
+</ul>
+<h2>直接依存</h2>
+<p>本ファイルは以下の主要なヘッダーおよびコンポーネントに直接依存しています。</p>
+<ul>
+<li>**PostgreSQL コア**:</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>executor/spi.h</code> (SPI 実行インターフェース)</li>
+<li><code>commands/trigger.h</code>, <code>commands/event_trigger.h</code> (トリガー構造体)</li>
+<li><code>utils/syscache.h</code>, <code>utils/lsyscache.h</code> (システムカタログ検索)</li>
+<li><code>utils/memutils.h</code> (メモリコンテキスト操作)</li>
+<li>**Perl 統合**:</li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.h.html&quot;}, '*');"><code>plperl.h</code></a> (Paired file: <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.h.html#L88" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_h__sv2cstr.html&quot;}, '*');"><code>sv2cstr</code></a> などのインライン変換関数やマクロを定義)</li>
+<li><code>perlchunks.h</code> (Perl インタプリタ起動時に実行される Perl コードの文字列リテラル群)</li>
+<li><code>plperl_opmask.h</code> (セーフモード用のオペコードマスク配列 <code>plperl_opmask</code> の定義)</li>
+<li><code>access/htup_details.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>catalog/pg_language.h</code></li>
+<li><code>catalog/pg_proc.h</code></li>
+<li><code>catalog/pg_type.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/funcapi.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/funcapi.h.html&quot;}, '*');"><code>funcapi.h</code></a></li>
+<li><code>limits.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>parser/parse_type.h</code></li>
+<li><code>storage/ipc.h</code></li>
+<li><code>tcop/tcopprot.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/fmgroids.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/rel.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/SPI.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/SPI.xs.html&quot;}, '*');"><code>src/pl/plperl/SPI.xs</code></a> / <a class="wiki-source-link" href="../../../../source/src/pl/plperl/Util.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/Util.xs.html&quot;}, '*');"><code>Util.xs</code></a>: Perl 空間に公開される <code>PostgreSQL::InServer::SPI</code> および <code>Util</code> モジュールの XS 実装。<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>plperl.c</code></a> で定義された <code>plperl_spi_*</code> 関数群を直接呼び出します。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl_system.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl_system.h.html&quot;}, '*');"><code>src/pl/plperl/plperl_system.h</code></a>: Perl のシステムヘッダーと PostgreSQL のヘッダー間のシンボル競合を回避するためのラッパー。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<h3>メモリ所有権とライフタイム</h3>
+<ul>
+<li>**関数記述子 (<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L102" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_proc_desc.html&quot;}, '*');"><code>plperl_proc_desc</code></a>)**:</li>
+<li>各関数記述子は専用のメモリコンテキスト <code>fn_cxt</code>（<a class="wiki-source-link" href="../../../../source/src/backend/utils/mmgr/mcxt.c.html#L150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>TopMemoryContext</code></a> の子）を持ちます。</li>
+<li>記述子のライフタイムは <code>fn_refcount</code> で管理されます。参照カウントが <code>0</code> になると、<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L2697" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__free_plperl_function.html&quot;}, '*');"><code>free_plperl_function</code></a> が呼び出され、<code>fn_cxt</code> ごとすべての関連データ（Perl サブルーチン参照 <code>reference</code> を含む）が削除されます。</li>
+<li>**一時コンテキスト**:</li>
+<li>セット戻り値関数（SRF）の処理（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L3275" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__pl__plperl__plperl_c__plperl_return_next_internal.html&quot;}, '*');"><code>plperl_return_next_internal</code></a>）では、行ごとの変換処理で発生するメモリリークを防ぐため、専用の一時コンテキスト <code>current_call_data-&gt;tmp_cxt</code> を作成し、1行出力するごとにリセット（<a class="wiki-source-link" href="../../../../source/src/backend/utils/mmgr/mcxt.c.html#L388" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__mmgr__mcxt_c__MemoryContextReset.html&quot;}, '*');"><code>MemoryContextReset</code></a>）します。</li>
+</ul>
+<h3>インタプリタの不変条件 (Invariants)</h3>
+<ul>
+<li>信頼された（trusted）PL/Perl インタプリタは、SQL の実効ユーザーID（<code>GetUserId()</code>）ごとに個別に作成され、ハッシュテーブル <a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L225" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>plperl_interp_hash</code></a> にキャッシュされます。これにより、一般ユーザーが他人の権限で動作する PL/Perl 関数にコードを注入することを防ぎます。</li>
+<li>信頼されない（untrusted）PL/PerlU インタプリタは、ユーザーID <code>0</code> (<a class="wiki-source-link" href="../../../../source/src/include/postgres_ext.h.html#L35" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/postgres_ext.h.html&quot;}, '*');">InvalidOid</a>) として1つだけ作成され、システム全体で共有されます。</li>
+</ul>
+<h3>エッジケースと制限</h3>
+<ul>
+<li>**マルチインタプリタ非対応環境**:</li>
+<li>Perl ビルドが <code>MULTIPLICITY</code> をサポートしていない場合、複数のインタプリタを割り当てることができません。この環境で異なるユーザーIDによる PL/Perl 関数の並行実行や、PL/Perl と PL/PerlU の混在実行を行うと、&quot;cannot allocate multiple Perl interpreters...&quot; エラーが発生します。</li>
+<li>**Windows 環境におけるロケール処理**:</li>
+<li>Perl 起動時に <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L472" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>setlocale</code></a> が勝手に呼び出されて PostgreSQL のロケールが破壊されるのを防ぐため、Windows かつ古い Perl バージョンでは、起動前後にロケールを退避・復元する特殊な処理（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/plperl.c.html#L756" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/pl/plperl/plperl.c.html&quot;}, '*');"><code>PLPERL_RESTORE_LOCALE</code></a>）が埋め込まれています。</li>
+</ul>
+<h3>意図的な省略</h3>
+<ul>
+<li><code>.xs</code> ファイル（<a class="wiki-source-link" href="../../../../source/src/pl/plperl/SPI.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/SPI.xs.html&quot;}, '*');"><code>SPI.xs</code></a>, <a class="wiki-source-link" href="../../../../source/src/pl/plperl/Util.xs.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/pl/plperl/Util.xs.html&quot;}, '*');"><code>Util.xs</code></a>）の具体的な Perl-C バインディングの生成ロジックは、このファイルではなくそれぞれの XS ファイルに閉じているため、本ページでは詳細を省略しています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_interp_desc.html" target="wiki-view"><code>plperl_interp_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_proc_desc.html" target="wiki-view"><code>plperl_proc_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_proc_key.html" target="wiki-view"><code>plperl_proc_key</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_proc_ptr.html" target="wiki-view"><code>plperl_proc_ptr</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_call_data.html" target="wiki-view"><code>plperl_call_data</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_query_desc.html" target="wiki-view"><code>plperl_query_desc</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_query_entry.html" target="wiki-view"><code>plperl_query_entry</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_array_info.html" target="wiki-view"><code>plperl_array_info</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__SvREFCNT_dec_current.html" target="wiki-view"><code>SvREFCNT_dec_current</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_init_interp.html" target="wiki-view"><code>plperl_init_interp</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_create_sub.html" target="wiki-view"><code>plperl_create_sub</code></a></li>
+<li><a href="../../../symbols/src__pl__plperl__plperl_c__plperl_init_shared_libs.html" target="wiki-view"><code>plperl_init_shared_libs</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

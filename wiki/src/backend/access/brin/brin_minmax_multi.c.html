@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/brin/brin_minmax_multi.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/brin/brin_minmax_multi.c.html&quot;}, '*');">src/backend/access/brin/brin_minmax_multi.c</a></h1>
+<h2>概要</h2>
+<p>本ファイルは、BRIN インデックスにおける「Multi Min/Max」戦略の実装です。従来の単一範囲（Min/Max）では、外れ値の混入により範囲が過度に拡大し、インデックスの選択性が低下する問題がありました。本モジュールは、複数の小さな間隔（<a class="wiki-source-link" href="../../../../../source/src/include/datatype/timestamp.h.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__datatype__timestamp_h__Interval.html&quot;}, '*');">Interval</a>）を保持することで、外れ値の影響を局所化し、スキャン効率を維持します。</p>
+<h2>モジュール内での役割</h2>
+<p>BRIN アクセスメソッドの演算戦略の一つとして機能します。<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/brin/brin.c.html&quot;}, '*');"><code>brin.c</code></a> 等のコアモジュールから呼び出される演算関数（<code>consistent</code>, <code>add_value</code>, <code>union</code> 等）を提供し、インデックスの要約データ（<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html&quot;}, '*');"><code>Ranges</code></a>）の構築、シリアライズ、およびマージを担います。</p>
+<h2>責務</h2>
+<ul>
+<li>**要約の管理**: ページ範囲内の値を複数の間隔または単一の値として保持し、<code>values_per_range</code> オプションに基づき管理する。</li>
+<li>**動的圧縮**: 保持する値が上限を超えた場合、距離関数（<code>distance</code>）を用いて最も近い間隔同士を貪欲にマージし、サイズを縮小する。</li>
+<li>**シリアライズ**: インメモリの <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html&quot;}, '*');"><code>Ranges</code></a> 構造体を、ディスク保存用の <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html&quot;}, '*');"><code>SerializedRanges</code></a>（<a class="wiki-source-link" href="../../../../../source/src/include/c.h.html#L678" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__c_h__bytea.html&quot;}, '*');"><code>bytea</code></a> 形式）へ変換する。</li>
+<li>**演算戦略の提供**: 距離計算（<code>distance</code>）や比較演算を各データ型向けに提供する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>データ構造</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html&quot;}, '*');"><code>Ranges</code></a>: インメモリでの要約表現。固定長ヘッダと可変長の <code>values</code> 配列を持つ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html&quot;}, '*');"><code>SerializedRanges</code></a>: ディスク上の永続化形式。<a class="wiki-source-link" href="../../../../../source/src/include/c.h.html#L678" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__c_h__bytea.html&quot;}, '*');"><code>bytea</code></a> として格納される。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L237" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__ExpandedRange.html&quot;}, '*');"><code>ExpandedRange</code></a>: マージ処理時に使用する、min/max を明示的に持つ中間表現。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L111" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__MinmaxMultiOpaque.html&quot;}, '*');"><code>MinmaxMultiOpaque</code></a>: インデックスのメタデータキャッシュ。</li>
+</ul>
+<h3>主要関数</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L2411" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__brin_minmax_multi_add_value.html&quot;}, '*');"><code>brin_minmax_multi_add_value</code></a>: 新しい値を要約に追加し、必要に応じて圧縮を行う。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L2548" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__brin_minmax_multi_consistent.html&quot;}, '*');"><code>brin_minmax_multi_consistent</code></a>: スキャンキーと要約を比較し、ページ範囲のスキップ可否を判定する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L2734" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__brin_minmax_multi_union.html&quot;}, '*');"><code>brin_minmax_multi_union</code></a>: 2つの要約をマージする。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1475" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__reduce_expanded_ranges.html&quot;}, '*');"><code>reduce_expanded_ranges</code></a>: 距離関数に基づき、要約のサイズを目標値まで縮小する。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **追加**: <code>add_value</code> が呼ばれると、まず <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1600" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__ensure_free_space_in_buffer.html&quot;}, '*');"><code>ensure_free_space_in_buffer</code></a> でバッファの空きを確認する。 2. **圧縮**: バッファが溢れる場合、<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1385" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__build_expanded_ranges.html&quot;}, '*');"><code>build_expanded_ranges</code></a> で全範囲を中間形式に展開し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1328" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__build_distances.html&quot;}, '*');"><code>build_distances</code></a> で間隔間の距離を計算。<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1475" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__reduce_expanded_ranges.html&quot;}, '*');"><code>reduce_expanded_ranges</code></a> で距離が近い順にマージする。 3. **シリアライズ**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L575" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__brin_range_serialize.html&quot;}, '*');"><code>brin_range_serialize</code></a> により、<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L169" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html&quot;}, '*');"><code>Ranges</code></a> を <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html&quot;}, '*');"><code>SerializedRanges</code></a> へ変換し、<a class="wiki-source-link" href="../../../../../source/src/include/c.h.html#L678" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__c_h__bytea.html&quot;}, '*');"><code>bytea</code></a> として格納する。 4. **クエリ**: <code>consistent</code> 関数が <a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html&quot;}, '*');"><code>SerializedRanges</code></a> をデシリアライズし、各間隔に対してスキャンキーの包含関係をチェックする。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/brin.h</code>, <code>access/brin_internal.h</code>: BRIN コア定義。</li>
+<li><code>utils/datum.h</code>, <code>utils/fmgr.h</code>: PostgreSQL のデータ型操作および関数呼び出し基盤。</li>
+<li>各種 <code>utils/</code> ヘッダ: <code>uuid</code>, <a class="wiki-source-link" href="../../../../../source/src/include/utils/inet.h.html#L52" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__inet_h__inet.html&quot;}, '*');"><code>inet</code></a>, <a class="wiki-source-link" href="../../../../../source/src/interfaces/ecpg/include/pgtypes_timestamp.h.html#L10" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__interfaces__ecpg__include__pgtypes_timestamp_h__timestamp.html&quot;}, '*');"><code>timestamp</code></a> 等の型固有の距離計算用。</li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/brin/brin_minmax.c.html&quot;}, '*');"><code>brin_minmax.c</code></a>: 単一範囲の Min/Max 戦略。本モジュールの基礎となる。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_tuple.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/brin/brin_tuple.c.html&quot;}, '*');"><code>brin_tuple.c</code></a>: BRIN インデックスのタプル操作。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_revmap.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/brin/brin_revmap.c.html&quot;}, '*');"><code>brin_revmap.c</code></a>: インデックスページとヒープページの対応管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: 圧縮処理（<a class="wiki-source-link" href="../../../../../source/src/backend/access/brin/brin_minmax_multi.c.html#L1475" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__brin__brin_minmax_multi_c__reduce_expanded_ranges.html&quot;}, '*');"><code>reduce_expanded_ranges</code></a> 等）はメモリ消費が激しいため、一時的な <code>MemoryContext</code> を作成してリークを防いでいます。</li>
+<li>**圧縮の性質**: 圧縮は貪欲法（Greedy）で行われます。距離関数は近似値でも許容されますが、正確であるほどインデックスの品質が向上します。</li>
+<li>**制約**: <code>values_per_range</code> は最大 256 まで設定可能です。デフォルトは 32 です。</li>
+<li>**未実装/浅い部分**: 距離計算のロジックは型ごとに手動で実装されており、一部（UUID や Inet 等）は近似的な計算を行っています。これは完全な精度よりも計算コストを優先しているためです。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__MinmaxMultiOpaque.html" target="wiki-view"><code>MinmaxMultiOpaque</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__MinMaxMultiOptions.html" target="wiki-view"><code>MinMaxMultiOptions</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__Ranges.html" target="wiki-view"><code>Ranges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__SerializedRanges.html" target="wiki-view"><code>SerializedRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__ExpandedRange.html" target="wiki-view"><code>ExpandedRange</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__DistanceValue.html" target="wiki-view"><code>DistanceValue</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__compare_context.html" target="wiki-view"><code>compare_context</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertArrayOrder.html" target="wiki-view"><code>AssertArrayOrder</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertCheckRanges.html" target="wiki-view"><code>AssertCheckRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__AssertCheckExpandedRanges.html" target="wiki-view"><code>AssertCheckExpandedRanges</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__minmax_multi_init.html" target="wiki-view"><code>minmax_multi_init</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__brin__brin_minmax_multi_c__range_deduplicate_values.html" target="wiki-view"><code>range_deduplicate_values</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

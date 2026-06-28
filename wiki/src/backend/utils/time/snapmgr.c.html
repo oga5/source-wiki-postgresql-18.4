@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/utils/time/snapmgr.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');">src/backend/utils/time/snapmgr.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQLのMVCC（多版同時実行制御）におけるスナップショットのライフサイクル管理を担う中核モジュールです。トランザクション内での可視性判定に使用されるスナップショットの生成、登録、参照カウント管理、および外部プロセスへのエクスポート/インポート機能を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/utils/time</code> モジュールの一部として、トランザクションの可視性境界を定義します。<a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/procarray.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/procarray.c.html&quot;}, '*');"><code>procarray.c</code></a> が提供するシステム全体のトランザクション状態を基に、個々のクエリやトランザクションが必要とするスナップショットを構築・保持します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スナップショットのライフサイクル管理**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>ActiveSnapshot</code></a> スタックと <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>RegisteredSnapshots</code></a> ヒープを用いた参照カウント管理。</li>
+<li>**VACUUM最適化**: 保持中のスナップショットに基づき、<code>MyProc-&gt;xmin</code> を更新し、不要なタプルの削除を促進。</li>
+<li>**スナップショットの永続化と共有**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L1289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__pg_export_snapshot.html&quot;}, '*');"><code>pg_export_snapshot</code></a> によるファイルベースの共有と、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L1384" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ImportSnapshot.html&quot;}, '*');"><code>ImportSnapshot</code></a> による他トランザクションへの状態引き継ぎ。</li>
+<li>**カタログスナップショットの管理**: システムカタログスキャン用スナップショットのキャッシュと無効化制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>スナップショット管理（グローバル変数）</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L148" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>CurrentSnapshot</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L149" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>SecondarySnapshot</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>CatalogSnapshot</code></a>: 現在のトランザクションで利用される主要なスナップショットへのポインタ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>ActiveSnapshot</code></a>: 現在のクエリ実行コンテキストを管理するスタックのトップ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>RegisteredSnapshots</code></a>: <a class="wiki-source-link" href="../../../../../source/src/include/lib/pairingheap.h.html#L71" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__lib__pairingheap_h__pairingheap.html&quot;}, '*');"><code>pairingheap</code></a> で管理される、参照中のスナップショット集合。</li>
+</ul>
+<h3>ライフサイクル操作</h3>
+<ul>
+<li><code>GetTransactionSnapshot()</code>: トランザクションの最初のスナップショットを取得。</li>
+<li><code>PushActiveSnapshot()</code> / <code>PopActiveSnapshot()</code>: クエリ実行中のスナップショットスタック操作。</li>
+<li><code>RegisterSnapshot()</code> / <code>UnregisterSnapshot()</code>: リソースオーナーによる明示的なスナップショット保持。</li>
+</ul>
+<h3>エクスポート/インポート</h3>
+<ul>
+<li><code>ExportSnapshot()</code>: スナップショットをファイルへシリアライズ。</li>
+<li><code>ImportSnapshot()</code>: ファイルからスナップショットをリストアし、現在のトランザクションに適用。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L172" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ActiveSnapshotElt.html&quot;}, '*');"><code>ActiveSnapshotElt</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L1013" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__AtEOXact_Snapshot.html&quot;}, '*');"><code>AtEOXact_Snapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L979" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__AtSubAbort_Snapshot.html&quot;}, '*');"><code>AtSubAbort_Snapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L958" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__AtSubCommit_Snapshot.html&quot;}, '*');"><code>AtSubCommit_Snapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L1584" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__DeleteAllExportedSnapshotFiles.html&quot;}, '*');"><code>DeleteAllExportedSnapshotFiles</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L205" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ExportedSnapshot.html&quot;}, '*');"><code>ExportedSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L661" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__FreeSnapshot.html&quot;}, '*');"><code>FreeSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L270" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__GetTransactionSnapshot.html&quot;}, '*');"><code>GetTransactionSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L238" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerForgetSnapshot.html&quot;}, '*');"><code>ResourceOwnerForgetSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L233" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerRememberSnapshot.html&quot;}, '*');"><code>ResourceOwnerRememberSnapshot</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L250" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__SerializedSnapshotData.html&quot;}, '*');"><code>SerializedSnapshotData</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L934" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__SnapshotResetXmin.html&quot;}, '*');"><code>SnapshotResetXmin</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **取得**: <code>GetTransactionSnapshot()</code> が呼ばれると、<code>GetSnapshotData()</code> を経由して <a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/procarray.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/procarray.c.html&quot;}, '*');"><code>procarray.c</code></a> から最新のトランザクション状態を取得します。 2. **スタック管理**: クエリ実行時に <code>PushActiveSnapshot()</code> が呼ばれ、<a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L180" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>ActiveSnapshot</code></a> スタックに積まれます。これにより、再帰的なクエリ実行やサブトランザクションでの可視性が維持されます。 3. **リソース追跡**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>RegisteredSnapshots</code></a> ヒープは、<code>xmin</code> が最も古いスナップショットを常に先頭に保持します。これにより、<code>SnapshotResetXmin()</code> が <code>MyProc-&gt;xmin</code> を効率的に更新し、VACUUMの停止を防ぎます。 4. **解放**: トランザクション終了時、<code>AtEOXact_Snapshot()</code> が呼び出され、登録済みスナップショットのクリーンアップとファイルベースの共有スナップショットの削除を行います。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/procarray.h</code>: システム全体のトランザクション状態取得。</li>
+<li><code>utils/resowner.h</code>: リソースオーナーによるスナップショットの自動解放管理。</li>
+<li><code>lib/pairingheap.h</code>: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>RegisteredSnapshots</code></a> の優先度付きキュー管理。</li>
+<li><code>access/xact.h</code>: トランザクションのネストレベルや状態管理。</li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>datatype/timestamp.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><code>port/pg_lfind.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>sys/stat.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/syscache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/storage/ipc/procarray.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/storage/ipc/procarray.c.html&quot;}, '*');"><code>src/backend/storage/ipc/procarray.c</code></a>: スナップショットの基となるトランザクション状態の提供元。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/combocid.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/combocid.c.html&quot;}, '*');"><code>src/backend/utils/time/combocid.c</code></a>: 同一トランザクション内でのタプル可視性（CID）管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/utils/snapshot.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/snapshot.h.html&quot;}, '*');"><code>src/include/utils/snapshot.h</code></a>: <a class="wiki-source-link" href="../../../../../source/src/include/utils/snapshot.h.html#L138" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__utils__snapshot_h__SnapshotData.html&quot;}, '*');"><code>SnapshotData</code></a> 構造体の定義。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: <code>CopySnapshot()</code> で生成されたスナップショットは <a class="wiki-source-link" href="../../../../../source/src/backend/utils/mmgr/mcxt.c.html#L155" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>TopTransactionContext</code></a> に割り当てられます。<code>regd_count</code> と <code>active_count</code> が両方とも0になった時点で <code>pfree()</code> されます。</li>
+<li>**不変条件**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L189" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/time/snapmgr.c.html&quot;}, '*');"><code>RegisteredSnapshots</code></a> ヒープ内のスナップショットは、<code>xmin</code> の昇順で管理されます。<code>MyProc-&gt;xmin</code> は常にこのヒープの先頭（最も古い <code>xmin</code>）と同期している必要があります。</li>
+<li>**エッジケース**: <a class="wiki-source-link" href="../../../../../source/src/backend/utils/time/snapmgr.c.html#L1384" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__utils__time__snapmgr_c__ImportSnapshot.html&quot;}, '*');"><code>ImportSnapshot</code></a> は、異なるデータベース間でのスナップショット共有を禁止しています。これは、VACUUMの <code>OldestXmin</code> 計算がデータベース単位であるためです。</li>
+<li>**省略された詳細**: 本ファイルはスナップショットの「管理」に特化しており、実際の可視性判定ロジック（<a class="wiki-source-link" href="../../../../../source/src/backend/access/heap/heapam_visibility.c.html#L959" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__heap__heapam_visibility_c__HeapTupleSatisfiesMVCC.html&quot;}, '*');"><code>HeapTupleSatisfiesMVCC</code></a> 等）は <code>access/heap/heapam_visibility.c</code> に委譲されています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ActiveSnapshotElt.html" target="wiki-view"><code>ActiveSnapshotElt</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ExportedSnapshot.html" target="wiki-view"><code>ExportedSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerRememberSnapshot.html" target="wiki-view"><code>ResourceOwnerRememberSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__ResourceOwnerForgetSnapshot.html" target="wiki-view"><code>ResourceOwnerForgetSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__SerializedSnapshotData.html" target="wiki-view"><code>SerializedSnapshotData</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__GetTransactionSnapshot.html" target="wiki-view"><code>GetTransactionSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__FreeSnapshot.html" target="wiki-view"><code>FreeSnapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__SnapshotResetXmin.html" target="wiki-view"><code>SnapshotResetXmin</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtSubCommit_Snapshot.html" target="wiki-view"><code>AtSubCommit_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtSubAbort_Snapshot.html" target="wiki-view"><code>AtSubAbort_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__AtEOXact_Snapshot.html" target="wiki-view"><code>AtEOXact_Snapshot</code></a></li>
+<li><a href="../../../../symbols/src__backend__utils__time__snapmgr_c__DeleteAllExportedSnapshotFiles.html" target="wiki-view"><code>DeleteAllExportedSnapshotFiles</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

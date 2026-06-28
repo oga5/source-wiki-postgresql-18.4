@@ -1,0 +1,152 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/transam/xact.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xact.c.html&quot;}, '*');">src/backend/access/transam/xact.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xact.c.html&quot;}, '*');"><code>xact.c</code></a> は、PostgreSQLのトランザクション管理システムの最上位層を実装するファイルです。トランザクションのライフサイクル（開始、コミット、アボート、2PC）、サブトランザクションの階層管理、および並列クエリ実行時の状態同期を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/transam</code> モジュールにおいて、トランザクションの論理的な状態遷移を制御する中心的な役割を果たします。物理的な永続化（CLOG、サブトランザクションIDの永続化）やWALの書き込みについては、他のサブモジュール（<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/clog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/clog.c.html&quot;}, '*');"><code>clog.c</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/subtrans.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/subtrans.c.html&quot;}, '*');"><code>subtrans.c</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>xlog.c</code></a>）に委譲します。</p>
+<h2>責務</h2>
+<ul>
+<li>**トランザクション状態管理**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L193" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransactionStateData.html&quot;}, '*');"><code>TransactionStateData</code></a> を用いたスタックベースのトランザクション階層管理。</li>
+<li>**ライフサイクル制御**: <code>StartTransaction</code>, <code>CommitTransaction</code>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L2808" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AbortTransaction.html&quot;}, '*');"><code>AbortTransaction</code></a> 等による状態遷移の実行。</li>
+<li>**並列処理の同期**: 並列ワーカーへのトランザクション状態のシリアライズと、ワーカー内での状態復元。</li>
+<li>**コールバック管理**: トランザクションの開始・終了時に実行される外部モジュール用フックの管理。</li>
+<li>**リカバリ時の再実行**: WALレコード（<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L6362" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__xact_redo.html&quot;}, '*');"><code>xact_redo</code></a>）に基づいたトランザクション状態の復元。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>状態管理</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L260" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xact.c.html&quot;}, '*');"><code>CurrentTransactionState</code></a>: 現在のトランザクション状態を指すポインタ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L193" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransactionStateData.html&quot;}, '*');"><code>TransactionStateData</code></a>: トランザクションの階層、メモリコンテキスト、リソースオーナー、XID等を保持する構造体。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L141" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransState.html&quot;}, '*');"><code>TransState</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L157" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TBlockState.html&quot;}, '*');"><code>TBlockState</code></a>: トランザクションの内部状態およびSQLレベルのブロック状態を定義する列挙型。</li>
+</ul>
+<h3>トランザクション識別子</h3>
+<ul>
+<li><code>GetTopTransactionId()</code> / <code>GetCurrentTransactionId()</code>: XIDの取得と必要に応じた割り当て。</li>
+<li><code>AssignTransactionId()</code>: 新規XIDの生成と、親トランザクションへの伝播。</li>
+</ul>
+<h3>制御フロー</h3>
+<ul>
+<li><code>StartTransaction()</code> / <code>CommitTransaction()</code> / <code>AbortTransaction()</code>: トランザクションの基本操作。</li>
+<li><code>StartSubTransaction()</code> / <code>CommitSubTransaction()</code> / <code>AbortSubTransaction()</code>: サブトランザクション（SAVEPOINT）の制御。</li>
+<li><code>CommitTransactionCommand()</code> / <code>AbortCurrentTransaction()</code>: SQLコマンド単位のトランザクション制御。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1166" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AtStart_Cache.html&quot;}, '*');"><code>AtStart_Cache</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1175" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AtStart_Memory.html&quot;}, '*');"><code>AtStart_Memory</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1225" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AtStart_ResourceOwner.html&quot;}, '*');"><code>AtStart_ResourceOwner</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1253" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AtSubStart_Memory.html&quot;}, '*');"><code>AtSubStart_Memory</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1282" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AtSubStart_ResourceOwner.html&quot;}, '*');"><code>AtSubStart_ResourceOwner</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L227" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__SerializedTransactionState.html&quot;}, '*');"><code>SerializedTransactionState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L320" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__SubXactCallbackItem.html&quot;}, '*');"><code>SubXactCallbackItem</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L157" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TBlockState.html&quot;}, '*');"><code>TBlockState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L141" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransState.html&quot;}, '*');"><code>TransState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L221" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransactionState.html&quot;}, '*');"><code>TransactionState</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L193" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__TransactionStateData.html&quot;}, '*');"><code>TransactionStateData</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L308" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__XactCallbackItem.html&quot;}, '*');"><code>XactCallbackItem</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **開始**: <code>StartTransaction</code> がメモリコンテキストとリソースオーナーを初期化し、<code>TRANS_INPROGRESS</code> へ遷移。 2. **XID割り当て**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L634" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AssignTransactionId.html&quot;}, '*');"><code>AssignTransactionId</code></a> が必要に応じてXIDを生成。サブトランザクションの場合、親のXIDを先に確定させる再帰的処理を行う。 3. **コミット**: <code>CommitTransaction</code> がトリガーやポータルを処理し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1314" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__RecordTransactionCommit.html&quot;}, '*');"><code>RecordTransactionCommit</code></a> でWALレコードを生成。その後、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/clog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/clog.c.html&quot;}, '*');"><code>clog.c</code></a> を更新して永続化。 4. **アボート**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L2808" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AbortTransaction.html&quot;}, '*');"><code>AbortTransaction</code></a> がリソースオーナーを解放し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L1753" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__RecordTransactionAbort.html&quot;}, '*');"><code>RecordTransactionAbort</code></a> でアボートをWALに記録。 5. **並列処理**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L5539" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__SerializeTransactionState.html&quot;}, '*');"><code>SerializeTransactionState</code></a> で状態を共有メモリに書き出し、ワーカー側で <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L5610" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__StartParallelWorkerTransaction.html&quot;}, '*');"><code>StartParallelWorkerTransaction</code></a> がそれを読み込んで復元する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/access/xlog.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/access/xlog.h.html&quot;}, '*');"><code>xlog.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/access/subtrans.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/access/subtrans.h.html&quot;}, '*');"><code>subtrans.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/access/twophase.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/twophase.h.html&quot;}, '*');"><code>twophase.h</code></a> 等（トランザクション永続化とWAL）</li>
+<li><code>storage/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/storage/proc.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/proc.h.html&quot;}, '*');"><code>proc.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/storage/lmgr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/lmgr.h.html&quot;}, '*');"><code>lmgr.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/storage/bufmgr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/storage/bufmgr.h.html&quot;}, '*');"><code>bufmgr.h</code></a> 等（プロセス管理とロック）</li>
+<li><code>utils/</code>: <a class="wiki-source-link" href="../../../../../source/src/include/utils/memutils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/memutils.h.html&quot;}, '*');"><code>memutils.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/utils/snapmgr.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/snapmgr.h.html&quot;}, '*');"><code>snapmgr.h</code></a>, <a class="wiki-source-link" href="../../../../../source/src/include/utils/guc.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/guc.h.html&quot;}, '*');"><code>guc.h</code></a> 等（メモリとGUC管理）</li>
+<li><code>access/commit_ts.h</code></li>
+<li><code>access/multixact.h</code></li>
+<li><code>access/parallel.h</code></li>
+<li><code>access/subtrans.h</code></li>
+<li><code>access/transam.h</code></li>
+<li><code>access/twophase.h</code></li>
+<li><code>access/xact.h</code></li>
+<li><code>access/xlog.h</code></li>
+<li><code>access/xloginsert.h</code></li>
+<li><code>access/xlogrecovery.h</code></li>
+<li><code>access/xlogutils.h</code></li>
+<li><code>catalog/index.h</code></li>
+<li><code>catalog/namespace.h</code></li>
+<li><code>catalog/pg_enum.h</code></li>
+<li><code>catalog/storage.h</code></li>
+<li><code>commands/async.h</code></li>
+<li><code>commands/tablecmds.h</code></li>
+<li><code>commands/trigger.h</code></li>
+<li><code>common/pg_prng.h</code></li>
+<li><code>executor/spi.h</code></li>
+<li><code>libpq/be-fsstubs.h</code></li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pg_trace.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/pg_trace.h.html&quot;}, '*');"><code>pg_trace.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>replication/logical.h</code></li>
+<li><code>replication/logicallauncher.h</code></li>
+<li><code>replication/logicalworker.h</code></li>
+<li><code>replication/origin.h</code></li>
+<li><code>replication/snapbuild.h</code></li>
+<li><code>replication/syncrep.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/lmgr.h</code></li>
+<li><code>storage/md.h</code></li>
+<li><code>storage/predicate.h</code></li>
+<li><code>storage/proc.h</code></li>
+<li><code>storage/procarray.h</code></li>
+<li><code>storage/sinvaladt.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/sys/time.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/sys/time.h.html&quot;}, '*');"><code>time.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/builtins.h</code></li>
+<li><code>utils/combocid.h</code></li>
+<li><code>utils/guc.h</code></li>
+<li><code>utils/inval.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/relmapper.h</code></li>
+<li><code>utils/snapmgr.h</code></li>
+<li><code>utils/timeout.h</code></li>
+<li><code>utils/timestamp.h</code></li>
+<li><code>utils/typcache.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/access/xact.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/xact.h.html&quot;}, '*');"><code>src/include/access/xact.h</code></a>: 公開インターフェースとデータ構造の定義。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/clog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/clog.c.html&quot;}, '*');"><code>src/backend/access/transam/clog.c</code></a>: トランザクション状態の永続化（SLRU）。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xlog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>src/backend/access/transam/xlog.c</code></a>: WALの物理的な書き込みとフラッシュ。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/subtrans.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/subtrans.c.html&quot;}, '*');"><code>src/backend/access/transam/subtrans.c</code></a>: サブトランザクションIDの親子関係管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ所有権**: トランザクション状態は <a class="wiki-source-link" href="../../../../../source/src/backend/utils/mmgr/mcxt.c.html#L155" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>TopTransactionContext</code></a> に保持されます。<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L2808" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AbortTransaction.html&quot;}, '*');"><code>AbortTransaction</code></a> は <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L303" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xact.c.html&quot;}, '*');"><code>TransactionAbortContext</code></a> を使用して、メモリ不足時でもアボート処理が完遂できるように設計されています。</li>
+<li>**不変条件**: 子トランザクションのXIDは必ず親のXIDより後に割り当てられます。<a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/xact.c.html#L634" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xact_c__AssignTransactionId.html&quot;}, '*');"><code>AssignTransactionId</code></a> はこの順序を保証するために再帰的に親を遡ります。</li>
+<li>**並列処理の制約**: 並列ワーカー内では、新しいXIDの割り当てやコマンドカウンタの変更は禁止されています。これは、リーダーとワーカー間で状態を同期させるための制約です。</li>
+<li>**省略された詳細**: 本ファイルは非常に巨大であるため、個別のコールバック関数の詳細や、特定のコマンド（<code>PREPARE</code> 等）の複雑なエラーハンドリングの詳細は省略しています。これらは <a class="wiki-source-link" href="../../../../../source/src/backend/access/transam/README.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/backend/access/transam/README.html&quot;}, '*');"><code>src/backend/access/transam/README</code></a> を併読することを推奨します。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransState.html" target="wiki-view"><code>TransState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TBlockState.html" target="wiki-view"><code>TBlockState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransactionStateData.html" target="wiki-view"><code>TransactionStateData</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__TransactionState.html" target="wiki-view"><code>TransactionState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__SerializedTransactionState.html" target="wiki-view"><code>SerializedTransactionState</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__XactCallbackItem.html" target="wiki-view"><code>XactCallbackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__SubXactCallbackItem.html" target="wiki-view"><code>SubXactCallbackItem</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_Cache.html" target="wiki-view"><code>AtStart_Cache</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_Memory.html" target="wiki-view"><code>AtStart_Memory</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtStart_ResourceOwner.html" target="wiki-view"><code>AtStart_ResourceOwner</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtSubStart_Memory.html" target="wiki-view"><code>AtSubStart_Memory</code></a></li>
+<li><a href="../../../../symbols/src__backend__access__transam__xact_c__AtSubStart_ResourceOwner.html" target="wiki-view"><code>AtSubStart_ResourceOwner</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/hash/hashovfl.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashovfl.c.html&quot;}, '*');">src/backend/access/hash/hashovfl.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQL ハッシュインデックスにおけるオーバーフローページの管理を担当するモジュールです。バケットが溢れた際に動的にページを割り当て、不要になった際に再利用・解放を行うための低レベルな操作を提供します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/hash</code> サブシステムにおいて、ハッシュバケットのチェーン構造を維持する役割を担います。<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashpage.c.html&quot;}, '*');"><code>hashpage.c</code></a> がページレベルの初期化を行うのに対し、本ファイルは「空き領域の探索」「ビットマップによる管理」「チェーンの再構成」という動的な構造変更に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**オーバーフローページの割り当て**: メタページのビットマップを参照し、空きページを検索または新規作成してバケットチェーンに連結する。</li>
+<li>**ページ解放と再利用**: 不要になったオーバーフローページをチェーンから切り離し、ビットマップを更新して空き領域としてマークする。</li>
+<li>**バケットの圧縮 (Squeezing)**: バケットチェーンの後方にあるページから前方へタプルを移動させ、空いたオーバーフローページを解放してインデックスの肥大化を抑制する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L111" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_addovflpage.html&quot;}, '*');"><code>_hash_addovflpage</code></a>: バケットの末尾に新しいオーバーフローページを追加する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L489" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_freeovflpage.html&quot;}, '*');"><code>_hash_freeovflpage</code></a>: 特定のオーバーフローページをチェーンから削除し、ビットマップを更新する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_squeezebucket.html&quot;}, '*');"><code>_hash_squeezebucket</code></a>: バケット内のタプルを再配置し、可能な限りオーバーフローページを解放する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L61" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_ovflblkno_to_bitno.html&quot;}, '*');"><code>_hash_ovflblkno_to_bitno</code></a>: ブロック番号からビットマップ上のビット位置を逆引きする。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L34" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c__bitno_to_blkno.html&quot;}, '*');"><code>bitno_to_blkno</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **割り当て**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L111" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_addovflpage.html&quot;}, '*');"><code>_hash_addovflpage</code></a> はメタページの <code>hashm_firstfree</code> から探索を開始し、ビットマップページを順次走査します。空きが見つかればそのブロックを初期化し、バケットチェーンの末尾にリンクします。 2. **解放**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L489" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_freeovflpage.html&quot;}, '*');"><code>_hash_freeovflpage</code></a> は対象ページの前後リンクを繋ぎ変え、ビットマップの該当ビットをクリアします。この際、WAL ログを適切に生成してクラッシュリカバリ時の整合性を保証します。 3. **圧縮**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_squeezebucket.html&quot;}, '*');"><code>_hash_squeezebucket</code></a> はバケットの末尾から前方へ向かってタプルを移動させます。移動が完了したページは <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L489" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_freeovflpage.html&quot;}, '*');"><code>_hash_freeovflpage</code></a> を呼び出して解放します。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/hash.h</code>: ハッシュインデックスの基本構造体および定数。</li>
+<li><code>access/hash_xlog.h</code>: オーバーフローページ操作に関連する WAL レコード定義。</li>
+<li><code>access/xloginsert.h</code>: WAL ログの生成用インターフェース。</li>
+<li><code>storage/bufmgr.h</code> (間接的): <a class="wiki-source-link" href="../../../../../source/src/include/storage/buf.h.html#L23" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__storage__buf_h__Buffer.html&quot;}, '*');"><code>Buffer</code></a> 操作およびロック管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>utils/rel.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashpage.c.html&quot;}, '*');"><code>hashpage.c</code></a>: ページヘッダーの初期化やフラグ管理。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashinsert.c.html&quot;}, '*');"><code>hashinsert.c</code></a>: インデックス挿入時のバケット溢れ判定。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hash.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hash.c.html&quot;}, '*');"><code>hash.c</code></a>: インデックス全体のメタデータ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロック順序**: デッドロックを避けるため、バケットの末尾ページ → メタページ → ビットマップページ → 新規オーバーフローページの順でロックを取得する設計になっています。</li>
+<li>**WAL 整合性**: ページ割り当てとチェーンへの追加は単一の WAL レコードで記録され、システムクラッシュ時のページリークを防いでいます。</li>
+<li>**圧縮のコスト**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashovfl.c.html#L841" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashovfl_c___hash_squeezebucket.html&quot;}, '*');"><code>_hash_squeezebucket</code></a> は VACUUM 時に呼び出されます。バケットチェーンが長い場合、タプルの移動とロックの連鎖が発生するため、パフォーマンスへの影響を考慮する必要があります。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__access__hash__hashovfl_c__bitno_to_blkno.html" target="wiki-view"><code>bitno_to_blkno</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

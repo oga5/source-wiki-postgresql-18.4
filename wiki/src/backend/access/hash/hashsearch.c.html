@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/hash/hashsearch.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashsearch.c.html&quot;}, '*');">src/backend/access/hash/hashsearch.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQL ハッシュインデックスにおけるスキャン（検索）処理の実装です。指定されたハッシュキーに基づき、バケットおよびオーバーフローページを辿って一致するタプルを特定し、取得する役割を担います。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/hash</code> サブシステムにおいて、インデックススキャンの実行エンジンとして機能します。<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hash.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hash.c.html&quot;}, '*');"><code>hash.c</code></a> が提供するスキャンインターフェース（<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hash.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hash_c__hashgettuple.html&quot;}, '*');"><code>hashgettuple</code></a> 等）から呼び出され、物理的なページ読み込みとタプルのフィルタリングを抽象化します。</p>
+<h2>責務</h2>
+<ul>
+<li>**スキャン実行**: インデックススキャン記述子（<code>IndexScanDesc</code>）に基づき、順方向および逆方向のスキャンを制御する。</li>
+<li>**バケット走査**: ハッシュバケットチェーン（メインバケットおよびオーバーフローページ）を横断する。</li>
+<li>**スプリット対応**: バケット分割（Split）処理中にスキャンが開始された場合、分割元・分割先の両方のバケットを適切に走査する。</li>
+<li>**タプルフィルタリング**: ハッシュキーの一致確認および <a class="wiki-source-link" href="../../../../../source/src/include/access/hash.h.html#L293" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/hash.h.html&quot;}, '*');"><code>INDEX_MOVED_BY_SPLIT_MASK</code></a> 等のフラグに基づく不要タプルのスキップ。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L287" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_first.html&quot;}, '*');"><code>_hash_first</code></a>: スキャンの開始点。ハッシュキーからバケットを特定し、最初のタプルを見つける。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_next.html&quot;}, '*');"><code>_hash_next</code></a>: スキャン中の次のタプルを取得する。ページ境界を跨ぐ処理を含む。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L447" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_readpage.html&quot;}, '*');"><code>_hash_readpage</code></a>: 指定されたページから条件に合致するタプルを <a class="wiki-source-link" href="../../../../../source/src/include/access/hash.h.html#L192" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__hash_h__HashScanOpaque.html&quot;}, '*');"><code>HashScanOpaque</code></a> にロードする。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/access/hash.h.html#L192" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__hash_h__HashScanOpaque.html&quot;}, '*');"><code>HashScanOpaque</code></a>: スキャン中の状態（現在のページ、バケット、分割状態など）を保持する構造体。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L287" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_first.html&quot;}, '*');"><code>_hash_first</code></a> がハッシュキーを計算し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html#L1558" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashpage_c___hash_getbucketbuf_from_hashkey.html&quot;}, '*');"><code>_hash_getbucketbuf_from_hashkey</code></a> で対象バケットを特定する。 2. **ページ読み込み**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L447" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_readpage.html&quot;}, '*');"><code>_hash_readpage</code></a> がページを読み込み、<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L603" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_load_qualified_items.html&quot;}, '*');"><code>_hash_load_qualified_items</code></a> を介して条件に合致するタプルを <code>so-&gt;currPos</code> にキャッシュする。 3. **走査**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L47" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_next.html&quot;}, '*');"><code>_hash_next</code></a> がキャッシュされたタプルを順次返し、キャッシュが尽きると <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L130" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_readnext.html&quot;}, '*');"><code>_hash_readnext</code></a> / <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashsearch.c.html#L196" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashsearch_c___hash_readprev.html&quot;}, '*');"><code>_hash_readprev</code></a> を呼び出して次のページへ移動する。 4. **終了**: スキャン終了時に <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html#L288" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashpage_c___hash_dropscanbuf.html&quot;}, '*');"><code>_hash_dropscanbuf</code></a> でバッファピンを解放する。</p>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/hash.h</code>: ハッシュインデックスの内部構造定義。</li>
+<li><code>access/relscan.h</code>: インデックススキャン用データ構造。</li>
+<li><code>storage/predicate.h</code>: 述語ロック（Predicate Locking）の管理。</li>
+<li><code>utils/rel.h</code>: リレーション記述子へのアクセス。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashpage.c.html&quot;}, '*');"><code>hashpage.c</code></a>: ページレベルの操作（<a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html#L69" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashpage_c___hash_getbuf.html&quot;}, '*');"><code>_hash_getbuf</code></a>, <a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashpage.c.html#L265" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__hash__hashpage_c___hash_relbuf.html&quot;}, '*');"><code>_hash_relbuf</code></a> 等）。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hash.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hash.c.html&quot;}, '*');"><code>hash.c</code></a>: インデックスアクセスメソッドのメインエントリポイント。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/hash/hashutil.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/hash/hashutil.c.html&quot;}, '*');"><code>hashutil.c</code></a>: ハッシュキー計算やユーティリティ関数。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**ロックの挙動**: ハッシュスキャンは、スキャン中ずっとバケットページをピン留めし続けることで、バケットの再編成や分割による不整合を防いでいます。</li>
+<li>**スプリット中の挙動**: バケット分割中にスキャンが重なった場合、<code>hashso_buc_populated</code> や <code>hashso_buc_split</code> フラグを用いて、分割元と分割先の両方を走査する複雑なロジックが含まれています。</li>
+<li>**全件スキャン不可**: ハッシュインデックスはハッシュキーによる特定が前提であるため、全件スキャン（Whole-index scan）はサポートされていません。</li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

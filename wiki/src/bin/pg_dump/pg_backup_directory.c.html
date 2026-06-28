@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/bin/pg_dump/pg_backup_directory.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_directory.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_directory.c.html&quot;}, '*');">src/bin/pg_dump/pg_backup_directory.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQL の <code>pg_dump</code> における「ディレクトリ形式」アーカイブの入出力処理を実装するモジュールです。この形式は、ダンプデータを単一の巨大なファイルではなく、メタデータ（<code>toc.dat</code>）と個別のデータファイル（<code>&lt;oid&gt;.dat</code>）の集合としてディレクトリ内に保存します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>pg_dump</code> のアーカイブフォーマット抽象化レイヤーの一部です。<a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_archiver.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_archiver.c.html&quot;}, '*');"><code>pg_backup_archiver.c</code></a> が定義するインターフェースを実装し、ディレクトリ構造特有のファイル操作（パス生成、ディレクトリ作成、圧縮ファイルの個別管理）を隠蔽します。</p>
+<h2>責務</h2>
+<ul>
+<li>**ディレクトリ構造の管理**: ダンプ先ディレクトリの作成と、各データファイルへのパス解決。</li>
+<li>**データチャンクの分離**: テーブルデータやラージオブジェクト（BLOB）を個別のファイルとして書き出し・読み込み。</li>
+<li>**圧縮の透過的処理**: 各データファイル単位での圧縮・解凍（<a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/compress_io.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/compress_io.c.html&quot;}, '*');"><code>compress_io.c</code></a> を利用）。</li>
+<li>**並列処理のサポート**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/parallel.h.html#L55" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__parallel_h__ParallelState.html&quot;}, '*');"><code>ParallelState</code></a> を用いた並列ダンプ・リストア時のジョブ実行とファイルアクセス制御。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_directory.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__pg_backup_directory_c__InitArchiveFmt_Directory.html&quot;}, '*');"><code>InitArchiveFmt_Directory</code></a>: アーカイブ形式の初期化関数。関数ポインタを <code>ArchiveHandle</code> に登録し、コンテキストを構築します。</li>
+<li><code>lclContext</code>: ディレクトリ形式特有の実行時状態（ディレクトリパス、現在開いているファイルハンドル、並列状態）を保持する構造体。</li>
+<li><code>_ArchiveEntry</code>: 各 TOC エントリに対して、対応するファイル名（<code>&lt;oid&gt;.dat</code> 等）を割り当てる関数。</li>
+<li><code>_StartData</code> / <code>_EndData</code>: 個別のデータファイルのオープン・クローズを管理するライフサイクル関数。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><code>lclTocEntry</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_directory.c.html#L681" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__pg_backup_directory_c__setFilePath.html&quot;}, '*');"><code>setFilePath</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_directory.c.html#L109" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__bin__pg_dump__pg_backup_directory_c__InitArchiveFmt_Directory.html&quot;}, '*');"><code>InitArchiveFmt_Directory</code></a> が呼ばれ、<code>ArchiveHandle</code> にディレクトリ形式用の関数ポインタ群を注入します。 2. **ダンプ時**:</p>
+<ul>
+<li><code>_ArchiveEntry</code> で各エントリのファイル名を決定。</li>
+<li><code>_StartData</code> でファイルを作成し、<code>_WriteData</code> でデータを書き込み、<code>_EndData</code> で閉じます。</li>
+<li><code>_CloseArchive</code> で最後に <code>toc.dat</code> を生成し、並列処理を開始します。</li>
+<p>3. **リストア時**:</p>
+<li><code>toc.dat</code> を読み込み、TOC エントリを復元。</li>
+<li><code>_PrintTocData</code> が各エントリのファイルパスを特定し、<code>_PrintFileData</code> を介してデータを読み出し、標準出力またはデータベースへ流し込みます。</li>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres_fe.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres_fe.h.html&quot;}, '*');"><code>postgres_fe.h</code></a>: フロントエンド共通定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/compress_io.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/compress_io.h.html&quot;}, '*');"><code>compress_io.h</code></a>: 圧縮・解凍処理の抽象化。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_utils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/bin/pg_dump/pg_backup_utils.h.html&quot;}, '*');"><code>pg_backup_utils.h</code></a>: バックアップ用ユーティリティ。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/dirent.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/dirent.h.html&quot;}, '*');"><code>dirent.h</code></a>, <code>sys/stat.h</code>: ファイルシステム操作用。</li>
+<li><code>parallel.h</code>: 並列処理用。</li>
+<li><code>common/file_utils.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/dumputils.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/dumputils.h.html&quot;}, '*');"><code>dumputils.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_archiver.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_archiver.c.html&quot;}, '*');"><code>pg_backup_archiver.c</code></a>: アーカイブ処理のメインエンジン。本ファイルが実装するインターフェースの呼び出し元。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_tar.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_tar.c.html&quot;}, '*');"><code>pg_backup_tar.c</code></a>: ディレクトリ形式と概念的に非常に近く、TOC の構造を共有しています。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/compress_io.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/compress_io.c.html&quot;}, '*');"><code>compress_io.c</code></a>: 実際の圧縮アルゴリズム（Gzip, LZ4, Zstd）の切り替えを担当。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**互換性**: ディレクトリ形式は <code>tar</code> 形式と内部的な TOC 構造が同一です。変更を加える際は <a class="wiki-source-link" href="../../../../source/src/bin/pg_dump/pg_backup_tar.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/bin/pg_dump/pg_backup_tar.c.html&quot;}, '*');"><code>pg_backup_tar.c</code></a> との整合性に注意してください。</li>
+<li>**圧縮**: データファイルは個別に圧縮されますが、<code>toc.dat</code> や <code>blobs_*.toc</code> は圧縮されません（手動圧縮された <code>.gz</code> ファイルは読み込み時に自動認識されます）。</li>
+<li>**並列処理**: <code>_PrepParallelRestore</code> は、各ファイルのサイズを <code>stat</code> で取得し、リストアの優先順位付け（<code>dataLength</code>）に利用しています。圧縮時は拡張子を考慮したサイズ推定が行われます。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__lclContext.html" target="wiki-view"><code>lclContext</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__lclTocEntry.html" target="wiki-view"><code>lclTocEntry</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__InitArchiveFmt_Directory.html" target="wiki-view"><code>InitArchiveFmt_Directory</code></a></li>
+<li><a href="../../../symbols/src__bin__pg_dump__pg_backup_directory_c__setFilePath.html" target="wiki-view"><code>setFilePath</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

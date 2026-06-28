@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/jit/llvm/llvmjit_deform.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/jit/llvm/llvmjit_deform.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/jit/llvm/llvmjit_deform.c.html&quot;}, '*');">src/backend/jit/llvm/llvmjit_deform.c</a></h1>
+<h2>概要</h2>
+<p>タプル（行データ）を物理的なメモリレイアウトから <code>TupleTableSlot</code> 形式へ変換（デフォーム）するための LLVM IR コードを生成するモジュールです。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/jit/llvm</code> サブシステムの一部として、実行時のタプルアクセスを高速化します。コンパイル時にタプルの記述子（<code>TupleDesc</code>）を知ることで、固定幅カラムのオフセット計算や NULL チェックを最適化し、汎用的なデフォーム処理を排除します。</p>
+<h2>責務</h2>
+<ul>
+<li>指定された <code>TupleDesc</code> に基づき、タプルをデフォームする専用の LLVM 関数を生成する。</li>
+<li>固定幅カラムの配置や NOT NULL 制約を静的に解析し、不要な分岐や計算を排除したコードを構築する。</li>
+<li>可変長データ（<a class="wiki-source-link" href="../../../../../source/src/include/c.h.html#L665" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__c_h__varlena.html&quot;}, '*');"><code>varlena</code></a>）や NULL ビットマップの処理を適切にインライン化する。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/jit/llvm/llvmjit_deform.c.html#L33" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__jit__llvm__llvmjit_deform_c__slot_compile_deform.html&quot;}, '*');"><code>slot_compile_deform</code></a>: 本ファイルのメイン関数。タプルデフォーム用の LLVM 関数を生成し、その <code>LLVMValueRef</code> を返す。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <code>TupleTableSlot</code> の型（Heap, Minimal 等）を確認し、対象外であれば <code>NULL</code> を返す。 2. **静的解析**: <code>TupleDesc</code> を走査し、どのカラムが NOT NULL かを判定して、オフセット計算の最適化戦略を決定する。 3. **コード生成**:</p>
+<ul>
+<li><code>entry</code> ブロックでタプルヘッダや NULL ビットマップへのポインタを取得。</li>
+<li>カラムごとに <code>attcheckattnoblocks</code> から <code>attstoreblocks</code> までの基本ブロックを生成。</li>
+<li><code>switch</code> 命令を用いて、現在の <code>nvalid</code>（既にデフォーム済みのカラム数）から適切な開始位置へジャンプさせる。</li>
+<p>4. **ループ処理**: 各カラムに対して、NULL チェック、アライメント調整、データコピー、オフセット更新のコードを順次生成する。 5. **終了**: 最終的な <code>nvalid</code> とオフセットをスロットに書き戻し、関数を終了する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>llvm-c/Core.h</code>: LLVM IR 生成用 API。</li>
+<li><code>access/htup_details.h</code>, <code>access/tupdesc_details.h</code>: タプル構造と記述子の定義。</li>
+<li><code>jit/llvmjit.h</code>, <code>jit/llvmjit_emit.h</code>: JIT コンパイルの共通基盤および IR 生成ヘルパー。</li>
+<li><code>executor/tuptable.h</code></li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/executor/execTuples.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>src/backend/executor/execTuples.c</code></a>: 本関数が生成したコードが操作する <code>TupleTableSlot</code> の標準的な実装。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/jit/llvm/llvmjit_expr.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/jit/llvm/llvmjit_expr.c.html&quot;}, '*');"><code>src/backend/jit/llvm/llvmjit_expr.c</code></a>: 式評価の JIT コンパイルを担当する関連モジュール。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**最適化の鍵**: このコードは「コンパイル時にカラムのオフセットが確定できるか」を重視しています。<code>attguaranteedalign</code> フラグが <a class="wiki-source-link" href="../../../../../source/src/tools/pg_bsd_indent/indent_globs.h.html#L46" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/tools/pg_bsd_indent/indent_globs.h.html&quot;}, '*');"><code>true</code></a> の場合、LLVM は定数オフセットを使用してロード命令を生成できるため、非常に高速です。</li>
+<li>**デバッグ**: 生成されたコードは <a class="wiki-source-link" href="../../../../../source/src/backend/jit/llvm/llvmjit.c.html#L315" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__jit__llvm__llvmjit_c__llvm_mutable_module.html&quot;}, '*');"><code>llvm_mutable_module</code></a> を通じてモジュールに追加されます。JIT されたコードの挙動を追う場合は、<a class="wiki-source-link" href="../../../../../source/src/backend/jit/jit.c.html#L34" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/jit/jit.c.html&quot;}, '*');"><code>jit_debugging_support</code></a> を有効にして LLVM IR をダンプすることをお勧めします。</li>
+<li>**注意点**: 仮想タプル（<a class="wiki-source-link" href="../../../../../source/src/backend/executor/execTuples.c.html#L84" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/executor/execTuples.c.html&quot;}, '*');"><code>TTSOpsVirtual</code></a>）はデフォームが不要なため、この関数は早期リターンします。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../../symbols/src__backend__jit__llvm__llvmjit_deform_c__slot_compile_deform.html" target="wiki-view"><code>slot_compile_deform</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

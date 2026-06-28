@@ -1,0 +1,120 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/libpq/hba.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');">src/backend/libpq/hba.c</a></h1>
+<h2>概要</h2>
+<p><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>hba.c</code></a> は、PostgreSQL のホストベース認証（HBA）およびユーザーマッピング（Ident）設定ファイルの解析と、接続要求に対する認証ルールの照合を担うモジュールです。<code>pg_hba.conf</code> および <code>pg_ident.conf</code> の読み込み、トークン化、構文解析、および実行時のアクセス制御判定を統括します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>libpq</code> サブシステムにおいて、認証フェーズの「ポリシー決定エンジン」として機能します。<a class="wiki-source-link" href="../../../../source/src/backend/libpq/auth.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/auth.c.html&quot;}, '*');"><code>auth.c</code></a> が実際の認証プロトコル（SCRAM, GSSAPI 等）を実行するのに対し、本モジュールは「どの接続元から、どのユーザーが、どのデータベースに対して、どの認証方式を使うべきか」を決定します。</p>
+<h2>責務</h2>
+<ul>
+<li>**設定ファイルの解析**: <code>pg_hba.conf</code> / <code>pg_ident.conf</code> の読み込み、再帰的なファイルインクルード処理、およびトークン化。</li>
+<li>**構文検証**: 設定行の構文チェック、認証オプション（LDAP, RADIUS, OAuth 等）の妥当性検証。</li>
+<li>**アクセス制御判定**: 接続要求（<a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__hbaPort.html&quot;}, '*');"><code>hbaPort</code></a>）とロード済みのルールリストを照合し、適用すべき認証方式を特定。</li>
+<li>**ユーザーマッピング**: Ident 認証におけるシステムユーザーとデータベースユーザーの対応付け（正規表現置換を含む）。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<h3>設定管理・状態保持</h3>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L86" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>parsed_hba_lines</code></a> / <a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L93" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>parsed_ident_lines</code></a>: 解析済みのルールを保持するグローバルリスト。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L80" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>tokenize_context</code></a>: ファイル解析中に使用される一時的なメモリコンテキスト。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L102" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>UserAuthName</code></a>: <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L25" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__UserAuth.html&quot;}, '*');"><code>UserAuth</code></a> 列挙型と文字列を対応付けるマッピング配列。</li>
+</ul>
+<h3>解析・構築</h3>
+<ul>
+<li><code>load_hba()</code> / <code>load_ident()</code>: 設定ファイルを再読み込みし、成功時にグローバル状態を更新するエントリポイント。</li>
+<li><code>parse_hba_line()</code> / <code>parse_ident_line()</code>: トークン化された行を構造体（<a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L95" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__HbaLine.html&quot;}, '*');"><code>HbaLine</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L145" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__IdentLine.html&quot;}, '*');"><code>IdentLine</code></a>）へ変換。</li>
+<li><code>tokenize_auth_file()</code>: ファイルを読み込み、行単位でトークン化する中心的なパーサー。</li>
+</ul>
+<h3>照合ロジック</h3>
+<ul>
+<li><code>hba_getauthmethod()</code>: 外部（<a class="wiki-source-link" href="../../../../source/src/backend/libpq/auth.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/auth.c.html&quot;}, '*');"><code>auth.c</code></a>）から呼び出される、認証方式決定のメインインターフェース。</li>
+<li><code>check_hba()</code>: 接続要求とルールリストを走査し、マッチする <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L95" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__HbaLine.html&quot;}, '*');"><code>HbaLine</code></a> を特定。</li>
+<li><code>check_usermap()</code>: Ident 認証において、ユーザーマッピングの妥当性を検証。</li>
+</ul>
+<h2>追加の索引済みシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L56" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__check_network_data.html&quot;}, '*');"><code>check_network_data</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L289" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__copy_auth_token.html&quot;}, '*');"><code>copy_auth_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L279" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__free_auth_token.html&quot;}, '*');"><code>free_auth_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L258" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__make_auth_token.html&quot;}, '*');"><code>make_auth_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L380" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__next_field_expand.html&quot;}, '*');"><code>next_field_expand</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L186" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__next_token.html&quot;}, '*');"><code>next_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L145" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__pg_isblank.html&quot;}, '*');"><code>pg_isblank</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L302" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__regcomp_auth_token.html&quot;}, '*');"><code>regcomp_auth_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L347" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__regexec_auth_token.html&quot;}, '*');"><code>regexec_auth_token</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L63" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__tokenize_error_callback_arg.html&quot;}, '*');"><code>tokenize_error_callback_arg</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L494" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__tokenize_expand_file.html&quot;}, '*');"><code>tokenize_expand_file</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L439" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__libpq__hba_c__tokenize_include_file.html&quot;}, '*');"><code>tokenize_include_file</code></a></li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化/リロード**: <code>load_hba()</code> が <code>open_auth_file()</code> を経由してファイルを読み込み、<code>tokenize_auth_file()</code> で <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L163" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__TokenizedAuthLine.html&quot;}, '*');"><code>TokenizedAuthLine</code></a> リストを生成。 2. **構文解析**: <code>parse_hba_line()</code> がトークンを検証し、<a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L95" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__HbaLine.html&quot;}, '*');"><code>HbaLine</code></a> 構造体を構築。エラー時は <code>err_msg</code> を設定して報告。 3. **照合**: <code>hba_getauthmethod()</code> が <code>check_hba()</code> を呼び出し、<a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__hbaPort.html&quot;}, '*');"><code>hbaPort</code></a> の情報（<a class="wiki-source-link" href="../../../../source/contrib/pgcrypto/crypt-des.c.html#L74" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/pgcrypto/crypt-des.c.html&quot;}, '*');">IP</a>, SSL状態, DB名, ユーザー名）を <a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L86" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>parsed_hba_lines</code></a> の各ルールと順次比較。 4. **判定**: マッチしたルールが見つかれば <code>port-&gt;hba</code> に格納。見つからない場合は <code>uaImplicitReject</code> を設定。</p>
+<h2>直接依存</h2>
+<ul>
+<li>**メモリ管理**: <code>utils/memutils.h</code>（コンテキスト管理）。</li>
+<li>**ネットワーク**: <code>common/ip.h</code>, <code>sys/socket.h</code>（<a class="wiki-source-link" href="../../../../source/contrib/pgcrypto/crypt-des.c.html#L74" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/contrib/pgcrypto/crypt-des.c.html&quot;}, '*');">IP</a>照合）。</li>
+<li>**正規表現**: <code>regex/regex.h</code>（Ident マッピングやルール照合）。</li>
+<li>**設定**: <code>utils/conffiles.h</code>, <code>utils/guc.h</code>（設定ファイル操作）。</li>
+<li><code>arpa/inet.h</code></li>
+<li><code>catalog/pg_collation.h</code></li>
+<li><code>common/string.h</code></li>
+<li><code>ctype.h</code></li>
+<li><code>fcntl.h</code></li>
+<li><code>ldap.h</code></li>
+<li><code>libpq/hba.h</code></li>
+<li><code>libpq/ifaddr.h</code></li>
+<li><code>libpq/libpq-be.h</code></li>
+<li><code>libpq/oauth.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32/netdb.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32/netdb.h.html&quot;}, '*');"><code>netdb.h</code></a></li>
+<li><code>netinet/in.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/postmaster.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32/pwd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32/pwd.h.html&quot;}, '*');"><code>pwd.h</code></a></li>
+<li><code>replication/walsender.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>sys/param.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/acl.h</code></li>
+<li><code>utils/varlena.h</code></li>
+<li><code>winldap.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/libpq/hba.h.html&quot;}, '*');"><code>src/include/libpq/hba.h</code></a>: データ構造（<a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L95" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__HbaLine.html&quot;}, '*');"><code>HbaLine</code></a>, <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L25" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__UserAuth.html&quot;}, '*');"><code>UserAuth</code></a> 等）の定義。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/auth.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/auth.c.html&quot;}, '*');"><code>src/backend/libpq/auth.c</code></a>: 本モジュールで決定された認証方式を実際に実行するコード。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/libpq/pqcomm.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/pqcomm.c.html&quot;}, '*');"><code>src/backend/libpq/pqcomm.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/include/libpq/hba.h.html#L173" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__libpq__hba_h__hbaPort.html&quot;}, '*');"><code>hbaPort</code></a> 構造体の定義元。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**メモリ管理**: <code>load_hba()</code> は、解析成功時にのみグローバルな <a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html#L87" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>parsed_hba_context</code></a> を差し替えます。解析失敗時は古い設定を維持するアトミックな更新設計になっています。</li>
+<li>**エラー処理**: <code>parse_hba_line()</code> 等の関数は、エラー時に <code>err_msg</code> を設定し、呼び出し元でログ出力を行う設計です。</li>
+<li>**制約**: <a class="wiki-source-link" href="../../../../source/src/backend/libpq/hba.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/libpq/hba.c.html&quot;}, '*');"><code>hba.c</code></a> は <a class="wiki-source-link" href="../../../../source/src/backend/utils/mmgr/mcxt.c.html#L152" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/utils/mmgr/mcxt.c.html&quot;}, '*');"><code>PostmasterContext</code></a> に依存しており、主に postmaster プロセスで実行されることを想定しています。</li>
+<li>**省略箇所**: LDAP や RADIUS の詳細なプロトコルハンドリングは、各ライブラリの API に依存しており、本ファイルでは設定の妥当性検証に留めています。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__check_network_data.html" target="wiki-view"><code>check_network_data</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__tokenize_error_callback_arg.html" target="wiki-view"><code>tokenize_error_callback_arg</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__pg_isblank.html" target="wiki-view"><code>pg_isblank</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__next_token.html" target="wiki-view"><code>next_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__make_auth_token.html" target="wiki-view"><code>make_auth_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__free_auth_token.html" target="wiki-view"><code>free_auth_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__copy_auth_token.html" target="wiki-view"><code>copy_auth_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__regcomp_auth_token.html" target="wiki-view"><code>regcomp_auth_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__regexec_auth_token.html" target="wiki-view"><code>regexec_auth_token</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__next_field_expand.html" target="wiki-view"><code>next_field_expand</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__tokenize_include_file.html" target="wiki-view"><code>tokenize_include_file</code></a></li>
+<li><a href="../../../symbols/src__backend__libpq__hba_c__tokenize_expand_file.html" target="wiki-view"><code>tokenize_expand_file</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

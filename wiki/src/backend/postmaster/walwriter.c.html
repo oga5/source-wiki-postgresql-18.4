@@ -1,0 +1,82 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/postmaster/walwriter.c.md</title><link rel="stylesheet" href="../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');">src/backend/postmaster/walwriter.c</a></h1>
+<h2>概要</h2>
+<p>WAL Writer は、PostgreSQL のバックグラウンドプロセスの一つであり、WAL（Write-Ahead Log）バッファの書き出しとディスクへの同期を定期的に行います。これにより、通常のバックエンドプロセスが WAL 書き込みの負荷を直接負うことを防ぎ、非同期コミットのトランザクションが一定時間内に確実にディスクへ反映されることを保証します。</p>
+<h2>モジュール内での役割</h2>
+<p><code>postmaster</code> サブシステムの一部として、Postmaster によって起動される補助プロセス（Auxiliary Process）です。他のバックグラウンドプロセス（<code>bgwriter</code> や <code>checkpointer</code>）と協調しつつ、WAL の永続化という特定の責務に特化しています。</p>
+<h2>責務</h2>
+<ul>
+<li>**WAL のフラッシュ**: メモリ上の WAL バッファをディスクへ書き出し、必要に応じて <a class="wiki-source-link" href="../../../../source/src/include/port/win32_port.h.html#L83" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_port.h.html&quot;}, '*');"><code>fsync</code></a> を実行します。</li>
+<li>**非同期コミットの保証**: 非同期コミットされたトランザクションが、設定された時間内に確実に永続化されるよう制御します。</li>
+<li>**ハイバネーション**: システムがアイドル状態の際、スリープ時間を延長することで消費電力を抑える適応的な待機制御を行います。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L87" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__walwriter_c__WalWriterMain.html&quot;}, '*');"><code>WalWriterMain</code></a>: プロセスのメインエントリポイント。無限ループ内でフラッシュ処理と待機を繰り返します。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');"><code>WalWriterDelay</code></a>: 書き込みサイクルの基本間隔（ミリ秒）。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L71" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');"><code>WalWriterFlushAfter</code></a>: WAL をフラッシュする閾値。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L78" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');"><code>LOOPS_UNTIL_HIBERNATE</code></a> / <code>HIBERNATE_FACTOR</code>: アイドル状態を判定し、スリープ時間を延長するための定数。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1.  **初期化**: <a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L87" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__postmaster__walwriter_c__WalWriterMain.html&quot;}, '*');"><code>WalWriterMain</code></a> が起動し、シグナルハンドラの設定と専用のメモリコンテキストを作成します。 2.  **メインループ**:</p>
+<ul>
+<li><code>ProcessMainLoopInterrupts()</code> でシグナルを処理します。</li>
+<li><code>XLogBackgroundFlush()</code> を呼び出し、WAL の書き出しを試みます。</li>
+<li>書き込みが行われた場合、ハイバネーションカウンタをリセットします。</li>
+<li><code>WaitLatch()</code> を使用して、次のサイクルまで待機します。この際、一定期間作業が発生していない場合は <code>HIBERNATE_FACTOR</code> を用いて待機時間を延長します。</li>
+<p>3.  **エラー処理**: <a class="wiki-source-link" href="../../../../source/src/include/c.h.html#L1343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/c.h.html&quot;}, '*');"><code>sigsetjmp</code></a> を使用した独自の例外処理スタックを持ち、エラー発生時にはリソースを解放して 1 秒間待機した後にループを再開します。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><code>access/xlog.h</code>: WAL 書き出しのコアロジック（<a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L2967" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogBackgroundFlush.html&quot;}, '*');"><code>XLogBackgroundFlush</code></a> 等）を提供。</li>
+<li><code>storage/proc.h</code>: プロセス管理と <code>MyLatch</code> による待機制御。</li>
+<li><code>postmaster/auxprocess.h</code>: 補助プロセスとしての共通初期化処理。</li>
+<li><code>storage/lwlock.h</code>: WAL バッファアクセス時のロック制御。</li>
+<li><code>libpq/pqsignal.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/pgstat.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/pgstat.h.html&quot;}, '*');"><code>pgstat.h</code></a></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a></li>
+<li><code>postmaster/interrupt.h</code></li>
+<li><code>postmaster/walwriter.h</code></li>
+<li><code>signal.h</code></li>
+<li><code>storage/aio_subsys.h</code></li>
+<li><code>storage/bufmgr.h</code></li>
+<li><code>storage/condition_variable.h</code></li>
+<li><code>storage/fd.h</code></li>
+<li><code>storage/procsignal.h</code></li>
+<li><code>storage/smgr.h</code></li>
+<li><a class="wiki-source-link" href="../../../../source/src/include/port/win32_msvc/unistd.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/port/win32_msvc/unistd.h.html&quot;}, '*');"><code>unistd.h</code></a></li>
+<li><code>utils/hsearch.h</code></li>
+<li><code>utils/memutils.h</code></li>
+<li><code>utils/resowner.h</code></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../source/src/include/postmaster/walwriter.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;panels/src/include/postmaster/walwriter.h.html&quot;}, '*');"><code>src/include/postmaster/walwriter.h</code></a>: GUC パラメータやメイン関数の宣言。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/transam/xlog.c.html&quot;}, '*');"><code>src/backend/access/transam/xlog.c</code></a>: <a class="wiki-source-link" href="../../../../source/src/backend/access/transam/xlog.c.html#L2967" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__transam__xlog_c__XLogBackgroundFlush.html&quot;}, '*');"><code>XLogBackgroundFlush</code></a> の実装詳細。</li>
+<li><a class="wiki-source-link" href="../../../../source/src/backend/postmaster/postmaster.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/postmaster.c.html&quot;}, '*');"><code>src/backend/postmaster/postmaster.c</code></a>: プロセスの起動と終了管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>WAL Writer は「必須ではない」プロセスです。もしこのプロセスが停止しても、通常のバックエンドプロセスが自ら WAL 書き込みを行うため、データベースの整合性は保たれます。</li>
+<li>エラー発生時のリカバリ処理は、<a class="wiki-source-link" href="../../../../source/src/include/utils/elog.h.html#L385" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/utils/elog.h.html&quot;}, '*');"><code>PG_TRY</code></a> を使わず <a class="wiki-source-link" href="../../../../source/src/include/c.h.html#L1343" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/c.h.html&quot;}, '*');"><code>sigsetjmp</code></a> を直接操作しています。これは、エラーハンドラ自体がクラッシュするリスクを最小限に抑えるための設計です。</li>
+<li>ハイバネーション機能は、負荷が低い環境での CPU 使用率を最適化するために重要です。デバッグやチューニングの際は、<a class="wiki-source-link" href="../../../../source/src/backend/postmaster/walwriter.c.html#L70" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/postmaster/walwriter.c.html&quot;}, '*');"><code>WalWriterDelay</code></a> の挙動に注目してください。</li>
+</ul>
+<h2>シンボルページ</h2>
+<ul>
+<li><a href="../../../symbols/src__backend__postmaster__walwriter_c__WalWriterMain.html" target="wiki-view"><code>WalWriterMain</code></a></li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>

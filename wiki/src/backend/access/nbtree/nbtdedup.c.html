@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="source-wiki-viewer-version" content="5"><title>src/backend/access/nbtree/nbtdedup.c.md</title><link rel="stylesheet" href="../../../../../styles.css"></head><body><h1><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtdedup.c.html&quot;}, '*');">src/backend/access/nbtree/nbtdedup.c</a></h1>
+<h2>概要</h2>
+<p>PostgreSQLのB-treeインデックスにおける重複排除（Deduplication）およびボトムアップ削除（Bottom-up Deletion）を実装するモジュールです。インデックスページの空き容量を確保し、不要なページ分割を抑制することを目的としています。</p>
+<h2>モジュール内での役割</h2>
+<p><code>src/backend/access/nbtree</code> サブシステムの一部として、インデックスの物理的な再構成を担います。<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtinsert.c.html&quot;}, '*');"><code>nbtinsert.c</code></a> から呼び出され、ページが満杯になった際の救済措置として機能します。</p>
+<h2>責務</h2>
+<ul>
+<li>**重複排除**: ページ内の重複するインデックスエントリを「Posting List」形式のタプルに統合し、ページ内の空き容量を増やす。</li>
+<li>**ボトムアップ削除**: MVCCの更新によって不要になったインデックスエントリを特定し、<code>tableam</code> と連携して物理的に削除する。</li>
+<li>**Posting Listの管理**: 複数のTIDを保持するタプルの生成、更新、および分割時のTID入れ替え処理。</li>
+<li>**戦略的制御**: ページ分割を遅延させるための「Single Value」戦略の適用。</li>
+</ul>
+<h2>重要なシンボル</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L57" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_dedup_pass.html&quot;}, '*');"><code>_bt_dedup_pass</code></a>: 重複排除のメインエントリーポイント。ページをスキャンし、Posting Listを構築してページを再構成する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L306" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_bottomupdel_pass.html&quot;}, '*');"><code>_bt_bottomupdel_pass</code></a>: ボトムアップ削除のメインエントリーポイント。削除可能なTIDを特定し、<a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtpage.c.html#L1512" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtpage_c___bt_delitems_delete_check.html&quot;}, '*');"><code>_bt_delitems_delete_check</code></a> を介して削除を実行する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L863" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_form_posting.html&quot;}, '*');"><code>_bt_form_posting</code></a>: Posting List形式のタプルを生成する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L923" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_update_posting.html&quot;}, '*');"><code>_bt_update_posting</code></a>: 既存のPosting Listから特定のTIDを削除して更新する。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L1021" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_swap_posting.html&quot;}, '*');"><code>_bt_swap_posting</code></a>: Posting Listの分割時に、新しいタプルと既存のTIDを入れ替える。</li>
+</ul>
+<h2>制御フローとデータフロー</h2>
+<p>1. **初期化**: <a class="wiki-source-link" href="../../../../../source/src/include/access/nbtree.h.html#L904" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/access/nbtree.h.html&quot;}, '*');"><code>BTDedupState</code></a> を確保し、スキャン対象のページ情報を保持する。 2. **スキャン**: ページ内の各タプルを順次処理し、キーが一致するものを <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L483" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_dedup_save_htid.html&quot;}, '*');"><code>_bt_dedup_save_htid</code></a> で一時的なPosting Listに蓄積する。 3. **終了処理**:</p>
+<ul>
+<li>重複排除の場合: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L554" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_dedup_finish_pending.html&quot;}, '*');"><code>_bt_dedup_finish_pending</code></a> でPosting Listタプルを生成し、一時ページ（<code>newpage</code>）に書き込む。</li>
+<li>ボトムアップ削除の場合: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L647" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_bottomupdel_finish_pending.html&quot;}, '*');"><code>_bt_bottomupdel_finish_pending</code></a> で削除対象のTIDを <a class="wiki-source-link" href="../../../../../source/src/include/access/tableam.h.html#L243" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__include__access__tableam_h__TM_IndexDeleteOp.html&quot;}, '*');"><code>TM_IndexDeleteOp</code></a> に登録し、最終的に <code>tableam</code> を呼び出す。</li>
+<p>4. **コミット**: 成功した場合、<a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html#L150" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>START_CRIT_SECTION</code></a> を経てページを更新し、WALを記録する。</p>
+</ul>
+<h2>直接依存</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/postgres.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/postgres.h.html&quot;}, '*');"><code>postgres.h</code></a>: 基本定義。</li>
+<li><code>access/nbtree.h</code>: B-treeのデータ構造とマクロ。</li>
+<li><code>access/nbtxlog.h</code>: WALレコード定義。</li>
+<li><code>access/xloginsert.h</code>: WAL挿入インターフェース。</li>
+<li><code>utils/rel.h</code>: リレーション情報。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/include/miscadmin.h.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/include/miscadmin.h.html&quot;}, '*');"><code>miscadmin.h</code></a></li>
+</ul>
+<h2>関連コード</h2>
+<ul>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtinsert.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtinsert.c.html&quot;}, '*');"><code>nbtinsert.c</code></a>: このモジュールの機能を呼び出すインデックス挿入ロジック。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtsplitloc.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtsplitloc.c.html&quot;}, '*');"><code>nbtsplitloc.c</code></a>: ページ分割時の戦略（Single Value戦略など）を共有している。</li>
+<li><a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtpage.c.html" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/src/backend/access/nbtree/nbtpage.c.html&quot;}, '*');"><code>nbtpage.c</code></a>: ページレベルの操作やフラグ管理。</li>
+</ul>
+<h2>読者向けメモ</h2>
+<ul>
+<li>**Posting Listの制約**: Posting List内のTIDは常に昇順で保持される必要があります。</li>
+<li>**アドバイザリな戻り値**: <a class="wiki-source-link" href="../../../../../source/src/backend/access/nbtree/nbtdedup.c.html#L306" target="source-view" onclick="parent.postMessage({&quot;type&quot;: &quot;source-link&quot;, &quot;panel&quot;: &quot;wiki/symbols/src__backend__access__nbtree__nbtdedup_c___bt_bottomupdel_pass.html&quot;}, '*');"><code>_bt_bottomupdel_pass</code></a> の戻り値は、呼び出し元に対する「ページ分割を避けるためのヒント」であり、必ずしも削除が成功したことを保証するものではありません。</li>
+<li>**メモリ管理**: <code>palloc</code> を多用するため、関数終了時の <code>pfree</code> 漏れに注意してください。特にエラー発生時のクリーンアップパスが重要です。</li>
+</ul><script>
+(function() {
+  function notifyParent() {
+    if (parent === window) return;
+    parent.postMessage({type: "frame-location", frame: window.name || "", href: window.location.href}, "*");
+  }
+  document.addEventListener("click", function(event) {
+    const link = event.target.closest("a[data-panel]");
+    if (!link || parent === window) return;
+    parent.postMessage({type: "source-link", panel: link.dataset.panel}, "*");
+  });
+  window.addEventListener("load", notifyParent);
+  window.addEventListener("hashchange", notifyParent);
+})();
+</script></body></html>
